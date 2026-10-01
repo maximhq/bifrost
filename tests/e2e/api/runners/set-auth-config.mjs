@@ -79,6 +79,13 @@ if (mode === "enable" && setupToken) {
   authConfig.setup_token = setupToken;
 }
 
+// The server reports log_retention_days:0 by default but rejects that on write
+// (it must be >= 1), so a straight round-trip of client_config would 400. Coerce
+// the invalid default so enabling/disabling auth through this PUT succeeds.
+if (current.client_config && !(current.client_config.log_retention_days >= 1)) {
+  current.client_config.log_retention_days = 1;
+}
+
 await request("PUT", "/api/config", {
   client_config: current.client_config,
   framework_config: current.framework_config,

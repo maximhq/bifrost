@@ -19,6 +19,8 @@ interface PushGatewayConfig {
 
 interface TelemetryConfig {
 	metrics_enabled?: boolean;
+	overhead_breakdown_enabled?: boolean;
+	user_labels_enabled?: boolean;
 	push_gateway?: PushGatewayConfig;
 }
 
@@ -36,6 +38,8 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 		return {
 			...pushGateway,
 			metrics_enabled: metricsEnabled,
+			overhead_breakdown_enabled: telemetryConfig.overhead_breakdown_enabled ?? false,
+			user_labels_enabled: telemetryConfig.user_labels_enabled ?? false,
 			push_gateway_enabled: pushGateway.enabled ?? false,
 		};
 	}, [selectedPlugin]);
@@ -68,6 +72,8 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 					enabled: true,
 					config: {
 						metrics_enabled: config.metrics_enabled,
+						overhead_breakdown_enabled: config.overhead_breakdown_enabled,
+						user_labels_enabled: config.user_labels_enabled,
 						push_gateway: pushGatewayConfig,
 					},
 				},
@@ -89,6 +95,10 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 	return (
 		<div className="flex w-full flex-col gap-4">
 			<div className="flex w-full flex-col gap-3">
+				<div className="text-muted-foreground mb-2 text-xs font-normal">
+					Expose Bifrost metrics for Prometheus to scrape from the <code>/metrics</code> endpoint, or push them to a Prometheus Push
+          Gateway.
+        </div>
 				<PrometheusFormFragment
 					onSave={handlePrometheusConfigSave}
 					currentConfig={currentConfig}

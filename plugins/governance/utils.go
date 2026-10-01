@@ -178,7 +178,16 @@ func hasDirectKeyAuth(ctx *schemas.BifrostContext) bool {
 // lacking an access it was never meant to have. It still answers the mandatory-auth question (something
 // was presented), which is why that step asks about it separately.
 func presentedGrantBearingCredential(ctx *schemas.BifrostContext) bool {
-	if identity := ctx.Grant().Identity(); identity != nil {
+	// A context with no grant at all reads as nothing presented, the same answer an empty
+	// identity gives. Worth stating explicitly because Grant() returns a nil interface rather
+	// than a zero value, so reaching straight for Identity() panics: every request that reaches
+	// Evaluate has a grant, but a transport asking this question directly (realtime admission)
+	// can hold a context built before one was ever recorded.
+	g := ctx.Grant()
+	if g == nil {
+		return false
+	}
+	if identity := g.Identity(); identity != nil {
 		return identity.Presented() || identity.User() != nil
 	}
 	return false
@@ -197,4 +206,90 @@ func (p *GovernancePlugin) pruneMCPIncludeToolsFromContext(ctx *schemas.BifrostC
 	requested, _ := existing.([]string)
 	ctx.SetValue(schemas.MCPContextKeyIncludeTools, access.NarrowMCPToolIncludeList(requested))
 	return true
+}
+
+// PresentedAnyCredential reports whether the request carried any credential at all that answers
+// the mandatory-authentication question: a grant-bearing one (virtual key or authenticated
+// identity), or a direct provider key. It is the exact question Evaluate's first step asks, and
+// asking it alone costs nothing - it reads the context and settles no limits.
+//
+// Exported so a transport can admit or refuse a connection on the same answer, rather than
+// reimplementing "was this authenticated" beside this one. Realtime is the caller that needs it:
+// a WebSocket upgrade opens an upstream provider session on the operator's key before any turn
+// exists to evaluate, so admission has to be decided at the upgrade, while the per-turn pipeline
+// keeps owning access and limits. Callers must still let the per-request pipeline run - this
+// answers only whether a credential was presented, never whether it grants what is being asked
+// for, and it deliberately settles no limits so an admission check cannot double-count usage
+// against the turns that follow.
+func PresentedAnyCredential(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	return presentedGrantBearingCredential(ctx) || hasDirectKeyAuth(ctx)
+}
+
+// PresentedCredentialResolved reports whether the credential the request presented resolved to
+// usable access. It is the second admission question realtime asks after PresentedAnyCredential:
+// not "was something presented" but "did what was presented turn out to exist". It reads the
+// answer ResolveAccess recorded on the request's grant rather than resolving anything itself, so
+// callers must run the per-request pipeline (PreRequestHook) first; asked earlier it reports the
+// credential unresolved, because it is.
+//
+// A direct provider key resolves to nothing by design (nothing in the governance model describes
+// it), so it counts as resolved here: refusing it for lacking an access it was never meant to
+// have would close direct-key requests entirely. A grant-bearing credential that resolved to no
+// access, or to access whose permit is unusable (revoked, expired, inactive), is exactly the
+// forged-or-revoked case this question exists to catch. Like PresentedAnyCredential, it settles
+// no limits, so admission cannot double-count usage against the turns that follow.
+func PresentedCredentialResolved(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	if hasDirectKeyAuth(ctx) {
+		return true
+	}
+	if !presentedGrantBearingCredential(ctx) {
+		return false
+	}
+	g := ctx.Grant()
+	if g == nil {
+		return false
+	}
+	access := g.Access()
+	return access != nil && unusablePermit(access) == nil
+}
+
+// AppendAllProviderPermits completes a permit that grants every provider. Such a permit names none,
+// so the providers it grants by the flag alone are materialised here, from what the deployment has
+// configured, and the permit then carries its whole grant in one readable list.
+//
+// Doing it at permit construction rather than where a consumer reads the permit is what keeps every
+// consumer honest: enumerating provider permits and asking whether the permit allows a provider give
+// the same answer, so a listing cannot refuse what the request path admits. Built per request, so a
+// provider added after the permit was last written is granted by the same rule.
+//
+// A provider the permit already names keeps its own entry: those are overrides, and the flag widens
+// the set rather than relaxing them. A materialised entry narrows nothing - every model, every key,
+// nothing blocked - and carries no weight, because a weight is a routing preference a provider
+// config expresses and this one expresses none.
+func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []string) []schemas.ProviderPermit {
+	named := make(map[string]struct{}, len(permits))
+	for i := range permits {
+		named[permits[i].Provider] = struct{}{}
+	}
+	for _, provider := range configured {
+		if provider == "" {
+			continue
+		}
+		if _, dup := named[provider]; dup {
+			continue
+		}
+		named[provider] = struct{}{}
+		permits = append(permits, schemas.ProviderPermit{
+			Provider:      provider,
+			AllowedModels: schemas.WhiteList{"*"},
+			KeyIDs:        schemas.WhiteList{"*"},
+		})
+	}
+	return permits
 }

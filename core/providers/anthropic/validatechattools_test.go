@@ -58,7 +58,7 @@ func TestValidateChatToolsForProvider(t *testing.T) {
 			wantDropped: []string{"web_fetch_20260309", "mcp_toolset"},
 		},
 		{
-			name:     "bedrock keeps computer/bash/memory/text_editor, drops tool_search",
+			name:     "bedrock keeps computer/bash/memory/text_editor and tool_search",
 			provider: schemas.Bedrock,
 			input: []schemas.ChatTool{
 				serverTool("computer_20251124", "computer"),
@@ -67,10 +67,9 @@ func TestValidateChatToolsForProvider(t *testing.T) {
 				serverTool("text_editor_20250728", "str_replace_based_edit_tool"),
 				serverTool("tool_search_tool_bm25", "tool_search_tool_bm25"),
 			},
-			// tool-search-tool-2025-10-19 is InvokeModel/InvokeModelWithResponseStream
-			// only per AWS's docs; classic Bedrock always dispatches via Converse.
-			wantKeep:    4,
-			wantDropped: []string{"tool_search_tool_bm25"},
+			// tool-search-tool-2025-10-19 is InvokeModel-only per AWS's docs; the
+			// Bedrock provider routes tool_search requests to InvokeModel (#6825).
+			wantKeep: 5,
 		},
 		{
 			name:     "bedrock partial drop mixes function + server tools",

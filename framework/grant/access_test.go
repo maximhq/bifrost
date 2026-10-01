@@ -207,6 +207,50 @@ func TestAccess_BlacklistWins(t *testing.T) {
 	assert.False(t, unionAccess.IsModelAllowed("anthropic", "claude-opus-4"))
 }
 
+// A permit that allows all providers grants even a provider it holds no provider permit for, with
+// every model and every key. A provider it does list keeps that permit's own rules, so allow-all
+// coexists with per-provider restrictions rather than overriding them.
+func TestAccess_AllowAllProviders(t *testing.T) {
+	// Lists openai with a blacklist and a key restriction; allows every other provider by the flag.
+	base := NewPermit(PermitVirtualKey, "vk1", "Caller Key", true, false,
+		[]schemas.ProviderPermit{
+			{Provider: "openai", AllowedModels: []string{"*"}, BlacklistedModels: []string{"gpt-4o"}, KeyIDs: []string{"key-a"}},
+			// Restrictive, non-wildcard allowlist: allow-all must not open models it omits.
+			{Provider: "anthropic", AllowedModels: []string{"claude-3-5-sonnet"}},
+		}, nil, WithAllowAllProviders(true))
+	access := NewAccess(held(base), nil, "", nil)
+
+	// A provider with no permit is allowed for any model, with no key restriction.
+	assert.True(t, access.IsProviderAllowed("cohere"), "allow-all grants an unlisted provider")
+	assert.True(t, access.IsModelAllowed("cohere", "command-r-plus"), "allow-all grants any model of an unlisted provider")
+	assert.True(t, access.IsModelAllowed("cohere", ""), "an empty model asks about the provider alone")
+	keyIDs, restricted := access.KeysForModel("cohere", "command-r-plus")
+	assert.False(t, restricted, "an unlisted provider under allow-all has no key restriction")
+	assert.Nil(t, keyIDs)
+
+	// A listed provider keeps its own rules: the blacklist still wins, and its key restriction stands.
+	assert.True(t, access.IsProviderAllowed("openai"))
+	assert.False(t, access.IsModelAllowed("openai", "gpt-4o"), "a listed provider's blacklist wins even under allow-all")
+	assert.True(t, access.IsModelAllowed("openai", "o3"))
+	keyIDs, restricted = access.KeysForModel("openai", "o3")
+	assert.True(t, restricted, "a listed provider keeps its key restriction under allow-all")
+	assert.Equal(t, []string{"key-a"}, keyIDs)
+
+	// A listed provider's restrictive allowlist wins: allow-all does not grant a model it omits.
+	assert.True(t, access.IsProviderAllowed("anthropic"))
+	assert.True(t, access.IsModelAllowed("anthropic", "claude-3-5-sonnet"), "a model in the allowlist is allowed")
+	assert.False(t, access.IsModelAllowed("anthropic", "claude-3-opus"), "allow-all must not grant a model outside a listed provider's allowlist")
+}
+
+// Without the flag, a provider the permit does not list is denied: allow-all is opt-in.
+func TestAccess_WithoutAllowAllProvidersUnlistedIsDenied(t *testing.T) {
+	base := permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")
+	access := NewAccess(held(base), nil, "", nil)
+
+	assert.False(t, access.IsProviderAllowed("cohere"))
+	assert.False(t, access.IsModelAllowed("cohere", "command-r-plus"))
+}
+
 func TestAccess_UnknownModeFailsClosed(t *testing.T) {
 	base := permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")
 	scoping := permitWithProviders("other", "o1", "Other", "openai")
@@ -534,7 +578,7 @@ func TestAccess_ProvidersForCandidateKeysAreACopy(t *testing.T) {
 		require.NotEmpty(t, candidates[0].KeyIDs)
 		candidates[0].KeyIDs[0] = "mutated"
 
-		assert.Equal(t, []string{"key-1", "key-2"}, base.ProviderPermits()[0].KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-1", "key-2"}, base.ProviderPermits()[0].KeyIDs)
 	})
 
 	t.Run("keys composeKeyIDs passes through untouched", func(t *testing.T) {
@@ -550,7 +594,7 @@ func TestAccess_ProvidersForCandidateKeysAreACopy(t *testing.T) {
 		require.NotEmpty(t, candidates[0].KeyIDs)
 		candidates[0].KeyIDs[0] = "mutated"
 
-		assert.Equal(t, []string{"key-1", "key-2"}, base.ProviderPermits()[0].KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-1", "key-2"}, base.ProviderPermits()[0].KeyIDs)
 	})
 }
 
@@ -647,14 +691,14 @@ func TestAccess_ProvidersFor(t *testing.T) {
 		// keys and the weight the scoping permit sets for it.
 		assert.Equal(t, "openai", candidates[0].Provider)
 		assert.Equal(t, ptr(0.1), candidates[0].Weight, "the scoping permit's preference")
-		assert.Equal(t, []string{"key-own", "key-scoping"}, candidates[0].KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-own", "key-scoping"}, candidates[0].KeyIDs)
 		assertPermitsAre(t, access.PermitsForModel(candidates[0].Provider, "gpt-4o"), base, scoping)
 		assert.Equal(t, "bedrock", candidates[1].Provider)
 		assertPermitsAre(t, access.PermitsForModel(candidates[1].Provider, "gpt-4o"), base, scoping)
 		// The added provider operates under the scoping permit, which alone permits it.
 		assert.Equal(t, "anthropic", candidates[2].Provider)
 		assert.Equal(t, ptr(0.3), candidates[2].Weight)
-		assert.Equal(t, []string{"key-scoping"}, candidates[2].KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-scoping"}, candidates[2].KeyIDs)
 		assertPermitsAre(t, access.PermitsForModel(candidates[2].Provider, "gpt-4o"), scoping)
 	})
 
@@ -736,7 +780,7 @@ func TestAccess_UnionServesFromThePermitThatPermits(t *testing.T) {
 	require.Len(t, candidates, 1, "the request is permitted, so something must be able to serve it")
 	// Served by the permit that permits the model, not the one that blacklists it.
 	assertPermitsAre(t, access.PermitsForModel(candidates[0].Provider, "gpt-4o"), scoping)
-	assert.Equal(t, []string{"key-scoping"}, candidates[0].KeyIDs,
+	assert.Equal(t, schemas.WhiteList{"key-scoping"}, candidates[0].KeyIDs,
 		"the blacklisting permit does not get to say which keys serve a request it refused")
 
 	// KeysForModel agrees with the candidate: the admitting permit's keys, composed with nothing,
@@ -753,7 +797,7 @@ func TestAccess_UnionServesFromThePermitThatPermits(t *testing.T) {
 	// keys, and both are named for it.
 	other := access.ProvidersForModel("o3")
 	require.Len(t, other, 1)
-	assert.Equal(t, []string{"key-own", "key-scoping"}, other[0].KeyIDs)
+	assert.Equal(t, schemas.WhiteList{"key-own", "key-scoping"}, other[0].KeyIDs)
 	assertPermitsAre(t, access.PermitsForModel(other[0].Provider, "o3"), base, scoping)
 }
 
@@ -1324,21 +1368,21 @@ func TestAccess_ProvidersForOffersEveryBaseInFull(t *testing.T) {
 		// The first base, in full.
 		assert.Equal(t, "openai", candidates[0].Provider)
 		assert.Equal(t, ptr(0.5), candidates[0].Weight, "the project sets no weight for openai")
-		assert.Equal(t, []string{"key-first", "key-project"}, candidates[0].KeyIDs, "the first's keys unioned with the project's")
+		assert.Equal(t, schemas.WhiteList{"key-first", "key-project"}, candidates[0].KeyIDs, "the first's keys unioned with the project's")
 		assert.Equal(t, "bedrock", candidates[1].Provider)
 		assert.Nil(t, candidates[1].Weight)
-		assert.Equal(t, []string{"key-first-bedrock"}, candidates[1].KeyIDs, "the project does not hold bedrock")
+		assert.Equal(t, schemas.WhiteList{"key-first-bedrock"}, candidates[1].KeyIDs, "the project does not hold bedrock")
 		// Then the second, in full: the same providers again, under its own weight and keys.
 		assert.Equal(t, "openai", candidates[2].Provider)
 		assert.Equal(t, ptr(0.9), candidates[2].Weight)
-		assert.Equal(t, []string{"key-second", "key-first", "key-project"}, candidates[2].KeyIDs, "the second's keys unioned with the project's")
+		assert.Equal(t, schemas.WhiteList{"key-second", "key-first", "key-project"}, candidates[2].KeyIDs, "the second's keys unioned with the project's")
 		assert.Equal(t, "bedrock", candidates[3].Provider)
 		assert.Nil(t, candidates[3].Weight)
-		assert.Equal(t, []string{"key-second-bedrock"}, candidates[3].KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-second-bedrock"}, candidates[3].KeyIDs)
 		// Then what only the project holds. Its openai is shadowed: a base served it.
 		assert.Equal(t, "gemini", candidates[4].Provider)
 		assert.Equal(t, ptr(0.2), candidates[4].Weight)
-		assert.Equal(t, []string{"key-project"}, candidates[4].KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-project"}, candidates[4].KeyIDs)
 
 		// Both openai candidates rest on the same answer: every permit that permits the pair.
 		assertPermitsAre(t, access.PermitsForModel("openai", "gpt-4o"), first, second, project)
@@ -1353,10 +1397,10 @@ func TestAccess_ProvidersForOffersEveryBaseInFull(t *testing.T) {
 		require.Len(t, candidates, 3)
 		assert.Equal(t, "openai", candidates[0].Provider)
 		assert.Equal(t, ptr(0.9), candidates[0].Weight, "the first does not allow the model on openai, so only the second offers it")
-		assert.Equal(t, []string{"key-second", "key-first", "key-project"}, candidates[0].KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-second", "key-first", "key-project"}, candidates[0].KeyIDs)
 		assertPermitsAre(t, access.PermitsForModel("openai", "claude-opus-4"), second, project)
 		assert.Equal(t, "bedrock", candidates[1].Provider)
-		assert.Equal(t, []string{"key-second-bedrock"}, candidates[1].KeyIDs, "the first blacklists the model on bedrock, so only the second offers it")
+		assert.Equal(t, schemas.WhiteList{"key-second-bedrock"}, candidates[1].KeyIDs, "the first blacklists the model on bedrock, so only the second offers it")
 		assertPermitsAre(t, access.PermitsForModel("bedrock", "claude-opus-4"), second, project)
 		assert.Equal(t, "gemini", candidates[2].Provider)
 		assertPermitsAre(t, access.PermitsForModel("gemini", "claude-opus-4"), project)
@@ -1368,11 +1412,11 @@ func TestAccess_ProvidersForOffersEveryBaseInFull(t *testing.T) {
 
 		require.Len(t, candidates, 3, "bedrock from the first, then openai and bedrock from the second")
 		assert.Equal(t, "bedrock", candidates[0].Provider)
-		assert.Equal(t, []string{"key-first-bedrock"}, candidates[0].KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-first-bedrock"}, candidates[0].KeyIDs)
 		assert.Equal(t, "openai", candidates[1].Provider)
 		assert.Equal(t, ptr(0.9), candidates[1].Weight)
 		assert.Equal(t, "bedrock", candidates[2].Provider)
-		assert.Equal(t, []string{"key-second-bedrock"}, candidates[2].KeyIDs, "served by the first already, and offered again from the second")
+		assert.Equal(t, schemas.WhiteList{"key-second-bedrock"}, candidates[2].KeyIDs, "served by the first already, and offered again from the second")
 		assertPermitsAre(t, access.PermitsForModel("openai", "o3"), second)
 		assertPermitsAre(t, access.PermitsForModel("bedrock", "o3"), first, second)
 	})
@@ -1384,7 +1428,7 @@ func TestAccess_ProvidersForOffersEveryBaseInFull(t *testing.T) {
 		require.Len(t, candidates, 2, "openai from each base: the project does not hold bedrock, and no base holds gemini")
 		assert.Equal(t, "openai", candidates[0].Provider)
 		assert.Equal(t, ptr(0.5), candidates[0].Weight)
-		assert.Equal(t, []string{"key-first"}, candidates[0].KeyIDs, "the first's keys intersected with the project's")
+		assert.Equal(t, schemas.WhiteList{"key-first"}, candidates[0].KeyIDs, "the first's keys intersected with the project's")
 		assert.Equal(t, "openai", candidates[1].Provider)
 		assert.Equal(t, ptr(0.9), candidates[1].Weight)
 		assert.NotNil(t, candidates[1].KeyIDs)

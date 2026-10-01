@@ -487,6 +487,11 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.InputCostPerVideoPerSecond, src: override.InputCostPerVideoPerSecond},
 		{dst: &patched.OutputCostPerVideoPerSecond, src: override.OutputCostPerVideoPerSecond},
 		{dst: &patched.OutputCostPerSecond, src: override.OutputCostPerSecond},
+		{dst: &patched.OutputCostPerVideoPerSecond480p, src: override.OutputCostPerVideoPerSecond480p},
+		{dst: &patched.OutputCostPerVideoPerSecond720p, src: override.OutputCostPerVideoPerSecond720p},
+		{dst: &patched.OutputCostPerVideoPerSecond1024p, src: override.OutputCostPerVideoPerSecond1024p},
+		{dst: &patched.OutputCostPerVideoPerSecond1080p, src: override.OutputCostPerVideoPerSecond1080p},
+		{dst: &patched.OutputCostPerVideoPerSecond4k, src: override.OutputCostPerVideoPerSecond4k},
 		{dst: &patched.InputCostPerAudioPerSecond, src: override.InputCostPerAudioPerSecond},
 		{dst: &patched.InputCostPerSecond, src: override.InputCostPerSecond},
 		{dst: &patched.InputCostPerAudioToken, src: override.InputCostPerAudioToken},
@@ -568,6 +573,7 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerImageAbove64Megapixels, src: override.OutputCostPerImageAbove64Megapixels},
 		{dst: &patched.CacheReadInputImageTokenCost, src: override.CacheReadInputImageTokenCost},
 		{dst: &patched.SearchContextCostPerQuery, src: override.SearchContextCostPerQuery},
+		{dst: &patched.WebSearchCostPerRequest, src: override.WebSearchCostPerRequest},
 		{dst: &patched.InputCostPerQuery, src: override.InputCostPerQuery},
 		{dst: &patched.CodeInterpreterCostPerSession, src: override.CodeInterpreterCostPerSession},
 		{dst: &patched.CostPerRequest, src: override.CostPerRequest},
@@ -577,10 +583,17 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerImageAutoQuality, src: override.OutputCostPerImageAutoQuality},
 		{dst: &patched.OCRCostPerPage, src: override.OCRCostPerPage},
 		{dst: &patched.AnnotationCostPerPage, src: override.AnnotationCostPerPage},
+		{dst: &patched.OffPeakCostMultiplier, src: override.OffPeakCostMultiplier},
 	} {
 		if field.src != nil {
 			*field.dst = field.src
 		}
+	}
+	// PeakHours is a struct pointer, not a *float64, so it cannot ride the
+	// loop above. Same nil-means-inherit semantics: an override that sets only
+	// the multiplier keeps the datasheet's schedule.
+	if override.PeakHours != nil {
+		patched.PeakHours = override.PeakHours
 	}
 	return patched
 }

@@ -681,6 +681,10 @@ Refer to [Anthropic documentation](/providers/supported-providers/anthropic) for
 - `anthropic_version` automatically set to `vertex-2023-10-16`
 - Minimum reasoning budget: 1024 tokens
 - Model field removed from request (Vertex uses different identification)
+- `prompt_cache.auto_inject` applies to **Claude models only**. Vertex serves Claude and
+  Gemini side by side, and only Claude takes a per-block cache marker; Gemini caches
+  through a `cachedContent` resource instead, so injection is a no-op there. See
+  [Prompt caching](/features/prompt-caching).
 
 ## Region Selection
 
@@ -822,8 +826,8 @@ curl -X POST http://localhost:8080/v1/embeddings \
 resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
     Provider: schemas.Vertex,
     Model:    "text-embedding-004",
-    Input: &schemas.EmbeddingInput{
-        Texts: []string{"text to embed"},
+    Input: []schemas.EmbeddingInputItem{
+        {Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("text to embed")}}},
     },
     Params: &schemas.EmbeddingParameters{
         Dimensions: schemas.Ptr(256),

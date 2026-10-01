@@ -11,6 +11,8 @@ import (
 
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateExternalURL(t *testing.T) {
@@ -206,6 +208,28 @@ func TestValidateExternalURL(t *testing.T) {
 	}
 }
 
+// TestPrepareContextForInternalEmbeddingRequestDisablesRawCapture ensures plugin-owned embeddings never inherit provider raw capture.
+func TestPrepareContextForInternalEmbeddingRequestDisablesRawCapture(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	PrepareContextForInternalEmbeddingRequest(ctx)
+
+	applyRawCaptureSignals(ctx, &schemas.ProviderConfig{
+		SendBackRawRequest:      true,
+		SendBackRawResponse:     true,
+		StoreRawRequestResponse: true,
+	})
+
+	for key, name := range map[schemas.BifrostContextKey]string{
+		schemas.BifrostContextKeyCaptureRawRequest:    "capture raw request",
+		schemas.BifrostContextKeyCaptureRawResponse:   "capture raw response",
+		schemas.BifrostContextKeyShouldStoreRawInLogs: "store raw request/response",
+	} {
+		if enabled, _ := ctx.Value(key).(bool); enabled {
+			t.Errorf("%s = true, want false", name)
+		}
+	}
+}
+
 // TestValidateExternalURLBoundsDNSLookup guards against regressing to the package-level
 // net.LookupIP (which has no context/deadline of its own, and previously let a stalled
 // resolver block the caller indefinitely -- see externalURLDNSLookupTimeout's doc). A
@@ -364,12 +388,22 @@ func TestClearCtxForFallback(t *testing.T) {
 		schemas.BifrostContextKeyAttemptTrail,
 		schemas.BifrostContextKeyStreamEndIndicator,
 		schemas.BifrostContextKeyConnectionClosed,
+		schemas.BifrostContextKeyStreamBodyExhausted,
+		schemas.BifrostContextKeyStreamParkedAfterFinish,
 		schemas.BifrostContextKeySupportsAssistantPrefill,
+		// Set by the Bedrock InvokeModel stream path; a fallback to a plain-SSE
+		// provider must not inherit the AWS event-stream reader (#6825).
+		schemas.BifrostContextKeySSEReaderFactory,
+		// The load balancer's record of the attempt that just failed.
+		schemas.BifrostContextKeyLoadBalancerAttempt,
 	}
 	// The next attempt resolves its own limits, which needs the same credential and caller.
 	preserved := []schemas.BifrostContextKey{
 		schemas.BifrostContextKeyVirtualKey,
 		schemas.BifrostContextKeyUserID,
+		// What the caller sent is the same for every attempt of the request.
+		schemas.BifrostContextKeyRequestedProvider,
+		schemas.BifrostContextKeyRequestedModel,
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -387,6 +421,154 @@ func TestClearCtxForFallback(t *testing.T) {
 	for _, key := range preserved {
 		if ctx.Value(key) == nil {
 			t.Errorf("%v was cleared, leaving the next attempt unable to resolve its own limits", key)
+		}
+	}
+}
+
+// TestCanProviderKeyValueBeEmptyGithubCopilot pins that a GitHub Copilot key may carry an
+// empty value. The GitHub App bundle in github_copilot_key_config is a complete credential
+// on its own, and the HTTP key handlers consult this allowlist before their provider-specific
+// checks, so dropping the entry rejects every App-authenticated key at creation with a
+// misleading "value must not be empty" error.
+func TestCanProviderKeyValueBeEmptyGithubCopilot(t *testing.T) {
+	if !CanProviderKeyValueBeEmpty(schemas.GithubCopilot) {
+		t.Fatal("GitHub Copilot keys authenticated through a GitHub App have no value; the allowlist must include the provider")
+	}
+}
+
+// TestStampRequestedRoute pins what core records as the caller's route before any
+// PreRequestHook runs: plugins read it to report the model a routing rule rewrote.
+func TestStampRequestedRoute(t *testing.T) {
+	requested := func(ctx *schemas.BifrostContext) (schemas.ModelProvider, string) {
+		provider, _ := ctx.Value(schemas.BifrostContextKeyRequestedProvider).(schemas.ModelProvider)
+		model, _ := ctx.Value(schemas.BifrostContextKeyRequestedModel).(string)
+		return provider, model
+	}
+
+	t.Run("records the caller's provider and model", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stampRequestedRoute(ctx, schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+		provider, model := requested(ctx)
+		assert.Equal(t, schemas.OpenAI, provider)
+		assert.Equal(t, "gpt-4o-mini", model)
+	})
+
+	// Large-payload requests carry the model only in the metadata, and the routing plugin
+	// rewrites it there in place, so the value must be copied before the hooks run.
+	t.Run("large payload model is copied before routing rewrites it", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o-mini"}
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, metadata)
+		stampRequestedRoute(ctx, schemas.Route{Provider: schemas.OpenAI})
+		metadata.Model = "gpt-4o"
+		_, model := requested(ctx)
+		assert.Equal(t, "gpt-4o-mini", model)
+	})
+
+	// bifrost.ctx is shared by every nil-ctx caller, so an empty provider must overwrite the
+	// previous request's rather than leave it in place.
+	t.Run("reused context does not keep the previous request's route", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stampRequestedRoute(ctx, schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+		stampRequestedRoute(ctx, schemas.Route{Model: "claude-sonnet-4-6"})
+		provider, model := requested(ctx)
+		assert.Empty(t, provider)
+		assert.Equal(t, "claude-sonnet-4-6", model)
+	})
+}
+
+// TestValidateKeyGithubCopilot pins that validateKey rejects the same credentials the
+// provider would reject at request time. Accepting a whitespace-only field here defers the
+// failure to the first inference call, where it reads like a runtime fault rather than a
+// setup mistake.
+func TestValidateKeyGithubCopilot(t *testing.T) {
+	fullAppConfig := func() *schemas.GithubCopilotKeyConfig {
+		return &schemas.GithubCopilotKeyConfig{
+			AppID:          *schemas.NewSecretVar("123456"),
+			InstallationID: *schemas.NewSecretVar("87654321"),
+			RepositoryID:   *schemas.NewSecretVar("999000111"),
+			PrivateKey:     *schemas.NewSecretVar("pem"),
+		}
+	}
+	blank := func(mutate func(*schemas.GithubCopilotKeyConfig)) *schemas.GithubCopilotKeyConfig {
+		c := fullAppConfig()
+		mutate(c)
+		return c
+	}
+
+	tests := []struct {
+		name      string
+		key       schemas.Key
+		wantError string
+	}{
+		{
+			name: "a direct token is sufficient",
+			key:  schemas.Key{Value: *schemas.NewSecretVar("tid=abc")},
+		},
+		{
+			name: "the full app config is sufficient",
+			key:  schemas.Key{GithubCopilotKeyConfig: fullAppConfig()},
+		},
+		{
+			name:      "a whitespace-only token is not a credential",
+			key:       schemas.Key{Value: *schemas.NewSecretVar("   ")},
+			wantError: "github_copilot_key_config is required",
+		},
+		{
+			name:      "no credential at all",
+			key:       schemas.Key{},
+			wantError: "github_copilot_key_config is required",
+		},
+		{
+			name:      "whitespace-only app_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.AppID = *schemas.NewSecretVar("  ") })},
+			wantError: "github_copilot_key_config.app_id is required",
+		},
+		{
+			name:      "whitespace-only installation_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.InstallationID = *schemas.NewSecretVar("\t") })},
+			wantError: "github_copilot_key_config.installation_id is required",
+		},
+		{
+			name:      "whitespace-only repository_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.RepositoryID = *schemas.NewSecretVar(" ") })},
+			wantError: "github_copilot_key_config.repository_id is required",
+		},
+		{
+			name:      "whitespace-only private_key",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.PrivateKey = *schemas.NewSecretVar("\n") })},
+			wantError: "github_copilot_key_config.private_key is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.key
+			err := validateKey(schemas.GithubCopilot, &key)
+
+			if tt.wantError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+
+	}
+}
+
+// A request cancelled at the same instant its backoff expires must still be
+// reported as cancelled: Go's select picks uniformly among ready cases, so a
+// timer-only check lets roughly half of such requests run one more attempt
+// (maximhq/bifrost#7105 review). With a cancelled ctx and a zero backoff both
+// cases are ready on every call, so 64 calls expose a missing ctx check with
+// probability 1 - 2^-64.
+func TestWaitRetryBackoffReportsCancellationAtTimerExpiry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 64; i++ {
+		if !waitRetryBackoff(ctx, 0) {
+			t.Fatalf("call %d: backoff expired together with the cancel and the wait reported not cancelled", i)
 		}
 	}
 }

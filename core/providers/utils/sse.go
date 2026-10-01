@@ -50,6 +50,35 @@ func SSEStreamEndedOnMarker(r SSEDataReader) bool {
 	return true
 }
 
+// SSEPostFinishTerminator is optionally implemented by SSE readers that can end
+// the stream on consecutive comments received after the caller has seen a
+// finish_reason. An upstream still producing sends its trailing usage chunk and
+// "data: [DONE]" back to back, so comments arriving after semantic completion
+// mean it has nothing left to send and is only holding the connection open.
+type SSEPostFinishTerminator interface {
+	EndOnCommentAfterFinish()
+	EndedOnComment() bool
+}
+
+// SSEEndOnCommentAfterFinish arms r to end the stream on the next SSE comment.
+// No-op for readers that do not implement SSEPostFinishTerminator (e.g. an
+// enterprise-injected SSEReaderFactory), which keep waiting for [DONE] or EOF.
+func SSEEndOnCommentAfterFinish(r SSEDataReader) {
+	if t, ok := r.(SSEPostFinishTerminator); ok {
+		t.EndOnCommentAfterFinish()
+	}
+}
+
+// SSEEndedOnComment reports whether r stopped on a post-finish comment rather
+// than at the end of the body. The connection is still open in that case, so
+// cleanup must abandon it instead of draining or releasing it.
+func SSEEndedOnComment(r SSEDataReader) bool {
+	if t, ok := r.(SSEPostFinishTerminator); ok {
+		return t.EndedOnComment()
+	}
+	return false
+}
+
 // SSEReaderFactory creates SSE readers for streaming response processing.
 // Enterprise injects this via BifrostContextKeySSEReaderFactory to replace
 // the default bufio.Scanner-based implementations with streaming readers.
@@ -97,6 +126,11 @@ type defaultSSEDataReader struct {
 	scanner *bufio.Scanner
 	pending []byte // line carried over from an aborted multi-line JSON accumulation
 	sawDone bool   // stream ended on "data: [DONE]" rather than a bare body EOF
+	// endOnComment is armed once the caller has seen a finish_reason; sawComment
+	// records that a comment then ended the stream with the body still open.
+	endOnComment bool
+	sawComment   bool
+	commentsSeen int
 	// ctx carries the request context so the per-event copy out of the scanner buffer
 	// can be attributed to the "response-parse" stream phase centrally, for every
 	// provider that uses the shared reader — rather than each provider timing its own
@@ -106,6 +140,12 @@ type defaultSSEDataReader struct {
 
 // SawDoneMarker implements SSEStreamTerminator.
 func (r *defaultSSEDataReader) SawDoneMarker() bool { return r.sawDone }
+
+// EndOnCommentAfterFinish implements SSEPostFinishTerminator.
+func (r *defaultSSEDataReader) EndOnCommentAfterFinish() { r.endOnComment = true }
+
+// EndedOnComment implements SSEPostFinishTerminator.
+func (r *defaultSSEDataReader) EndedOnComment() bool { return r.sawComment }
 
 func newDefaultSSEDataReader(ctx *schemas.BifrostContext, reader io.Reader) *defaultSSEDataReader {
 	scanner := bufio.NewScanner(reader)
@@ -134,9 +174,24 @@ func (r *defaultSSEDataReader) ReadDataLine() ([]byte, error) {
 			break
 		}
 		// Skip empty lines and comments
-		if len(line) == 0 || line[0] == ':' {
+		if len(line) == 0 {
 			continue
 		}
+		if line[0] == ':' {
+			// Heartbeats after finish_reason mean nothing further is coming. Two are
+			// required so a keepalive that merely straddles the trailing usage chunk
+			// cannot end the stream early; that chunk resets the count below.
+			if r.endOnComment {
+				r.commentsSeen++
+				if r.commentsSeen >= 2 {
+					r.sawComment = true
+					return nil, io.EOF
+				}
+			}
+			continue
+		}
+		// Any real SSE line means the upstream is still making progress.
+		r.commentsSeen = 0
 
 		// Parse "data:" lines
 		if bytes.HasPrefix(line, sseDataPrefix) {

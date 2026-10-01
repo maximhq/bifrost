@@ -4,20 +4,44 @@ import { SearchSelect } from "@/components/ui/searchSelect";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useDebouncedValue } from "@/hooks/useDebounce";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useGetCoreConfigQuery, useGetMCPClientsQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { Check, Globe2, KeyRound, Server, SquareTerminal } from "lucide-react";
+import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
+import { Link } from "@tanstack/react-router";
+import { Check, Fingerprint, Globe2, KeyRound, Server, ShieldCheck, SquareTerminal } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringLiteral, useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { HARNESSES } from "./harnesses";
 import { PlatformSelect } from "./platformSelect";
-import type { HarnessID, HarnessPlatform, ServerScope, VirtualKeyOption } from "./types";
-import { isClientAllowedForVirtualKey, maskSecret } from "./utils";
+import type { AuthMethod, HarnessID, HarnessPlatform, ServerScope, VirtualKeyOption } from "./types";
+import { buildMCPHeaders, isClientAllowedForVirtualKey, maskSecret } from "./utils";
 
 // Literal value sets driving the URL-persisted enums.
 const HARNESS_IDS = HARNESSES.map((h) => h.id);
 const HARNESS_PLATFORMS: HarnessPlatform[] = ["macos", "windows", "linux"];
 const SERVER_SCOPES: ServerScope[] = ["all", "selected"];
+const AUTH_METHODS: AuthMethod[] = ["virtual_key", "oauth", "idp_token"];
+
+const AUTH_METHOD_COPY: Record<AuthMethod, { label: string; icon: typeof KeyRound; description: string }> = {
+	virtual_key: {
+		label: "Virtual key",
+		icon: KeyRound,
+		description: "The client sends a virtual key header. Governance, budgets and tool access follow the key you pick below.",
+	},
+	oauth: {
+		label: "OAuth",
+		icon: ShieldCheck,
+		description:
+			"No credential in the config. The client discovers the gateway, opens Bifrost's consent page in a browser, and holds a short-lived token of its own.",
+	},
+	idp_token: {
+		label: "Identity provider",
+		icon: Fingerprint,
+		description:
+			"The client sends its caller's own SSO access token. Replace the placeholder with a token from your identity provider; the request is attributed to that user.",
+	},
+};
 
 export function MCPUsageGuideSheet() {
 	// ── URL-persisted settings (survive refresh) ─────────────────────────
@@ -29,6 +53,7 @@ export function MCPUsageGuideSheet() {
 			harness: parseAsStringLiteral(HARNESS_IDS).withDefault("claude-code"),
 			platform: parseAsStringLiteral(HARNESS_PLATFORMS).withDefault("macos"),
 			scope: parseAsStringLiteral(SERVER_SCOPES).withDefault("all"),
+			auth: parseAsStringLiteral(AUTH_METHODS).withDefault("virtual_key"),
 			vk: parseAsString,
 			servers: parseAsArrayOf(parseAsString).withDefault([]),
 		},
@@ -49,13 +74,16 @@ export function MCPUsageGuideSheet() {
 
 	// ── Queries ──────────────────────────────────────────────────────────
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true }, { skip: !open });
+	// The identity-provider path is enterprise-only and needs an enabled provider to
+	// authenticate against. The SCIM query is stubbed to [] in OSS builds.
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !open || !IS_ENTERPRISE });
 	const { data: virtualKeysData, isFetching: isFetchingVirtualKeys } = useGetVirtualKeysQuery(
 		{ limit: 50, search: debouncedVirtualKeySearch || undefined },
-		{ skip: !open },
+		{ skip: !open || urlState.auth !== "virtual_key" },
 	);
 	const { data: mcpClientsData, isFetching: isFetchingMCPClients } = useGetMCPClientsQuery(
 		{ limit: 50 },
-		{ skip: !open || !selectedVirtualKey, refetchOnMountOrArgChange: true },
+		{ skip: !open || urlState.auth !== "virtual_key" || !selectedVirtualKey, refetchOnMountOrArgChange: true },
 	);
 
 	// ── Derived data ─────────────────────────────────────────────────────
@@ -85,9 +113,58 @@ export function MCPUsageGuideSheet() {
 		[allowedMCPClients, urlState.servers],
 	);
 
-	const canGenerateCommand = !!selectedVirtualKey && (serverScope === "all" || selectedServers.length > 0);
+	// ── Authentication method ────────────────────────────────────────────
+	// Which credentials /mcp accepts is a server setting, so only the methods the
+	// gateway is actually configured for can produce a working config:
+	//   headers → virtual key and (enterprise) identity-provider token
+	//   both    → all three
+	//   oauth   → OAuth only; header credentials are rejected outright
+	const serverAuthMode = bifrostConfig?.client_config?.mcp_server_auth_mode ?? "headers";
+	const idpConfigured = !!scimProviders?.some((provider) => (provider as { enabled?: boolean }).enabled);
+
+	const availableAuthMethods = useMemo<AuthMethod[]>(() => {
+		const methods: AuthMethod[] = [];
+		if (serverAuthMode !== "oauth") methods.push("virtual_key");
+		if (serverAuthMode !== "headers") methods.push("oauth");
+		if (serverAuthMode !== "oauth" && IS_ENTERPRISE && idpConfigured) methods.push("idp_token");
+		return methods;
+	}, [idpConfigured, serverAuthMode]);
+
+	// The identity-provider card stays visible without an enabled provider so the
+	// method is discoverable, just disabled with the reason.
+	const visibleAuthMethods = useMemo<AuthMethod[]>(() => {
+		const methods: AuthMethod[] = ["virtual_key", "oauth"];
+		if (IS_ENTERPRISE) methods.push("idp_token");
+		return methods;
+	}, []);
+
+	const authMethod = availableAuthMethods.includes(urlState.auth) ? urlState.auth : (availableAuthMethods[0] ?? "virtual_key");
+	const usesVirtualKey = authMethod === "virtual_key";
+
+	const headers = useMemo(
+		() =>
+			buildMCPHeaders({
+				authMethod,
+				selectedServers: serverScope === "selected" ? selectedServers : undefined,
+				virtualKey: selectedVirtualKey,
+			}),
+		[authMethod, selectedServers, serverScope, selectedVirtualKey],
+	);
+
+	const canGenerateCommand = usesVirtualKey ? !!selectedVirtualKey && (serverScope === "all" || selectedServers.length > 0) : true;
+	const emptyMessage = selectedVirtualKey ? "Select servers or use Gateway root." : "Select a virtual key to continue.";
 
 	// ── Effects ──────────────────────────────────────────────────────────
+	// Keep the URL honest when the stored method is not one the gateway accepts
+	// (config changed, or a shared link from a differently configured instance).
+	// Waits for both sources availability is derived from, so a link carrying a
+	// still-valid method is not rewritten while the config is in flight.
+	useEffect(() => {
+		if (!open || !bifrostConfig || (IS_ENTERPRISE && !scimProviders)) return;
+		if (availableAuthMethods.length === 0 || availableAuthMethods.includes(urlState.auth)) return;
+		setUrlState({ auth: availableAuthMethods[0] });
+	}, [availableAuthMethods, bifrostConfig, open, scimProviders, setUrlState, urlState.auth]);
+
 	// Resolve the persisted virtual-key id into its full object, otherwise
 	// fall back to auto-selecting the first active key. Auto-selection is kept
 	// transient (not written to the URL) so it re-resolves on every open.
@@ -162,60 +239,107 @@ export function MCPUsageGuideSheet() {
 							</Tabs>
 						</section>
 
-						{/* ── Virtual key picker ─────────────────────────── */}
+						{/* ── Authentication method ──────────────────────── */}
 						<section className="flex flex-col gap-2 transition-[border-color,background-color] duration-150 ease-out">
 							<div className="flex items-center gap-2 text-sm font-medium">
-								<span>Virtual key</span>
+								<span>Authentication</span>
 							</div>
-							<SearchSelect<VirtualKeyOption>
-								async
-								open={virtualKeySelectOpen}
-								onOpenChange={setVirtualKeySelectOpen}
-								options={virtualKeyOptions}
-								onSearchChange={setVirtualKeySearch}
-								isSearching={isFetchingVirtualKeys}
-								isLoading={isFetchingVirtualKeys && virtualKeyOptions.length === 0}
-								onValueSelect={(option) => {
-									setSelectedVirtualKey(option.virtualKey);
-									// Switching keys clears server selection and resets the scope.
-									setUrlState({ vk: option.virtualKey.id, servers: [], scope: "all" });
-									setVirtualKeySelectOpen(false);
-								}}
-								label={
-									<Button
-										type="button"
-										variant="outline"
-										className="h-9 w-full justify-start bg-transparent"
-										data-testid="mcp-usage-guide-vk-select"
-									>
-										<KeyRound className="text-muted-foreground size-4" />
-										<span className="truncate">{selectedVirtualKey?.name ?? "Search virtual keys"}</span>
-										{selectedVirtualKey && (
-											<span className="text-muted-foreground ml-auto hidden font-mono text-xs sm:inline">
-												{maskSecret(selectedVirtualKey.value)}
-											</span>
-										)}
-									</Button>
-								}
-								entryView={(option) => (
-									<div className="flex min-w-0 flex-1 items-center gap-2">
-										<div className="flex min-w-0 flex-col">
-											<span className="truncate font-medium">{option.label}</span>
-											<span className="text-muted-foreground text-xs">{maskSecret(option.virtualKey.value)}</span>
-										</div>
-										{selectedVirtualKey?.id === option.virtualKey.id && <Check className="ml-auto size-4 text-green-600" />}
-									</div>
-								)}
-								searchPlaceholder="Search virtual keys..."
-								emptyMessage="No active virtual keys found."
-								align="start"
-								className="w-full"
-								contentClassName="w-[var(--radix-popover-trigger-width)]"
-							/>
+							<div className={cn("grid gap-2", visibleAuthMethods.length > 2 ? "sm:grid-cols-3" : "sm:grid-cols-2")}>
+								{visibleAuthMethods.map((method) => {
+									const { label, icon: Icon } = AUTH_METHOD_COPY[method];
+									const disabled = !availableAuthMethods.includes(method);
+									return (
+										<button
+											key={method}
+											type="button"
+											disabled={disabled}
+											onClick={() => setUrlState({ auth: method })}
+											className={cn(
+												"flex h-9 items-center gap-2 rounded-sm border px-3 py-2 text-left text-sm transition-[background-color,border-color,transform] duration-150 ease-out hover:bg-accent active:scale-[0.99]",
+												authMethod === method && "border-primary bg-primary/5",
+												disabled && "pointer-events-none opacity-50",
+											)}
+											data-testid={`mcp-usage-guide-auth-${method}`}
+										>
+											<Icon className="text-muted-foreground size-4 shrink-0" />
+											<span className="truncate font-medium">{label}</span>
+											{authMethod === method && <Check className="ml-auto size-4 shrink-0 text-green-600" />}
+										</button>
+									);
+								})}
+							</div>
+							<p className="text-muted-foreground text-xs">{AUTH_METHOD_COPY[authMethod].description}</p>
+							{!availableAuthMethods.includes("oauth") && (
+								<p className="text-muted-foreground text-xs">
+									OAuth is off for this gateway. Switch the MCP server auth mode to <span className="font-medium">both</span> or{" "}
+									<span className="font-medium">oauth</span> under{" "}
+									<Link to="/workspace/config/mcp-gateway" className="text-primary underline">
+										MCP settings
+									</Link>{" "}
+									to offer it.
+								</p>
+							)}
+							{IS_ENTERPRISE && !idpConfigured && (
+								<p className="text-muted-foreground text-xs">Identity provider login needs an enabled SSO/SCIM provider.</p>
+							)}
 						</section>
 
+						{/* ── Virtual key picker ─────────────────────────── */}
+						{usesVirtualKey && (
+							<section className="flex flex-col gap-2 transition-[border-color,background-color] duration-150 ease-out">
+								<div className="flex items-center gap-2 text-sm font-medium">
+									<span>Virtual key</span>
+								</div>
+								<SearchSelect<VirtualKeyOption>
+									async
+									open={virtualKeySelectOpen}
+									onOpenChange={setVirtualKeySelectOpen}
+									options={virtualKeyOptions}
+									onSearchChange={setVirtualKeySearch}
+									isSearching={isFetchingVirtualKeys}
+									isLoading={isFetchingVirtualKeys && virtualKeyOptions.length === 0}
+									onValueSelect={(option) => {
+										setSelectedVirtualKey(option.virtualKey);
+										// Switching keys clears server selection and resets the scope.
+										setUrlState({ vk: option.virtualKey.id, servers: [], scope: "all" });
+										setVirtualKeySelectOpen(false);
+									}}
+									label={
+										<Button
+											type="button"
+											variant="outline"
+											className="h-9 w-full justify-start bg-transparent"
+											data-testid="mcp-usage-guide-vk-select"
+										>
+											<KeyRound className="text-muted-foreground size-4" />
+											<span className="truncate">{selectedVirtualKey?.name ?? "Search virtual keys"}</span>
+											{selectedVirtualKey && (
+												<span className="text-muted-foreground ml-auto hidden font-mono text-xs sm:inline">
+													{maskSecret(selectedVirtualKey.value)}
+												</span>
+											)}
+										</Button>
+									}
+									entryView={(option) => (
+										<div className="flex min-w-0 flex-1 items-center gap-2">
+											<div className="flex min-w-0 flex-col">
+												<span className="truncate font-medium">{option.label}</span>
+												<span className="text-muted-foreground text-xs">{maskSecret(option.virtualKey.value)}</span>
+											</div>
+											{selectedVirtualKey?.id === option.virtualKey.id && <Check className="ml-auto size-4 text-green-600" />}
+										</div>
+									)}
+									searchPlaceholder="Search virtual keys..."
+									emptyMessage="No active virtual keys found."
+									align="start"
+									className="w-full"
+									contentClassName="w-[var(--radix-popover-trigger-width)]"
+								/>
+							</section>
+						)}
+
 						{/* ── Server scope selector ──────────────────────── */}
-						{selectedVirtualKey && (
+						{usesVirtualKey && selectedVirtualKey && (
 							<section className="flex flex-col gap-2 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none">
 								<div className="flex items-center gap-2 text-sm font-medium">
 									<span>Server access</span>
@@ -269,7 +393,7 @@ export function MCPUsageGuideSheet() {
 						)}
 
 						{/* ── Platform selector ───────────────────────────── */}
-						{selectedVirtualKey && activeHarness.usesPlatform && (
+						{canGenerateCommand && activeHarness.usesPlatform && (
 							<section className="flex flex-col gap-2 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none">
 								<div className="flex items-center gap-2 text-sm font-medium">
 									<span>Platform</span>
@@ -282,10 +406,11 @@ export function MCPUsageGuideSheet() {
 						<activeHarness.Install
 							canGenerateCommand={canGenerateCommand}
 							clientConfig={bifrostConfig?.client_config}
+							emptyMessage={emptyMessage}
+							headers={headers}
 							platform={platform}
-							selectedServers={selectedServers}
-							serverScope={serverScope}
-							virtualKey={selectedVirtualKey}
+							selectedServers={usesVirtualKey ? selectedServers : []}
+							serverScope={usesVirtualKey ? serverScope : "all"}
 						/>
 					</div>
 				</SheetContent>

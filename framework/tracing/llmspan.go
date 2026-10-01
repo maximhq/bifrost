@@ -133,20 +133,22 @@ func PopulateResponseAttributes(resp *schemas.BifrostResponse) map[string]any {
 // PopulateErrorAttributes extracts error attributes from a BifrostError.
 func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 	attrs := make(map[string]any)
-	if err == nil || err.Error == nil {
+	if err == nil {
 		return attrs
 	}
 
-	attrs[schemas.AttrError] = err.Error.Message
-	if err.Error.Type != nil {
-		attrs[schemas.AttrErrorTypeSpec] = *err.Error.Type
+	// Error is optional, so a status-only error must not return early here.
+	if err.Error != nil {
+		attrs[schemas.AttrError] = err.Error.Message
+		if err.Error.Type != nil {
+			attrs[schemas.AttrErrorTypeSpec] = *err.Error.Type
+		}
+		if err.Error.Code != nil {
+			attrs[schemas.AttrErrorCode] = *err.Error.Code
+		}
 	}
-	if err.Error.Code != nil {
-		attrs[schemas.AttrErrorCode] = *err.Error.Code
-	}
-	if err.StatusCode != nil {
-		attrs[schemas.AttrHTTPResponseStatusCode] = *err.StatusCode
-	}
+	// Effective, not raw: an internal error has no StatusCode but still returns 500.
+	attrs[schemas.AttrHTTPResponseStatusCode] = err.EffectiveHTTPStatus()
 
 	// Usage the provider billed us for even though the request failed or was
 	// cancelled (see BifrostError.ExtraFields.BilledUsage). Governance and the
@@ -206,6 +208,10 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 }
 
 // PopulateContextAttributes extracts context-related attributes (virtual keys, retries, routing rules, etc.)
+//
+// Deprecated: has no callers. Superseded by the span-based context enrichment in
+// core (applyContextSpanAttributes), which writes the same dimensions straight
+// onto the span instead of into an attribute map.
 func PopulateContextAttributes(
 	attrs map[string]any,
 	virtualKeyID, virtualKeyName string,
@@ -214,6 +220,7 @@ func PopulateContextAttributes(
 	teamID, teamName string,
 	customerID, customerName string,
 	businessUnitID, businessUnitName string,
+	projectID, projectName string,
 	userID, userName, userEmail string,
 	numberOfRetries, fallbackIndex int,
 ) {
@@ -246,6 +253,12 @@ func PopulateContextAttributes(
 	}
 	if businessUnitName != "" {
 		attrs[schemas.AttrBifrostBusinessUnitName] = businessUnitName
+	}
+	if projectID != "" {
+		attrs[schemas.AttrBifrostProjectID] = projectID
+	}
+	if projectName != "" {
+		attrs[schemas.AttrBifrostProjectName] = projectName
 	}
 	if userID != "" {
 		attrs[schemas.AttrBifrostUserID] = userID
@@ -305,7 +318,7 @@ func PopulateChatRequestAttributes(req *schemas.BifrostChatRequest, attrs map[st
 	// Extract input messages
 	if req.Input != nil {
 		attrs[schemas.AttrMessageCount] = len(req.Input)
-		messages := extractChatMessages(req.Input)
+		messages := schemas.ExtractChatMessages(req.Input, schemas.AttachmentOptions{})
 		if len(messages) > 0 {
 			if data, err := schemas.MarshalString(messages); err == nil {
 				attrs[schemas.AttrInputMessages] = data
@@ -330,11 +343,11 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 	}
 	attrs[schemas.AttrCreated] = resp.Created
 	if resp.ServiceTier != nil {
-		attrs[schemas.AttrServiceTier] = *resp.ServiceTier
+		attrs[schemas.AttrServiceTier] = string(*resp.ServiceTier)
 	}
 
 	// Extract output messages
-	outputMessages := extractChatResponseMessages(resp)
+	outputMessages := schemas.ExtractChatResponseMessages(resp, schemas.AttachmentOptions{})
 	if len(outputMessages) > 0 {
 		if data, err := schemas.MarshalString(outputMessages); err == nil {
 			attrs[schemas.AttrOutputMessages] = data
@@ -553,17 +566,16 @@ func PopulateEmbeddingRequestAttributes(req *schemas.BifrostEmbeddingRequest, at
 
 	// Extract input
 	if req.Input != nil {
-		if req.Input.Text != nil {
-			attrs[schemas.AttrInputText] = *req.Input.Text
-		} else if req.Input.Texts != nil {
-			attrs[schemas.AttrInputText] = strings.Join(req.Input.Texts, ",")
-		} else if req.Input.Embedding != nil {
-			embedding := make([]string, len(req.Input.Embedding))
-			for i, v := range req.Input.Embedding {
-				// Use a float‑safe representation; adjust precision as needed.
-				embedding[i] = fmt.Sprintf("%v", v)
+		var texts []string
+		for _, item := range req.Input {
+			for _, part := range item.Content {
+				if part.Type == schemas.EmbeddingContentPartTypeText && part.Text != nil {
+					texts = append(texts, *part.Text)
+				}
 			}
-			attrs[schemas.AttrInputEmbedding] = strings.Join(embedding, ",")
+		}
+		if len(texts) > 0 {
+			attrs[schemas.AttrInputText] = strings.Join(texts, ",")
 		}
 	}
 }
@@ -725,7 +737,7 @@ func PopulateResponsesRequestAttributes(req *schemas.BifrostResponsesRequest, at
 		attrs[schemas.AttrSafetyIdentifier] = *req.Params.SafetyIdentifier
 	}
 	if req.Params.ServiceTier != nil {
-		attrs[schemas.AttrServiceTier] = *req.Params.ServiceTier
+		attrs[schemas.AttrServiceTier] = string(*req.Params.ServiceTier)
 	}
 	if req.Params.Store != nil {
 		attrs[schemas.AttrStore] = *req.Params.Store
@@ -800,7 +812,7 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		attrs[schemas.AttrResponseModel] = resp.Model
 	}
 	if resp.ServiceTier != nil {
-		attrs[schemas.AttrServiceTier] = *resp.ServiceTier
+		attrs[schemas.AttrServiceTier] = string(*resp.ServiceTier)
 	}
 
 	// Extract output messages (includes reasoning)
@@ -809,6 +821,14 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		if data, err := schemas.MarshalString(outputMessages); err == nil {
 			attrs[schemas.AttrOutputMessages] = data
 		}
+	}
+
+	// Finish reason: the Responses API carries a single top-level stop_reason
+	// rather than per-choice finish reasons. Emit it under the same
+	// finish_reasons key the chat path uses so the tracer derives the singular
+	// gen_ai.response.finish_reason from it and refusals stay visible in OTEL.
+	if resp.StopReason != nil && *resp.StopReason != "" {
+		attrs[schemas.AttrFinishReasons] = []string{*resp.StopReason}
 	}
 
 	// Additional response fields
@@ -1401,148 +1421,24 @@ func PopulateFileContentResponseAttributes(resp *schemas.BifrostFileContentRespo
 // Helper functions for extracting messages
 // ===============================================
 
-// MessageSummary represents a summarized chat message for tracing
-type MessageSummary struct {
-	Role             string                   `json:"role"`
-	Content          string                   `json:"content"`
-	ToolCalls        []ToolCallSummary        `json:"tool_calls,omitempty"`
-	Reasoning        string                   `json:"reasoning,omitempty"`
-	ReasoningDetails []ReasoningDetailSummary `json:"reasoning_details,omitempty"`
-	Audio            *AudioSummary            `json:"audio,omitempty"`
-	Refusal          string                   `json:"refusal,omitempty"`
-}
-
-// ToolCallSummary represents a summarized tool call for tracing
-type ToolCallSummary struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
-	Name string `json:"name"`
-	Args string `json:"args,omitempty"`
-}
-
-// ReasoningDetailSummary represents a summarized reasoning detail for tracing
-type ReasoningDetailSummary struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-}
-
-// AudioSummary represents summarized audio data for tracing
-type AudioSummary struct {
-	ID         string `json:"id,omitempty"`
-	Transcript string `json:"transcript,omitempty"`
-}
-
-// extractChatMessages extracts chat messages into a slice of MessageSummary
-func extractChatMessages(messages []schemas.ChatMessage) []MessageSummary {
-	result := make([]MessageSummary, 0, len(messages))
-	for _, msg := range messages {
-		summary := extractMessageSummary(&msg)
-		result = append(result, summary)
-	}
-	return result
-}
-
-// extractChatResponseMessages extracts output messages from chat response
-func extractChatResponseMessages(resp *schemas.BifrostChatResponse) []MessageSummary {
-	if resp == nil {
-		return nil
-	}
-
-	result := make([]MessageSummary, 0, len(resp.Choices))
-	for _, choice := range resp.Choices {
-		if choice.ChatNonStreamResponseChoice == nil || choice.ChatNonStreamResponseChoice.Message == nil {
-			continue
-		}
-		msg := choice.ChatNonStreamResponseChoice.Message
-		summary := extractMessageSummary(msg)
-		result = append(result, summary)
-	}
-	return result
-}
-
-// extractMessageSummary extracts a full MessageSummary from a ChatMessage
-func extractMessageSummary(msg *schemas.ChatMessage) MessageSummary {
-	if msg == nil {
-		return MessageSummary{}
-	}
-
-	summary := MessageSummary{
-		Role:    string(schemas.ChatMessageRoleAssistant),
-		Content: extractMessageContent(msg.Content),
-	}
-
-	if msg.Role != "" {
-		summary.Role = string(msg.Role)
-	}
-
-	// Extract assistant-specific fields
-	if msg.ChatAssistantMessage != nil {
-		am := msg.ChatAssistantMessage
-
-		// Extract refusal
-		if am.Refusal != nil && *am.Refusal != "" {
-			summary.Refusal = *am.Refusal
-		}
-
-		// Extract reasoning
-		if am.Reasoning != nil && *am.Reasoning != "" {
-			summary.Reasoning = *am.Reasoning
-		}
-
-		// Extract reasoning details
-		if len(am.ReasoningDetails) > 0 {
-			summary.ReasoningDetails = make([]ReasoningDetailSummary, 0, len(am.ReasoningDetails))
-			for _, rd := range am.ReasoningDetails {
-				detail := ReasoningDetailSummary{
-					Type: string(rd.Type),
-				}
-				if rd.Text != nil {
-					detail.Text = *rd.Text
-				}
-				summary.ReasoningDetails = append(summary.ReasoningDetails, detail)
-			}
-		}
-
-		// Extract audio
-		if am.Audio != nil {
-			summary.Audio = &AudioSummary{
-				ID:         am.Audio.ID,
-				Transcript: am.Audio.Transcript,
-			}
-		}
-
-		// Extract tool calls
-		if len(am.ToolCalls) > 0 {
-			summary.ToolCalls = make([]ToolCallSummary, 0, len(am.ToolCalls))
-			for _, tc := range am.ToolCalls {
-				toolCall := ToolCallSummary{
-					Type: "function",
-				}
-				if tc.ID != nil {
-					toolCall.ID = *tc.ID
-				}
-				if tc.Type != nil {
-					toolCall.Type = *tc.Type
-				}
-				if tc.Function.Name != nil {
-					toolCall.Name = *tc.Function.Name
-				}
-				toolCall.Args = tc.Function.Arguments
-				summary.ToolCalls = append(summary.ToolCalls, toolCall)
-			}
-		}
-	}
-
-	return summary
-}
+// Aliases kept so existing importers (the Datadog connector reads
+// tracing.MessageSummary) compile unchanged after the types moved to
+// core/schemas.
+type (
+	MessageSummary         = schemas.MessageSummary
+	ToolCallSummary        = schemas.ToolCallSummary
+	ReasoningDetailSummary = schemas.ReasoningDetailSummary
+	AudioSummary           = schemas.AudioSummary
+)
 
 // ResponsesMessageSummary extends MessageSummary with reasoning
 type ResponsesMessageSummary struct {
-	Role       string            `json:"role"`
-	Content    string            `json:"content"`
-	Reasoning  string            `json:"reasoning,omitempty"`
-	ToolCalls  []ToolCallSummary `json:"tool_calls,omitempty"`
-	ToolCallID string            `json:"tool_call_id,omitempty"`
+	Role        string                      `json:"role"`
+	Content     string                      `json:"content"`
+	Attachments []schemas.AttachmentSummary `json:"attachments,omitempty"`
+	Reasoning   string                      `json:"reasoning,omitempty"`
+	ToolCalls   []ToolCallSummary           `json:"tool_calls,omitempty"`
+	ToolCallID  string                      `json:"tool_call_id,omitempty"`
 }
 
 // extractResponsesOutputMessages extracts output messages from a Responses API response.
@@ -1629,22 +1525,19 @@ func extractResponsesOutputMessages(resp *schemas.BifrostResponsesResponse) []Re
 				Content: "[computer_call]",
 			})
 
-		case schemas.ResponsesMessageTypeFileSearchCall,
-			schemas.ResponsesMessageTypeCodeInterpreterCall,
+		case schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
-			schemas.ResponsesMessageTypeCustomToolCall,
+			schemas.ResponsesMessageTypeCodeInterpreterCall:
+			result = append(result, ResponsesMessageSummary{
+				Role:      "assistant",
+				ToolCalls: []ToolCallSummary{responsesItemToolCall(&msg, msgType)},
+			})
+
+		case schemas.ResponsesMessageTypeFileSearchCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
-			name := ""
-			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
-				name = *msg.ResponsesToolMessage.Name
-			}
-			content := "[" + string(msgType) + "]"
-			if name != "" {
-				content += " " + name
-			}
 			result = append(result, ResponsesMessageSummary{
 				Role:    "assistant",
-				Content: content,
+				Content: responsesItemTag(&msg, msgType),
 			})
 
 		default:
@@ -1674,9 +1567,10 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 				role = string(*msg.Role)
 			}
 			summary := ResponsesMessageSummary{
-				Role:      role,
-				Content:   extractResponsesMessageTextContent(&msg),
-				Reasoning: extractResponsesReasoning(msg.ResponsesReasoning),
+				Role:        role,
+				Content:     extractResponsesMessageTextContent(&msg),
+				Attachments: schemas.ExtractResponsesAttachments(msg.Content, schemas.AttachmentOptions{}),
+				Reasoning:   extractResponsesReasoning(msg.ResponsesReasoning),
 			}
 			result = append(result, summary)
 
@@ -1781,22 +1675,19 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 				Content: "[computer_call_output]",
 			})
 
-		case schemas.ResponsesMessageTypeFileSearchCall,
-			schemas.ResponsesMessageTypeCodeInterpreterCall,
+		case schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
-			schemas.ResponsesMessageTypeCustomToolCall,
+			schemas.ResponsesMessageTypeCodeInterpreterCall:
+			result = append(result, ResponsesMessageSummary{
+				Role:      "assistant",
+				ToolCalls: []ToolCallSummary{responsesItemToolCall(&msg, msgType)},
+			})
+
+		case schemas.ResponsesMessageTypeFileSearchCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
-			name := ""
-			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
-				name = *msg.ResponsesToolMessage.Name
-			}
-			content := "[" + string(msgType) + "]"
-			if name != "" {
-				content += " " + name
-			}
 			result = append(result, ResponsesMessageSummary{
 				Role:    "assistant",
-				Content: content,
+				Content: responsesItemTag(&msg, msgType),
 			})
 
 		case schemas.ResponsesMessageTypeLocalShellCallOutput,
@@ -1819,6 +1710,71 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 		}
 	}
 	return result
+}
+
+// responsesItemToolCall summarizes a tool call whose model-generated payload does
+// not live on `arguments`: `input`, `action` and `code` respectively.
+func responsesItemToolCall(msg *schemas.ResponsesMessage, msgType schemas.ResponsesMessageType) ToolCallSummary {
+	tc := ToolCallSummary{Type: responsesItemToolType(msgType)}
+	if msg.ID != nil {
+		tc.ID = *msg.ID
+	}
+	tm := msg.ResponsesToolMessage
+	if tm == nil {
+		tc.Name = tc.Type
+		return tc
+	}
+	if tc.ID == "" && tm.CallID != nil {
+		tc.ID = *tm.CallID
+	}
+	if tm.Name != nil {
+		tc.Name = *tm.Name
+	}
+	switch msgType {
+	case schemas.ResponsesMessageTypeCustomToolCall:
+		if tm.ResponsesCustomToolCall != nil {
+			tc.Args = tm.ResponsesCustomToolCall.Input
+		}
+	case schemas.ResponsesMessageTypeLocalShellCall:
+		if tm.Action != nil && tm.Action.ResponsesLocalShellToolCallAction != nil {
+			if args, err := schemas.MarshalString(tm.Action.ResponsesLocalShellToolCallAction); err == nil {
+				tc.Args = args
+			}
+		}
+	case schemas.ResponsesMessageTypeCodeInterpreterCall:
+		if tm.ResponsesCodeInterpreterToolCall != nil && tm.ResponsesCodeInterpreterToolCall.Code != nil {
+			tc.Args = *tm.ResponsesCodeInterpreterToolCall.Code
+		}
+	}
+	// local_shell_call and code_interpreter_call have no name of their own.
+	if tc.Name == "" {
+		tc.Name = tc.Type
+	}
+	return tc
+}
+
+// responsesItemToolType maps an item type onto the tool type the summary reports.
+func responsesItemToolType(msgType schemas.ResponsesMessageType) string {
+	switch msgType {
+	case schemas.ResponsesMessageTypeCustomToolCall:
+		return "custom"
+	case schemas.ResponsesMessageTypeLocalShellCall:
+		return "local_shell"
+	case schemas.ResponsesMessageTypeCodeInterpreterCall:
+		return "code_interpreter"
+	default:
+		return string(msgType)
+	}
+}
+
+// responsesItemTag renders the placeholder for items with no input to record,
+// e.g. "[file_search_call] my_tool".
+func responsesItemTag(msg *schemas.ResponsesMessage, msgType schemas.ResponsesMessageType) string {
+	content := "[" + string(msgType) + "]"
+	if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil && *msg.ResponsesToolMessage.Name != "" {
+		content += " " + *msg.ResponsesToolMessage.Name
+	}
+	return content
 }
 
 // extractResponsesMessageTextContent extracts plain text from a ResponsesMessage's Content field.
@@ -1871,25 +1827,8 @@ func extractResponsesReasoning(r *schemas.ResponsesReasoning) string {
 	return sb.String()
 }
 
-// extractMessageContent extracts text content from ChatMessageContent
+// extractMessageContent concatenates a chat message's text blocks. Kept as a
+// thin wrapper because tracer.go uses it for root-span propagation.
 func extractMessageContent(content *schemas.ChatMessageContent) string {
-	if content == nil {
-		return ""
-	}
-
-	if content.ContentStr != nil {
-		return *content.ContentStr
-	}
-
-	if content.ContentBlocks != nil {
-		var builder strings.Builder
-		for _, block := range content.ContentBlocks {
-			if block.Text != nil {
-				builder.WriteString(*block.Text)
-			}
-		}
-		return builder.String()
-	}
-
-	return ""
+	return schemas.ExtractChatContentText(content)
 }

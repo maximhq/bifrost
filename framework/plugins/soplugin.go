@@ -27,9 +27,10 @@ type DynamicPlugin struct {
 	httpTransportPreAuthHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
 
 	// HTTPTransportPlugin (optional)
-	httpTransportPreHook         func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
-	httpTransportPostHook        func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
-	httpTransportStreamChunkHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, stream *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)
+	httpTransportPreHook             func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
+	httpTransportPostHook            func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
+	httpTransportStreamChunkHook     func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, stream *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)
+	httpTransportResponseHeadersHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error
 
 	// LLMPlugin (optional)
 	// preRequestHook is forward-compat: new .so plugins built against LLMPlugin can export
@@ -52,6 +53,13 @@ type DynamicPlugin struct {
 
 	// ObservabilityPlugin (optional)
 	inject func(ctx context.Context, trace *schemas.Trace) error
+
+	// ConfigMarshallerPlugin (optional). Forward-compat: new .so plugins can export
+	// MarshalConfigForStorage/RedactConfig to customize how their config round-trips
+	// through the plugins API/DB (e.g. resolving/masking SecretVar fields). Legacy
+	// plugins predating this leave these nil and the config passes through unchanged.
+	marshalConfigForStorage func(config map[string]any) (map[string]any, error)
+	redactConfig            func(config map[string]any) (map[string]any, error)
 }
 
 // GetName returns the name of the plugin (BasePlugin interface)
@@ -96,6 +104,15 @@ func (dp *DynamicPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContex
 		return stream, nil // No-op if not implemented
 	}
 	return dp.httpTransportStreamChunkHook(ctx, req, stream)
+}
+
+// HTTPTransportResponseHeadersHook intercepts response headers immediately before
+// they are committed. The symbol is optional for shared-object plugins.
+func (dp *DynamicPlugin) HTTPTransportResponseHeadersHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+	if dp.httpTransportResponseHeadersHook == nil {
+		return nil
+	}
+	return dp.httpTransportResponseHeadersHook(ctx, req, resp)
 }
 
 // PreRequestHook is invoked once per top-level request to decide provider/model/fallbacks
@@ -166,4 +183,24 @@ func (dp *DynamicPlugin) Inject(ctx context.Context, trace *schemas.Trace) error
 		return nil // No-op if not implemented
 	}
 	return dp.inject(ctx, trace)
+}
+
+// MarshalConfigForStorage converts the raw config map into the canonical DB-storage
+// format (ConfigMarshallerPlugin interface). Passes the config through unchanged if
+// the .so doesn't export MarshalConfigForStorage.
+func (dp *DynamicPlugin) MarshalConfigForStorage(config map[string]any) (map[string]any, error) {
+	if dp.marshalConfigForStorage == nil {
+		return config, nil // Passthrough if not implemented
+	}
+	return dp.marshalConfigForStorage(config)
+}
+
+// RedactConfig converts a stored config map into the API-response format, masking
+// sensitive values (ConfigMarshallerPlugin interface). Passes the config through
+// unchanged if the .so doesn't export RedactConfig.
+func (dp *DynamicPlugin) RedactConfig(config map[string]any) (map[string]any, error) {
+	if dp.redactConfig == nil {
+		return config, nil // Passthrough if not implemented
+	}
+	return dp.redactConfig(config)
 }

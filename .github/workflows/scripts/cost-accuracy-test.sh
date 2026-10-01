@@ -385,13 +385,25 @@ params = {
     "order": "asc",
 }
 
+def token_counts(item):
+    usage = item.get("token_usage") or {}
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    total = usage.get("total_tokens")
+    # Go's omitempty drops zero counts. Only accept an omitted count as zero
+    # when total_tokens confirms it; missing usage must still fail validation.
+    if "prompt_tokens" not in usage and total is not None and total == usage.get("completion_tokens", 0):
+        prompt = 0
+    if "completion_tokens" not in usage and total is not None and total == usage.get("prompt_tokens", 0):
+        completion = 0
+    return prompt, completion
+
 def logs_complete(logs):
     # Log writes are fully async (single batched insert in PostLLMHook), so a
     # row can be visible before its usage/cost are readable. Poll on the
     # predicate we assert (every row has usage and cost), not just row count.
     return all(
-        (item.get("token_usage") or {}).get("prompt_tokens") is not None
-        and (item.get("token_usage") or {}).get("completion_tokens") is not None
+        all(count is not None for count in token_counts(item))
         and item.get("cost") is not None
         for item in logs
     )
@@ -401,7 +413,7 @@ def describe_incomplete(item):
     # reach the API by different routes (cost is a column, token_usage is a JSON blob
     # deserialized after the query), so which one is absent decides where to look.
     # Report the field names and the raw values.
-    usage = item.get("token_usage") or {}
+    prompt, completion = token_counts(item)
     return {
         "id": item.get("id"),
         "timestamp": item.get("timestamp"),
@@ -411,8 +423,8 @@ def describe_incomplete(item):
         "missing": [
             name
             for name, value in (
-                ("token_usage.prompt_tokens", usage.get("prompt_tokens")),
-                ("token_usage.completion_tokens", usage.get("completion_tokens")),
+                ("token_usage.prompt_tokens", prompt),
+                ("token_usage.completion_tokens", completion),
                 ("cost", item.get("cost")),
             )
             if value is None
@@ -458,8 +470,8 @@ if not logs_ready:
     }, indent=2, sort_keys=True))
     raise SystemExit(
         f"logs did not become complete within {LOG_POLL_ATTEMPTS}s: {len(incomplete)} of "
-        f"{len(logs)} rows still missing token_usage or cost. This is a log-write "
-        f"visibility problem, not a pricing mismatch. First 5:\n"
+        f"{len(logs)} rows still missing token_usage or cost. "
+        f"Cannot validate pricing for these rows. First 5:\n"
         + json.dumps(incomplete[:5], indent=2, sort_keys=True)
     )
 
@@ -475,9 +487,7 @@ for item in logs:
             "actual_virtual_key_id": item.get("virtual_key_id"),
         })
         continue
-    usage = item.get("token_usage") or {}
-    prompt = usage.get("prompt_tokens")
-    completion = usage.get("completion_tokens")
+    prompt, completion = token_counts(item)
     actual = item.get("cost")
     if prompt is None or completion is None or actual is None:
         mismatches.append({**describe_incomplete(item), "reason": "missing token_usage or cost"})

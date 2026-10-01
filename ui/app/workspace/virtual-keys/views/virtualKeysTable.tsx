@@ -1,9 +1,11 @@
 import PageTitle from "@/components/pageTitle";
+import { DisabledReasonMenuItem } from "@/components/ui/disabledReason";
 import { BudgetDisplay } from "@/components/budgetDisplay";
 import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { RateLimitDisplay } from "@/components/rateLimitDisplay";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import { TruncatedBadge } from "@/components/truncatedBadge";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -27,23 +29,26 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { resetDurationLabels } from "@/lib/constants/governance";
 import { getUserPicker } from "@/lib/registries/userPicker";
+import { useVirtualKeyAccessAudit } from "@enterprise/lib/hooks/useVirtualKeyAccessAudit";
 import {
 	getErrorMessage,
 	useBulkRotateVirtualKeysMutation,
 	useDeleteVirtualKeyMutation,
+	useGetCoreConfigQuery,
 	useGetVirtualKeyQuery,
 	useLazyGetVirtualKeysQuery,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
 import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { formatCurrency, getEffectiveBudgetLimit } from "@/lib/utils/governance";
+import { actionDisabledReason, formatCurrency, getEffectiveBudgetLimit } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
 	ArrowDown,
 	ArrowUp,
 	ArrowUpDown,
+	Building2,
 	ChevronLeft,
 	ChevronRight,
 	Copy,
@@ -59,6 +64,8 @@ import {
 	Search,
 	ShieldCheck,
 	Trash2,
+	UserRound,
+	Users,
 	X,
 } from "lucide-react";
 import { useQueryState } from "nuqs";
@@ -68,7 +75,7 @@ import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
 import VirtualKeySheet from "./virtualKeySheet";
-import { latestGraceDeadline } from "./virtualKeysTable.utils";
+import { assignedToLabel, csvAssignedToCell, latestGraceDeadline } from "./virtualKeysTable.utils";
 
 // Registers the enterprise user picker as a side effect; a no-op in OSS builds,
 // where the user filter stays hidden because no picker is registered.
@@ -91,7 +98,7 @@ function virtualKeysToCSV(vks: VirtualKey[]): string {
 				vk.rate_limit.request_current_usage >= vk.rate_limit.request_max_limit);
 		const isExpired = !!vk.expires_at && Date.now() >= new Date(vk.expires_at).getTime();
 		const status = !vk.is_active ? "Inactive" : isExpired ? "Expired" : isExhausted ? "Exhausted" : "Active";
-		const assignedTo = vk.team ? `Team: ${vk.team.name}` : vk.customer ? `Customer: ${vk.customer.name}` : "";
+		const assignedTo = csvAssignedToCell(vk);
 		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(getEffectiveBudgetLimit(b))).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
 		const budgetReset = vk.budgets?.length ? vk.budgets.map((b) => formatResetDuration(b.reset_duration)).join("; ") : "";
@@ -117,6 +124,15 @@ function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 
 // Entity selectors only ever set a value, so a filter built on one needs its own
 // reset back to "all" — this restores the affordance ComboboxSelect gave for free.
+// Filters show only their icon until the toolbar has room for the full labelled dropdown.
+const FILTER_WRAPPER_CLASS =
+	"flex shrink-0 items-center gap-1 @6xl/vk-toolbar:max-w-[250px] @6xl/vk-toolbar:min-w-[150px] @6xl/vk-toolbar:shrink @6xl/vk-toolbar:grow @6xl/vk-toolbar:basis-[150px]";
+const FILTER_SELECTOR_CLASS = "w-auto min-w-0 @6xl/vk-toolbar:w-full";
+const FILTER_TRIGGER_CLASS =
+	"size-9 justify-center px-0 [&_[data-slot=entity-selector-chevron]]:hidden [&_[data-slot=entity-selector-label]]:sr-only @6xl/vk-toolbar:w-full @6xl/vk-toolbar:justify-between @6xl/vk-toolbar:px-3 @6xl/vk-toolbar:[&_[data-slot=entity-selector-chevron]]:block @6xl/vk-toolbar:[&_[data-slot=entity-selector-label]]:not-sr-only";
+const FILTER_CONTENT_CLASS = "w-(--radix-popover-trigger-width) min-w-64";
+const FILTER_ICON_CLASS = "size-4 shrink-0 @6xl/vk-toolbar:hidden";
+
 function FilterClearButton({
 	show,
 	label,
@@ -145,32 +161,18 @@ function FilterClearButton({
 }
 
 function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
+	// A resolved row (assigned_user present, user or null) is read straight off the row:
+	// the list endpoint resolves the whole page at once, so the hook skips its request and
+	// this costs nothing per row. Only a row whose assignee could not be resolved upstream
+	// falls back to the per-key lookup, so "-" never stands in for "we do not know".
 	const { assignedUsers } = useVirtualKeyUsage(vk);
-	const assignedUser = assignedUsers[0];
-
-	let label: string | null = null;
-	if (vk.team) {
-		label = `Team: ${vk.team.name}`;
-	} else if (vk.customer) {
-		label = `Customer: ${vk.customer.name}`;
-	} else if (assignedUser) {
-		label = `User: ${assignedUser.name || assignedUser.email}`;
-	}
+	const label = assignedToLabel({ ...vk, assigned_user: assignedUsers[0] ?? null });
 
 	if (!label) {
 		return <span className="text-muted-foreground max-w-full truncate text-left text-sm">-</span>;
 	}
 
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<Badge variant="outline" className="block max-w-full truncate text-left" data-testid={`vk-assigned-to-tooltip-trigger-${vk.name}`}>
-					{label}
-				</Badge>
-			</TooltipTrigger>
-			<TooltipContent data-testid={`vk-assigned-to-tooltip-content-${vk.name}`}>{label}</TooltipContent>
-		</Tooltip>
-	);
+	return <TruncatedBadge label={label} dataTestId={`vk-assigned-to-tooltip-${vk.name}`} />;
 }
 
 function VKRateLimitCell({ vk }: { vk: VirtualKey }) {
@@ -256,9 +258,9 @@ function VKActionsMenu({
 					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">
-					<DropdownMenuItem
+					<DisabledReasonMenuItem
+						reason={actionDisabledReason(hasUpdateAccess, "edit", "virtual keys")}
 						className="cursor-pointer"
-						disabled={!hasUpdateAccess}
 						data-testid={`vk-edit-btn-${vk.name}`}
 						onSelect={(e) => {
 							e.preventDefault();
@@ -268,19 +270,23 @@ function VKActionsMenu({
 					>
 						<Edit className="h-4 w-4" />
 						Edit
-					</DropdownMenuItem>
+					</DisabledReasonMenuItem>
 					<DropdownMenuItem asChild className="cursor-pointer" data-testid={`vk-view-logs-btn-${vk.name}`}>
 						<Link to="/workspace/logs" search={{ virtual_key_ids: [vk.id] }} onClick={() => setIsOpen(false)}>
 							<ScrollText className="h-4 w-4" />
 							View logs
 						</Link>
 					</DropdownMenuItem>
-					<DropdownMenuItem
+					<DisabledReasonMenuItem
+						reason={actionDisabledReason(
+							hasDeleteAccess,
+							"delete",
+							"virtual keys",
+							isManagedByProfile ? "This virtual key is managed by an access profile and can't be deleted here." : undefined,
+						)}
 						variant="destructive"
 						className="cursor-pointer"
-						disabled={!hasDeleteAccess || isManagedByProfile}
 						data-testid={`vk-delete-btn-${vk.name}`}
-						title={isManagedByProfile ? "This virtual key is managed by an access profile and can't be deleted here." : undefined}
 						onSelect={(e) => {
 							e.preventDefault();
 							setDeleteOpen(true);
@@ -289,7 +295,7 @@ function VKActionsMenu({
 					>
 						<Trash2 className="h-4 w-4" />
 						Delete
-					</DropdownMenuItem>
+					</DisabledReasonMenuItem>
 				</DropdownMenuContent>
 			</DropdownMenu>
 			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
@@ -364,6 +370,9 @@ export default function VirtualKeysTable({
 }: VirtualKeysTableProps) {
 	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false);
 	const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null);
+	// Keys without their own delete_after_expire follow this client-wide setting.
+	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const deleteExpiredByDefault = coreConfig?.client_config?.delete_expired_virtual_keys ?? false;
 	const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
 	const [showExportDialog, setShowExportDialog] = useState(false);
 	const [exportScope, setExportScope] = useState<ExportScope>("current_page");
@@ -575,12 +584,17 @@ export default function VirtualKeysTable({
 		}
 	};
 
+	// Enterprise records reveals and copies in the audit log; a no-op in OSS builds.
+	const reportVkAccess = useVirtualKeyAccessAudit();
+
 	const toggleKeyVisibility = (vkId: string) => {
 		const newRevealed = new Set(revealedKeys);
 		if (newRevealed.has(vkId)) {
 			newRevealed.delete(vkId);
 		} else {
 			newRevealed.add(vkId);
+			// Only the reveal edge is a disclosure; re-hiding is not.
+			reportVkAccess(vkId, "reveal");
 		}
 		setRevealedKeys(newRevealed);
 	};
@@ -597,6 +611,10 @@ export default function VirtualKeysTable({
 	// Registered by the downstream build at module load; undefined in builds
 	// without a user directory, which hides the user filter entirely.
 	const UserPicker = getUserPicker();
+	// Server-side search matches the key name, its team and its customer, plus the
+	// assigned user where there is a user directory to match against. Same signal as
+	// the user filter below, so the placeholder never promises what OSS cannot do.
+	const searchHint = UserPicker ? "name, user, team, or customer" : "name, team, or customer";
 
 	const toggleSort = (column: string) => {
 		if (sortBy === column) {
@@ -811,13 +829,13 @@ export default function VirtualKeysTable({
 
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
 				{/* Toolbar: Search + Filters + Actions */}
-				<div className="mb-4 flex shrink-0 flex-wrap items-center gap-3">
+				<div className="@container/vk-toolbar mb-4 flex shrink-0 flex-wrap items-center gap-3">
 					<PageTitle title="Virtual Keys">Manage virtual keys, their permissions, budgets, and rate limits.</PageTitle>
-					<div className="relative w-full max-w-sm min-w-0 flex-1 basis-full sm:min-w-[180px] sm:basis-auto">
+					<div className="relative max-w-sm min-w-0 grow basis-40">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
-							aria-label="Search virtual keys by name"
-							placeholder="Search by name..."
+							aria-label={`Search virtual keys by ${searchHint}`}
+							placeholder={`Search by ${searchHint}...`}
 							value={search}
 							onChange={(e) => onSearchChange(e.target.value)}
 							className="pl-9"
@@ -826,13 +844,15 @@ export default function VirtualKeysTable({
 					</div>
 					{/* Both filters search server-side and resolve their own label for a
 					    value restored from the URL, so the page fetches no entity lists. */}
-					<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-customer-filter">
+					<div className={FILTER_WRAPPER_CLASS} data-testid="vk-customer-filter">
 						<CustomerSelector
 							value={customerFilter}
 							onChange={onCustomerFilterChange}
 							placeholder="All Customers"
-							triggerClassName="h-9"
-							className="w-full min-w-0"
+							triggerIcon={<Building2 className={FILTER_ICON_CLASS} />}
+							triggerClassName={FILTER_TRIGGER_CLASS}
+							contentClassName={FILTER_CONTENT_CLASS}
+							className={FILTER_SELECTOR_CLASS}
 						/>
 						<FilterClearButton
 							show={!!customerFilter}
@@ -842,13 +862,15 @@ export default function VirtualKeysTable({
 						/>
 					</div>
 					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
-					<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-team-filter">
+					<div className={FILTER_WRAPPER_CLASS} data-testid="vk-team-filter">
 						<TeamSelector
 							value={teamFilter}
 							onChange={onTeamFilterChange}
 							placeholder="All Teams"
-							triggerClassName="h-9"
-							className="w-full min-w-0"
+							triggerIcon={<Users className={FILTER_ICON_CLASS} />}
+							triggerClassName={FILTER_TRIGGER_CLASS}
+							contentClassName={FILTER_CONTENT_CLASS}
+							className={FILTER_SELECTOR_CLASS}
 						/>
 						<FilterClearButton
 							show={!!teamFilter}
@@ -861,13 +883,15 @@ export default function VirtualKeysTable({
 						<span className="text-muted-foreground text-xs font-medium">or</span>
 					)}
 					{UserPicker && (
-						<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-user-filter">
+						<div className={FILTER_WRAPPER_CLASS} data-testid="vk-user-filter">
 							<UserPicker
 								value={userFilter}
 								onChange={onUserFilterChange}
 								placeholder="All Users"
-								triggerClassName="h-9"
-								className="w-full min-w-0"
+								triggerIcon={<UserRound className={FILTER_ICON_CLASS} />}
+								triggerClassName={FILTER_TRIGGER_CLASS}
+								contentClassName={FILTER_CONTENT_CLASS}
+								className={FILTER_SELECTOR_CLASS}
 							/>
 							<FilterClearButton
 								show={!!userFilter}
@@ -878,26 +902,63 @@ export default function VirtualKeysTable({
 						</div>
 					)}
 
-					<div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:shrink-0 sm:flex-nowrap">
+					<div className="ml-auto flex shrink-0 items-center gap-2">
 						{selectedCount > 0 && (
-							<Button
-								variant="outline"
-								onClick={() => setShowBulkRotateDialog(true)}
-								disabled={!hasUpdateAccess || isBulkRotating}
-								data-testid="vk-bulk-rotate-btn"
-							>
-								<RotateCcw className="h-4 w-4" />
-								Rotate selected ({selectedCount})
-							</Button>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									{/* A disabled button emits no pointer events, so the span carries the hover. */}
+									<span tabIndex={hasUpdateAccess ? undefined : 0} className="inline-flex">
+										<Button
+											variant="outline"
+											className="size-9 px-0 @5xl/vk-toolbar:w-auto @5xl/vk-toolbar:px-4"
+											onClick={() => setShowBulkRotateDialog(true)}
+											disabled={!hasUpdateAccess || isBulkRotating}
+											aria-label={`Rotate selected (${selectedCount})`}
+											data-testid="vk-bulk-rotate-btn"
+										>
+											<RotateCcw className="h-4 w-4" />
+											<span className="hidden @5xl/vk-toolbar:inline">Rotate selected ({selectedCount})</span>
+										</Button>
+									</span>
+								</TooltipTrigger>
+								<TooltipContent>
+									{actionDisabledReason(hasUpdateAccess, "rotate", "virtual keys") ?? `Rotate selected (${selectedCount})`}
+								</TooltipContent>
+							</Tooltip>
 						)}
-						<Button variant="outline" onClick={openExportDialog} disabled={virtualKeys.length === 0} data-testid="vk-export-btn">
-							<Download className="h-4 w-4" />
-							Export CSV
-						</Button>
-						<Button onClick={handleAddVirtualKey} disabled={!hasCreateAccess} data-testid="create-vk-btn">
-							<Plus className="h-4 w-4" />
-							Add Virtual Key
-						</Button>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Button
+									variant="outline"
+									className="size-9 px-0 @5xl/vk-toolbar:w-auto @5xl/vk-toolbar:px-4"
+									onClick={openExportDialog}
+									disabled={virtualKeys.length === 0}
+									aria-label="Export CSV"
+									data-testid="vk-export-btn"
+								>
+									<Download className="h-4 w-4" />
+									<span className="hidden @5xl/vk-toolbar:inline">Export CSV</span>
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent>Export CSV</TooltipContent>
+						</Tooltip>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<span tabIndex={hasCreateAccess ? undefined : 0} className="inline-flex">
+									<Button
+										className="size-9 px-0 @5xl/vk-toolbar:w-auto @5xl/vk-toolbar:px-4"
+										onClick={handleAddVirtualKey}
+										disabled={!hasCreateAccess}
+										aria-label="Add Virtual Key"
+										data-testid="create-vk-btn"
+									>
+										<Plus className="h-4 w-4" />
+										<span className="hidden @5xl/vk-toolbar:inline">Add Virtual Key</span>
+									</Button>
+								</span>
+							</TooltipTrigger>
+							<TooltipContent>{actionDisabledReason(hasCreateAccess, "create", "virtual keys") ?? "Add Virtual Key"}</TooltipContent>
+						</Tooltip>
 					</div>
 				</div>
 
@@ -979,7 +1040,11 @@ export default function VirtualKeysTable({
 														<Button
 															variant="ghost"
 															size="sm"
-															onClick={() => copyToClipboard(vk.value)}
+															onClick={() => {
+																// Not awaited: the clipboard write must not wait on the beacon.
+																reportVkAccess(vk.id, "copy");
+																copyToClipboard(vk.value);
+															}}
 															data-testid={`vk-copy-btn-${vk.name}`}
 														>
 															<Copy className="h-4 w-4" />
@@ -995,8 +1060,14 @@ export default function VirtualKeysTable({
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												{showExpiredBadge ? (
-													<Badge variant="destructive" className="text-xs">
-														Expired
+													<Badge
+														variant="destructive"
+														className="text-xs"
+														title={
+															(vk.delete_after_expire ?? deleteExpiredByDefault) ? "Deleted automatically within about a day" : undefined
+														}
+													>
+														{(vk.delete_after_expire ?? deleteExpiredByDefault) ? "Expired · auto-delete" : "Expired"}
 													</Badge>
 												) : (
 													<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />

@@ -1,7 +1,7 @@
+import { BaseProviderSelector } from "@/components/ui/baseProviderSelector";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { DefaultNetworkConfig } from "@/lib/constants/config";
@@ -24,6 +24,8 @@ const formSchema = z.object({
 	allowed_requests: allowedRequestsSchema,
 	request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	is_key_less: z.boolean().optional(),
+	does_not_send_done_marker: z.boolean().optional(),
+	wait_for_usage: z.boolean().optional(),
 	allow_private_network: z.boolean().optional(),
 });
 
@@ -86,6 +88,8 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			},
 			request_path_overrides: undefined,
 			is_key_less: false,
+			does_not_send_done_marker: false,
+			wait_for_usage: false,
 			allow_private_network: false,
 		},
 	});
@@ -104,6 +108,8 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				allowed_requests: data.allowed_requests,
 				request_path_overrides: cleanPathOverrides(data.request_path_overrides),
 				is_key_less: data.is_key_less ?? false,
+				does_not_send_done_marker: data.does_not_send_done_marker ?? false,
+				wait_for_usage: data.wait_for_usage ?? false,
 			},
 			network_config: {
 				base_url: data.base_url,
@@ -130,10 +136,29 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 
 	const baseFormat = form.watch("baseFormat") as BaseProvider;
 	const isKeyLessDisabled = baseFormat === "bedrock";
+	// Only the OpenAI stream loops read this flag; every other base format ignores it.
+	const isDoneMarkerToggleDisabled = baseFormat !== "openai";
+	// wait_for_usage only has meaning once the stream ends on finish_reason, so the
+	// toggle is nested under does_not_send_done_marker rather than offered on its own.
+	const doesNotSendDoneMarker = form.watch("does_not_send_done_marker");
+
+	useEffect(() => {
+		if (isDoneMarkerToggleDisabled) {
+			form.setValue("does_not_send_done_marker", false);
+		}
+	}, [isDoneMarkerToggleDisabled, form]);
+
+	// Clear the nested flag whenever its parent goes away: the provider update replaces
+	// custom_provider_config wholesale, so a stale true would otherwise be persisted.
+	useEffect(() => {
+		if (isDoneMarkerToggleDisabled || !doesNotSendDoneMarker) {
+			form.setValue("wait_for_usage", false);
+		}
+	}, [isDoneMarkerToggleDisabled, doesNotSendDoneMarker, form]);
 
 	return (
 		<>
-			<SheetHeader className="flex shrink-0 flex-col items-start px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+			<SheetHeader className="flex shrink-0 flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 				<SheetTitle>Add Custom Provider</SheetTitle>
 				<SheetDescription>Enter the details of your custom provider.</SheetDescription>
 			</SheetHeader>
@@ -163,19 +188,12 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 									<FormLabel>Base Format</FormLabel>
 									<div>
 										<FormControl>
-											<Select onValueChange={field.onChange} value={field.value} disabled={!hasProviderCreateAccess}>
-												<SelectTrigger className="w-full" data-testid="base-provider-select">
-													<SelectValue placeholder="Select base format" />
-												</SelectTrigger>
-												<SelectContent>
-													<SelectItem value="openai">OpenAI</SelectItem>
-													<SelectItem value="anthropic">Anthropic</SelectItem>
-													<SelectItem value="gemini">Gemini</SelectItem>
-													<SelectItem value="cohere">Cohere</SelectItem>
-													<SelectItem value="bedrock">AWS Bedrock</SelectItem>
-													<SelectItem value="replicate">Replicate</SelectItem>
-												</SelectContent>
-											</Select>
+											<BaseProviderSelector
+												data-testid="base-provider-select"
+												value={field.value}
+												onChange={field.onChange}
+												disabled={!hasProviderCreateAccess}
+											/>
 										</FormControl>
 										<FormMessage />
 									</div>
@@ -208,7 +226,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 							name="allow_private_network"
 							render={({ field }) => (
 								<FormItem>
-									<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+									<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
 										<div className="space-y-0.5">
 											<label htmlFor="allow-private-network" className="text-sm font-medium">
 												Allow Private Network
@@ -235,7 +253,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 								name="is_key_less"
 								render={({ field }) => (
 									<FormItem>
-										<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+										<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
 											<div className="space-y-0.5">
 												<label htmlFor="drop-excess-requests" className="text-sm font-medium">
 													Is Keyless?
@@ -249,6 +267,63 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 												onCheckedChange={field.onChange}
 												disabled={!hasProviderCreateAccess}
 												data-testid="custom-provider-keyless-switch"
+											/>
+										</div>
+									</FormItem>
+								)}
+							/>
+						)}
+						{!isDoneMarkerToggleDisabled && (
+							<FormField
+								control={form.control}
+								name="does_not_send_done_marker"
+								render={({ field }) => (
+									<FormItem>
+										<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
+											<div className="space-y-0.5">
+												<label htmlFor="does-not-send-done-marker" className="text-sm font-medium">
+													Does Not Send [DONE] Marker?
+												</label>
+												<p className="text-muted-foreground text-sm">
+													Whether the provider ends streams on finish_reason without sending a [DONE] marker
+												</p>
+											</div>
+											<Switch
+												id="does-not-send-done-marker"
+												size="md"
+												checked={field.value}
+												onCheckedChange={field.onChange}
+												disabled={!hasProviderCreateAccess}
+												data-testid="custom-provider-does-not-send-done-marker-switch"
+											/>
+										</div>
+									</FormItem>
+								)}
+							/>
+						)}
+						{!isDoneMarkerToggleDisabled && doesNotSendDoneMarker && (
+							<FormField
+								control={form.control}
+								name="wait_for_usage"
+								render={({ field }) => (
+									<FormItem>
+										<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
+											<div className="space-y-0.5">
+												<label htmlFor="wait-for-usage" className="text-sm font-medium">
+													Wait For Trailing Usage Chunk?
+												</label>
+												<p className="text-muted-foreground text-sm">
+													Keep reading after finish_reason so the trailing usage chunk is collected. Without this the request records zero
+													tokens and zero cost
+												</p>
+											</div>
+											<Switch
+												id="wait-for-usage"
+												size="md"
+												checked={field.value}
+												onCheckedChange={field.onChange}
+												disabled={!hasProviderCreateAccess}
+												data-testid="custom-provider-wait-for-usage-switch"
 											/>
 										</div>
 									</FormItem>

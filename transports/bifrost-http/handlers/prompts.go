@@ -16,10 +16,9 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// PromptCacheReloader is implemented by the prompts plugin to allow the HTTP handler
-// to trigger an in-memory cache refresh after any repository mutation.
+// PromptCacheReloader refreshes the in-memory prompt cache after a repository mutation.
 type PromptCacheReloader interface {
-	Reload(ctx context.Context) error
+	ReloadPromptCache(ctx context.Context) error
 }
 
 // PromptsHandler handles prompt repository endpoints
@@ -43,7 +42,7 @@ func (h *PromptsHandler) reloadCache(ctx context.Context) {
 	if h.reloader == nil {
 		return
 	}
-	if err := h.reloader.Reload(ctx); err != nil {
+	if err := h.reloader.ReloadPromptCache(ctx); err != nil {
 		logger.Error("failed to reload prompt cache: %v", err)
 	}
 }
@@ -137,28 +136,28 @@ type CreateVersionRequest struct {
 	ModelParams   tables.ModelParams     `json:"model_params"`
 	Provider      string                 `json:"provider"`
 	Model         string                 `json:"model"`
-	Variables     tables.PromptVariables  `json:"variables,omitempty"`
+	Variables     tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // CreateSessionRequest represents the request body for creating a session
 type CreateSessionRequest struct {
-	Name        string                  `json:"name"`
-	VersionID   *uint                   `json:"version_id,omitempty"`
-	Messages    []tables.PromptMessage  `json:"messages,omitempty"`
-	ModelParams tables.ModelParams      `json:"model_params"`
-	Provider    string                  `json:"provider"`
-	Model       string                  `json:"model"`
-	Variables   tables.PromptVariables  `json:"variables,omitempty"`
+	Name        string                 `json:"name"`
+	VersionID   *uint                  `json:"version_id,omitempty"`
+	Messages    []tables.PromptMessage `json:"messages,omitempty"`
+	ModelParams tables.ModelParams     `json:"model_params"`
+	Provider    string                 `json:"provider"`
+	Model       string                 `json:"model"`
+	Variables   tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // UpdateSessionRequest represents the request body for updating a session
 type UpdateSessionRequest struct {
-	Name        string                  `json:"name"`
-	Messages    []tables.PromptMessage  `json:"messages"`
-	ModelParams tables.ModelParams      `json:"model_params"`
-	Provider    string                  `json:"provider"`
-	Model       string                  `json:"model"`
-	Variables   tables.PromptVariables  `json:"variables,omitempty"`
+	Name        string                 `json:"name"`
+	Messages    []tables.PromptMessage `json:"messages"`
+	ModelParams tables.ModelParams     `json:"model_params"`
+	Provider    string                 `json:"provider"`
+	Model       string                 `json:"model"`
+	Variables   tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // RenameSessionRequest represents the request body for renaming a session
@@ -864,6 +863,8 @@ func (h *PromptsHandler) createSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
+
 	SendJSON(ctx, map[string]any{
 		"session": session,
 	})
@@ -930,6 +931,8 @@ func (h *PromptsHandler) updateSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
+
 	SendJSON(ctx, map[string]any{
 		"session": session,
 	})
@@ -962,6 +965,8 @@ func (h *PromptsHandler) deleteSession(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+
+	h.reloadCache(ctx)
 
 	SendJSON(ctx, map[string]any{
 		"message": "session deleted successfully",
@@ -1008,6 +1013,8 @@ func (h *PromptsHandler) renameSession(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+
+	h.reloadCache(ctx)
 
 	session.Name = req.Name
 	SendJSON(ctx, map[string]any{

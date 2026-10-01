@@ -1,6 +1,15 @@
 config:
   get:
     operationId: getConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get configuration
     description: |
       Retrieves the current Bifrost configuration including client config, framework config,
@@ -16,6 +25,7 @@ config:
           enum: ["true", "false"]
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -28,6 +38,15 @@ config:
 
   put:
     operationId: updateConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update configuration
     description: |
       Updates the Bifrost configuration. Supports hot-reloading of certain settings
@@ -42,6 +61,7 @@ config:
             $ref: '../../schemas/management/config.yaml#/UpdateConfigRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Configuration updated successfully
@@ -57,12 +77,23 @@ config:
 version:
   get:
     operationId: getVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get version
-    description: Returns the current Bifrost version information.
+    description: |
+      Returns the current Bifrost version information.
+      Unauthenticated by design - `/api/version` is in the auth middleware's system whitelist.
     tags:
       - Configuration
-    security:
-      - ManagementBearerAuth: []
+    # Public: system-whitelisted in AuthMiddleware.APIMiddleware().
+    security: []
     responses:
       '200':
         description: Successful response
@@ -74,12 +105,23 @@ version:
 proxy-config:
   get:
     operationId: getProxyConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get proxy configuration
-    description: Retrieves the current global proxy configuration.
+    description: |
+      Retrieves the current global proxy configuration.
     tags:
       - Configuration
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -98,8 +140,18 @@ proxy-config:
 
   put:
     operationId: updateProxyConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update proxy configuration
-    description: Updates the global proxy configuration.
+    description: |
+      Updates the global proxy configuration.
     tags:
       - Configuration
     requestBody:
@@ -110,6 +162,7 @@ proxy-config:
             $ref: '../../schemas/management/config.yaml#/ProxyConfig'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Proxy configuration updated successfully
@@ -125,12 +178,23 @@ proxy-config:
 force-sync-pricing:
   post:
     operationId: forceSyncPricing
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Force pricing sync
-    description: Triggers an immediate pricing sync and resets the pricing sync timer.
+    description: |
+      Triggers an immediate pricing sync and resets the pricing sync timer.
     tags:
       - Configuration
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Pricing sync triggered successfully

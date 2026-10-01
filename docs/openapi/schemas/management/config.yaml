@@ -72,6 +72,10 @@ ClientConfig:
           type: boolean
           default: false
           description: Converts model parameter values that are not supported by the model
+        azure_deepseek:
+          type: boolean
+          default: false
+          description: Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses
       additionalProperties: false
     log_retention_days:
       type: integer
@@ -95,6 +99,23 @@ ClientConfig:
     mcp_code_mode_binding_level:
       type: string
       description: Binding level for MCP code mode
+    mcp_max_instructions_per_client:
+      type: integer
+      minimum: 0
+      default: 0
+      description: >
+        Byte bound on a single MCP server's forwarded instructions. Longer text
+        is truncated on a rune boundary with a notice. 0 uses the built-in
+        default of 4096.
+    mcp_max_instructions_total:
+      type: integer
+      minimum: 0
+      default: 0
+      description: >
+        Byte bound on the whole forwarded aggregate across every MCP server the
+        caller can see. This rides on every MCP-bearing request that carries
+        tools, so raising it raises per-request tokens. 0 uses the
+        built-in default of 16384.
     required_headers:
       type: array
       items:

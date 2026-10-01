@@ -2,12 +2,15 @@ package schemas
 
 import "testing"
 
+// TestDetectAppFromUserAgent distinguishes known clients using version-independent identifiers.
 func TestDetectAppFromUserAgent(t *testing.T) {
 	tests := []struct {
 		name      string
 		userAgent string
 		want      string
 	}{
+		{name: "cowork captured version", userAgent: "claude-cowork/1.49585.0", want: "Claude Cowork"},
+		{name: "cowork fallback", userAgent: "Claude-Cowork/0.1", want: "Claude Cowork"},
 		{name: "claude cli versioned", userAgent: "claude-cli/2.1.168 (external, cli)", want: "Claude Code"},
 		{name: "claude code contains", userAgent: "external claude-code/1.0", want: "Claude Code"},
 		{name: "claude desktop", userAgent: "claude-desktop/1.2.3", want: "Claude Desktop"},
@@ -42,6 +45,7 @@ func TestDetectAppFromUserAgent(t *testing.T) {
 	}
 }
 
+// TestAppKeyFromName preserves canonical policy identifiers.
 func TestAppKeyFromName(t *testing.T) {
 	tests := []struct {
 		name string
@@ -63,6 +67,7 @@ func TestAppKeyFromName(t *testing.T) {
 	}
 }
 
+// TestMatchUserAgent covers supported custom matching modes.
 func TestMatchUserAgent(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -85,5 +90,28 @@ func TestMatchUserAgent(t *testing.T) {
 				t.Fatalf("MatchUserAgent(%q, %q, %q) = %v, want %v", tt.userAgent, tt.pattern, tt.matchType, got, tt.want)
 			}
 		})
+	}
+}
+
+// Warp must be detected as itself, not as a generic API client. It reaches the
+// gateway over fasthttp, so without an earlier matcher the APIClient identifier
+// claims it and its traffic disappears into everyone else's.
+func TestDetectAppFromUserAgentIdentifiesWarp(t *testing.T) {
+	if got := DetectAppFromUserAgent("bifrost-warp/1"); got != "Warp" {
+		t.Errorf("DetectAppFromUserAgent(bifrost-warp/1) = %q, want Warp", got)
+	}
+	if got := AppKeyFromName("Warp"); got != "warp" {
+		t.Errorf("AppKeyFromName(Warp) = %q, want warp", got)
+	}
+}
+
+// The identifier is prefixed rather than a bare "warp" because matching is by
+// substring: an unrelated client whose User-Agent happens to contain the word
+// must not be relabelled.
+func TestWarpIdentifierDoesNotClaimUnrelatedAgents(t *testing.T) {
+	for _, ua := range []string{"melodin/2.0", "warp-unrelated-client/3", "Mozilla/5.0 (warp)"} {
+		if got := DetectAppFromUserAgent(ua); got == "Warp" {
+			t.Errorf("DetectAppFromUserAgent(%q) = Warp, want anything else", ua)
+		}
 	}
 }

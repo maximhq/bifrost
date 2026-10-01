@@ -1,9 +1,12 @@
 package openai
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -466,3 +469,38 @@ func TestOpenAIChatRequest_UnmarshalJSON_ValueAssertions(t *testing.T) {
 	}
 }
 
+// TestStripCompactionItemSummary_AllocationScaling pins the allocation shape of the
+// compaction-summary strip.
+//
+// The loop deletes "<i>.summary" through the whole input array, once per compaction
+// item, and each sjson delete reserialises the entire array. A conversation carrying
+// many compaction items therefore costs that many copies of it.
+func TestStripCompactionItemSummary_AllocationScaling(t *testing.T) {
+	// items must line up with the payload, so both are built together and looked up
+	// by payload length when the assertion calls back.
+	itemsByLen := map[int][]schemas.ResponsesMessage{}
+
+	memtest.AssertAllocScaling(t, func(n int) []byte {
+		var b bytes.Buffer
+		items := make([]schemas.ResponsesMessage, 0, n)
+		compaction := schemas.ResponsesMessageTypeCompaction
+		b.WriteByte('[')
+		for i := range n {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// encrypted_content is the bulk, so the payload grows with n; summary is
+			// what gets stripped.
+			b.WriteString(`{"type":"compaction","summary":null,"encrypted_content":"`)
+			b.WriteString(strings.Repeat("e", 400))
+			b.WriteString(`"}`)
+			items = append(items, schemas.ResponsesMessage{Type: &compaction})
+		}
+		b.WriteByte(']')
+		payload := b.Bytes()
+		itemsByLen[len(payload)] = items
+		return payload
+	}, func(body []byte) {
+		stripCompactionItemSummary(body, itemsByLen[len(body)])
+	})
+}

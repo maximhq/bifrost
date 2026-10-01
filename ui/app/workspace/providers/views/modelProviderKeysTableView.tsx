@@ -203,14 +203,14 @@ export default function ModelProviderKeysTableView({ provider, className, header
 								<TooltipTrigger asChild>
 									<Button
 										variant="outline"
-										className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
+										className="size-9 px-0 @3xl/card-header:h-9 @3xl/card-header:w-auto @3xl/card-header:px-4"
 										disabled={isRefreshing}
 										data-testid="provider-refresh-models"
 										aria-label={isRefreshingProvider ? "Refreshing model list" : "Refresh model list"}
 										onClick={handleRefreshProviderModels}
 									>
 										<RefreshCwIcon className={cn("h-4 w-4", isRefreshingProvider && "animate-spin")} />
-										<span className="hidden xl:inline">{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}</span>
+										<span className="hidden @3xl/card-header:inline">{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}</span>
 									</Button>
 								</TooltipTrigger>
 								<TooltipContent className="max-w-xs">
@@ -224,17 +224,17 @@ export default function ModelProviderKeysTableView({ provider, className, header
 									<Button
 										disabled={!hasUpdateProviderAccess}
 										data-testid="add-key-btn"
-										aria-label={`Add new ${entityLabel}`}
-										className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
+										aria-label={`Add ${EntityLabel}`}
+										className="size-9 px-0 @3xl/card-header:h-9 @3xl/card-header:w-auto @3xl/card-header:px-4"
 										onClick={() => {
 											handleAddKey();
 										}}
 									>
 										<PlusIcon className="h-4 w-4" />
-										<span className="hidden xl:inline">Add new {entityLabel}</span>
+										<span className="hidden @3xl/card-header:inline">Add {EntityLabel}</span>
 									</Button>
 								</TooltipTrigger>
-								<TooltipContent className="xl:hidden">Add new {entityLabel}</TooltipContent>
+								<TooltipContent>Add {EntityLabel}</TooltipContent>
 							</Tooltip>
 						) : null}
 					</div>
@@ -247,7 +247,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 				</div>
 			) : (
 				<div className="flex w-full flex-col gap-2 rounded-sm border">
-					<Table className="w-full table-fixed" data-testid="keys-table">
+					<Table className="w-full min-w-[560px] table-fixed" data-testid="keys-table">
 						<colgroup>
 							<col className="w-[64%]" />
 							<col className="w-[12%]" />

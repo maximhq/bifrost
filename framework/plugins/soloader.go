@@ -119,6 +119,13 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		}
 	}
 
+	// Optional: HTTPTransportResponseHeadersHook
+	if sym, err := pluginObj.Lookup("HTTPTransportResponseHeadersHook"); err == nil {
+		if dp.httpTransportResponseHeadersHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error); !ok {
+			return nil, fmt.Errorf("failed to cast HTTPTransportResponseHeadersHook to expected signature")
+		}
+	}
+
 	// Optional: PreRequestHook — new .so plugins built against LLMPlugin can export this
 	// to participate in routing. Legacy plugins predating PreRequestHook keep working;
 	// DynamicPlugin's default PreRequestHook is a no-op passthrough.
@@ -187,6 +194,18 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 	if sym, err := pluginObj.Lookup("Inject"); err == nil {
 		if dp.inject, ok = sym.(func(ctx context.Context, trace *schemas.Trace) error); !ok {
 			return nil, fmt.Errorf("failed to cast Inject to expected signature")
+		}
+	}
+
+	// Optional: MarshalConfigForStorage / RedactConfig (ConfigMarshallerPlugin) (for Secret Var)
+	if sym, err := pluginObj.Lookup("MarshalConfigForStorage"); err == nil {
+		if dp.marshalConfigForStorage, ok = sym.(func(config map[string]any) (map[string]any, error)); !ok {
+			return nil, fmt.Errorf("failed to cast MarshalConfigForStorage to expected signature")
+		}
+	}
+	if sym, err := pluginObj.Lookup("RedactConfig"); err == nil {
+		if dp.redactConfig, ok = sym.(func(config map[string]any) (map[string]any, error)); !ok {
+			return nil, fmt.Errorf("failed to cast RedactConfig to expected signature")
 		}
 	}
 

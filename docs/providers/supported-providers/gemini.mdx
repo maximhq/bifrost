@@ -458,6 +458,17 @@ Audio is sent as inline data with auto-detected MIME type:
 }
 ```
 
+<Note>
+Gemini caching works differently from the rest of Bifrost's providers, so the
+`prompt_cache.auto_inject` setting does **not** apply here. Anthropic-style providers
+mark a content block and the cached prefix follows from where the marker sits. Gemini
+instead caches through a server-side `cachedContent` **resource** that you create,
+name, and pass by ID, with its own TTL and billing. There is no per-block marker for
+Bifrost to add, so injecting one would do nothing. Create the resource and pass
+`cachedContent` yourself. See [Prompt caching](/features/prompt-caching) for how the setting behaves
+elsewhere.
+</Note>
+
 ### Extra Parameters
 
 Safety settings and caching can be configured:
@@ -511,11 +522,11 @@ resp, err := client.TranscriptionRequest(schemas.NewBifrostContext(ctx, schemas.
 # 5. Embeddings
 
 <Note>
-Supports both single text and batch text embeddings via batch requests.
+Supports text and multimodal embeddings (text, image, audio, video, and PDF via `file` parts). Multiple input items are sent as a batch — each item maps to a separate entry in `requests[]`.
 </Note>
 
 **Request Parameters**:
-- `input` → `requests[0].content.parts[0].text` (single text joins arrays with space)
+- `input` → `ToGeminiEmbeddingRequest` maps each `EmbeddingInputItem.Content` to a separate `requests[]` entry (batch). Each content's parts map to `content.parts[]`.
 - `dimensions` → `outputDimensionality`
 - Extra task type and title via `extra_params`
 

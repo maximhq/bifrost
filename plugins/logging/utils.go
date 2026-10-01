@@ -98,6 +98,9 @@ type LogManager interface {
 	// GetAvailableStopReasons returns all unique stop reason values from logs
 	GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error)
 
+	// GetAvailableToolCallNames returns all unique function names that responses called
+	GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error)
+
 	// GetAvailableUserAgents returns all unique raw User-Agent strings from logs
 	GetAvailableUserAgents(ctx context.Context, limit int, query string) ([]string, error)
 	// GetAvailableApps returns all unique backend-detected app labels from logs
@@ -114,6 +117,9 @@ type LogManager interface {
 
 	// GetAvailableBusinessUnits returns all unique business unit ID-Name pairs from logs
 	GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableProjects returns all unique project ID-Name pairs from logs
+	GetAvailableProjects(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableMetadataKeys returns distinct metadata keys and their values from recent logs
 	GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
@@ -345,6 +351,10 @@ func (p *PluginLogManager) GetAvailableStopReasons(ctx context.Context, limit in
 	return p.plugin.GetAvailableStopReasons(ctx, limit, query)
 }
 
+func (p *PluginLogManager) GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableToolCallNames(ctx, limit, query)
+}
+
 // GetAvailableUserAgents returns distinct raw User-Agent strings from logs for the logs "App" filter.
 func (p *PluginLogManager) GetAvailableUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
 	return p.plugin.GetAvailableUserAgents(ctx, limit, query)
@@ -369,6 +379,10 @@ func (p *PluginLogManager) GetAvailableUsers(ctx context.Context, limit int, que
 
 func (p *PluginLogManager) GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableBusinessUnits(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableProjects(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	return p.plugin.GetAvailableProjects(ctx, limit, query)
 }
 
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
@@ -649,32 +663,18 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 			},
 		}, []schemas.ResponsesMessage{}
 	}
-	if request.EmbeddingRequest != nil {
-		// Large payload passthrough can intentionally leave Input nil to avoid
-		// materializing giant request bodies. Logging should degrade gracefully.
-		if request.EmbeddingRequest.Input == nil {
-			return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
-		}
-		texts := request.EmbeddingRequest.Input.Texts
-
-		if len(texts) == 0 && request.EmbeddingRequest.Input.Text != nil {
-			texts = []string{*request.EmbeddingRequest.Input.Text}
-		}
-
-		contentBlocks := make([]schemas.ChatContentBlock, len(texts))
-		for i, text := range texts {
-			// Create a per-iteration copy to avoid reusing the same memory address
-			t := text
-			contentBlocks[i] = schemas.ChatContentBlock{
-				Type: schemas.ChatContentBlockTypeText,
-				Text: &t,
-			}
+	if request.DecisionRequest != nil {
+		var state string
+		if s, ok := request.DecisionRequest.State.(string); ok {
+			state = s
+		} else if raw, err := sonic.Marshal(request.DecisionRequest.State); err == nil {
+			state = string(raw)
 		}
 		return []schemas.ChatMessage{
 			{
 				Role: schemas.ChatMessageRoleUser,
 				Content: &schemas.ChatMessageContent{
-					ContentBlocks: contentBlocks,
+					ContentStr: &state,
 				},
 			},
 		}, []schemas.ResponsesMessage{}
@@ -697,6 +697,53 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		return []schemas.ChatMessage{}, request.CompactionRequest.Input
 	}
 	return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
+}
+
+// extractEmbeddingInput returns the request's input items, preserving all part types
+// (text, image, audio, file, video) and any per-item params. Returns nil when Input is
+// empty (large-payload passthrough).
+func extractEmbeddingInput(request *schemas.BifrostRequest) []schemas.EmbeddingInputItem {
+	if request.EmbeddingRequest == nil || len(request.EmbeddingRequest.Input) == 0 {
+		return nil
+	}
+	return request.EmbeddingRequest.Input
+}
+
+// redactEmbeddingMediaData returns a copy of items with inline Data fields stripped from
+// all media parts. Only called when the total data size exceeds the large-payload
+// threshold. URL-based parts and per-item params are preserved.
+func redactEmbeddingMediaData(items []schemas.EmbeddingInputItem) []schemas.EmbeddingInputItem {
+	stripped := make([]schemas.EmbeddingInputItem, len(items))
+	for i, item := range items {
+		parts := make(schemas.EmbeddingContent, len(item.Content))
+		for j, part := range item.Content {
+			for _, media := range []**schemas.EmbeddingMediaPart{&part.Image, &part.Audio, &part.File, &part.Video} {
+				if *media != nil {
+					cp := **media
+					cp.Data = nil
+					*media = &cp
+				}
+			}
+			parts[j] = part
+		}
+		stripped[i] = schemas.EmbeddingInputItem{Content: parts, Params: item.Params}
+	}
+	return stripped
+}
+
+// embeddingMediaDataSize totals the inline media bytes across every item.
+func embeddingMediaDataSize(items []schemas.EmbeddingInputItem) int64 {
+	var total int64
+	for _, item := range items {
+		for _, part := range item.Content {
+			for _, media := range []*schemas.EmbeddingMediaPart{part.Image, part.Audio, part.File, part.Video} {
+				if media != nil && media.Data != nil {
+					total += int64(len(*media.Data))
+				}
+			}
+		}
+	}
+	return total
 }
 
 func extractRealtimeInputHistory(input []schemas.ResponsesMessage) []schemas.ChatMessage {
@@ -891,8 +938,36 @@ func mergeRealtimeMetadata(metadata map[string]interface{}, ctx *schemas.Bifrost
 	return metadata
 }
 
+// mergeLoadBalancerMetadata folds the enterprise load balancer's per-attempt routing decision into a
+// log row's metadata. Only keys carrying schemas.LoadBalancerMetadataPrefix are taken, so the load
+// balancer cannot write into the caller's namespace. Nor can a caller write into its: captureLoggingHeaders
+// drops every prefixed key a header or dimension produced, so each prefixed key on a row came from the
+// load balancer, including on a row it never stamped. The map is read at PostLLMHook time because key
+// selection, which stamps the key-level decision, runs after PreLLMHook.
+func mergeLoadBalancerMetadata(metadata map[string]interface{}, ctx *schemas.BifrostContext) map[string]interface{} {
+	if ctx == nil {
+		return metadata
+	}
+	attempt, ok := ctx.Value(schemas.BifrostContextKeyLoadBalancerAttempt).(map[string]string)
+	if !ok || len(attempt) == 0 {
+		return metadata
+	}
+	for key, value := range attempt {
+		if !strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix) {
+			continue
+		}
+		if metadata == nil {
+			metadata = make(map[string]interface{}, len(attempt))
+		}
+		metadata[key] = value
+	}
+	return metadata
+}
+
 // formatRoutingEngineLogs formats routing engine logs into a human-readable string.
-// Format: [timestamp] [engine] - message
+// Format: [timestamp] [engine] [level] - message
+// The level token lets the log detail view filter and badge each line by severity.
+// An entry recorded without a level is written as info so every line keeps the same shape.
 // Parameters:
 //   - logs: Slice of routing engine log entries
 //
@@ -904,7 +979,11 @@ func formatRoutingEngineLogs(logs []schemas.RoutingEngineLogEntry) string {
 	}
 	var sb strings.Builder
 	for _, log := range logs {
-		sb.WriteString(fmt.Sprintf("[%d] [%s] - %s\n", log.Timestamp, log.Engine, log.Message))
+		level := log.Level
+		if level == "" {
+			level = schemas.LogLevelInfo
+		}
+		sb.WriteString(fmt.Sprintf("[%d] [%s] [%s] - %s\n", log.Timestamp, log.Engine, level, log.Message))
 	}
 	return sb.String()
 }

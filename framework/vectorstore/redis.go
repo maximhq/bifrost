@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -64,7 +65,7 @@ type RedisStore struct {
 	logger schemas.Logger
 
 	namespaceFieldTypesMu sync.RWMutex
-	namespaceFieldTypes   map[string]map[string]VectorStorePropertyType
+	namespaceFieldTypes   map[string]map[string]VectorStoreProperties
 }
 
 // Ping checks if the Redis server is reachable.
@@ -80,15 +81,12 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 	// Check if index already exists
 	infoResult := s.client.Do(ctx, "FT.INFO", namespace)
 	if infoResult.Err() == nil {
-		ftInfo, ftInfoErr := s.client.FTInfo(ctx, namespace).Result()
-		if ftInfoErr != nil {
-			s.logger.Warn(fmt.Sprintf("could not inspect existing index %q for dimension validation (check skipped): %v", namespace, ftInfoErr))
-		} else {
-			for _, attr := range ftInfo.Attributes {
-				if strings.EqualFold(attr.Type, "VECTOR") && attr.Dim > 0 && attr.Dim != dimension {
-					return fmt.Errorf("namespace %q already exists with dimension %d but config requires %d — update vector_store_namespace to a new name or drop the existing index manually", namespace, attr.Dim, dimension)
-				}
-			}
+		// Read the dimension out of the raw reply rather than the typed FTInfo
+		// helper. That helper refuses to decode while the client speaks RESP3
+		// without UnstableResp3 — which is exactly how this store configures it
+		// — so it always failed and the check below silently never ran.
+		if existing, ok := vectorDimensionFromFTInfo(infoResult.Val()); ok && existing != dimension {
+			return fmt.Errorf("namespace %q already exists with dimension %d but config requires %d — update vector_store_namespace to a new name or drop the existing index manually", namespace, existing, dimension)
 		}
 		s.cacheNamespaceFieldTypes(namespace, properties)
 		return nil // Index already exists with matching dimension
@@ -177,6 +175,7 @@ func (s *RedisStore) GetChunk(ctx context.Context, namespace string, id string) 
 	for k, v := range fields {
 		searchResult.Properties[k] = v
 	}
+	s.decodeFilterableProperties(namespace, []SearchResult{searchResult})
 
 	return searchResult, nil
 }
@@ -238,9 +237,9 @@ func (s *RedisStore) GetChunks(ctx context.Context, namespace string, ids []stri
 		for k, v := range fields {
 			searchResult.Properties[k] = v
 		}
-
 		results = append(results, searchResult)
 	}
+	s.decodeFilterableProperties(namespace, results)
 
 	return results, nil
 }
@@ -378,6 +377,7 @@ func (s *RedisStore) executeSearch(ctx context.Context, namespace string, redisQ
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse search results: %w", err)
 	}
+	s.decodeFilterableProperties(namespace, results)
 
 	return results, nil
 }
@@ -893,6 +893,67 @@ func attributesToMap(value interface{}) map[string]interface{} {
 	}
 }
 
+// vectorDimensionFromFTInfo reads the declared dimension of an index's VECTOR
+// attribute out of a raw FT.INFO reply, returning false when the reply carries
+// no such attribute. Shape depends on the protocol the client negotiated: the
+// top level is a map under RESP3 and a flat key/value sequence under RESP2,
+// and each entry of "attributes" varies the same way.
+func vectorDimensionFromFTInfo(reply interface{}) (int, bool) {
+	attributes, ok := ftInfoField(reply, "attributes")
+	if !ok {
+		return 0, false
+	}
+	entries, ok := attributes.([]interface{})
+	if !ok {
+		return 0, false
+	}
+	for _, entry := range entries {
+		entryType, ok := ftInfoField(entry, "type")
+		if !ok {
+			continue
+		}
+		typeText, ok := toString(entryType)
+		if !ok || !strings.EqualFold(typeText, "VECTOR") {
+			continue
+		}
+		rawDimension, ok := ftInfoField(entry, "dim")
+		if !ok {
+			continue
+		}
+		if value, ok := toFloat64(rawDimension); ok && value > 0 {
+			return int(value), true
+		}
+	}
+	return 0, false
+}
+
+// ftInfoField looks up one field of an FT.INFO reply across both protocol
+// shapes. Used for the top level and for individual attribute entries, which
+// are maps under RESP3 and flat key/value sequences under RESP2.
+func ftInfoField(reply interface{}, name string) (interface{}, bool) {
+	switch typed := reply.(type) {
+	case map[interface{}]interface{}:
+		for key, value := range typed {
+			if keyText, ok := toString(key); ok && strings.EqualFold(keyText, name) {
+				return value, true
+			}
+		}
+	case map[string]interface{}:
+		for key, value := range typed {
+			if strings.EqualFold(key, name) {
+				return value, true
+			}
+		}
+	case []interface{}:
+		for i := 0; i+1 < len(typed); i += 2 {
+			if keyText, ok := toString(typed[i]); ok && strings.EqualFold(keyText, name) {
+				return typed[i+1], true
+			}
+		}
+	}
+	return nil, false
+}
+
 func toString(value interface{}) (string, bool) {
 	switch v := value.(type) {
 	case string:
@@ -945,17 +1006,17 @@ func (s *RedisStore) cacheNamespaceFieldTypes(namespace string, properties map[s
 		return
 	}
 
-	fieldTypes := make(map[string]VectorStorePropertyType, len(properties))
+	fieldProps := make(map[string]VectorStoreProperties, len(properties))
 	for field, prop := range properties {
-		fieldTypes[field] = prop.DataType
+		fieldProps[field] = prop
 	}
 
 	s.namespaceFieldTypesMu.Lock()
 	defer s.namespaceFieldTypesMu.Unlock()
 	if s.namespaceFieldTypes == nil {
-		s.namespaceFieldTypes = make(map[string]map[string]VectorStorePropertyType)
+		s.namespaceFieldTypes = make(map[string]map[string]VectorStoreProperties)
 	}
-	s.namespaceFieldTypes[namespace] = fieldTypes
+	s.namespaceFieldTypes[namespace] = fieldProps
 }
 
 func (s *RedisStore) deleteNamespaceFieldTypes(namespace string) {
@@ -967,7 +1028,7 @@ func (s *RedisStore) deleteNamespaceFieldTypes(namespace string) {
 	delete(s.namespaceFieldTypes, namespace)
 }
 
-func (s *RedisStore) getNamespaceFieldTypes(namespace string) map[string]VectorStorePropertyType {
+func (s *RedisStore) getNamespaceFieldTypes(namespace string) map[string]VectorStoreProperties {
 	if strings.TrimSpace(namespace) == "" {
 		return nil
 	}
@@ -975,27 +1036,20 @@ func (s *RedisStore) getNamespaceFieldTypes(namespace string) map[string]VectorS
 	s.namespaceFieldTypesMu.RLock()
 	defer s.namespaceFieldTypesMu.RUnlock()
 
-	fieldTypes, ok := s.namespaceFieldTypes[namespace]
-	if !ok {
-		return nil
-	}
-
-	copied := make(map[string]VectorStorePropertyType, len(fieldTypes))
-	for field, dataType := range fieldTypes {
-		copied[field] = dataType
-	}
-	return copied
+	// Safe to hand out directly: cacheNamespaceFieldTypes always publishes a
+	// freshly built map, so an entry is never mutated after it is stored.
+	return s.namespaceFieldTypes[namespace]
 }
 
 // buildRedisQuery converts []Query to Redis query syntax
-func buildRedisQuery(queries []Query, fieldTypes map[string]VectorStorePropertyType) string {
+func buildRedisQuery(queries []Query, fieldProps map[string]VectorStoreProperties) string {
 	if len(queries) == 0 {
 		return "*"
 	}
 
 	var conditions []string
 	for _, query := range queries {
-		condition := buildRedisQueryCondition(query, fieldTypes)
+		condition := buildRedisQueryCondition(query, fieldProps)
 		if condition != "" {
 			conditions = append(conditions, condition)
 		}
@@ -1009,10 +1063,10 @@ func buildRedisQuery(queries []Query, fieldTypes map[string]VectorStorePropertyT
 	return strings.Join(conditions, " ")
 }
 
-func shouldUseNumericEquality(field string, value interface{}, fieldTypes map[string]VectorStorePropertyType) (string, bool) {
-	if fieldTypes != nil {
-		if dataType, ok := fieldTypes[field]; ok {
-			if dataType == VectorStorePropertyTypeInteger {
+func shouldUseNumericEquality(field string, value interface{}, fieldProps map[string]VectorStoreProperties) (string, bool) {
+	if fieldProps != nil {
+		if prop, ok := fieldProps[field]; ok {
+			if prop.DataType == VectorStorePropertyTypeInteger {
 				return normalizeNumericQueryValue(value)
 			}
 			return "", false
@@ -1062,7 +1116,7 @@ func normalizeNumericQueryValue(value interface{}) (string, bool) {
 }
 
 // buildRedisQueryCondition builds a single Redis query condition
-func buildRedisQueryCondition(query Query, fieldTypes map[string]VectorStorePropertyType) string {
+func buildRedisQueryCondition(query Query, fieldProps map[string]VectorStoreProperties) string {
 	field := query.Field
 	operator := query.Operator
 	value := query.Value
@@ -1079,33 +1133,45 @@ func buildRedisQueryCondition(query Query, fieldTypes map[string]VectorStoreProp
 		stringValue = string(jsonData)
 	}
 
-	// Escape special characters for TAG fields
-	escapedValue := escapeSearchValue(stringValue) // new function for TAG escaping
+	// Filterable TAG values are stored hex-encoded, so they need no escaping;
+	// everything else is escaped for the query parser.
+	var tagValue string
+	if isFilterableTag(field, fieldProps) {
+		tagValue = encodeTagValue(stringValue)
+	} else {
+		tagValue = escapeSearchValue(stringValue)
+	}
 
 	switch operator {
 	case QueryOperatorEqual:
-		if numericValue, useNumeric := shouldUseNumericEquality(field, value, fieldTypes); useNumeric {
+		if numericValue, useNumeric := shouldUseNumericEquality(field, value, fieldProps); useNumeric {
 			return fmt.Sprintf("@%s:[%s %s]", field, numericValue, numericValue)
 		}
 		// TAG exact match
-		return fmt.Sprintf("@%s:{%s}", field, escapedValue)
+		return fmt.Sprintf("@%s:{%s}", field, tagValue)
 	case QueryOperatorNotEqual:
-		if numericValue, useNumeric := shouldUseNumericEquality(field, value, fieldTypes); useNumeric {
+		if numericValue, useNumeric := shouldUseNumericEquality(field, value, fieldProps); useNumeric {
 			return fmt.Sprintf("-@%s:[%s %s]", field, numericValue, numericValue)
 		}
 		// TAG negation
-		return fmt.Sprintf("-@%s:{%s}", field, escapedValue)
+		return fmt.Sprintf("-@%s:{%s}", field, tagValue)
 	case QueryOperatorLike:
 		// Cannot do LIKE with TAGs directly; fallback to exact match
-		return fmt.Sprintf("@%s:{%s}", field, escapedValue)
-	case QueryOperatorGreaterThan:
-		return fmt.Sprintf("@%s:[(%s +inf]", field, escapedValue)
-	case QueryOperatorGreaterThanOrEqual:
-		return fmt.Sprintf("@%s:[%s +inf]", field, escapedValue)
-	case QueryOperatorLessThan:
-		return fmt.Sprintf("@%s:[-inf (%s]", field, escapedValue)
-	case QueryOperatorLessThanOrEqual:
-		return fmt.Sprintf("@%s:[-inf %s]", field, escapedValue)
+		return fmt.Sprintf("@%s:{%s}", field, tagValue)
+	case QueryOperatorGreaterThan, QueryOperatorGreaterThanOrEqual,
+		QueryOperatorLessThan, QueryOperatorLessThanOrEqual:
+		// Range bounds are compared, not matched, so they keep plain escaping.
+		bound := escapeSearchValue(stringValue)
+		switch operator {
+		case QueryOperatorGreaterThan:
+			return fmt.Sprintf("@%s:[(%s +inf]", field, bound)
+		case QueryOperatorGreaterThanOrEqual:
+			return fmt.Sprintf("@%s:[%s +inf]", field, bound)
+		case QueryOperatorLessThan:
+			return fmt.Sprintf("@%s:[-inf (%s]", field, bound)
+		default:
+			return fmt.Sprintf("@%s:[-inf %s]", field, bound)
+		}
 	case QueryOperatorIsNull:
 		// Field not present
 		return fmt.Sprintf("-@%s:*", field)
@@ -1117,23 +1183,31 @@ func buildRedisQueryCondition(query Query, fieldTypes map[string]VectorStoreProp
 			var orConditions []string
 			for _, v := range values {
 				vStr := fmt.Sprintf("%v", v)
-				orConditions = append(orConditions, fmt.Sprintf("@%s:{%s}", field, escapeSearchValue(vStr)))
+				encoded := escapeSearchValue(vStr)
+				if isFilterableTag(field, fieldProps) {
+					encoded = encodeTagValue(vStr)
+				}
+				orConditions = append(orConditions, fmt.Sprintf("@%s:{%s}", field, encoded))
 			}
 			return fmt.Sprintf("(%s)", strings.Join(orConditions, " | "))
 		}
-		return fmt.Sprintf("@%s:{%s}", field, escapedValue)
+		return fmt.Sprintf("@%s:{%s}", field, tagValue)
 	case QueryOperatorContainsAll:
 		if values, ok := value.([]interface{}); ok {
 			var andConditions []string
 			for _, v := range values {
 				vStr := fmt.Sprintf("%v", v)
-				andConditions = append(andConditions, fmt.Sprintf("@%s:{%s}", field, escapeSearchValue(vStr)))
+				encoded := escapeSearchValue(vStr)
+				if isFilterableTag(field, fieldProps) {
+					encoded = encodeTagValue(vStr)
+				}
+				andConditions = append(andConditions, fmt.Sprintf("@%s:{%s}", field, encoded))
 			}
 			return strings.Join(andConditions, " ")
 		}
-		return fmt.Sprintf("@%s:{%s}", field, escapedValue)
+		return fmt.Sprintf("@%s:{%s}", field, tagValue)
 	default:
-		return fmt.Sprintf("@%s:{%s}", field, escapedValue)
+		return fmt.Sprintf("@%s:{%s}", field, tagValue)
 	}
 }
 
@@ -1170,7 +1244,6 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 		"FT.SEARCH", namespace,
 		fmt.Sprintf("%s=>[KNN %d @embedding $vec AS score]", hybridQuery, knnLimit),
 		"PARAMS", "2", "vec", queryBytes,
-		"SORTBY", "score",
 	}
 
 	// Add RETURN clause - always include score for vector search
@@ -1194,22 +1267,7 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 
 	result := s.client.Do(ctx, args...)
 	if result.Err() != nil {
-		errMsg := strings.ToLower(result.Err().Error())
-		// Some Valkey implementations reject SORTBY in KNN search (already distance-ordered).
-		if strings.Contains(errMsg, "unexpected argument `sortby`") || strings.Contains(errMsg, "unexpected argument sortby") {
-			compatArgs := make([]interface{}, 0, len(args)-2)
-			for i := 0; i < len(args); i++ {
-				if i+1 < len(args) && args[i] == "SORTBY" {
-					i++ // skip sort field value too
-					continue
-				}
-				compatArgs = append(compatArgs, args[i])
-			}
-			result = s.client.Do(ctx, compatArgs...)
-		}
-		if result.Err() != nil {
-			return nil, fmt.Errorf("native vector search failed: %w", result.Err())
-		}
+		return nil, fmt.Errorf("native vector search failed: %w", result.Err())
 	}
 
 	// Parse search results
@@ -1217,6 +1275,7 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 	if err != nil {
 		return nil, err
 	}
+	s.decodeFilterableProperties(namespace, results)
 
 	// Apply threshold filter and extract scores
 	var filteredResults []SearchResult
@@ -1241,6 +1300,15 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 			filteredResults = append(filteredResults, result)
 		}
 	}
+
+	// Order client-side: SORTBY is not portable across search backends.
+	sort.SliceStable(filteredResults, func(i, j int) bool {
+		si, sj := filteredResults[i].Score, filteredResults[j].Score
+		if si == nil || sj == nil {
+			return si != nil && sj == nil
+		}
+		return *si > *sj
+	})
 
 	results = filteredResults
 
@@ -1269,6 +1337,8 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 		fields["embedding"] = embeddingBytes
 	}
 
+	fieldProps := s.getNamespaceFieldTypes(namespace)
+
 	// Add metadata fields directly (no prefix needed with proper indexing)
 	for k, v := range metadata {
 		switch val := v.(type) {
@@ -1290,6 +1360,13 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 				return fmt.Errorf("failed to marshal metadata field %s: %w", k, err)
 			}
 			fields[k] = string(jsonData)
+		}
+
+		// TAG filter values are stored hex-encoded so queries need no escaping.
+		if isFilterableTag(k, fieldProps) {
+			if str, ok := fields[k].(string); ok {
+				fields[k] = encodeTagValue(str)
+			}
 		}
 	}
 
@@ -1476,6 +1553,37 @@ func (s *RedisStore) getAllMatchingIDs(ctx context.Context, namespace string, qu
 }
 
 // DeleteNamespace deletes a namespace from the Redis vector store.
+// ListNamespaces returns the search indices beginning with prefix. A namespace
+// here is an FT index, so FT._LIST is the enumeration; the keys it owns live
+// under the index's own "<namespace>:" prefix and are not separately listed.
+func (s *RedisStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
+	defer cancel()
+
+	result, err := s.client.Do(ctx, "FT._LIST").Result()
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unknown command") {
+			return nil, fmt.Errorf("search module not available: please use Redis Stack or a Valkey bundle with search support (FT.* commands required). original error: %w", err)
+		}
+		return nil, fmt.Errorf("failed to list search indices: %w", err)
+	}
+
+	entries, ok := result.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected FT._LIST reply type %T", result)
+	}
+	namespaces := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name, ok := entry.(string)
+		if !ok || !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		namespaces = append(namespaces, name)
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
+}
+
 func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) error {
 	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
@@ -1555,6 +1663,48 @@ func (s *RedisStore) Close(ctx context.Context, namespace string) error {
 // RequiresVectors returns false because Redis can store hash data with or without vectors.
 func (s *RedisStore) RequiresVectors() bool {
 	return false
+}
+
+// isFilterableTag reports whether a field is matched as a TAG filter and so
+// is stored hex-encoded.
+func isFilterableTag(field string, fieldProps map[string]VectorStoreProperties) bool {
+	prop, ok := fieldProps[field]
+	return ok && prop.Filterable && prop.DataType != VectorStorePropertyTypeInteger
+}
+
+// encodeTagValue hex-encodes a TAG value so no query escaping is needed.
+// Engines disagree on backslash handling inside {}, but agree on [0-9a-f].
+func encodeTagValue(value string) string {
+	return hex.EncodeToString([]byte(value))
+}
+
+// decodeTagValue reverses encodeTagValue, passing through values written
+// before encoding was introduced.
+func decodeTagValue(value string) string {
+	decoded, err := hex.DecodeString(value)
+	if err != nil || !utf8.Valid(decoded) {
+		return value
+	}
+	return string(decoded)
+}
+
+// decodeFilterableProperties restores hex-encoded TAG values on read so
+// callers see what they wrote.
+func (s *RedisStore) decodeFilterableProperties(namespace string, results []SearchResult) {
+	fieldProps := s.getNamespaceFieldTypes(namespace)
+	if len(fieldProps) == 0 {
+		return
+	}
+	for _, result := range results {
+		for field, value := range result.Properties {
+			if !isFilterableTag(field, fieldProps) {
+				continue
+			}
+			if str, ok := value.(string); ok {
+				result.Properties[field] = decodeTagValue(str)
+			}
+		}
+	}
 }
 
 // escapeSearchValue escapes special characters in search values.
@@ -1788,7 +1938,7 @@ func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger)
 		client:              client,
 		config:              config,
 		logger:              logger,
-		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
+		namespaceFieldTypes: make(map[string]map[string]VectorStoreProperties),
 	}
 	// Eagerly verify connectivity, consistent with other store constructors (e.g. Qdrant)
 	if err := store.Ping(context.Background()); err != nil {

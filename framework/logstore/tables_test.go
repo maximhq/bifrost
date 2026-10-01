@@ -245,3 +245,110 @@ func TestDeserializeFieldsCostBreakdownNilWhenNoCost(t *testing.T) {
 	require.NoError(t, log.DeserializeFields())
 	assert.Nil(t, log.CostBreakdown)
 }
+
+// TestMCPToolLogGovernanceSetsRoundTrip covers the multi-valued attribution
+// surviving storage. The ids and names are written as separate JSON columns but
+// read back index-aligned, which is what lets DAC filter the two together.
+func TestMCPToolLogGovernanceSetsRoundTrip(t *testing.T) {
+	entry := &MCPToolLog{
+		TeamIDsParsed: []string{"team1", "team2"}, TeamNamesParsed: []string{"Team One", "Team Two"},
+		CustomerIDsParsed: []string{"cust1"}, CustomerNamesParsed: []string{"Customer One"},
+		BusinessUnitIDsParsed: []string{"bu1"}, BusinessUnitNamesParsed: []string{"BU One"},
+		BudgetIDsParsed: []string{"budget1"}, RateLimitIDsParsed: []string{"rl1"},
+	}
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	if entry.TeamIDs == nil || entry.TeamNames == nil || entry.BudgetIDs == nil {
+		t.Fatalf("sets not written to their columns: %+v", entry)
+	}
+
+	stored := &MCPToolLog{
+		TeamIDs: entry.TeamIDs, TeamNames: entry.TeamNames,
+		CustomerIDs: entry.CustomerIDs, CustomerNames: entry.CustomerNames,
+		BusinessUnitIDs: entry.BusinessUnitIDs, BusinessUnitNames: entry.BusinessUnitNames,
+		BudgetIDs: entry.BudgetIDs, RateLimitIDs: entry.RateLimitIDs,
+	}
+	if err := stored.DeserializeFields(); err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+	for _, field := range []struct {
+		name      string
+		got, want []string
+	}{
+		{"team_ids", stored.TeamIDsParsed, entry.TeamIDsParsed},
+		{"team_names", stored.TeamNamesParsed, entry.TeamNamesParsed},
+		{"customer_ids", stored.CustomerIDsParsed, entry.CustomerIDsParsed},
+		{"customer_names", stored.CustomerNamesParsed, entry.CustomerNamesParsed},
+		{"business_unit_ids", stored.BusinessUnitIDsParsed, entry.BusinessUnitIDsParsed},
+		{"business_unit_names", stored.BusinessUnitNamesParsed, entry.BusinessUnitNamesParsed},
+		{"budget_ids", stored.BudgetIDsParsed, entry.BudgetIDsParsed},
+		{"rate_limit_ids", stored.RateLimitIDsParsed, entry.RateLimitIDsParsed},
+	} {
+		if len(field.got) != len(field.want) {
+			t.Fatalf("%s = %v, want %v", field.name, field.got, field.want)
+		}
+		for i := range field.want {
+			if field.got[i] != field.want[i] {
+				t.Fatalf("%s = %v, want %v", field.name, field.got, field.want)
+			}
+		}
+	}
+}
+
+// TestMCPToolLogGovernanceSetsTolerateCorruptJSON keeps one unreadable column
+// from failing the whole read: the row is still worth serving without it.
+func TestMCPToolLogGovernanceSetsTolerateCorruptJSON(t *testing.T) {
+	corrupt := "{not json"
+	entry := &MCPToolLog{TeamIDs: &corrupt}
+	if err := entry.DeserializeFields(); err != nil {
+		t.Fatalf("deserialize must not fail on a corrupt column: %v", err)
+	}
+	if entry.TeamIDsParsed != nil {
+		t.Fatalf("team_ids = %v, want nil", entry.TeamIDsParsed)
+	}
+}
+
+func TestSerializeFieldsStoresWebSearchAsNumSearchQueries(t *testing.T) {
+	stale := 1
+	usage := &schemas.BifrostLLMUsage{
+		TotalTokens:             15,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ReasoningTokens: 4, NumSearchQueries: &stale},
+		ToolUsage:               &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 3}},
+	}
+	log := &Log{TokenUsageParsed: usage}
+	require.NoError(t, log.SerializeFields())
+
+	assert.NotContains(t, log.TokenUsage, "tool_usage")
+	assert.JSONEq(t, `{"total_tokens":15,"completion_tokens_details":{"reasoning_tokens":4,"num_search_queries":3}}`, log.TokenUsage)
+	// The caller's usage keeps its own shape.
+	require.NotNil(t, usage.ToolUsage)
+	assert.Equal(t, 1, *usage.CompletionTokensDetails.NumSearchQueries)
+
+	onlyTool := &Log{TokenUsageParsed: &schemas.BifrostLLMUsage{TotalTokens: 1, ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 2}}}}
+	require.NoError(t, onlyTool.SerializeFields())
+	assert.JSONEq(t, `{"total_tokens":1,"completion_tokens_details":{"num_search_queries":2}}`, onlyTool.TokenUsage)
+}
+
+func TestDeserializeFieldsRebuildsToolUsageFromNumSearchQueries(t *testing.T) {
+	log := &Log{TokenUsage: `{"total_tokens":15,"completion_tokens_details":{"num_search_queries":3}}`}
+	require.NoError(t, log.DeserializeFields())
+	require.NotNil(t, log.TokenUsageParsed.ToolUsage)
+	assert.Equal(t, 3, log.TokenUsageParsed.ToolUsage.WebSearch.NumRequests)
+
+	null := &Log{TokenUsage: `null`}
+	require.NoError(t, null.DeserializeFields())
+	assert.Nil(t, null.TokenUsageParsed)
+
+	none := &Log{TokenUsage: `{"total_tokens":15}`}
+	require.NoError(t, none.DeserializeFields())
+	assert.Nil(t, none.TokenUsageParsed.ToolUsage)
+
+	// Round trip: what the gateway writes, a later read prices.
+	written := &Log{TokenUsageParsed: &schemas.BifrostLLMUsage{TotalTokens: 1, ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 5}}}}
+	require.NoError(t, written.SerializeFields())
+	read := &Log{TokenUsage: written.TokenUsage}
+	require.NoError(t, read.DeserializeFields())
+	assert.Equal(t, 5, read.TokenUsageParsed.ToolUsage.WebSearch.NumRequests)
+	assert.Equal(t, 5, *read.TokenUsageParsed.CompletionTokensDetails.NumSearchQueries)
+}

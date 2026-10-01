@@ -25,9 +25,9 @@ func TestMistral(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Mistral,
-		ChatModel: "mistral-medium-2508",
+		ChatModel: "ministral-8b-latest",
 		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.Mistral, Model: "mistral-small-2503"},
+			{Provider: schemas.Mistral, Model: "ministral-3b-latest"},
 		},
 		VisionModel:         "pixtral-12b-latest",
 		EmbeddingModel:      "codestral-embed",

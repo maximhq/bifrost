@@ -590,20 +590,52 @@ if [ "$AUTH_ENABLED_BY_RUN" = "1" ]; then
     fi
 fi
 
-# Governance suites (virtual key quota, rate limit / budget enforcement, and
-# rotation cooldown). These run as their own newman invocations rather than
-# through --extra-collection: merging folds them into the management collection,
+# Content-logging permutation matrix: every combination of virtual key (inherit/on/off), client
+# disable_content_logging, OTel connector disable_content_logging, the per-request override gate
+# and the x-bf-disable-content-logging header, checked in both the log store and the OTel export.
+# It brings its own echo provider and OTLP collector (no provider credentials, no paid calls),
+# restores the client config and OTel plugin afterwards, and runs after auth is restored to
+# disabled because it provisions virtual keys through the unauthenticated management API.
+# Its echo provider and collector are on loopback, so the gateway must share this host (as it does
+# in every CI path and for the observability check above); for a gateway in another container or
+# host, set BIFROST_E2E_CALLBACK_HOST to an address it can reach this runner on.
+# Set BIFROST_E2E_SKIP_CONTENT_LOGGING_MATRIX=1 to skip it.
+if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_CONTENT_LOGGING_MATRIX:-0}" != "1" ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${GREEN}Running content-logging permutation matrix...${NC}" | tee -a "$LOG_FILE"
+    # The matrix reads raw log rows, so it must look at the same logs database this run was pointed
+    # at: --logs-db-url and --config-path are plain shell variables here, not exported, so pass them
+    # on explicitly. Unset values are left out so a caller's exported BIFROST_LOGS_DB_URL still wins.
+    matrix_env=(BIFROST_E2E_BASE_URL="$BASE_URL")
+    [ -n "$LOGS_DB_URL" ] && matrix_env+=(BIFROST_LOGS_DB_URL="$LOGS_DB_URL")
+    [ -n "$DB_CONFIG_PATH" ] && matrix_env+=(BIFROST_E2E_CONFIG_PATH="$DB_CONFIG_PATH")
+    set +e
+    env "${matrix_env[@]}" node "$SCRIPT_DIR/run-content-logging-matrix.mjs" 2>&1 | tee -a "$LOG_FILE"
+    MATRIX_EXIT_CODE=${PIPESTATUS[0]}
+    set -e
+    if [ $MATRIX_EXIT_CODE -ne 0 ]; then
+        EXIT_CODE=$MATRIX_EXIT_CODE
+    fi
+elif [ $EXIT_CODE -eq 0 ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}Skipping content-logging permutation matrix (BIFROST_E2E_SKIP_CONTENT_LOGGING_MATRIX=1).${NC}" | tee -a "$LOG_FILE"
+fi
+
+# Governance suites (virtual key quota, rate limit / budget enforcement,
+# rotation cooldown, and time-of-day pricing). These run as their own newman
+# invocations rather than through --extra-collection: merging folds them into the management collection,
 # which would drop their collection variables, subject their deliberate 401/403/
 # 429/402 assertions to that collection's 2xx gate, and run them a second time in
 # the authenticated pass. They also run after auth is restored to disabled,
 # because they provision virtual keys through the unauthenticated management API.
-# Roughly 7 minutes, most of it the rotation suite waiting out real 1m and 3m
+# Roughly 8 minutes, most of it the rotation suite waiting out real 1m and 3m
 # grace windows; set BIFROST_E2E_SKIP_GOVERNANCE=1 to skip them.
 if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_GOVERNANCE:-0}" != "1" ]; then
     for governance_suite in \
         "vk-quota:run-newman-vk-quota-tests.sh" \
         "rate-limit:run-newman-rate-limit-tests.sh" \
-        "vk-rotation-cooldown:run-newman-vk-rotation-cooldown-tests.sh"; do
+        "vk-rotation-cooldown:run-newman-vk-rotation-cooldown-tests.sh" \
+        "pricing-time-of-day:run-newman-pricing-time-of-day-tests.sh"; do
         suite_name="${governance_suite%%:*}"
         suite_runner="${governance_suite##*:}"
         echo "" | tee -a "$LOG_FILE"

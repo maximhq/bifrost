@@ -16,6 +16,7 @@ import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
+import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import NumberFlow from "@number-flow/react";
 import { useLocation } from "@tanstack/react-router";
@@ -52,6 +53,14 @@ export default function MCPLogsPage() {
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			tool_names: parseAsArrayOf(parseAsString).withDefault([]),
+			user_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			team_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			customer_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			business_unit_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			project_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			device_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			apps: parseAsArrayOf(parseAsString).withDefault([]),
+
 			server_labels: parseAsArrayOf(parseAsString).withDefault([]),
 			status: parseAsArrayOf(parseAsString).withDefault([]),
 			virtual_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
@@ -82,6 +91,14 @@ export default function MCPLogsPage() {
 	const filters: MCPToolLogFilters = useMemo(
 		() => ({
 			tool_names: urlState.tool_names,
+			user_ids: urlState.user_ids,
+			team_ids: urlState.team_ids,
+			customer_ids: urlState.customer_ids,
+			business_unit_ids: urlState.business_unit_ids,
+			project_ids: urlState.project_ids,
+			device_ids: urlState.device_ids,
+			apps: urlState.apps,
+
 			server_labels: urlState.server_labels,
 			status: urlState.status,
 			virtual_key_ids: urlState.virtual_key_ids,
@@ -95,6 +112,13 @@ export default function MCPLogsPage() {
 		}),
 		[
 			urlState.tool_names,
+			urlState.user_ids,
+			urlState.team_ids,
+			urlState.customer_ids,
+			urlState.business_unit_ids,
+			urlState.project_ids,
+			urlState.device_ids,
+			urlState.apps,
 			urlState.server_labels,
 			urlState.status,
 			urlState.virtual_key_ids,
@@ -218,6 +242,14 @@ export default function MCPLogsPage() {
 			setUrlState({
 				...(timeChanged && { period: "" }),
 				tool_names: newFilters.tool_names || [],
+				user_ids: newFilters.user_ids || [],
+				team_ids: newFilters.team_ids || [],
+				customer_ids: newFilters.customer_ids || [],
+				business_unit_ids: newFilters.business_unit_ids || [],
+				project_ids: newFilters.project_ids || [],
+				device_ids: newFilters.device_ids || [],
+				apps: newFilters.apps || [],
+
 				server_labels: newFilters.server_labels || [],
 				status: newFilters.status || [],
 				virtual_key_ids: newFilters.virtual_key_ids || [],
@@ -284,16 +316,18 @@ export default function MCPLogsPage() {
 
 	const handlePollToggle = useCallback(
 		(enabled: boolean) => {
-			setUrlState({ polling: enabled });
-			if (enabled) refreshAllData();
+			const next = getLiveToggleState(enabled, urlState.period);
+			setUrlState(next);
+			// A period change alters the query args, which fetches on its own.
+			if (enabled && !next.period) refreshAllData();
 		},
-		[setUrlState, refreshAllData],
+		[setUrlState, refreshAllData, urlState.period],
 	);
 
 	const statCards = useMemo(
 		() => [
 			{
-				title: "Total Executions",
+				title: "Total Records",
 				value: <NumberFlow value={statsData?.total_executions ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
 			},
@@ -363,7 +397,7 @@ export default function MCPLogsPage() {
 		columnIds,
 		paramName: "mcp_cols",
 		storageKey: "bifrost.mcp_logs.cols",
-		defaultHidden: ["virtual_key"],
+		defaultHidden: ["virtual_key", "customer", "business_unit", "project", "device"],
 		fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
 	});
 
@@ -372,6 +406,13 @@ export default function MCPLogsPage() {
 			timestamp: "Time",
 			tool_name: "Tool Name",
 			server_label: "Server",
+			source: "Source",
+			user: "User",
+			team: "Team",
+			customer: "Customer",
+			business_unit: "Business Unit",
+			project: "Project",
+			device: "Device",
 			latency: "Latency",
 			cost: "Cost",
 			virtual_key: "Virtual Key",

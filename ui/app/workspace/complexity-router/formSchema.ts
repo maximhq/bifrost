@@ -1,0 +1,515 @@
+import {
+	AnalyzerConfig,
+	COMPLEXITY_TIER_VALUES,
+	DEFAULT_JEV_CONFIG,
+	JevGuidanceDefaults,
+	JevTier,
+	MAX_JEV_CRITERIA_ITEM_CHARACTERS,
+	MAX_JEV_CRITERIA_ITEMS,
+	MAX_JEV_DEFINITION_CHARACTERS,
+	DEFAULT_LLM_CONFIG,
+	DEFAULT_SEMANTIC_CONFIG,
+	MAX_JEV_PREVIOUS_MESSAGE_COUNT,
+	KeywordListKey,
+	MAX_LLM_PROMPT_CHARACTERS,
+	MAX_LLM_MESSAGE_HISTORY,
+	MAX_SEMANTIC_MESSAGE_HISTORY,
+	MAX_SEMANTIC_PHRASE_CHARACTERS,
+	MAX_SEMANTIC_PHRASES,
+	MAX_SEMANTIC_TIMEOUT_MS,
+	MIN_LLM_MESSAGE_HISTORY,
+	MIN_SEMANTIC_MESSAGE_HISTORY,
+	parseLLMTimeoutMs,
+	parseSemanticTimeoutMs,
+} from "@/lib/types/complexityRouter";
+import { ModelProvider } from "@/lib/types/config";
+import { DBKey } from "@/lib/types/governance";
+import { z } from "zod";
+
+// Form-owned duration values are always a single unit (the controls append
+// "ms"), so a plain positive-duration check is enough.
+const positiveDurationPattern = /^[0-9]*\.?[0-9]+(ns|us|µs|ms|s|m|h)$/;
+
+export function countCanonicalSemanticPhrases(keywords: Record<KeywordListKey, string[]>) {
+	const count = (phrases: string[]) => new Set(phrases.map((phrase) => phrase.trim().toLowerCase()).filter(Boolean)).size;
+	const simple = count(keywords.simple_keywords);
+	const medium = count(keywords.medium_keywords);
+	const complex = count(keywords.complex_keywords);
+	return { simple, medium, complex, total: simple + medium + complex };
+}
+
+export function isPositiveDurationString(value: string | undefined): boolean {
+	if (!value) return false;
+	const trimmed = value.trim();
+	if (!positiveDurationPattern.test(trimmed) || Number.parseFloat(trimmed) <= 0) return false;
+	// Past the int64-nanosecond ceiling the server cannot parse the duration at
+	// all, so it is rejected here as a value rather than sent to fail as a 400.
+	return parseSemanticTimeoutMs(trimmed) <= MAX_SEMANTIC_TIMEOUT_MS;
+}
+
+const semanticSchema = z.object({
+	provider: z.string(),
+	embedding_model: z.string(),
+	// The control edits milliseconds but the value stays a Go duration, so a
+	// non-positive or malformed entry is caught here rather than snapped back to
+	// the default while the operator is still typing.
+	timeout: z
+		.string()
+		.min(1, "Enter an embedding timeout")
+		.refine((value) => isPositiveDurationString(value), `Enter a timeout greater than 0 and at most ${MAX_SEMANTIC_TIMEOUT_MS}ms`)
+		.optional(),
+	min_similarity: z.number({ error: "Enter a number between 0 and 1" }).min(0, "Must be 0 or greater").lt(1, "Must be less than 1"),
+	message_history_count: z
+		.number({
+			error: `Enter a number between ${MIN_SEMANTIC_MESSAGE_HISTORY} and ${MAX_SEMANTIC_MESSAGE_HISTORY}`,
+		})
+		.int("Must be a whole number")
+		.min(MIN_SEMANTIC_MESSAGE_HISTORY, `Must be at least ${MIN_SEMANTIC_MESSAGE_HISTORY}`)
+		.max(MAX_SEMANTIC_MESSAGE_HISTORY, `Must be at most ${MAX_SEMANTIC_MESSAGE_HISTORY}`),
+	count_toward_budgets: z.boolean().optional(),
+	vector_store: z.enum(["embedded", "vector_store"]).optional(),
+	fallback: z.enum(["none", "llm", "jev"]),
+});
+
+// The editors always hold what the gateway will send, so an emptied field is
+// rejected rather than saved: it would reload as the shipped default, silently
+// undoing the deletion. Reset to default is the way back.
+const jevCriteriaListSchema = (label: string) =>
+	z
+		.array(z.string().max(MAX_JEV_CRITERIA_ITEM_CHARACTERS, `Each ${label} must be at most ${MAX_JEV_CRITERIA_ITEM_CHARACTERS} characters`))
+		.min(1, `Add at least one ${label}`)
+		.max(MAX_JEV_CRITERIA_ITEMS, `At most ${MAX_JEV_CRITERIA_ITEMS} ${label}s`);
+
+const jevTierCriteriaSchema = z.object({
+	definition: z
+		.string()
+		.trim()
+		.min(1, "Enter a definition")
+		.max(MAX_JEV_DEFINITION_CHARACTERS, `Must be at most ${MAX_JEV_DEFINITION_CHARACTERS} characters`),
+	signals: jevCriteriaListSchema("signal"),
+	examples: jevCriteriaListSchema("example"),
+});
+
+// The unvalidated shape the form always holds; jevGuidanceSchema checks it
+// only once the editors are seeded.
+const jevTierFormShape = z.object({
+	definition: z.string(),
+	signals: z.array(z.string()),
+	examples: z.array(z.string()),
+});
+
+const jevGuidanceSchema = z.object({
+	criteria: z.object({
+		SIMPLE: jevTierCriteriaSchema,
+		MEDIUM: jevTierCriteriaSchema,
+		COMPLEX: jevTierCriteriaSchema,
+	}),
+});
+
+const jevSchema = z.object({
+	previous_message_count: z
+		.number()
+		.int("Must be a whole number")
+		.min(0, "Must be at least 0")
+		.max(MAX_JEV_PREVIOUS_MESSAGE_COUNT, `Must be at most ${MAX_JEV_PREVIOUS_MESSAGE_COUNT}`),
+	timeout: z
+		.string()
+		.min(1, "Enter a Jev timeout")
+		.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0"),
+});
+
+const llmSchema = z.object({
+	provider: z.string(),
+	model: z.string(),
+	// Same millisecond-edited Go duration treatment as the semantic timeout.
+	timeout: z
+		.string()
+		.min(1, "Enter a classification timeout")
+		.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0")
+		.optional(),
+	prompt: z.string().max(MAX_LLM_PROMPT_CHARACTERS, `Must be at most ${MAX_LLM_PROMPT_CHARACTERS} characters`),
+	message_history_count: z
+		.number({
+			error: `Enter a number between ${MIN_LLM_MESSAGE_HISTORY} and ${MAX_LLM_MESSAGE_HISTORY}`,
+		})
+		.int("Must be a whole number")
+		.min(MIN_LLM_MESSAGE_HISTORY, `Must be at least ${MIN_LLM_MESSAGE_HISTORY}`)
+		.max(MAX_LLM_MESSAGE_HISTORY, `Must be at most ${MAX_LLM_MESSAGE_HISTORY}`),
+	count_toward_budgets: z.boolean().optional(),
+});
+
+// usesJev reports whether the Jev block is live: the primary classifier or the
+// semantic fallback. Its controls are hidden and its values are not saved otherwise.
+function usesJev(values: { classifier: string; semantic: { fallback: string } }): boolean {
+	return values.classifier === "jev" || values.semantic.fallback === "jev";
+}
+
+export const analyzerConfigSchema = z
+	.object({
+		classifier: z.enum(["semantic", "jev"]),
+		keywords: z.object({
+			simple_keywords: z.array(z.string()).min(1, "Simple phrases cannot be empty"),
+			medium_keywords: z.array(z.string()).min(1, "Medium phrases cannot be empty"),
+			complex_keywords: z.array(z.string()).min(1, "Complex phrases cannot be empty"),
+		}),
+		semantic: semanticSchema,
+		// Only shape-checked here: the Jev controls are hidden unless Jev is the
+		// classifier or the fallback, so jevSchema runs in superRefine under that
+		// condition rather than letting an invisible error block Save. An emptied
+		// number input registers as NaN, which must pass the shape check too.
+		jev: z.object({
+			previous_message_count: z.number().or(z.nan()),
+			timeout: z.string(),
+			criteria: z.object({
+				SIMPLE: jevTierFormShape,
+				MEDIUM: jevTierFormShape,
+				COMPLEX: jevTierFormShape,
+			}),
+		}),
+		llm: llmSchema,
+		session: z.object({ enabled: z.boolean() }),
+	})
+	.superRefine((data, ctx) => {
+		// A blank provider and model means the classifier simply is not configured
+		// yet, which is a legal state: phrase edits still save. Half-filled is not,
+		// because it cannot be turned into a working classifier.
+		const hasProvider = data.semantic.provider.trim() !== "";
+		const hasModel = data.semantic.embedding_model.trim() !== "";
+		if (hasProvider || hasModel) {
+			if (!hasProvider) {
+				ctx.addIssue({
+					code: "custom",
+					message: "Select an embedding provider",
+					path: ["semantic", "provider"],
+				});
+			}
+			if (!hasModel) {
+				ctx.addIssue({
+					code: "custom",
+					message: "Select an embedding model",
+					path: ["semantic", "embedding_model"],
+				});
+			}
+		}
+		if (data.session.enabled && data.classifier === "semantic" && (!hasProvider || !hasModel)) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Configure the semantic classifier before enabling session routing",
+				path: ["session", "enabled"],
+			});
+		}
+
+		if (usesJev(data)) {
+			const jev = jevSchema.safeParse(data.jev);
+			const issues = jev.success ? [] : [...jev.error.issues];
+			// Guidance that was never seeded (the status endpoint has not supplied
+			// defaults) is hidden and saves as "use the defaults", so it is only
+			// validated once the editors hold something.
+			if (!isJevGuidanceEmpty(data.jev)) {
+				const guidance = jevGuidanceSchema.safeParse(data.jev);
+				if (!guidance.success) issues.push(...guidance.error.issues);
+			}
+			for (const issue of issues) {
+				ctx.addIssue({ code: "custom", message: issue.message, path: ["jev", ...issue.path] });
+			}
+		}
+
+		// The llm block follows the same half-filled rule, with one addition:
+		// switching the semantic fallback to "llm" makes the block mandatory,
+		// because the server rejects that fallback without one.
+		const hasLLMProvider = data.llm.provider.trim() !== "";
+		const hasLLMModel = data.llm.model.trim() !== "";
+		if (hasLLMProvider || hasLLMModel || data.semantic.fallback === "llm") {
+			if (!hasLLMProvider) {
+				ctx.addIssue({
+					code: "custom",
+					message: "Select a fallback provider",
+					path: ["llm", "provider"],
+				});
+			}
+			if (!hasLLMModel) {
+				ctx.addIssue({
+					code: "custom",
+					message: "Select a fallback model",
+					path: ["llm", "model"],
+				});
+			}
+		}
+
+		// Mirrors validateComplexitySemanticPhrases so invalid input fails in the
+		// form instead of as an opaque 400.
+		const lists: Array<{ key: KeywordListKey; label: string }> = [
+			{ key: "simple_keywords", label: "Simple" },
+			{ key: "medium_keywords", label: "Medium" },
+			{ key: "complex_keywords", label: "Complex" },
+		];
+
+		const seen = new Map<string, string>();
+		for (const { key, label } of lists) {
+			for (const phrase of data.keywords[key]) {
+				if (phrase.length > MAX_SEMANTIC_PHRASE_CHARACTERS) {
+					ctx.addIssue({
+						code: "custom",
+						message: `A ${label} phrase exceeds the ${MAX_SEMANTIC_PHRASE_CHARACTERS}-character limit.`,
+						path: ["keywords", key],
+					});
+					break;
+				}
+				const normalized = phrase.trim().toLowerCase();
+				const firstTier = seen.get(normalized);
+				if (firstTier && firstTier !== label) {
+					ctx.addIssue({
+						code: "custom",
+						message: `"${phrase}" is also in the ${firstTier} list. Each phrase must belong to exactly one tier.`,
+						path: ["keywords", key],
+					});
+				} else if (!firstTier) {
+					seen.set(normalized, label);
+				}
+			}
+		}
+
+		if (hasProvider && hasModel) {
+			const counts = countCanonicalSemanticPhrases(data.keywords);
+			if (counts.total > MAX_SEMANTIC_PHRASES) {
+				ctx.addIssue({
+					code: "custom",
+					message: `Semantic routing has ${counts.total} phrases (Simple=${counts.simple}, Medium=${counts.medium}, Complex=${counts.complex}); the maximum is ${MAX_SEMANTIC_PHRASES} across all tiers.`,
+					path: ["keywords"],
+				});
+			}
+		}
+	});
+
+// The form is stricter than the wire type: the API omits semantic fields left at
+// their zero value (Go `omitempty`), but every control here is controlled and
+// needs a concrete value, so the schema's inferred type is the source of truth.
+export type AnalyzerFormValues = z.infer<typeof analyzerConfigSchema>;
+export type SemanticFormValues = AnalyzerFormValues["semantic"];
+export type LLMFormValues = AnalyzerFormValues["llm"];
+
+export const DEFAULT_LLM_FORM_VALUES: LLMFormValues = {
+	provider: DEFAULT_LLM_CONFIG.provider,
+	model: DEFAULT_LLM_CONFIG.model,
+	timeout: DEFAULT_LLM_CONFIG.timeout,
+	prompt: DEFAULT_LLM_CONFIG.prompt ?? "",
+	message_history_count: DEFAULT_LLM_CONFIG.message_history_count ?? MIN_LLM_MESSAGE_HISTORY,
+	count_toward_budgets: DEFAULT_LLM_CONFIG.count_toward_budgets ?? false,
+};
+
+export const DEFAULT_SEMANTIC_FORM_VALUES: SemanticFormValues = {
+	...DEFAULT_SEMANTIC_CONFIG,
+	min_similarity: DEFAULT_SEMANTIC_CONFIG.min_similarity ?? 0,
+	message_history_count: DEFAULT_SEMANTIC_CONFIG.message_history_count ?? MIN_SEMANTIC_MESSAGE_HISTORY,
+	vector_store: "embedded",
+	fallback: DEFAULT_SEMANTIC_CONFIG.fallback ?? "none",
+};
+
+export const DEFAULT_FORM_VALUES: AnalyzerFormValues = {
+	keywords: {
+		simple_keywords: [],
+		medium_keywords: [],
+		complex_keywords: [],
+	},
+	classifier: "semantic",
+	semantic: DEFAULT_SEMANTIC_FORM_VALUES,
+	jev: { ...DEFAULT_JEV_CONFIG, ...jevGuidanceFormValues() },
+	llm: DEFAULT_LLM_FORM_VALUES,
+	session: { enabled: false },
+};
+
+export type JevGuidanceFormValues = Pick<AnalyzerFormValues["jev"], "criteria">;
+
+// isJevTierEmpty reports a tier with no definition and no list entries.
+function isJevTierEmpty({ definition, signals, examples }: JevGuidanceFormValues["criteria"][JevTier]): boolean {
+	return definition.trim() === "" && signals.length === 0 && examples.length === 0;
+}
+
+// isJevGuidanceEmpty reports guidance the form never seeded: no tier content
+// anywhere.
+export function isJevGuidanceEmpty(jev: JevGuidanceFormValues): boolean {
+	return COMPLEXITY_TIER_VALUES.every((tier) => isJevTierEmpty(jev.criteria[tier]));
+}
+
+// jevGuidanceFormValues fills the Jev guidance editors: each saved override
+// wins, and anything unset shows the shipped default so the editor always
+// displays what the gateway will send. Without defaults (status not loaded)
+// unset fields stay empty, which saves as "use the default".
+export function jevGuidanceFormValues(saved?: AnalyzerConfig["jev"], defaults?: JevGuidanceDefaults): JevGuidanceFormValues {
+	const tier = (name: JevTier) => {
+		const override = saved?.criteria?.[name];
+		const shipped = defaults?.criteria[name];
+		return {
+			definition: override?.definition || shipped?.definition || "",
+			signals: override?.signals?.length ? override.signals : (shipped?.signals ?? []),
+			examples: override?.examples?.length ? override.examples : (shipped?.examples ?? []),
+		};
+	};
+	return {
+		criteria: {
+			SIMPLE: tier("SIMPLE"),
+			MEDIUM: tier("MEDIUM"),
+			COMPLEX: tier("COMPLEX"),
+		},
+	};
+}
+
+// jevCriteriaFromDefaults copies the shipped per-tier criteria into form
+// values, so restoring them never shares arrays with the status response.
+export function jevCriteriaFromDefaults(defaults: JevGuidanceDefaults): JevGuidanceFormValues["criteria"] {
+	const tier = (name: JevTier) => ({
+		definition: defaults.criteria[name].definition,
+		signals: [...defaults.criteria[name].signals],
+		examples: [...defaults.criteria[name].examples],
+	});
+	return { SIMPLE: tier("SIMPLE"), MEDIUM: tier("MEDIUM"), COMPLEX: tier("COMPLEX") };
+}
+
+// isJevGuidanceDefault reports whether every tier's definition, signals, and
+// examples equal the shipped criteria, in order.
+export function isJevGuidanceDefault(criteria: JevGuidanceFormValues["criteria"], defaults: JevGuidanceDefaults): boolean {
+	const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((value, index) => value === b[index]);
+	return COMPLEXITY_TIER_VALUES.every((tier) => {
+		const shipped = defaults.criteria[tier];
+		const current = criteria[tier];
+		return (
+			current.definition === shipped.definition &&
+			sameList(current.signals, shipped.signals) &&
+			sameList(current.examples, shipped.examples)
+		);
+	});
+}
+
+// Fills in the fields the API omitted so the semantic controls stay controlled.
+export function toFormValues(config: AnalyzerConfig, jevDefaults?: JevGuidanceDefaults): AnalyzerFormValues {
+	const saved = config.semantic;
+	const savedLLM = config.llm;
+	const classifier = config.classifier?.trim().toLowerCase();
+	return {
+		classifier: classifier === "jev" ? "jev" : "semantic",
+		keywords: config.keywords,
+		jev: {
+			previous_message_count: config.jev?.previous_message_count ?? DEFAULT_JEV_CONFIG.previous_message_count,
+			timeout: config.jev?.timeout ?? DEFAULT_JEV_CONFIG.timeout,
+			...jevGuidanceFormValues(config.jev, jevDefaults),
+		},
+		session: config.session ?? { enabled: false },
+		llm: savedLLM
+			? {
+					...DEFAULT_LLM_FORM_VALUES,
+					...savedLLM,
+					timeout: savedLLM.timeout ?? DEFAULT_LLM_FORM_VALUES.timeout,
+					prompt: savedLLM.prompt ?? "",
+					message_history_count: savedLLM.message_history_count ?? MIN_LLM_MESSAGE_HISTORY,
+					count_toward_budgets: savedLLM.count_toward_budgets ?? false,
+				}
+			: DEFAULT_LLM_FORM_VALUES,
+		semantic: saved
+			? {
+					...DEFAULT_SEMANTIC_FORM_VALUES,
+					...saved,
+					min_similarity: saved.min_similarity ?? 0,
+					message_history_count: saved.message_history_count ?? MIN_SEMANTIC_MESSAGE_HISTORY,
+					vector_store: saved.vector_store ?? DEFAULT_SEMANTIC_FORM_VALUES.vector_store,
+					fallback: saved.fallback ?? "none",
+				}
+			: DEFAULT_SEMANTIC_FORM_VALUES,
+	};
+}
+
+// Builds the replacement payload without writing a disabled session block.
+// Session is additive to the complexity API, and nil already means disabled;
+// omitting it keeps ordinary semantic edits compatible with gateways that
+// predate session-aware routing. Once enabled, the block is sent explicitly.
+export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerConfig): AnalyzerConfig {
+	const semantic = values.semantic.provider && values.semantic.embedding_model ? values.semantic : (saved?.semantic ?? undefined);
+	const llm = values.llm.provider && values.llm.model ? values.llm : (saved?.llm ?? undefined);
+
+	return {
+		classifier: values.classifier,
+		keywords: values.keywords,
+		// Unused Jev values are not validated, so keep the saved block instead of
+		// sending hidden, possibly invalid edits.
+		...(usesJev(values) ? { jev: toJevPayload(values.jev) } : saved?.jev ? { jev: saved.jev } : {}),
+		...(values.session.enabled ? { session: values.session } : {}),
+		...(semantic ? { semantic } : {}),
+		...(llm ? { llm } : {}),
+	};
+}
+
+// toJevPayload sends the editors' contents. The gateway drops anything equal
+// to its shipped default, so saving untouched guidance stores no override and
+// later default updates still apply. Empty fields are omitted only for the
+// window before the status endpoint has supplied defaults to seed them.
+function toJevPayload(jev: AnalyzerFormValues["jev"]): NonNullable<AnalyzerConfig["jev"]> {
+	const criteria: NonNullable<NonNullable<AnalyzerConfig["jev"]>["criteria"]> = {};
+	for (const tier of COMPLEXITY_TIER_VALUES) {
+		const { definition, signals, examples } = jev.criteria[tier];
+		if (isJevTierEmpty(jev.criteria[tier])) continue;
+		criteria[tier] = {
+			...(definition.trim() ? { definition } : {}),
+			...(signals.length ? { signals } : {}),
+			...(examples.length ? { examples } : {}),
+		};
+	}
+	return {
+		previous_message_count: jev.previous_message_count,
+		timeout: jev.timeout,
+		...(Object.keys(criteria).length ? { criteria } : {}),
+	};
+}
+
+// The timeout control edits milliseconds while the form value stays a Go
+// duration. A value this control wrote round-trips digit for digit, including a
+// "0" the operator is midway through typing, which the schema rejects rather
+// than the field silently rewriting. Anything else — a saved "1s", a blank —
+// falls back to the parsed reading.
+export function semanticTimeoutFieldValue(timeout: string | undefined): string | number {
+	if (timeout === "") return "";
+	const millis = timeout?.trim().match(/^([0-9]*\.?[0-9]+)ms$/);
+	return millis ? millis[1] : parseSemanticTimeoutMs(timeout);
+}
+
+// jevTimeoutFieldValue shows the stored Go duration as editable milliseconds.
+export function jevTimeoutFieldValue(timeout: string | undefined): string | number {
+	if (timeout === "") return "";
+	const millis = timeout?.trim().match(/^([0-9]*\.?[0-9]+)ms$/);
+	return millis ? millis[1] : parseSemanticTimeoutMs(timeout ?? DEFAULT_JEV_CONFIG.timeout);
+}
+
+// Same round-trip as semanticTimeoutFieldValue, with the llm default backstop.
+export function llmTimeoutFieldValue(timeout: string | undefined): string | number {
+	if (timeout === "") return "";
+	const millis = timeout?.trim().match(/^([0-9]*\.?[0-9]+)ms$/);
+	return millis ? millis[1] : parseLLMTimeoutMs(timeout);
+}
+// shouldSeedLLMPrompt decides whether the shipped guidance may initialize the draft.
+export function shouldSeedLLMPrompt(enabled: boolean, defaultPrompt: string, prompt: string, edited: boolean): boolean {
+	return enabled && defaultPrompt !== "" && prompt === "" && !edited;
+}
+
+// isRouterConfigured decides whether the page opens on the classifier choice
+// (nothing set up yet) or straight on the configured classifier's settings.
+// A router counts as configured once it can classify anything: a saved semantic
+// block, or Jev chosen as the primary classifier. Phrases alone do not count;
+// every install has them, and without a classifier they route nothing.
+export function isRouterConfigured(config: AnalyzerConfig | undefined): boolean {
+	if (!config) return false;
+	if (config.classifier?.trim().toLowerCase() === "jev") return true;
+	return Boolean(config.semantic?.provider && config.semantic?.embedding_model);
+}
+// TypesafeState is what the UI can actually tell about the Typesafe provider
+// Jev authenticates through. "configured" is not a guarantee that Jev calls
+// succeed — only a live request proves that — so the UI never calls it "ready".
+export type TypesafeState = "missing" | "failing" | "no-enabled-key" | "configured";
+
+export function getTypesafeState(providers: ModelProvider[] | undefined, keys: DBKey[] | undefined): TypesafeState {
+	const provider = (providers ?? []).find((candidate) => candidate.name === "typesafe");
+	if (!provider) return "missing";
+	// The provider failed to initialise, or could not list models with its keys:
+	// both mean its credentials or settings are wrong.
+	if (provider.provider_status !== "active" || provider.status === "list_models_failed") return "failing";
+	// A key omits `enabled` when unset, which the Go side reads as enabled.
+	if (!(keys ?? []).some((key) => key.provider === "typesafe" && key.enabled !== false)) return "no-enabled-key";
+	return "configured";
+}

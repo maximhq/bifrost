@@ -9,18 +9,16 @@ import (
 type compiledKeywordMask uint16
 
 const (
-	maskCode compiledKeywordMask = 1 << iota
-	maskReasoning
-	maskStrongReasoning
-	maskTechnical
+	maskMedium compiledKeywordMask = 1 << iota
+	maskComplex
 	maskSimple
 	maskContinuation
 )
 
 const (
-	lastTextBaseScanMask = maskCode | maskReasoning | maskStrongReasoning | maskTechnical | maskSimple | maskContinuation
-	systemTextScanMask   = maskCode | maskTechnical
-	contextTextScanMask  = maskCode | maskReasoning | maskTechnical
+	lastTextBaseScanMask = maskMedium | maskComplex | maskSimple | maskContinuation
+	systemTextScanMask   = maskMedium
+	contextTextScanMask  = maskMedium | maskComplex
 )
 
 const (
@@ -73,10 +71,8 @@ type compiledKeywordMatcher struct {
 
 type textSignalCounts struct {
 	wordCount               int
-	codeCount               int
-	reasoningCount          int
-	strongReasoningCount    int
-	technicalCount          int
+	mediumCount             int
+	complexCount            int
 	simpleCount             int
 	continuationPhraseCount int
 }
@@ -104,9 +100,8 @@ func newCompiledKeywordMatcher(keywords KeywordConfig) *compiledKeywordMatcher {
 		}
 	}
 
-	addKeywords(keywords.CodeKeywords, maskCode)
-	addKeywords(keywords.StrongReasoningKeywords, maskReasoning|maskStrongReasoning)
-	addKeywords(keywords.TechnicalKeywords, maskTechnical)
+	addKeywords(keywords.MediumKeywords, maskMedium)
+	addKeywords(keywords.ComplexKeywords, maskComplex)
 	addKeywords(keywords.SimpleKeywords, maskSimple)
 	addKeywords(keywords.ContinuationPhrases, maskContinuation)
 
@@ -270,17 +265,11 @@ func (m *compiledKeywordMatcher) addStemmedMatches(lowerText string, scanMask co
 
 // addMask increments every scoring bucket a matched keyword contributes to.
 func (s *textSignalCounts) addMask(mask compiledKeywordMask) {
-	if mask&maskCode != 0 {
-		s.codeCount++
+	if mask&maskMedium != 0 {
+		s.mediumCount++
 	}
-	if mask&maskReasoning != 0 {
-		s.reasoningCount++
-	}
-	if mask&maskStrongReasoning != 0 {
-		s.strongReasoningCount++
-	}
-	if mask&maskTechnical != 0 {
-		s.technicalCount++
+	if mask&maskComplex != 0 {
+		s.complexCount++
 	}
 	if mask&maskSimple != 0 {
 		s.simpleCount++

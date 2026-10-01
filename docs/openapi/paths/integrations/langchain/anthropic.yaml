@@ -40,7 +40,6 @@ messages:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 count-tokens:
@@ -78,6 +77,5 @@ count-tokens:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

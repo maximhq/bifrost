@@ -63,13 +63,14 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 		c.Status = "pending"
 	}
 
-	if encrypt.IsEnabled() {
-		if c.ClientSecret != nil && !c.ClientSecret.IsFromSecret() && c.ClientSecret.Val != "" {
-			if err := encryptString(&c.ClientSecret.Val); err != nil {
-				return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
-			}
-			c.EncryptionStatus = EncryptionStatusEncrypted
+	// Stamp the status whenever a secret is present, not only when it was ciphered:
+	// encryptSecretVar leaves env/vault refs alone, and leaving such a row
+	// 'plain_text' makes the startup backfill re-select it forever.
+	if encrypt.IsEnabled() && c.ClientSecret.IsSet() {
+		if err := encryptSecretVar(c.ClientSecret); err != nil {
+			return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
 		}
+		c.EncryptionStatus = EncryptionStatusEncrypted
 	}
 	return nil
 }
@@ -201,6 +202,7 @@ type TableMCPOauthToken struct {
 	VirtualKeyID     *string    `gorm:"type:varchar(255);index" json:"virtual_key_id"`            // VK identity (vk-mode rows)
 	UserID           *string    `gorm:"type:varchar(255);index" json:"user_id"`                   // User identity (user-mode rows; populated by enterprise middleware/governance)
 	Status           string     `gorm:"type:varchar(20);not null;default:'active'" json:"status"` // 'active' | 'orphaned' | 'needs_reauth' — only 'active' satisfies a runtime lookup; the others are surfaced in the UI with distinct copy
+	StatusReason     string     `gorm:"type:text" json:"status_reason,omitempty"`                 // Why Status left 'active': the provider's refresh rejection (HTTP status plus the OAuth error and description), a credential rotation, or a failed admin exchange. Empty while active; cleared whenever the row becomes active again
 	AccessToken      string     `gorm:"type:text;not null" json:"-"`                              // Encrypted access token
 	RefreshToken     string     `gorm:"type:text" json:"-"`                                       // Encrypted refresh token (optional)
 	TokenType        string     `gorm:"type:varchar(50);not null" json:"token_type"`              // "Bearer"

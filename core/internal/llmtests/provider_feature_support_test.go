@@ -219,8 +219,8 @@ func TestProviderToolValidation(t *testing.T) {
 			name:     "Vertex/mixed_supported_and_unsupported",
 			provider: schemas.Vertex,
 			tools: []schemas.ResponsesTool{
-				{Type: schemas.ResponsesToolTypeWebSearch},   // allowed
-				{Type: schemas.ResponsesToolTypeFunction},    // allowed
+				{Type: schemas.ResponsesToolTypeWebSearch},       // allowed
+				{Type: schemas.ResponsesToolTypeFunction},        // allowed
 				{Type: schemas.ResponsesToolTypeCodeInterpreter}, // rejected
 			},
 			expectErr: true,
@@ -1011,28 +1011,120 @@ func TestProviderFeatureMapCompleteness(t *testing.T) {
 			assert.True(t, features.StructuredOutputs, "Bedrock should support StructuredOutputs")
 			assert.True(t, features.Compaction, "Bedrock should support Compaction")
 			assert.True(t, features.ComputerUse, "Bedrock should support ComputerUse")
-			// ToolSearch is a SERVER-side tool, not a client-side one, so it does
-			// not belong in the blanket group below. AWS restricts server-side
-			// tool search to InvokeModel/InvokeModelWithResponseStream and never
-			// exposes it on Converse, which is the only API Bifrost's Bedrock
-			// provider uses for tool-bearing requests — so it can never work
-			// end-to-end here. Cite: "On Amazon Bedrock, server-side tool search
-			// is available only through the InvokeModel API, not the Converse
-			// API." (platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
-			assert.False(t, features.ToolSearch, "Bedrock should NOT support ToolSearch (Converse cannot run it)")
+			// ToolSearch is InvokeModel-only on AWS ("On Amazon Bedrock, server-side
+			// tool search is available only through the InvokeModel API, not the
+			// Converse API." platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool).
+			// The Bedrock provider routes any request carrying a tool_search tool
+			// or defer_loading to InvokeModel, so the flag is on (bedrock.go,
+			// InvokeModel section, #6825).
+			assert.True(t, features.ToolSearch, "Bedrock should support ToolSearch via InvokeModel routing")
 		}
 
-		// ToolSearch is server-side and gated per provider: available on the
-		// Claude API, Vertex and Azure, but not on classic Bedrock (see above).
-		if provider != schemas.Bedrock {
-			assert.True(t, features.ToolSearch, "%s should support ToolSearch", provider)
-		}
+		// ToolSearch is server-side and supported on every Anthropic-family
+		// provider, on classic Bedrock through InvokeModel routing (see above).
+		assert.True(t, features.ToolSearch, "%s should support ToolSearch", provider)
 
 		// All providers should support client-side tools
 		assert.True(t, features.ComputerUse, "%s should support ComputerUse", provider)
 		assert.True(t, features.Bash, "%s should support Bash", provider)
 		assert.True(t, features.Memory, "%s should support Memory", provider)
 		assert.True(t, features.TextEditor, "%s should support TextEditor", provider)
+	}
+}
+
+// TestAnthropicCompatibleThirdPartyProvidersRejectServerTools covers the
+// surfaces that speak the Anthropic Messages wire format in front of models and
+// infrastructure that are not Anthropic's own. Anthropic executes its server
+// tools on its own infrastructure, so these hosts cannot run them and the
+// request must be stripped before it goes out. Fireworks is the reported case:
+// it answers a forwarded web_search tool with a 400.
+//
+// Fireworks documents one carve-out, asserted separately below: it implements
+// the client-side tool-search and deferred-loading wire format, so tool_search
+// survives there and is dropped on the self-hosted pair.
+//
+// These providers are deliberately excluded from TestProviderFeatureMapCompleteness
+// above, whose closing assertions require blanket client-tool support.
+func TestAnthropicCompatibleThirdPartyProvidersRejectServerTools(t *testing.T) {
+	t.Parallel()
+
+	// Unsupported on all three, whatever the host.
+	serverTools := []schemas.ResponsesToolType{
+		schemas.ResponsesToolTypeWebSearch,
+		schemas.ResponsesToolTypeWebSearchPreview,
+		schemas.ResponsesToolTypeWebFetch,
+		schemas.ResponsesToolTypeCodeInterpreter,
+		schemas.ResponsesToolTypeComputerUsePreview,
+		schemas.ResponsesToolTypeMCP,
+		schemas.ResponsesToolTypeLocalShell,
+		schemas.ResponsesToolTypeMemory,
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Fireworks, schemas.VLLM, schemas.SGL} {
+		t.Run(string(provider), func(t *testing.T) {
+			features, ok := anthropic.ProviderFeatures[provider]
+			require.True(t, ok, "%s must be in ProviderFeatures, or the validators fall back to keep-everything", provider)
+
+			assert.False(t, features.WebSearch, "%s must not advertise WebSearch", provider)
+			assert.False(t, features.WebFetch, "%s must not advertise WebFetch", provider)
+			assert.False(t, features.CodeExecution, "%s must not advertise CodeExecution", provider)
+			assert.False(t, features.MCP, "%s must not advertise MCP", provider)
+			assert.False(t, features.ComputerUse, "%s must not advertise ComputerUse", provider)
+			assert.False(t, features.Bash, "%s must not advertise Bash", provider)
+			assert.False(t, features.Memory, "%s must not advertise Memory", provider)
+			assert.False(t, features.TextEditor, "%s must not advertise TextEditor", provider)
+
+			caps := schemas.ResolveModelCaps(provider, "accounts/fireworks/models/deepseek-v4p1-flash")
+			for _, toolType := range serverTools {
+				keep, dropped := anthropic.ValidateResponsesToolsForProvider(
+					[]schemas.ResponsesTool{{Type: toolType}}, caps,
+				)
+				assert.Empty(t, keep, "%s should drop %s", provider, toolType)
+				assert.Equal(t, []string{string(toolType)}, dropped, "%s should report %s as dropped", provider, toolType)
+			}
+
+			// Function tools are the whole point of the endpoint and must survive.
+			keep, dropped := anthropic.ValidateResponsesToolsForProvider(
+				[]schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction}}, caps,
+			)
+			assert.Len(t, keep, 1, "%s must keep function tools", provider)
+			assert.Empty(t, dropped)
+		})
+	}
+}
+
+// TestFireworksToolSearchCarveOut pins the one server-tool family Fireworks
+// documents as working. Their compatibility page says "Tool search discovery
+// and deferred tool loading are supported", translating "the client-side
+// tool-search discovery and deferred-loading wire format only" and covering
+// "both Anthropic-native tool_search_tool_* tool names and clients that name
+// their discovery tool ToolSearch". The ToolSearch flag gates the tool type and
+// tool.defer_loading together, so turning it off would strip a pattern the
+// endpoint implements. vLLM and SGLang document nothing here and stay
+// fail-closed.
+//
+// Source: https://docs.fireworks.ai/tools-sdks/anthropic-compatibility
+func TestFireworksToolSearchCarveOut(t *testing.T) {
+	t.Parallel()
+
+	fwCaps := schemas.ResolveModelCaps(schemas.Fireworks, "accounts/fireworks/models/deepseek-v4p1-flash")
+	keep, dropped := anthropic.ValidateResponsesToolsForProvider(
+		[]schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch}}, fwCaps,
+	)
+	assert.Len(t, keep, 1, "Fireworks implements the client-side tool-search wire format, so the tool must survive")
+	assert.Empty(t, dropped)
+
+	// service_tier: "priority" is documented on the same page.
+	assert.True(t, anthropic.ProviderFeatures[schemas.Fireworks].ServiceTier,
+		"Fireworks documents service_tier: priority, so the field must not be stripped")
+
+	for _, provider := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL} {
+		caps := schemas.ResolveModelCaps(provider, "meta-llama/Llama-3.2-1B-Instruct")
+		keep, dropped := anthropic.ValidateResponsesToolsForProvider(
+			[]schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch}}, caps,
+		)
+		assert.Empty(t, keep, "%s documents no tool-search support, so it stays fail-closed", provider)
+		assert.Equal(t, []string{string(schemas.ResponsesToolTypeToolSearch)}, dropped)
 	}
 }
 

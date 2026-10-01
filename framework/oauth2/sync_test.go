@@ -130,7 +130,7 @@ func (s *testConfigStore) RefreshOauthTokenFieldsIfActive(_ context.Context, id 
 // the test-double equivalent of the real store's method of the same name —
 // which, despite the historical "UserToken" naming, is not scoped away from
 // auth_mode='shared' (see its doc comment on the real ConfigStore interface).
-func (s *testConfigStore) MarkOauthUserTokenNeedsReauthByID(_ context.Context, tokenID string) error {
+func (s *testConfigStore) MarkOauthUserTokenNeedsReauthByID(_ context.Context, tokenID string, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	token := s.oauthTokens[tokenID]
@@ -138,12 +138,13 @@ func (s *testConfigStore) MarkOauthUserTokenNeedsReauthByID(_ context.Context, t
 		return nil
 	}
 	token.Status = "needs_reauth"
+	token.StatusReason = reason
 	return nil
 }
 
 // MarkTokensNeedsReauthByConfigID is the test-double equivalent of the real
 // store's bulk, auth_mode-agnostic cascade used by OAuth credential rotation.
-func (s *testConfigStore) MarkTokensNeedsReauthByConfigID(_ context.Context, oauthConfigID string, _ ...*gorm.DB) error {
+func (s *testConfigStore) MarkTokensNeedsReauthByConfigID(_ context.Context, oauthConfigID string, _ string, _ ...*gorm.DB) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, token := range s.oauthTokens {
@@ -679,6 +680,8 @@ func TestTokenRefreshWorker_PermanentError_MarksNeedsReauth(t *testing.T) {
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
 	assert.Equal(t, "needs_reauth", token.Status, "permanent auth rejection must mark token needs_reauth")
+	assert.Equal(t, "provider rejected the refresh (HTTP 401, invalid_grant: Refresh token expired or revoked)", token.StatusReason,
+		"the provider's rejection must be recorded on the row so the UI can say what failed")
 }
 
 func TestTokenRefreshWorker_SuccessfulRefresh_UpdatesToken(t *testing.T) {
@@ -742,7 +745,7 @@ func TestTokenRefreshWorker_ConcurrentReauth_DoesNotOverwriteStaleRefresh(t *tes
 	}()
 
 	<-started
-	require.NoError(t, store.MarkOauthUserTokenNeedsReauthByID(context.Background(), tokenID))
+	require.NoError(t, store.MarkOauthUserTokenNeedsReauthByID(context.Background(), tokenID, "test"))
 	close(unblock)
 	wg.Wait()
 

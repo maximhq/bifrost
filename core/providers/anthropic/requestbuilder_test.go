@@ -2,8 +2,10 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +21,53 @@ func makeSimpleInput(text string) []schemas.ResponsesMessage {
 			Role:    &role,
 			Content: &schemas.ResponsesMessageContent{ContentStr: &text},
 		},
+	}
+}
+
+func TestSafeguardsRequestBuilders(t *testing.T) {
+	const beta = "dangerous-tool-use-2026-09-03"
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure} {
+		for _, raw := range []bool{false, true} {
+			for _, chat := range []bool{false, true} {
+				for _, streaming := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/raw=%v/chat=%v/stream=%v", provider, raw, chat, streaming), func(t *testing.T) {
+						ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+						ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
+						payload := json.RawMessage(`{"z":1,"a":{"b":true}}`)
+						extra := map[string]interface{}{"safeguards": payload}
+						body := []byte(`{"model":"claude-opus-4-8","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"safeguards":{"z":1,"a":{"b":true}}}`)
+						cfg := AnthropicRequestBuildConfig{Provider: provider, Model: "claude-opus-4-8", IsStreaming: streaming}
+						var out []byte
+						var err *schemas.BifrostError
+						if chat {
+							out, err = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: "claude-opus-4-8", RawRequestBody: body, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}, Params: &schemas.ChatParameters{ExtraParams: extra}}, cfg)
+						} else {
+							out, err = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: "claude-opus-4-8", RawRequestBody: body, Input: makeSimpleInput("hi"), Params: &schemas.ResponsesParameters{ExtraParams: extra}}, cfg)
+						}
+						if err != nil {
+							t.Fatalf("build: %v", err)
+						}
+						if got := providerUtils.GetJSONField(out, "safeguards").Raw; got != string(payload) {
+							t.Errorf("safeguards = %s; body=%s", got, out)
+						}
+						if _, ok := extra["safeguards"]; !ok {
+							t.Error("conversion consumed safeguards from the input used by fallbacks")
+						}
+						betas := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), provider)
+						if !slices.Contains(betas, beta) {
+							t.Errorf("missing required beta: %v", betas)
+						}
+						if provider == schemas.Bedrock || provider == schemas.Vertex {
+							if !strings.Contains(providerUtils.GetJSONField(out, "anthropic_beta").Raw, beta) {
+								t.Errorf("missing body beta: %s", out)
+							}
+						} else if providerUtils.JSONFieldExists(out, "anthropic_beta") {
+							t.Errorf("unexpected body beta: %s", out)
+						}
+					})
+				}
+			}
+		}
 	}
 }
 
@@ -317,6 +366,61 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 
 		if !providerUtils.JSONFieldExists(result, "anthropic_beta") {
 			t.Error("expected anthropic_beta to be injected into body")
+		}
+	})
+}
+
+func TestBuildAnthropicResponsesRequestBody_ThreadFieldStripped(t *testing.T) {
+	// Server-side thread state is bound to the account that created it; per-request
+	// key selection, retries, and fallbacks cannot keep a continuation there, so the
+	// raw path never forwards the field. Continuations themselves are refused at the
+	// transport (anthropicRefuseThreadContinue) before reaching this builder.
+	rawBody := []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"thread":{"type":"create"}}`)
+
+	t.Run("raw_path_strips_thread", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider:       schemas.Anthropic,
+			Model:          "claude-sonnet-4-5",
+			RawRequestBody: rawBody,
+		}
+
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "thread") {
+			t.Errorf("expected thread field to be stripped from the raw body, got %s", string(result))
+		}
+		if !providerUtils.JSONFieldExists(result, "messages") {
+			t.Error("expected messages to survive the thread strip")
+		}
+	})
+
+	t.Run("count_tokens_mode_strips_thread", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider:       schemas.Anthropic,
+			Model:          "claude-sonnet-4-5",
+			RawRequestBody: rawBody,
+		}
+
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider:      schemas.Anthropic,
+			Model:         "claude-sonnet-4-5",
+			IsCountTokens: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "thread") {
+			t.Errorf("expected thread field to be stripped in count_tokens mode, got %s", string(result))
 		}
 	})
 }
@@ -843,4 +947,219 @@ func TestBuildAnthropicResponsesRequestBody_RemapToolVersions(t *testing.T) {
 			t.Error("expected tool type to be remapped from web_search_20260209")
 		}
 	})
+}
+
+// Regression tests for maximhq/bifrost#6825.
+//
+// The Bedrock provider routes Claude requests that carry a compact_20260112
+// edit to InvokeModel / InvokeModelWithResponseStream, because AWS documents
+// compaction as unsupported on Converse:
+// https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-compaction.html
+//
+// InvokeModel takes the native Anthropic Messages body with three Bedrock
+// specifics, per
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.html:
+//   - anthropic_version must be "bedrock-2023-05-31"
+//   - the model is in the URL, so the body carries no "model"
+//   - streaming is selected by the URL, so the body carries no "stream"
+//   - beta features are opted into via the anthropic_beta body array
+// The shared anthropic request builder must produce exactly that shape when
+// cfg.Provider is schemas.Bedrock.
+
+const bedrockInvokeCompactionContextManagement = `{"edits":[{"type":"compact_20260112","trigger":{"type":"input_tokens","value":50000}}]}`
+
+func assertBedrockInvokeBodyShape(t *testing.T, body []byte) {
+	t.Helper()
+	if providerUtils.JSONFieldExists(body, "model") {
+		t.Errorf("InvokeModel body must not carry model (it is in the URL), got: %s", string(body))
+	}
+	if providerUtils.JSONFieldExists(body, "stream") {
+		t.Errorf("InvokeModel body must not carry stream (the URL selects streaming), got: %s", string(body))
+	}
+	if got := providerUtils.GetJSONField(body, "anthropic_version").String(); got != "bedrock-2023-05-31" {
+		t.Errorf("anthropic_version = %q, want %q", got, "bedrock-2023-05-31")
+	}
+	betas := providerUtils.GetJSONField(body, "anthropic_beta")
+	if !betas.Exists() || !betas.IsArray() {
+		t.Fatalf("anthropic_beta array missing, got: %s", string(body))
+	}
+	var betaValues []string
+	for _, b := range betas.Array() {
+		betaValues = append(betaValues, b.String())
+	}
+	if !slices.Contains(betaValues, AnthropicCompactionBetaHeader) {
+		t.Errorf("anthropic_beta = %v, want it to contain %q", betaValues, AnthropicCompactionBetaHeader)
+	}
+	if got := providerUtils.GetJSONField(body, "context_management.edits.0.type").String(); got != string(ContextManagementEditTypeCompact) {
+		t.Errorf("context_management.edits.0.type = %q, want %q; body=%s", got, ContextManagementEditTypeCompact, string(body))
+	}
+}
+
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeShape(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-4-6",
+		Input:    makeSimpleInput("Hello!"),
+		Params: &schemas.ResponsesParameters{
+			ContextManagement: json.RawMessage(bedrockInvokeCompactionContextManagement),
+		},
+	}
+	body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:    schemas.Bedrock,
+		Model:       "us.anthropic.claude-sonnet-4-6",
+		IsStreaming: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertBedrockInvokeBodyShape(t, body)
+}
+
+func TestBuildAnthropicChatRequestBody_BedrockInvokeShape(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-4-6",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")}}},
+		Params: &schemas.ChatParameters{
+			ContextManagement: json.RawMessage(bedrockInvokeCompactionContextManagement),
+		},
+	}
+	body, err := BuildAnthropicChatRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:    schemas.Bedrock,
+		Model:       "us.anthropic.claude-sonnet-4-6",
+		IsStreaming: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertBedrockInvokeBodyShape(t, body)
+}
+
+// Tool search is InvokeModel-only on Bedrock (see the routing tests in the
+// bedrock package). Once a request is routed there, the shared builder must keep
+// the tool_search tool, keep defer_loading on the deferred function tool, and
+// opt in with the tool-search-tool-2025-10-19 beta in the anthropic_beta array.
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeKeepsToolSearch(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-4-6",
+		Input:    makeSimpleInput("What is the weather in Paris?"),
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				responsesToolFromJSON(t, `{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"}`),
+				responsesToolFromJSON(t, `{"type":"function","name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]},"defer_loading":true}`),
+			},
+		},
+	}
+	body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:      schemas.Bedrock,
+		Model:         "us.anthropic.claude-sonnet-4-6",
+		ValidateTools: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tools := providerUtils.GetJSONField(body, "tools").Array()
+	var sawToolSearch, sawDeferred bool
+	for _, tool := range tools {
+		if strings.HasPrefix(tool.Get("type").String(), "tool_search_tool_") {
+			sawToolSearch = true
+		}
+		if tool.Get("name").String() == "get_weather" && tool.Get("defer_loading").Bool() {
+			sawDeferred = true
+		}
+	}
+	if !sawToolSearch {
+		t.Errorf("tool_search tool was stripped from the InvokeModel body: %s", string(body))
+	}
+	if !sawDeferred {
+		t.Errorf("defer_loading was stripped from the deferred function tool: %s", string(body))
+	}
+	var betas []string
+	for _, b := range providerUtils.GetJSONField(body, "anthropic_beta").Array() {
+		betas = append(betas, b.String())
+	}
+	if !slices.Contains(betas, AnthropicToolSearchBetaHeader) {
+		t.Errorf("anthropic_beta = %v, want it to contain %q", betas, AnthropicToolSearchBetaHeader)
+	}
+}
+
+// TestRawBodyBuilderKeepsToolsAndSetsBetaHeaders checks the thing that actually goes
+// upstream, rather than any one step of building it.
+//
+// The beta probe strips input_schema and description from a local copy, and
+// TestBetaProbeNeverMutatesTheOutboundBody proves that copy never touches the caller's
+// bytes. But the builder does a great deal more to the body after that — strips thinking
+// blocks, remaps tool versions, deletes fields, injects anthropic_version. This asserts
+// the end of that pipeline: the body it returns still carries every tool intact, and the
+// context carries the beta headers those tools imply.
+//
+// Put plainly: the final request gets all the tools AND all the headers.
+func TestRawBodyBuilderKeepsToolsAndSetsBetaHeaders(t *testing.T) {
+	rawBody := []byte(`{"model":"claude-opus-4-8","max_tokens":1024,` +
+		`"tools":[` +
+		`{"type":"custom","name":"lookup","description":"Look something up",` +
+		`"input_schema":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]},"strict":true},` +
+		`{"type":"computer_20250124","name":"computer","description":"Use the computer",` +
+		`"input_schema":{"type":"object"}}` +
+		`],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+	out, bErr := BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{
+		Provider:       schemas.Anthropic,
+		Model:          "claude-opus-4-8",
+		RawRequestBody: rawBody,
+	}, AnthropicRequestBuildConfig{Provider: schemas.Anthropic})
+	if bErr != nil {
+		t.Fatalf("building request body: %v", bErr)
+	}
+
+	// 1. Every tool survives, with the fields the probe strips from its own copy.
+	tools := providerUtils.GetJSONField(out, "tools")
+	if !tools.IsArray() || len(tools.Array()) != 2 {
+		t.Fatalf("outbound body lost tools: %s", out)
+	}
+	for i, want := range []struct{ name, description string }{
+		{"lookup", "Look something up"},
+		{"computer", "Use the computer"},
+	} {
+		base := fmt.Sprintf("tools.%d", i)
+		if got := providerUtils.GetJSONField(out, base+".name").String(); got != want.name {
+			t.Errorf("%s.name = %q, want %q", base, got, want.name)
+		}
+		if got := providerUtils.GetJSONField(out, base+".description").String(); got != want.description {
+			t.Errorf("%s.description = %q, want %q (the probe's strip reached the wire)", base, got, want.description)
+		}
+		if !providerUtils.JSONFieldExists(out, base+".input_schema") {
+			t.Errorf("%s.input_schema is missing from the outbound body", base)
+		}
+	}
+	// The nested schema must be byte-intact, not merely present.
+	if got := providerUtils.GetJSONField(out, "tools.0.input_schema.properties.q.type").String(); got != "string" {
+		t.Errorf("nested schema altered: tools.0.input_schema.properties.q.type = %q, want \"string\"", got)
+	}
+	if got := providerUtils.GetJSONField(out, "tools.0.input_schema.required.0").String(); got != "q" {
+		t.Errorf("nested schema altered: tools.0.input_schema.required[0] = %q, want \"q\"", got)
+	}
+
+	// 2. The beta headers those tools imply are on the context, ready for the request.
+	extra, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if !ok {
+		t.Fatal("no extra headers on the context; the beta probe did not run")
+	}
+	got := extra[AnthropicBetaHeader]
+	for _, want := range []string{
+		AnthropicStructuredOutputsBetaHeader,   // from tools.0.strict
+		AnthropicComputerUseBetaHeader20250124, // from tools.1.type
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("beta header %q missing from the outbound request; got %v", want, got)
+		}
+	}
 }

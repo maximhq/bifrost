@@ -45,6 +45,14 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "❌ jq is required" >&2
   exit 1
 fi
+
+# The content-logging matrix reads each request's raw logs row to prove disabled content never
+# reached the database. The server's logs_store is the Postgres overlay below, so hand the runner the
+# same database explicitly (the default config.json it would otherwise read uses sqlite).
+if [ -z "${BIFROST_LOGS_DB_URL:-}" ]; then
+  BIFROST_LOGS_DB_URL="postgresql://$(jq -rn --arg v "$POSTGRES_USER" '$v|@uri'):$(jq -rn --arg v "$POSTGRES_PASSWORD" '$v|@uri')@${POSTGRES_HOST}:${POSTGRES_PORT}/$(jq -rn --arg v "$POSTGRES_DB" '$v|@uri')?sslmode=${POSTGRES_SSLMODE}"
+fi
+export BIFROST_LOGS_DB_URL
 if ! command -v newman >/dev/null 2>&1; then
   echo "❌ newman is required (npm install -g newman newman-reporter-htmlextra)" >&2
   exit 1
@@ -150,6 +158,14 @@ jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES
      "logs_store":   {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}}
    }' "$SOURCE_CONFIG" > "$MERGED_CONFIG"
 
+# The authenticated newman pass needs a first admin account. Creating it is the one
+# config write the server accepts unauthenticated, and it demands a bootstrap token
+# the server resolves at boot from BIFROST_SETUP_TOKEN. Export it here so both the
+# server process and the runner (which reads BIFROST_E2E_SETUP_TOKEN) share it;
+# without it set-auth-config skips the auth pass and the MCP/vMCP tests run nowhere.
+export BIFROST_SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}"
+export BIFROST_E2E_SETUP_TOKEN="$BIFROST_SETUP_TOKEN"
+
 echo "🚀 Starting bifrost-http on port $PORT..."
 "$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &
 BIFROST_PID=$!
@@ -185,3 +201,11 @@ fi
 echo ""
 echo "🧪 Running api-management newman collection..."
 "$RUNNER" $REPORT_ARGS
+
+# Warp boots its own server on its own database (bifrost_warp_e2e on the same
+# Postgres), because its answers cover every row in the logs table and the
+# api-management run above has just written to this server's. It reuses the
+# compose stack's Weaviate and the job's OPENAI_API_KEY.
+echo ""
+echo "🧪 Running Warp newman collection..."
+"$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-warp-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 8))" $REPORT_ARGS

@@ -39,7 +39,7 @@ Every role in Bifrost Enterprise has a data access scope with one of three value
 
 DAC tracks ownership on every row created through the dashboard or API. When a user makes a request, Bifrost determines who is asking, looks up the membership context (team, business unit, customer), and filters every query so the result set matches the role's scope.
 
-Resources that participate in scoping include virtual keys, prompts, teams, customers, routing rules, access profiles, guardrail configurations, business units, MCP clients, MCP tool groups, and API keys. Resources without an ownership concept (system-wide configuration, supported provider list) are not scoped.
+Resources that participate in scoping include virtual keys, prompts, teams, customers, routing rules, access profiles, guardrail configurations, business units, MCP clients, Virtual MCPs, projects, and API keys. Resources without an ownership concept (system-wide configuration, supported provider list) are not scoped.
 
 ### Identity resolution
 
@@ -84,15 +84,16 @@ For programmatic configuration (create role, update scope, assign role to user, 
 
 The table below summarizes which rows a member sees under each scope. Resources not listed here are not row-scoped.
 
-| Resource                                                             | `own-data`                                                | `team-data`                                                             | `all-data`      |
-| -------------------------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------- | --------------- |
-| Virtual keys                                                         | Keys the user personally owns                             | Own keys + keys created by team members + keys attached to user's teams | All keys        |
-| Prompts                                                              | Prompts authored by the user (+ legacy unowned prompts)   | Own prompts + prompts belonging to user's teams                         | All prompts     |
-| Teams                                                                | Teams the user belongs to or created                      | Same as own + teams created by team members                             | All teams       |
-| Customers                                                            | Customers derived from user's team or virtual key linkage | Same + customers created by team members                                | All customers   |
-| Routing rules                                                        | Rules user created                                        | Rules created by user or any team member                                | All rules       |
-| Access profile attachments                                           | Attachments matching user's role                          | Attachments held by user + team members                                 | All attachments |
-| Guardrails / Audit logs / Business units / MCP clients / Tool groups | Rows the user created                                     | Rows created by user + team members                                     | All rows        |
+| Resource                                                             | `own-data`                                                                            | `team-data`                                                                                 | `all-data`      |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------- |
+| Virtual keys                                                         | Keys the user personally owns                                                         | Own keys + keys created by team members + keys attached to user's teams                     | All keys        |
+| Prompts                                                              | Prompts authored by the user (+ legacy unowned prompts)                               | Own prompts + prompts belonging to user's teams                                             | All prompts     |
+| Teams                                                                | Teams the user belongs to or created                                                  | Same as own + teams created by team members                                                 | All teams       |
+| Customers                                                            | Customers derived from user's team or virtual key linkage                             | Same + customers created by team members                                                    | All customers   |
+| Routing rules                                                        | Rules user created                                                                    | Rules created by user or any team member                                                    | All rules       |
+| Access profile attachments                                           | Attachments matching user's role                                                      | Attachments held by user + team members                                                     | All attachments |
+| Projects                                                             | Projects the user created or belongs to, showing only their own membership and shares | Same + projects created by or holding team members, with the roster limited to team members | All projects    |
+| Guardrails / Audit logs / Business units / MCP clients / Virtual MCPs | Rows the user created                                                                 | Rows created by user + team members                                                         | All rows        |
 
 <Note>
   Rows created before DAC was adopted remain visible under every scope. New rows always carry

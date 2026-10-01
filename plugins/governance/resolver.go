@@ -161,7 +161,10 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 	if limits != nil {
 		budgets, rateLimits = limits.Budgets(), limits.RateLimits()
 	} else {
-		budgets, rateLimits = r.store.ProviderAndModelLimits(ctx, nil, evaluationRequest.Provider, evaluationRequest.Model)
+		budgets, rateLimits = r.store.GlobalProviderLimits(ctx, evaluationRequest.Provider)
+		modelBudgets, modelRateLimits := r.store.GlobalModelLimits(ctx, evaluationRequest.Provider, evaluationRequest.Model)
+		budgets = append(budgets, modelBudgets...)
+		rateLimits = append(rateLimits, modelRateLimits...)
 	}
 
 	// Rate limits before budgets, as they always have been: a rate limit refuses a request that
@@ -188,7 +191,13 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 }
 
 // untrackedHolderKinds are the kinds still billed when a caller has asked for the holder's usage not
-// to be counted: what the deployment imposes, and what the user who made the request answers to.
+// to be counted: what the deployment imposes, and what the user who made the request answers to
+// directly. Access-profile-derived limits are deliberately NOT here: a user can hold several access
+// profiles at once, each granting different restrictions, so no access-profile-derived limit is
+// unconditionally "the user's own money" the way a limit assigned straight to the user is — those
+// are scoped limits like a virtual key's or a project's, and respect the caller's request not to be
+// counted the same way those do. LimitHolderUserModelConfig has no such ambiguity: it is always the
+// user's own money, so it stays billed regardless of what the caller asked to skip.
 //
 // This names what to keep rather than what to drop, because the set it names is closed and belongs
 // to this package, while what a holder funds is open: a kind nobody here has heard of is a holder's,

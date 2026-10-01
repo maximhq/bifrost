@@ -50,6 +50,37 @@ Two entirely separate credential-resolution paths exist for per-user auth types,
 `pending_tools` and a bare `connected`/`disconnected` naming existed in older versions of this doc set — the current state names are exactly the seven above. If you see `connected`, `disconnected`, `connecting`, or `pending_tools` referenced anywhere else in these docs, that's stale and maps to `healthy`, `unstable`, (nothing — was never a real state), and (removed — an empty `healthy` tool map already communicates the same thing) respectively.
 </Note>
 
+### Why a server is in a state
+
+When Bifrost's own connection handling has failed for a server, the state carries its explanation. `GET /api/mcp/clients` returns it as `last_failure`, and the UI shows the same record behind the state badge (click it) and at the top of the server sheet. The field is present only after the serving instance has attempted a connect or check that failed; it is absent while `healthy`, and absent when a state changed without such an attempt.
+
+```json
+"state": "unstable",
+"last_failure": {
+  "stage": "list_tools",
+  "message": "context deadline exceeded",
+  "at": "2026-09-03T10:41:12Z",
+  "since": "2026-09-03T10:32:04Z"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `stage` | Which step of Bifrost's own connection handling failed: `connect` (dial, initialize, connect gate, or the initial `list_tools` a new connection must pass), `ping` and `list_tools` (the periodic check over a sticky connection), `tool_discovery` (the periodic check's ephemeral connect-discover-close cycle for per-call auth types), `transport_lost` (a live SSE stream dropped), or `credential` (the credential the connection depends on was rejected upstream or rotated by an admin). |
+| `message` | The error that step failed with, whitespace-collapsed and capped at 512 characters. |
+| `at` | The most recent failed attempt. While a server is `unstable` the check retries every 10 seconds, so this keeps moving for as long as the outage lasts. |
+| `since` | The first failed attempt of the current unhealthy run. Answers "how long has this been going on". |
+
+A few properties worth knowing:
+
+- **It is the serving instance's own record.** It describes what *this* Bifrost instance last ran into, never the outcome of real tool calls made through the server.
+- **It clears on the first passing check.** A `healthy` server never carries a stale reason; the record is gone the moment the state flips back.
+- **It can lag a credential-driven state.** A `needs_reauth` that comes from a credential row dying in the store (a rejected refresh, a rotation) shows no reason until the server's next scheduled check actually hits the dead credential, at which point the provider's rejection is recorded. Shared-OAuth servers hit it on their next reconnect; per-user servers on their next tool-discovery check.
+- **A single failed check is enough.** There is no consecutive-failure counter across checks. Each check already retries with backoff internally (three retries per operation), and that budget is what absorbs an ordinary blip. A check that exhausts it marks the server `unstable` and records why.
+- **Reasons are logged once per transition.** The state-change log line at `INFO` carries the stage and message. Individual failed checks during an outage log at `DEBUG` only, so a long outage does not flood the log.
+
+**Distributed deployments.** Each instance reports its own state and `last_failure` through the shared node-state heartbeat. When instances disagree, `state` is `degraded` and `node_states` maps each instance ID to its own `{ "state", "last_failure" }`. The same map is also attached when every instance agrees on `unstable`, because their reasons can still differ (one pod missing a binary, another timing out). The UI folds that map by state and reason, so three instances failing the same way read as one line with a count; the per-instance detail stays available in the API.
+
 ---
 
 ## Lifecycle: sticky server-level (`needs_session_stickiness: true`, or `sse`/`stdio`)
@@ -61,13 +92,14 @@ flowchart LR
     B -->|failure, transient| D[unstable]
     C -->|periodic check fails, transient| D
     D -->|periodic check succeeds| C
+    D -->|automatic reconnect succeeds| C
     D -->|credential dead, no silent recovery| E[needs_reauth]
     C -->|credential dead| E
     E -->|admin reauthorizes| B
 ```
 
-- **Connect** happens once at `AddClient` (boot, or client creation) and again on every reconnect. Reconnects are [make-before-break](./gateway#reconnection-behavior): the old connection keeps serving until the new one is ready, so token rotation never causes downtime.
-- **`unstable`** is purely informational — a network blip doesn't stop tool calls, and the client self-heals on the next successful check with no human involvement.
+- **Connect** happens once at `AddClient` (boot, or client creation) and again on every reconnect. For `http` and `sse`, reconnects are [make-before-break](./gateway#reconnection-behavior): the old connection keeps serving until the new one is ready, so token rotation never causes downtime. `stdio` and in-process clients close first instead, because two subprocesses would double resource use and clash over anything held exclusively.
+- **`unstable`** is purely informational: a network blip doesn't stop tool calls, and the client recovers with no human involvement. Two things heal it. A failed periodic check reconnects the connection it just failed to probe, so a session the server expired, a dropped SSE stream, or a `stdio` server whose process exited is replaced on the next check rather than probed forever. And a tool call that fails because the session is gone triggers the same reconnect immediately, usually retrying the caller's own request on the healed connection (see [Auth failure recovery](./tool-execution#auth-failure-recovery), which covers both cases).
 - **`needs_reauth`** is a hard gate specifically for server-level clients: the periodic checker stops retrying entirely (retrying against a known-dead credential is pointless), and tool calls are refused outright rather than attempted. Recovery is [`POST /api/mcp/client/{id}/reauthorize`](./auth/oauth#reauthorization) (also covers `oauth`; `headers`/`none` credentials don't expire the same way, so this state is effectively OAuth-only in practice for server-level clients).
 - Every discovered tool list — from the initial connect and from every periodic refresh — persists to the DB, gated on the tool list actually having changed (no write on an unchanged tick), so a restart doesn't lose anything a running instance had already discovered.
 
@@ -134,6 +166,7 @@ Because these two paths are independent, a per-user client's tool list can go st
 | Endpoint | Sticky server-level | Per-call server-level | Per-user |
 | --- | --- | --- | --- |
 | `POST /api/mcp/client/{id}/reconnect` | ✅ Re-dials the persistent connection | ❌ `400` — nothing to reconnect | ❌ `400` — nothing to reconnect |
+| `POST /api/mcp/client/{id}/refresh-tools` | ✅ Re-lists over the live connection | ✅ Ephemeral connect, `tools/list`, disconnect | ✅ Same, via the retained admin discovery credential |
 | `POST /api/mcp/client/{id}/reauthorize` | ✅ Re-establishes a dead `oauth` credential | ✅ Same, for `oauth` | ✅ Re-establishes the *admin discovery* credential for `per_user_oauth` only |
 | `POST /api/mcp/client/{id}/verify-headers` | — (`headers` has no expiring credential) | — | ✅ `per_user_headers` bootstrap + repair |
 | `POST /api/mcp/client/{id}/verify-exchange` | — | — | ✅ `token_exchange` bootstrap + repair |
@@ -143,10 +176,12 @@ Because these two paths are independent, a per-user client's tool list can go st
 
 A `reconnect`/`reauthorize`/`close` call that doesn't apply to a client's current connection mode returns a consistent error (`client uses per-call connections; there is no persistent connection to reconnect/close`) rather than one that implies something is specifically wrong with per-user auth — the same message applies to any per-call client, shared or per-user.
 
+`refresh-tools` is the exception to that table's shape: it is the one endpoint that applies to every combination. Where the others recover a *connection* or a *credential* — and so only mean something for the modes that hold one — it re-discovers the *tool list*, which every client has regardless of how it connects. Reach for it when an upstream server's tools changed and you don't want to wait out the [tool sync interval](./connecting-to-servers#global-tool-manager-settings) (10 minutes by default). It returns `400` when the client is in a state where discovery is meaningless: `disabled`, `needs_reauth`, or `pending_verification`.
+
 ---
 
 ## Next Steps
 
 - [Session Stickiness](./connecting-to-servers#session-stickiness-http-only) — how to set `needs_session_stickiness`
 - [MCP Authentication](./auth/overview) — which auth type to pick
-- [MCP Gateway](./gateway) — reconnection behavior, dynamic tool discovery, health monitoring
+- [MCP Gateway](./overview#bifrost-as-an-mcp-gateway) — reconnection behavior, dynamic tool discovery, health monitoring

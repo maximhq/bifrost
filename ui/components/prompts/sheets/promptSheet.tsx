@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -27,6 +28,7 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 
 	const isLoading = isCreating || isUpdating;
 	const isEditing = !!prompt;
+	const canSave = useRbac(RbacResource.PromptRepository, isEditing ? RbacOperation.Update : RbacOperation.Create);
 
 	const {
 		register,
@@ -78,7 +80,7 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 				}}
 			>
 				<form onSubmit={handleSubmit(onSubmit)} className="flex grow flex-col">
-					<SheetHeader className="flex flex-col items-start px-4 pt-8 md:px-8">
+					<SheetHeader className="flex flex-col items-start pt-8" headerClassName="px-4 md:px-8">
 						<SheetTitle>{isEditing ? "Rename Prompt" : "Create Prompt"}</SheetTitle>
 						<SheetDescription>
 							{isEditing ? "Update the prompt name." : folderId ? "Create a new prompt in this folder." : "Create a new prompt."}
@@ -107,7 +109,12 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 							<Button type="button" variant="outline" data-testid="prompt-cancel" onClick={() => onOpenChange(false)}>
 								Cancel
 							</Button>
-							<Button type="submit" data-testid="prompt-submit" disabled={isLoading}>
+							<Button
+								type="submit"
+								data-testid="prompt-submit"
+								disabled={isLoading || !canSave}
+								title={canSave ? undefined : "You do not have permission to change prompts"}
+							>
 								{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
 							</Button>
 						</SheetFooter>

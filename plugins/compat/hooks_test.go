@@ -19,7 +19,7 @@ func newTestPlugin(t *testing.T, supported map[string][]string) *CompatPlugin {
 	t.Helper()
 	ds := datasheet.NewTestStore(nil)
 	ds.SetSupportedParamsForTest(supported)
-	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+	p, err := Init(Config{ShouldDropParams: true, AzureDeepseek: true}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}

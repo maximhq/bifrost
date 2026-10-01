@@ -8,8 +8,17 @@ users:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Users:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List users
-    description: Returns a paginated list of users with optional search.
+    description: |
+      Returns a paginated list of users with optional search.
     tags:
       - Users
     parameters:
@@ -35,6 +44,7 @@ users:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -54,8 +64,17 @@ users:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Users:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create user
-    description: Manually creates a new user in the organization.
+    description: |
+      Manually creates a new user in the organization.
     tags:
       - Users
     requestBody:
@@ -66,6 +85,7 @@ users:
             $ref: '../../schemas/management/users.yaml#/CreateUserRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: User created successfully
@@ -94,6 +114,14 @@ users-email-virtual-keys:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get user's virtual keys by email
     description: >
       **Enterprise only.**
@@ -115,6 +143,7 @@ users-email-virtual-keys:
           format: email
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -143,8 +172,17 @@ users-by-email:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Users:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get user by email
-    description: Returns a single Enterprise user resolved by URL-encoded email address.
+    description: |
+      Returns a single Enterprise user resolved by URL-encoded email address.
     tags:
       - Users
     parameters:
@@ -156,6 +194,7 @@ users-by-email:
           format: email
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -178,8 +217,17 @@ users-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Users:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get user
-    description: Returns a single Enterprise user.
+    description: |
+      Returns a single Enterprise user.
     tags:
       - Users
     parameters:
@@ -191,6 +239,7 @@ users-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -212,6 +261,14 @@ users-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Users:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete user
     description: >
       Permanently removes a user from the organization. This cascades to delete
@@ -228,13 +285,27 @@ users-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: User deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+              allOf:
+                - $ref: '../../schemas/management/common.yaml#/MessageResponse'
+                - type: object
+                  properties:
+                    redivision_job_ids:
+                      type: array
+                      items:
+                        type: string
+                      description: >-
+                        One queued job per equal-split governance project the
+                        user belonged to, since removing them enlarges every
+                        remaining member's slice of every cap. Present only when
+                        such projects were affected. Progress is reported on the
+                        `redivision_progress` WebSocket channel under each id.
       '400':
         description: Bad request (e.g. cannot delete yourself)
         content:
@@ -260,6 +331,14 @@ users-me-permissions:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get current user permissions
     description: >
       Returns the RBAC permissions for the authenticated user. When SCIM is not
@@ -269,6 +348,7 @@ users-me-permissions:
       - Users
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -301,6 +381,14 @@ users-role:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `UserProvisioning:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Assign role to user
     description: >
       Assigns an RBAC role to a user. This also auto-assigns the default
@@ -322,6 +410,7 @@ users-role:
             $ref: '../../schemas/management/users.yaml#/AssignUserRoleRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Role assigned successfully
@@ -350,8 +439,17 @@ users-teams:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Users:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get user's teams
-    description: Returns the list of teams a user belongs to, including the membership source.
+    description: |
+      Returns the list of teams a user belongs to, including the membership source.
     tags:
       - Users
     parameters:
@@ -363,6 +461,7 @@ users-teams:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -390,6 +489,14 @@ users-teams:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Users:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update user's team assignments
     description: >
       Replaces the user's manual team assignments. Synced team memberships
@@ -411,6 +518,7 @@ users-teams:
             $ref: '../../schemas/management/users.yaml#/UpdateUserTeamsRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Teams updated successfully
@@ -443,6 +551,14 @@ users-governance:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Users:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create user governance
     tags: [Users]
     parameters:
@@ -459,6 +575,7 @@ users-governance:
             $ref: '../../schemas/management/users.yaml#/UserGovernanceRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Governance created
@@ -487,6 +604,14 @@ users-governance:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Users:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update user governance
     tags: [Users]
     parameters:
@@ -503,6 +628,7 @@ users-governance:
             $ref: '../../schemas/management/users.yaml#/UserGovernanceRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Governance updated
@@ -525,6 +651,14 @@ users-governance:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Users:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete user governance
     tags: [Users]
     parameters:
@@ -535,6 +669,7 @@ users-governance:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Governance deleted
@@ -559,8 +694,17 @@ team-members:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List team members
-    description: Returns all members of a team with their user details and membership source.
+    description: |
+      Returns all members of a team with their user details and membership source.
     tags:
       - Teams
     parameters:
@@ -572,6 +716,7 @@ team-members:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -599,8 +744,17 @@ team-members:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Add team member
-    description: Adds a user to a team. Both the team and user must exist.
+    description: |
+      Adds a user to a team. Both the team and user must exist.
     tags:
       - Teams
     parameters:
@@ -618,6 +772,7 @@ team-members:
             $ref: '../../schemas/management/users.yaml#/AddTeamMemberRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Member added successfully
@@ -650,8 +805,17 @@ team-member-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Remove team member
-    description: Removes a user from a team.
+    description: |
+      Removes a user from a team.
     tags:
       - Teams
     parameters:
@@ -669,6 +833,7 @@ team-member-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Member removed successfully

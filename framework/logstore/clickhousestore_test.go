@@ -2,7 +2,9 @@ package logstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -13,13 +15,24 @@ import (
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 	gormschema "gorm.io/gorm/schema"
 )
 
-// ClickHouse test connection matches the clickhouse service in
+// ClickHouse test connection defaults match the clickhouse service in
 // framework/docker-compose.yml (native protocol on host port 9001; host 9000
-// is taken by Weaviate).
+// is taken by Weaviate). Each value can be overridden through the
+// BIFROST_TEST_CLICKHOUSE_* environment variables so the suite can target
+// another local instance (for example one whose ports collide with 9001).
+// The suite TRUNCATEs the log tables and rewrites their TTL, so the default
+// "bifrost" database is accepted only for the stock docker-compose target:
+// setting any override, even just the host or port, requires
+// BIFROST_TEST_CLICKHOUSE_DB to name a database containing "test"
+// (requireDedicatedClickHouseTestDB fails the test otherwise). For example:
+//
+//	BIFROST_TEST_CLICKHOUSE_PORT=9011 BIFROST_TEST_CLICKHOUSE_DB=bifrost_test
 const (
 	clickhouseTestHost     = "localhost"
 	clickhouseTestPort     = "9001"
@@ -28,24 +41,70 @@ const (
 	clickhouseTestPassword = "bifrost_password"
 )
 
+// chTestEnv returns the environment override for key, or def when unset.
+func chTestEnv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// chTestOverridden reports whether any BIFROST_TEST_CLICKHOUSE_* override is
+// set, meaning the suite is pointed away from the stock docker-compose target.
+func chTestOverridden() bool {
+	for _, k := range []string{"HOST", "PORT", "DB", "USER", "PASSWORD"} {
+		if os.Getenv("BIFROST_TEST_CLICKHOUSE_"+k) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// chTestTargetIsDedicated reports whether the suite may run its destructive
+// setup (TRUNCATE of every log table, TTL rewrites) against cfg. The stock
+// docker-compose target is dedicated by definition; an overridden target is
+// accepted only when its database name marks it as a test database.
+func chTestTargetIsDedicated(cfg *ClickHouseConfig, overridden bool) bool {
+	if !overridden {
+		return true
+	}
+	return strings.Contains(strings.ToLower(cfg.Database.GetValue()), "test")
+}
+
+// requireDedicatedClickHouseTestDB fails the test before any connection is
+// opened when the configured target is not safe to truncate.
+func requireDedicatedClickHouseTestDB(t *testing.T, cfg *ClickHouseConfig) {
+	t.Helper()
+	if !chTestTargetIsDedicated(cfg, chTestOverridden()) {
+		t.Fatalf("refusing to run destructive ClickHouse tests against database %q: BIFROST_TEST_CLICKHOUSE_* overrides must point at a database whose name contains \"test\" (the suite truncates logs, mcp_tool_logs, async_jobs and webhook_deliveries and rewrites their TTL)", cfg.Database.GetValue())
+	}
+}
+
 func clickhouseTestConfig() *ClickHouseConfig {
 	return &ClickHouseConfig{
-		Host:     schemas.NewSecretVar(clickhouseTestHost),
-		Port:     schemas.NewSecretVar(clickhouseTestPort),
-		Database: schemas.NewSecretVar(clickhouseTestDatabase),
-		Username: schemas.NewSecretVar(clickhouseTestUser),
-		Password: schemas.NewSecretVar(clickhouseTestPassword),
+		Host:     schemas.NewSecretVar(chTestEnv("BIFROST_TEST_CLICKHOUSE_HOST", clickhouseTestHost)),
+		Port:     schemas.NewSecretVar(chTestEnv("BIFROST_TEST_CLICKHOUSE_PORT", clickhouseTestPort)),
+		Database: schemas.NewSecretVar(chTestEnv("BIFROST_TEST_CLICKHOUSE_DB", clickhouseTestDatabase)),
+		Username: schemas.NewSecretVar(chTestEnv("BIFROST_TEST_CLICKHOUSE_USER", clickhouseTestUser)),
+		Password: schemas.NewSecretVar(chTestEnv("BIFROST_TEST_CLICKHOUSE_PASSWORD", clickhouseTestPassword)),
 	}
 }
 
 // trySetupClickHouseStore connects to the docker-compose ClickHouse, runs
 // migrations, and truncates the log tables for a clean slate. Skips the test
-// when ClickHouse is unavailable.
+// when ClickHouse is unavailable locally; in CI (the CI env var is set by
+// GitHub Actions and tests/docker-compose.yml provides the service) an
+// unreachable ClickHouse is a failure, so the suite can never silently skip.
 func trySetupClickHouseStore(t *testing.T) *ClickHouseLogStore {
 	t.Helper()
 	ctx := context.Background()
-	store, err := newClickHouseLogStore(ctx, clickhouseTestConfig(), 0, testLogger{})
+	cfg := clickhouseTestConfig()
+	requireDedicatedClickHouseTestDB(t, cfg)
+	store, err := newClickHouseLogStore(ctx, cfg, 0, testLogger{})
 	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("ClickHouse not available in CI (is the clickhouse service in tests/docker-compose.yml up?): %v", err)
+		}
 		t.Skipf("ClickHouse not available, skipping test: %v", err)
 	}
 	ch := store.(*ClickHouseLogStore)
@@ -152,7 +211,15 @@ func TestBuildClickHouseDSN(t *testing.T) {
 	})
 
 	t.Run("CredentialsPortAndDatabase", func(t *testing.T) {
-		dsn, err := buildClickHouseDSN(clickhouseTestConfig())
+		// A literal config (not clickhouseTestConfig) so the assertion stays
+		// deterministic when BIFROST_TEST_CLICKHOUSE_* overrides are set.
+		dsn, err := buildClickHouseDSN(&ClickHouseConfig{
+			Host:     schemas.NewSecretVar("localhost"),
+			Port:     schemas.NewSecretVar("9001"),
+			Database: schemas.NewSecretVar("bifrost"),
+			Username: schemas.NewSecretVar("bifrost"),
+			Password: schemas.NewSecretVar("bifrost_password"),
+		})
 		require.NoError(t, err)
 		assert.Contains(t, dsn, "bifrost:bifrost_password@localhost:9001/bifrost")
 	})
@@ -184,6 +251,104 @@ func TestChEscapeIdentifier(t *testing.T) {
 // connection (chParseSchema only needs the naming strategy).
 func chUnitSchemaDB() *gorm.DB {
 	return &gorm.DB{Config: &gorm.Config{NamingStrategy: gormschema.NamingStrategy{}}}
+}
+
+func TestChTestTargetIsDedicated(t *testing.T) {
+	cfg := func(db string) *ClickHouseConfig { return &ClickHouseConfig{Database: schemas.NewSecretVar(db)} }
+	assert.True(t, chTestTargetIsDedicated(cfg("bifrost"), false), "stock compose target is always allowed")
+	assert.True(t, chTestTargetIsDedicated(cfg("bifrost_test"), true))
+	assert.True(t, chTestTargetIsDedicated(cfg("TestLogs"), true), "case-insensitive")
+	assert.False(t, chTestTargetIsDedicated(cfg("bifrost"), true), "an override onto a non-test database is refused")
+	assert.False(t, chTestTargetIsDedicated(cfg(""), true))
+
+	t.Setenv("BIFROST_TEST_CLICKHOUSE_PORT", "9011")
+	assert.True(t, chTestOverridden())
+}
+
+func TestChServerVersionSupported(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		ok      bool
+	}{
+		{"26.6.1.1193", true},
+		{"24.8.14.39", true},
+		{"24.4.1.1", true},
+		{"24.3.9.5", false},
+		{"23.8.2.7", false},
+		{" 25.1 ", true},
+	} {
+		ok, err := chServerVersionSupported(tc.version)
+		require.NoError(t, err, tc.version)
+		assert.Equal(t, tc.ok, ok, tc.version)
+	}
+	for _, bad := range []string{"", "26", "x.y.z", "24.four"} {
+		_, err := chServerVersionSupported(bad)
+		assert.Error(t, err, bad)
+	}
+}
+
+func TestChTTLDays(t *testing.T) {
+	t.Run("EngineFull", func(t *testing.T) {
+		// Fixtures copied verbatim from system.tables.engine_full on ClickHouse 26.6.
+		days, ok := chTTLDaysFromEngineFull("ReplacingMergeTree(ver) ORDER BY id TTL toDateTime(created_at) + toIntervalDay(7) SETTINGS index_granularity = 8192")
+		assert.True(t, ok)
+		assert.Equal(t, 7, days)
+
+		days, ok = chTTLDaysFromEngineFull("ReplacingMergeTree(ver) PARTITION BY toYYYYMM(timestamp) ORDER BY (timestamp, id) SETTINGS index_granularity = 8192")
+		assert.False(t, ok, "no TTL")
+		assert.Equal(t, 0, days)
+
+		_, ok = chTTLDaysFromEngineFull("ReplacingMergeTree(ver) ORDER BY id TTL timestamp + toIntervalDay(3) SETTINGS index_granularity = 8192")
+		assert.False(t, ok, "a TTL Bifrost did not write is not managed")
+	})
+	t.Run("Clause", func(t *testing.T) {
+		days, ok := chTTLDaysFromClause(chLogsTTL(3))
+		assert.True(t, ok)
+		assert.Equal(t, 3, days)
+
+		_, ok = chTTLDaysFromClause(chLogsTTL(0))
+		assert.False(t, ok, "retention < 1 is unmanaged")
+
+		_, ok = chTTLDaysFromClause("toDateTime(created_at) + INTERVAL 3 DAY DELETE WHERE status = 'x'")
+		assert.False(t, ok, "only the exact clause shape is managed")
+	})
+}
+
+// countingRetentionManager is a LogRetentionManager stub that returns a
+// scripted count per call and records how often it was asked.
+type countingRetentionManager struct {
+	counts []int64
+	calls  int
+}
+
+func (m *countingRetentionManager) DeleteLogsBatch(_ context.Context, _ time.Time, _ int) (int64, error) {
+	m.calls++
+	if m.calls > len(m.counts) {
+		return 0, nil
+	}
+	return m.counts[m.calls-1], nil
+}
+
+// TestLogsCleanerStopsAfterOversizedBatch pins the loop contract ClickHouse
+// relies on: a store that deletes the whole expired range in one statement
+// returns a count above batchSize, and the cleaner must stop there instead of
+// issuing the delete again.
+func TestLogsCleanerStopsAfterOversizedBatch(t *testing.T) {
+	t.Run("OversizedCountEndsTheLoop", func(t *testing.T) {
+		m := &countingRetentionManager{counts: []int64{250}}
+		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
+		assert.Equal(t, 1, m.calls, "a count above batchSize means the store already deleted everything")
+	})
+	t.Run("FullBatchesKeepGoing", func(t *testing.T) {
+		m := &countingRetentionManager{counts: []int64{100, 100, 40}}
+		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
+		assert.Equal(t, 3, m.calls, "SQL stores return exactly batchSize while rows remain")
+	})
+	t.Run("ExactBatchThenEmpty", func(t *testing.T) {
+		m := &countingRetentionManager{counts: []int64{100, 0}}
+		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
+		assert.Equal(t, 2, m.calls, "a full batch is followed by one more probe that finds nothing")
+	})
 }
 
 func TestChApplyUpdateMapSkipsDedupKeys(t *testing.T) {
@@ -497,6 +662,11 @@ func TestClickHouseSearchAndStats(t *testing.T) {
 	models, err := store.GetDistinctModels(ctx, 10, "")
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"gpt-4o", "claude-sonnet-4-5"}, models)
+
+	// ClickHouse LIKE is case-sensitive; the filterdata search must not be.
+	upper, err := store.GetDistinctModels(ctx, 10, "GPT")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"gpt-4o"}, upper)
 }
 
 func TestClickHouseDeleteLogs(t *testing.T) {
@@ -534,6 +704,302 @@ func TestClickHouseDeleteLogsBatch(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 	_, err = store.FindByID(ctx, "ch-fresh")
 	assert.NoError(t, err)
+}
+
+// chMutationIDs snapshots the mutation ids ClickHouse has recorded for table.
+// system.mutations keeps finished entries (and trims them in the background),
+// so tests diff a before/after snapshot instead of asserting absolute counts.
+func chMutationIDs(t *testing.T, db *gorm.DB, table string) map[string]struct{} {
+	t.Helper()
+	var ids []string
+	require.NoError(t, db.Raw("SELECT mutation_id FROM system.mutations WHERE database = currentDatabase() AND table = ?", table).Scan(&ids).Error)
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return set
+}
+
+// chNewMutationCommands returns the command text of every mutation recorded
+// for table since the before snapshot, in creation order.
+func chNewMutationCommands(t *testing.T, db *gorm.DB, table string, before map[string]struct{}) []string {
+	t.Helper()
+	type row struct {
+		MutationID string
+		Command    string
+	}
+	var rows []row
+	require.NoError(t, db.Raw("SELECT mutation_id, command FROM system.mutations WHERE database = currentDatabase() AND table = ? ORDER BY create_time, mutation_id", table).Scan(&rows).Error)
+	var cmds []string
+	for _, r := range rows {
+		if _, seen := before[r.MutationID]; seen {
+			continue
+		}
+		cmds = append(cmds, r.Command)
+	}
+	return cmds
+}
+
+// chLightweightDeletePrefix is how ClickHouse records a lightweight DELETE in
+// system.mutations (the command column wraps each command in parentheses).
+// A heavyweight ALTER TABLE ... DELETE is recorded as "(DELETE WHERE ...)"
+// and rewrites every column of every affected part.
+const chLightweightDeletePrefix = "UPDATE _row_exists = 0"
+
+func assertLightweightMutations(t *testing.T, table string, cmds []string) {
+	t.Helper()
+	for _, cmd := range cmds {
+		assert.True(t, strings.HasPrefix(strings.TrimLeft(cmd, "("), chLightweightDeletePrefix), "%s: expected a lightweight delete mutation, got %q", table, cmd)
+		assert.NotContains(t, cmd, "DELETE WHERE", "%s: heavyweight ALTER TABLE ... DELETE rewrites whole parts (#7098)", table)
+	}
+}
+
+// TestClickHouseDeleteLogsBatchIsSingleLightweightMutation covers #7098: one
+// retention sweep must cost one lightweight mutation, not one heavyweight
+// part rewrite per 100 rows. It drives the same loop LogsCleaner runs.
+func TestClickHouseDeleteLogsBatchIsSingleLightweightMutation(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+
+	old := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Millisecond)
+	entries := make([]*Log, 0, 250)
+	for i := range 250 {
+		entries = append(entries, chTestLog(fmt.Sprintf("ch-sweep-%03d", i), old.Add(time.Duration(i)*time.Millisecond)))
+	}
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, entries))
+	require.NoError(t, store.CreateIfNotExists(ctx, chTestLog("ch-sweep-fresh", time.Now().UTC().Truncate(time.Millisecond))))
+
+	before := chMutationIDs(t, store.db, "logs")
+	cutoff := time.Now().UTC().Add(-24 * time.Hour)
+	var total int64
+	for {
+		deleted, err := store.DeleteLogsBatch(ctx, cutoff, batchSize)
+		require.NoError(t, err)
+		total += deleted
+		if deleted != int64(batchSize) {
+			break
+		}
+	}
+	assert.Equal(t, int64(250), total, "cleaner logging relies on an accurate deleted count")
+
+	_, err := store.FindByID(ctx, "ch-sweep-fresh")
+	assert.NoError(t, err, "rows newer than the cutoff must survive")
+	_, err = store.FindByID(ctx, "ch-sweep-000")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	cmds := chNewMutationCommands(t, store.db, "logs", before)
+	require.Len(t, cmds, 1, "one sweep must issue exactly one mutation, got %v", cmds)
+	assertLightweightMutations(t, "logs", cmds)
+}
+
+// TestClickHouseFlushIsLightweightAndSkipsWhenEmpty covers the minute sweep
+// from plugins/logging: Flush and FlushMCPToolLogs must use lightweight
+// deletes and must not issue any mutation when nothing is left to flush.
+func TestClickHouseFlushIsLightweightAndSkipsWhenEmpty(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+
+	old := time.Now().UTC().Add(-40 * time.Minute).Truncate(time.Millisecond)
+	stuck := chTestLog("ch-flush-stuck", old)
+	done := chTestLog("ch-flush-done", old)
+	done.Status = "success"
+	require.NoError(t, store.CreateIfNotExists(ctx, stuck))
+	require.NoError(t, store.CreateIfNotExists(ctx, done))
+	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, []*MCPToolLog{chTestMCPToolLog("ch-flush-mcp", old)}))
+
+	logsBefore := chMutationIDs(t, store.db, "logs")
+	mcpBefore := chMutationIDs(t, store.db, "mcp_tool_logs")
+	since := time.Now().UTC().Add(-30 * time.Minute)
+	require.NoError(t, store.Flush(ctx, since))
+	require.NoError(t, store.FlushMCPToolLogs(ctx, since))
+
+	_, err := store.FindByID(ctx, "ch-flush-stuck")
+	assert.ErrorIs(t, err, ErrNotFound, "stale processing row must be flushed")
+	_, err = store.FindByID(ctx, "ch-flush-done")
+	assert.NoError(t, err, "completed rows must survive the flush")
+	_, err = store.FindMCPToolLog(ctx, "ch-flush-mcp")
+	assert.ErrorIs(t, err, ErrNotFound, "stale processing MCP row must be flushed")
+
+	logsCmds := chNewMutationCommands(t, store.db, "logs", logsBefore)
+	require.Len(t, logsCmds, 1, "logs: one flush must issue exactly one mutation, got %v", logsCmds)
+	assertLightweightMutations(t, "logs", logsCmds)
+	mcpCmds := chNewMutationCommands(t, store.db, "mcp_tool_logs", mcpBefore)
+	require.Len(t, mcpCmds, 1, "mcp_tool_logs: one flush must issue exactly one mutation, got %v", mcpCmds)
+	assertLightweightMutations(t, "mcp_tool_logs", mcpCmds)
+
+	// Nothing left to flush: the once-a-minute sweep must not touch the
+	// tables at all (the issue counted ~1,440 mutations per table per day).
+	logsBefore = chMutationIDs(t, store.db, "logs")
+	mcpBefore = chMutationIDs(t, store.db, "mcp_tool_logs")
+	require.NoError(t, store.Flush(ctx, since))
+	require.NoError(t, store.FlushMCPToolLogs(ctx, since))
+	assert.Empty(t, chNewMutationCommands(t, store.db, "logs", logsBefore), "empty flush must not issue a mutation")
+	assert.Empty(t, chNewMutationCommands(t, store.db, "mcp_tool_logs", mcpBefore), "empty flush must not issue a mutation")
+}
+
+// TestClickHouseFlushSkipsSupersededProcessingRow: a log created as processing
+// and then updated to success leaves the old version physically in place until
+// merge. The minute sweep must not treat that superseded version as stale, or
+// it would issue a mutation every run until the part merged.
+func TestClickHouseFlushSkipsSupersededProcessingRow(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	old := time.Now().UTC().Add(-40 * time.Minute).Truncate(time.Millisecond)
+	require.NoError(t, store.CreateIfNotExists(ctx, chTestLog("ch-flush-superseded", old)))
+	require.NoError(t, store.Update(ctx, "ch-flush-superseded", map[string]interface{}{"status": "success"}))
+	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, []*MCPToolLog{chTestMCPToolLog("ch-flush-superseded-mcp", old)}))
+	require.NoError(t, store.UpdateMCPToolLog(ctx, "ch-flush-superseded-mcp", map[string]interface{}{"status": "success"}))
+
+	logsBefore := chMutationIDs(t, store.db, "logs")
+	mcpBefore := chMutationIDs(t, store.db, "mcp_tool_logs")
+	since := time.Now().UTC().Add(-30 * time.Minute)
+	require.NoError(t, store.Flush(ctx, since))
+	require.NoError(t, store.FlushMCPToolLogs(ctx, since))
+	assert.Empty(t, chNewMutationCommands(t, store.db, "logs", logsBefore), "superseded processing version must not trigger a flush mutation")
+	assert.Empty(t, chNewMutationCommands(t, store.db, "mcp_tool_logs", mcpBefore), "superseded processing version must not trigger a flush mutation")
+
+	found, err := store.FindByID(ctx, "ch-flush-superseded")
+	require.NoError(t, err)
+	assert.Equal(t, "success", found.Status)
+	mcp, err := store.FindMCPToolLog(ctx, "ch-flush-superseded-mcp")
+	require.NoError(t, err)
+	assert.Equal(t, "success", mcp.Status)
+}
+
+// TestClickHouseFinalAfterLightweightDelete proves the _row_exists mask left
+// by a lightweight delete cannot resurrect an older ReplacingMergeTree version
+// of the row under the connection-level final=1 setting, and that the
+// user-triggered deletes are lightweight too.
+func TestClickHouseFinalAfterLightweightDelete(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+
+	// A background ReplacingMergeTree merge can collapse the two versions
+	// written below at any moment, flaking the "both versions on disk"
+	// preconditions. Stop merges while the versions are written and counted.
+	// Merges must run again before the deletes: a lightweight DELETE is a
+	// mutation, mutations do not execute while merges are stopped, and the
+	// connection's mutations_sync=1 would make the delete hang forever
+	// (verified against a live server).
+	require.NoError(t, store.db.Exec("SYSTEM STOP MERGES logs").Error)
+	startMerges := sync.OnceFunc(func() {
+		require.NoError(t, store.db.Exec("SYSTEM START MERGES logs").Error)
+	})
+	t.Cleanup(startMerges)
+
+	for _, id := range []string{"ch-final-1", "ch-final-2", "ch-final-3"} {
+		require.NoError(t, store.CreateIfNotExists(ctx, chTestLog(id, ts)))
+		// A second ReplacingMergeTree version of the same id via read-modify-write.
+		require.NoError(t, store.Update(ctx, id, map[string]interface{}{"status": "success"}))
+		// Two physical versions must exist (FINAL would hide the older one),
+		// otherwise the resurrection case below is not actually exercised.
+		require.EqualValues(t, 2, chCountIDsNoFinal(t, store, "logs", []string{id}), "expected both versions of %s on disk before the delete", id)
+		require.Equal(t, int64(1), chCountRows(t, store.db, "logs", id), "FINAL collapses them to one logical row")
+	}
+	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, []*MCPToolLog{chTestMCPToolLog("ch-final-mcp", ts)}))
+	startMerges()
+
+	logsBefore := chMutationIDs(t, store.db, "logs")
+	mcpBefore := chMutationIDs(t, store.db, "mcp_tool_logs")
+	require.NoError(t, store.DeleteLog(ctx, "ch-final-1"))
+	require.NoError(t, store.DeleteLogs(ctx, []string{"ch-final-2", "ch-final-3"}))
+	require.NoError(t, store.DeleteMCPToolLogs(ctx, []string{"ch-final-mcp"}))
+
+	for _, id := range []string{"ch-final-1", "ch-final-2", "ch-final-3"} {
+		_, err := store.FindByID(ctx, id)
+		assert.ErrorIs(t, err, ErrNotFound, "log %s should be deleted", id)
+		assert.Equal(t, int64(0), chCountRows(t, store.db, "logs", id), "no version of %s may survive under FINAL", id)
+		assert.EqualValues(t, 0, chCountIDsNoFinal(t, store, "logs", []string{id}), "both physical versions of %s must be masked, not just the newest", id)
+	}
+	_, err := store.FindMCPToolLog(ctx, "ch-final-mcp")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	logsCmds := chNewMutationCommands(t, store.db, "logs", logsBefore)
+	require.Len(t, logsCmds, 2, "DeleteLog + DeleteLogs must issue one mutation each, got %v", logsCmds)
+	assertLightweightMutations(t, "logs", logsCmds)
+	mcpCmds := chNewMutationCommands(t, store.db, "mcp_tool_logs", mcpBefore)
+	require.Len(t, mcpCmds, 1, "DeleteMCPToolLogs must issue one mutation, got %v", mcpCmds)
+	assertLightweightMutations(t, "mcp_tool_logs", mcpCmds)
+}
+
+func chEngineFull(t *testing.T, db *gorm.DB, table string) string {
+	t.Helper()
+	var engineFull string
+	require.NoError(t, db.Raw("SELECT engine_full FROM system.tables WHERE database = currentDatabase() AND name = ?", table).Scan(&engineFull).Error)
+	return engineFull
+}
+
+// TestClickHouseTTLReconciledOnExistingTables covers the second half of
+// #7098: CREATE TABLE IF NOT EXISTS never updates the TTL of an existing
+// table, so a changed logs_store.retention_days must be reconciled with
+// MODIFY TTL / REMOVE TTL at startup.
+func TestClickHouseTTLReconciledOnExistingTables(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	retained := []string{"logs", "mcp_tool_logs", "webhook_deliveries"}
+	// removeTTLs strips any TTL from the shared tables. REMOVE TTL errors on
+	// a table that has none (BAD_ARGUMENTS), so it is only issued when one is
+	// present. It runs before the initial-state check, because retention 0
+	// deliberately preserves whatever an interrupted earlier run left behind,
+	// and again on cleanup so every other test still sees TTL-free tables.
+	removeTTLs := func() {
+		t.Helper()
+		for _, table := range retained {
+			if strings.Contains(chEngineFull(t, store.db, table), "TTL ") {
+				require.NoError(t, store.db.Exec("ALTER TABLE `"+table+"` REMOVE TTL").Error, "%s: reset TTL", table)
+			}
+		}
+	}
+	removeTTLs()
+	t.Cleanup(removeTTLs)
+	// managedDays asserts the table carries exactly one Bifrost-managed TTL of
+	// want days, using the production parser so an appended or leftover rule
+	// cannot satisfy a looser substring check.
+	managedDays := func(table string, want int) {
+		t.Helper()
+		engineFull := chEngineFull(t, store.db, table)
+		days, ok := chTTLDaysFromEngineFull(engineFull)
+		require.True(t, ok, "%s: expected a managed TTL, got %q", table, engineFull)
+		assert.Equal(t, want, days, "%s: %q", table, engineFull)
+		assert.Equal(t, 1, strings.Count(engineFull, "TTL "), "%s: exactly one TTL clause expected in %q", table, engineFull)
+	}
+
+	for _, table := range retained {
+		require.NotContains(t, chEngineFull(t, store.db, table), "TTL", "%s: fixture tables are created without retention", table)
+	}
+
+	withTTL, err := newClickHouseLogStore(ctx, clickhouseTestConfig(), 3, testLogger{})
+	require.NoError(t, err)
+	require.NoError(t, withTTL.Close(ctx))
+	for _, table := range retained {
+		managedDays(table, 3)
+	}
+	managedDays("async_jobs", 7)
+
+	// A different retention replaces the TTL in place.
+	longer, err := newClickHouseLogStore(ctx, clickhouseTestConfig(), 5, testLogger{})
+	require.NoError(t, err)
+	require.NoError(t, longer.Close(ctx))
+	for _, table := range retained {
+		managedDays(table, 5)
+	}
+	// Snapshot the complete definitions so the retention-zero restart is
+	// proven to leave them byte-for-byte unchanged, not merely still matching.
+	before := map[string]string{}
+	for _, table := range append(retained, "async_jobs") {
+		before[table] = chEngineFull(t, store.db, table)
+	}
+
+	// Retention 0 (the default when the field is omitted) means "not managed
+	// by Bifrost": an existing TTL, including one an operator applied by hand
+	// as the #7098 workaround, must survive a restart.
+	unmanaged, err := newClickHouseLogStore(ctx, clickhouseTestConfig(), 0, testLogger{})
+	require.NoError(t, err)
+	require.NoError(t, unmanaged.Close(ctx))
+	for table, want := range before {
+		assert.Equal(t, want, chEngineFull(t, store.db, table), "%s: retention_days=0 must leave the table definition untouched", table)
+	}
 }
 
 func chTestMCPToolLog(id string, ts time.Time) *MCPToolLog {
@@ -774,4 +1240,186 @@ func TestClickHouseHistograms(t *testing.T) {
 	modelRankings, err := store.GetModelRankings(ctx, SearchFilters{})
 	require.NoError(t, err)
 	require.NotNil(t, modelRankings)
+}
+
+// The Warp history tables reach ClickHouse as generated DDL, and a wrong column
+// list there only fails against a real server - which most runs do not have.
+//
+// The specific hazard is WarpConversation.Messages. It is a GORM association,
+// not a column, and emitting it would produce DDL ClickHouse rejects at startup
+// on every deployment that uses this store. This asserts the generated columns
+// directly so the mistake is caught here instead.
+func TestClickHouseWarpConversationDDLOmitsAssociations(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	cols, err := clickhouseColumnDefs(db, &WarpConversation{})
+	require.NoError(t, err)
+	names := chColumnNames(cols)
+	assert.Equal(t, []string{"id", "owner_id", "title", "created_at", "updated_at"}, names)
+	assert.NotContains(t, names, "messages", "the transcript is an association, not a column")
+
+	cols, err = clickhouseColumnDefs(db, &WarpMessage{})
+	require.NoError(t, err)
+	assert.Equal(t,
+		[]string{
+			"id", "conversation_id", "created_at", "position", "role", "content",
+			"tool_calls_json", "question_json", "error", "finish_reason", "total_tokens", "cost",
+		},
+		chColumnNames(cols))
+}
+
+// chColumnNames pulls the identifiers out of generated column definitions.
+func chColumnNames(cols []string) []string {
+	names := make([]string, 0, len(cols))
+	for _, col := range cols {
+		name, _, found := strings.Cut(strings.TrimPrefix(col, "`"), "`")
+		if !found {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// fakeDistributedLocker stands in for the config-store lock every replica
+// shares: one mutex per key, whichever store instance asks.
+type fakeDistributedLocker struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+func (f *fakeDistributedLocker) Acquire(ctx context.Context, key string) (context.Context, func(), error) {
+	f.mu.Lock()
+	if f.locks == nil {
+		f.locks = map[string]*sync.Mutex{}
+	}
+	lock, ok := f.locks[key]
+	if !ok {
+		lock = &sync.Mutex{}
+		f.locks[key] = lock
+	}
+	f.mu.Unlock()
+	lock.Lock()
+	return ctx, lock.Unlock, nil
+}
+
+// Two Bifrost instances on one ClickHouse do not share rmwLocks, so a delete on
+// one could land inside another's append - after its existence re-check, before
+// its re-insert - and bring the deleted thread back, or an empty-thread cleanup
+// could take a turn another instance was appending. Every Warp write must wait
+// on the owner's shared lock, whichever instance holds it.
+func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
+	holder := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	other, err := newClickHouseLogStore(ctx, clickhouseTestConfig(), 0, testLogger{})
+	require.NoError(t, err)
+	replica := other.(*ClickHouseLogStore)
+	t.Cleanup(func() { _ = replica.Close(context.Background()) })
+	locker := &fakeDistributedLocker{}
+	holder.SetDistributedLocker(locker)
+	replica.SetDistributedLocker(locker)
+
+	owner := fmt.Sprintf("user:lock-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	seed := func(id string, at time.Time, messages int) {
+		require.NoError(t, holder.CreateWarpConversation(ctx, &WarpConversation{ID: id, OwnerID: owner, Title: id, CreatedAt: at, UpdatedAt: at}))
+		if messages > 0 {
+			batch := make([]WarpMessage, 0, messages)
+			for i := range messages {
+				batch = append(batch, WarpMessage{ID: fmt.Sprintf("%s-m%d", id, i), Role: "user", Content: "q", CreatedAt: at})
+			}
+			require.NoError(t, holder.AppendWarpMessages(ctx, owner, id, batch))
+		}
+	}
+	// Each write runs on the replica while the holder has the owner's lock, and
+	// must not finish until the holder lets go.
+	waitsForLock := func(t *testing.T, write func() error) {
+		t.Helper()
+		_, release, err := locker.Acquire(ctx, warpHistoryLockKey(owner))
+		require.NoError(t, err)
+		done := make(chan error, 1)
+		go func() { done <- write() }()
+		select {
+		case err := <-done:
+			release()
+			t.Fatalf("write finished while another instance held the owner's lock (err=%v)", err)
+		case <-time.After(300 * time.Millisecond):
+		}
+		release()
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("write never finished after the lock was released")
+		}
+	}
+
+	t.Run("append", func(t *testing.T) {
+		seed(owner+"-append", now, 0)
+		waitsForLock(t, func() error {
+			return replica.AppendWarpMessages(ctx, owner, owner+"-append", []WarpMessage{{ID: owner + "-append-m", Role: "user", Content: "q", CreatedAt: now}})
+		})
+	})
+	t.Run("delete if empty", func(t *testing.T) {
+		seed(owner+"-empty", now, 0)
+		waitsForLock(t, func() error {
+			_, err := replica.DeleteWarpConversationIfEmpty(ctx, owner, owner+"-empty")
+			return err
+		})
+	})
+	t.Run("delete", func(t *testing.T) {
+		seed(owner+"-delete", now, 1)
+		waitsForLock(t, func() error { return replica.DeleteWarpConversation(ctx, owner, owner+"-delete") })
+	})
+	t.Run("prune", func(t *testing.T) {
+		seed(owner+"-prune-old", now.Add(-time.Hour), 1)
+		seed(owner+"-prune-new", now, 1)
+		waitsForLock(t, func() error {
+			_, err := replica.PruneWarpConversations(ctx, owner, 1)
+			return err
+		})
+	})
+	t.Run("age sweep", func(t *testing.T) {
+		stale := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+		seed(owner+"-stale", stale, 1)
+		waitsForLock(t, func() error {
+			_, err := replica.DeleteWarpConversationsOlderThan(ctx, stale.Add(time.Hour))
+			return err
+		})
+	})
+}
+
+// lostLeaseLocker grants the lock but reports it lost at once, the way the
+// config-store lock does when its lease expires mid-write.
+type lostLeaseLocker struct{}
+
+func (lostLeaseLocker) Acquire(ctx context.Context, _ string) (context.Context, func(), error) {
+	held, lose := context.WithCancelCause(ctx)
+	lose(errors.New("lease lost"))
+	return held, func() {}, nil
+}
+
+// A write must run on the lock's context, so losing the lease stops it rather
+// than letting it finish without the protection it waited for.
+func TestClickHouseWarpWriteStopsWhenTheLeaseIsLost(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	owner := fmt.Sprintf("user:lease-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: owner + "-c", OwnerID: owner, Title: "c", CreatedAt: now, UpdatedAt: now}))
+
+	store.SetDistributedLocker(lostLeaseLocker{})
+	err := store.AppendWarpMessages(ctx, owner, owner+"-c", []WarpMessage{{ID: owner + "-m", Role: "user", Content: "q", CreatedAt: now}})
+	require.ErrorIs(t, err, context.Canceled)
+
+	store.SetDistributedLocker(nil)
+	counts, err := store.CountWarpMessages(ctx, []string{owner + "-c"})
+	require.NoError(t, err)
+	require.Zero(t, counts[owner+"-c"], "nothing was written without the lock")
 }

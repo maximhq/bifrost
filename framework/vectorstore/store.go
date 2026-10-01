@@ -16,6 +16,7 @@ const (
 	VectorStoreTypeRedis    VectorStoreType = "redis"
 	VectorStoreTypeQdrant   VectorStoreType = "qdrant"
 	VectorStoreTypePinecone VectorStoreType = "pinecone"
+	VectorStoreTypeChromem  VectorStoreType = "chromem"
 )
 
 // Query represents a query to the vector store.
@@ -65,6 +66,8 @@ const (
 type VectorStoreProperties struct {
 	DataType    VectorStorePropertyType `json:"data_type"`
 	Description string                  `json:"description"`
+	// Filterable marks a property used in Query filters; stores may encode it.
+	Filterable bool `json:"filterable,omitempty"`
 }
 
 type VectorStorePropertyType string
@@ -86,6 +89,16 @@ type VectorStore interface {
 	CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]VectorStoreProperties) error
 	// DeleteNamespace deletes a namespace from the vector store.
 	DeleteNamespace(ctx context.Context, namespace string) error
+	// ListNamespaces returns the names of existing namespaces beginning with
+	// prefix, sorted. An empty prefix lists everything the backend exposes.
+	//
+	// Callers that create namespaces under a naming scheme of their own need
+	// this to find the ones they left behind: a name derived from content
+	// cannot be reconstructed once the content has changed, so without
+	// enumeration an abandoned namespace becomes unreachable rather than
+	// merely unused. Filtering happens in the backend where the API supports
+	// it and here where it does not, so the result is the same either way.
+	ListNamespaces(ctx context.Context, prefix string) ([]string, error)
 	// GetChunk retrieves a single vector from the vector store.
 	GetChunk(ctx context.Context, namespace string, id string) (SearchResult, error)
 	// GetChunks retrieves multiple vectors from the vector store.
@@ -179,6 +192,15 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("failed to unmarshal pinecone config: %w", err)
 		}
 		c.Config = pineconeConfig
+	case VectorStoreTypeChromem:
+		var chromemConfig ChromemConfig
+		// Chromem has no required fields, so a missing config block is valid.
+		if len(temp.Config) > 0 {
+			if err := json.Unmarshal(temp.Config, &chromemConfig); err != nil {
+				return fmt.Errorf("failed to unmarshal chromem config: %w", err)
+			}
+		}
+		c.Config = chromemConfig
 	default:
 		return fmt.Errorf("unknown vector store type: %s", temp.Type)
 	}
@@ -233,6 +255,13 @@ func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) 
 			return nil, fmt.Errorf("invalid pinecone config")
 		}
 		return newPineconeStore(ctx, &pineconeConfig, logger)
+	case VectorStoreTypeChromem:
+		// A nil config block is valid: chromem defaults to memory-only mode.
+		chromemConfig, ok := config.Config.(ChromemConfig)
+		if !ok && config.Config != nil {
+			return nil, fmt.Errorf("invalid chromem config")
+		}
+		return newChromemStore(ctx, &chromemConfig, logger)
 	}
 	return nil, fmt.Errorf("invalid vector store type: %s", config.Type)
 }

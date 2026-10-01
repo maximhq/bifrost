@@ -23,6 +23,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyDirectKey:               {},
 	BifrostContextKeyRequestID:               {},
 	BifrostContextKeyFallbackRequestID:       {},
+	BifrostContextKeyBillingNonce:            {},
 	BifrostContextKeySelectedKeyID:           {},
 	BifrostContextKeySelectedKeyName:         {},
 	BifrostContextKeyNumberOfRetries:         {},
@@ -36,10 +37,14 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyDeferTraceCompletion:    {},
 	BifrostContextKeyAttemptTrail:            {},
 	BifrostContextKeyStreamGated:             {},
+	BifrostContextKeyStreamAttemptAbort:      {},
 	BifrostContextKeyMCPHealthCheckRequest:   {},
+	BifrostContextKeyMCPUnattendedExecution:  {},
 	BifrostContextKeyUpstreamLatency:         {},
 	BifrostContextKeyStreamOverhead:          {},
 	BifrostContextKeyRoutingInfo:             {},
+	BifrostContextKeyRequestedProvider:       {},
+	BifrostContextKeyRequestedModel:          {},
 	BifrostContextKeyMCPInboundBearer:        {},
 }
 
@@ -516,6 +521,11 @@ func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
 	bc.setReservedValue(BifrostContextKeyRoutingInfo, ri)
 }
 
+// SetFallbackPinnedAPIKeyID pins a fallback's provider key, bypassing the restricted-writes guard (set by core - DO NOT SET THIS MANUALLY).
+func (bc *BifrostContext) SetFallbackPinnedAPIKeyID(keyID string) {
+	bc.setReservedValue(BifrostContextKeyAPIKeyID, keyID)
+}
+
 // ClearValue clears a value from the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
 func (bc *BifrostContext) ClearValue(key any) {
@@ -637,6 +647,22 @@ type streamBufferClearer interface {
 	ClearPausedStreamBuffer(traceID string) error
 }
 
+// PausedStreamBufferTransformResult contains rewritten chunks and the leading count safe to replay.
+type PausedStreamBufferTransformResult struct {
+	Chunks       []*BifrostStreamChunk
+	ReleaseCount int
+}
+
+// PausedStreamBufferTransform rewrites a shallow snapshot of chunks captured by one pause epoch.
+// Implementations must use copy-on-write and return the same number of chunks in the same order.
+// ReleaseCount lets the gate replay an approved prefix while keeping an unevaluated suffix paused.
+type PausedStreamBufferTransform func(chunks []*BifrostStreamChunk) (PausedStreamBufferTransformResult, error)
+
+// streamBufferTransformer is an optional tracer capability for atomically rewriting paused client chunks.
+type streamBufferTransformer interface {
+	TransformPausedStreamBuffer(traceID string, transform PausedStreamBufferTransform) error
+}
+
 // ClearPausedStreamBuffer drops chunks buffered while the active stream is paused.
 func (bc *BifrostContext) ClearPausedStreamBuffer() error {
 	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
@@ -649,6 +675,24 @@ func (bc *BifrostContext) ClearPausedStreamBuffer() error {
 		return fmt.Errorf("stream tracer does not support buffer clearing")
 	}
 	return clearer.ClearPausedStreamBuffer(tid)
+}
+
+// TransformPausedStreamBuffer atomically rewrites chunks captured since the latest pause.
+// The current PostLLMHook chunk has not reached the gate yet and is therefore not included.
+func (bc *BifrostContext) TransformPausedStreamBuffer(transform PausedStreamBufferTransform) error {
+	if transform == nil {
+		return fmt.Errorf("paused stream buffer transform is nil")
+	}
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return fmt.Errorf("stream tracer or trace ID is missing")
+	}
+	transformer, ok := any(tr).(streamBufferTransformer)
+	if !ok {
+		return fmt.Errorf("stream tracer does not support buffer transformation")
+	}
+	return transformer.TransformPausedStreamBuffer(tid, transform)
 }
 
 // EndStream terminates the active streaming response. Any buffered chunks are
@@ -764,6 +808,38 @@ func (bc *BifrostContext) CalculateCost(resp *BifrostResponse) float64 {
 		return 0
 	}
 	return catalog.CalculateRequestCost(bc, resp)
+}
+
+// CalculateCostBreakdown returns the per-category cost breakdown of a
+// completed response. It is the same computation as CalculateCost, so
+// TotalCost always equals what CalculateCost returns for the same response;
+// the difference is that the input, output and additional sides come back
+// split by category instead of collapsed into one number:
+//
+//   - InputCostDetails: TextCost, AudioCost, ImageCost, CachedReadCost,
+//     CachedWriteCost, RequestCost (flat per-request surcharge)
+//   - OutputCostDetails: TextCost, AudioCost, ImageCost, ReasoningCost,
+//     CitationCost, SearchQueriesCost
+//   - AdditionalCostDetails: GuardrailCost, MCPCost, SemanticCacheCost,
+//     RoutingCost (internal sidecar calls with no token category)
+//
+// The full pricing resolution applies exactly as in CalculateCost: long-context
+// tiers, batch/priority/flex/fast rates, cache read/write rates, the provider
+// and request-mode fallback chain, and any pricing overrides in effect.
+//
+// Returns nil when no catalog is wired or the response has no billable usage.
+// The returned value is a fresh copy owned by the caller; mutating it never
+// touches the response.
+//
+// PLUGIN AUTHORS: call this synchronously inside your hook, for the same reason
+// as CalculateCost. If you need the breakdown in a background goroutine, compute
+// it in the hook and close over the pointer.
+func (bc *BifrostContext) CalculateCostBreakdown(resp *BifrostResponse) *BifrostCost {
+	catalog, _ := bc.Value(BifrostContextKeyModelCatalog).(ModelInfoProvider)
+	if catalog == nil || resp == nil {
+		return nil
+	}
+	return catalog.CalculateRequestCostBreakdown(bc, resp)
 }
 
 // AppendRoutingEngineLog appends a routing engine log entry to the context.

@@ -21,6 +21,7 @@ var payloadFields = []string{
 	"responses_input_history",
 	"output_message",
 	"responses_output",
+	"embedding_input",
 	"embedding_output",
 	"rerank_output",
 	"ocr_input",
@@ -46,6 +47,7 @@ var payloadFields = []string{
 	"video_delete_output",
 	"cache_debug",
 	"guardrail_debug",
+	"routing_metadata",
 	"token_usage",
 	"error_details",
 	"raw_request",
@@ -63,6 +65,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["responses_input_history"] = l.ResponsesInputHistory
 	m["output_message"] = l.OutputMessage
 	m["responses_output"] = l.ResponsesOutput
+	m["embedding_input"] = l.EmbeddingInput
 	m["embedding_output"] = l.EmbeddingOutput
 	m["rerank_output"] = l.RerankOutput
 	m["ocr_input"] = l.OCRInput
@@ -88,6 +91,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["video_delete_output"] = l.VideoDeleteOutput
 	m["cache_debug"] = l.CacheDebug
 	m["guardrail_debug"] = l.GuardrailDebug
+	m["routing_metadata"] = l.RoutingMetadata
 	m["token_usage"] = l.TokenUsage
 	m["error_details"] = l.ErrorDetails
 	m["raw_request"] = l.RawRequest
@@ -126,6 +130,8 @@ func ExtractPayload(l *Log) map[string]string {
 	putIfPresent(m, "business_unit_name", l.BusinessUnitName)
 	putIfPresent(m, "business_unit_ids", l.BusinessUnitIDs)
 	putIfPresent(m, "business_unit_names", l.BusinessUnitNames)
+	putIfPresent(m, "project_id", l.ProjectID)
+	putIfPresent(m, "project_name", l.ProjectName)
 	if l.Cost != nil {
 		m["cost"] = strconv.FormatFloat(*l.Cost, 'f', -1, 64)
 	}
@@ -204,6 +210,7 @@ func ClearPayload(l *Log) {
 	l.ResponsesInputHistory = ""
 	l.OutputMessage = ""
 	l.ResponsesOutput = ""
+	l.EmbeddingInput = ""
 	l.EmbeddingOutput = ""
 	l.RerankOutput = ""
 	l.OCRInput = ""
@@ -229,6 +236,7 @@ func ClearPayload(l *Log) {
 	l.VideoDeleteOutput = ""
 	l.CacheDebug = ""
 	l.GuardrailDebug = ""
+	l.RoutingMetadata = ""
 	l.TokenUsage = ""
 	l.ErrorDetails = ""
 	l.RawRequest = ""
@@ -242,6 +250,7 @@ func ClearPayload(l *Log) {
 	l.ResponsesInputHistoryParsed = nil
 	l.OutputMessageParsed = nil
 	l.ResponsesOutputParsed = nil
+	l.EmbeddingInputParsed = nil
 	l.EmbeddingOutputParsed = nil
 	l.RerankOutputParsed = nil
 	l.OCRInputParsed = nil
@@ -267,6 +276,7 @@ func ClearPayload(l *Log) {
 	l.VideoDeleteOutputParsed = nil
 	l.CacheDebugParsed = nil
 	l.GuardrailDebugParsed = nil
+	l.RoutingMetadataParsed = nil
 	l.TokenUsageParsed = nil
 	l.ErrorDetailsParsed = nil
 }
@@ -290,6 +300,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	}
 	if v, ok := m["responses_output"]; ok && v != "" {
 		l.ResponsesOutput = v
+	}
+	if v, ok := m["embedding_input"]; ok && v != "" {
+		l.EmbeddingInput = v
 	}
 	if v, ok := m["embedding_output"]; ok && v != "" {
 		l.EmbeddingOutput = v
@@ -365,6 +378,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	}
 	if v, ok := m["guardrail_debug"]; ok && v != "" {
 		l.GuardrailDebug = v
+	}
+	if v, ok := m["routing_metadata"]; ok && v != "" {
+		l.RoutingMetadata = v
 	}
 	if v, ok := m["token_usage"]; ok && v != "" {
 		l.TokenUsage = v
@@ -857,6 +873,9 @@ func clearPayloadField(l *Log, name string) {
 	case "responses_output":
 		l.ResponsesOutput = ""
 		l.ResponsesOutputParsed = nil
+	case "embedding_input":
+		l.EmbeddingInput = ""
+		l.EmbeddingInputParsed = nil
 	case "embedding_output":
 		l.EmbeddingOutput = ""
 		l.EmbeddingOutputParsed = nil
@@ -932,6 +951,9 @@ func clearPayloadField(l *Log, name string) {
 	case "guardrail_debug":
 		l.GuardrailDebug = ""
 		l.GuardrailDebugParsed = nil
+	case "routing_metadata":
+		l.RoutingMetadata = ""
+		l.RoutingMetadataParsed = nil
 	case "token_usage":
 		l.TokenUsage = ""
 		l.TokenUsageParsed = nil

@@ -18,6 +18,39 @@ test.describe('LLM Logs', () => {
       expect(statsVisible).toBe(true)
     })
 
+    test('should fit stat card trend figures at 1440px', async ({ logsPage, page }) => {
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await logsPage.goto()
+
+      const figures = page.getByTestId('logs-metric-strip').getByTestId('logs-metric-trailing')
+      const count = await figures.count()
+      test.skip(count === 0, 'No trend figures rendered: the strip needs traffic in the selected window')
+      for (let i = 0; i < count; i++) {
+        const figure = figures.nth(i)
+        await expect
+          .poll(() => figure.evaluate((el) => el.scrollWidth <= el.clientWidth), {
+            message: `trend figure "${await figure.textContent()}" is truncated`,
+          })
+          .toBe(true)
+      }
+    })
+
+    test('should keep the table status row inside the visible table at 1440px', async ({ logsPage, page }) => {
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await logsPage.goto()
+
+      const status = page.getByTestId('logs-table-status-row')
+      await expect(status).toBeVisible()
+      const inside = await status.evaluate((el) => {
+        const scroller = el.closest('[data-slot="table-container"]')
+        if (!scroller) return false
+        const box = el.getBoundingClientRect()
+        const view = scroller.getBoundingClientRect()
+        return box.left >= view.left && box.right <= view.right
+      })
+      expect(inside).toBe(true)
+    })
+
     test('should display filters section', async ({ logsPage }) => {
       // Check if the search input or filters button is visible
       // These are always visible when the page loads (not inside empty state)
@@ -84,6 +117,21 @@ test.describe('LLM Logs', () => {
       await expect
         .poll(() => page.url(), { timeout: 5000, intervals: [200, 300, 500] })
         .toMatch(/status=success/)
+    })
+
+    test('should filter logs by tool call name', async ({ logsPage, page }) => {
+      const filtersVisible = await logsPage.filtersButton.isVisible().catch(() => false)
+      if (!filtersVisible) {
+        test.skip(true, 'Filters button not visible')
+        return
+      }
+
+      await logsPage.filterByToolCallName('get_weather')
+
+      // The tool calls filter persists in the URL like every other sidebar filter
+      await expect
+        .poll(() => page.url(), { timeout: 5000, intervals: [200, 300, 500] })
+        .toMatch(/tool_call_names=get_weather/)
     })
 
     test('should search logs by content', async ({ logsPage }) => {

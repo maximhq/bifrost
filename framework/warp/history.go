@@ -1,0 +1,523 @@
+package warp
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/logstore"
+)
+
+const (
+	// historySweepInterval is how often expired chats are swept.
+	//
+	// Hourly, because the setting is measured in days: a sweep that runs sooner
+	// deletes nothing new, and one that runs much later makes "kept for 7 days"
+	// mean something closer to 8. It is a single ranged delete against a table
+	// bounded by WarpMaxConversationsPerOwner per owner, so the cost of running
+	// it on an idle deployment is one query an hour.
+	historySweepInterval = time.Hour
+
+	// historySweepTimeout bounds one sweep, so a wedged store cannot pin the
+	// loop and silently stop retention for the life of the process.
+	historySweepTimeout = 2 * time.Minute
+)
+
+// OwnerFromContext resolves the caller's history owner.
+//
+// It is read from the context, never from a request body. An owner id a caller
+// can supply is not an access control, and history is the one part of Warp
+// that holds what people actually asked. Transports put the user id on the
+// context; a deployment with no identity resolves to the shared owner.
+func OwnerFromContext(ctx context.Context) string {
+	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
+	return schemas.WarpOwnerID(userID)
+}
+
+// ListConversations returns an owner's threads, most recent first. limit is
+// clamped to [1, 100].
+func (s *Service) ListConversations(ctx context.Context, ownerID string, limit int) ([]schemas.WarpConversation, error) {
+	if s.conversations == nil {
+		return nil, ErrUnavailable
+	}
+	limit = min(max(limit, 1), 100)
+	rows, err := s.conversations.ListWarpConversations(ctx, ownerID, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Counts come from one grouped query rather than a count per row, so opening
+	// the history costs a constant two queries however long it is. A failed count
+	// degrades to zeros rather than failing the list.
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	counts, err := s.conversations.CountWarpMessages(ctx, ids)
+	if err != nil {
+		s.warnf("failed to count warp messages: %v", err)
+		counts = map[string]int{}
+	}
+	// Returned, not swallowed. An empty map makes every thread report zero
+	// tokens and zero cost, which is a claim about spend rather than an absence
+	// of one - and this list is the only place a whole conversation's cost is
+	// shown, so "0" reads as "free" rather than "we could not look it up".
+	totals, err := s.conversations.SumWarpMessageUsage(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("sum warp message usage: %w", err)
+	}
+
+	conversations := make([]schemas.WarpConversation, 0, len(rows))
+	for _, row := range rows {
+		conversations = append(conversations, schemas.WarpConversation{
+			ID:           row.ID,
+			Title:        row.Title,
+			MessageCount: counts[row.ID],
+			TotalTokens:  totals[row.ID].TotalTokens,
+			TotalCost:    totals[row.ID].Cost,
+			CreatedAt:    row.CreatedAt,
+			UpdatedAt:    row.UpdatedAt,
+		})
+	}
+	return conversations, nil
+}
+
+// GetConversation returns one thread with its transcript. A thread that does
+// not exist and a thread that belongs to someone else both return
+// logstore.ErrWarpConversationNotFound; distinguishing them would confirm
+// that another person's conversation exists.
+func (s *Service) GetConversation(ctx context.Context, ownerID, id string) (*schemas.WarpConversationDetail, error) {
+	if s.conversations == nil {
+		return nil, ErrUnavailable
+	}
+	row, err := s.conversations.GetWarpConversation(ctx, ownerID, id)
+	if err != nil {
+		return nil, err
+	}
+	detail := conversationDetailFromRow(row)
+	// The transcript is bounded at WarpMaxTranscriptMessages, so the sum
+	// conversationDetailFromRow takes over it undercounts a longer thread. The
+	// whole thread's usage comes from the same query the list uses, and fails
+	// the same way: a zero here would read as "free", not "unknown".
+	totals, err := s.conversations.SumWarpMessageUsage(ctx, []string{id})
+	if err != nil {
+		return nil, fmt.Errorf("sum warp message usage: %w", err)
+	}
+	if usage, ok := totals[id]; ok {
+		detail.TotalTokens, detail.TotalCost = usage.TotalTokens, usage.Cost
+	}
+	return &detail, nil
+}
+
+// DeleteConversation removes a thread.
+func (s *Service) DeleteConversation(ctx context.Context, ownerID, id string) error {
+	if s.conversations == nil {
+		return ErrUnavailable
+	}
+	return s.conversations.DeleteWarpConversation(ctx, ownerID, id)
+}
+
+// SweepHistory expires every saved chat last touched before the configured
+// retention window, across all owners.
+//
+// This is the age half of retention; PruneWarpConversations is the count half,
+// and they exist for different reasons. The per-owner cap stops the table
+// growing without bound, which is an operational concern. This one answers "how
+// long do we keep what people typed", which is a policy one - and a deployment
+// where nobody has chatted for months is exactly where the cap never fires and
+// the old transcripts sit there anyway.
+//
+// The cutoff comes from Warp's own history_retention_days. It deliberately does
+// not read logs_store.retention_days; see schemas.WarpDefaultHistoryRetentionDays.
+func (s *Service) SweepHistory(ctx context.Context) (int64, error) {
+	if s.conversations == nil || s.store == nil {
+		return 0, ErrUnavailable
+	}
+	row, err := s.store.GetWarpConfig(ctx)
+	if err != nil {
+		return 0, err
+	}
+	// Deliberately not gated on IsConfigured or Enabled. Turning Warp off stops
+	// new chats; it does not mean the transcripts already saved should be kept
+	// forever, which is what skipping the sweep on a disabled deployment would
+	// quietly do.
+	config := configFromRow(row)
+	cutoff := time.Now().UTC().AddDate(0, 0, -config.EffectiveHistoryRetentionDays())
+
+	// Drained, not nibbled. The store caps one delete at 1000 rows and this runs
+	// hourly, so a backlog larger than that outlived the retention window by
+	// hours - and a backlog that grows faster than 1000/hour never clears at
+	// all. Retention that applies only to the first thousand rows is not the
+	// setting the operator chose.
+	//
+	// The cutoff is computed once, so a thread used during the sweep is spared
+	// by the store's own staleness predicate rather than by a moving deadline.
+	var total int64
+	for {
+		deleted, err := s.conversations.DeleteWarpConversationsOlderThan(ctx, cutoff)
+		total += deleted
+		if err != nil {
+			return total, err
+		}
+		if deleted == 0 {
+			return total, nil
+		}
+		// The caller's context still bounds the whole sweep, so a wedged store
+		// cannot spin here.
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+	}
+}
+
+// StartHistoryCleanup runs SweepHistory on a timer until Shutdown.
+//
+// On a timer rather than on write, because the thing being expired is age: a
+// deployment nobody has used for a month is precisely where a write-triggered
+// sweep never runs and the retention setting turns out to have been decorative.
+// Calling it twice is a no-op, so a service rebuilt at route registration does
+// not end up with two loops.
+func (s *Service) StartHistoryCleanup() {
+	if s.conversations == nil || s.store == nil {
+		return
+	}
+	s.cleanupOnce.Do(func() {
+		// Under the same lock Shutdown takes, for two reasons. The write to
+		// s.stopCleanup and Shutdown's read of it were unsynchronised, which is a
+		// data race; and Shutdown could read a nil stopCleanup, consume
+		// cleanupStopOnce, and return - after which this goroutine started and ran
+		// for the life of the process with nothing left able to stop it.
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return
+		}
+		stop := make(chan struct{})
+		s.stopCleanup = stop
+		s.mu.Unlock()
+		go func() {
+			ticker := time.NewTicker(historySweepInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					// Its own context: the sweep outlives any request, and a
+					// bounded one keeps a wedged store from pinning the loop.
+					ctx, cancel := context.WithTimeout(context.Background(), historySweepTimeout)
+					deleted, err := s.SweepHistory(ctx)
+					cancel()
+					if err != nil {
+						s.warnf("failed to sweep warp history: %v", err)
+					} else if deleted > 0 {
+						s.infof("expired %d warp conversation(s) past the retention window", deleted)
+					}
+				case <-stop:
+					return
+				}
+			}
+		}()
+	})
+}
+
+// stopHistoryCleanup ends the sweep loop. Safe to call without a matching
+// start, and safe to call twice.
+func (s *Service) stopHistoryCleanup() {
+	s.cleanupStopOnce.Do(func() {
+		if s.stopCleanup != nil {
+			close(s.stopCleanup)
+		}
+	})
+}
+
+// conversationDetailFromRow renders a stored thread for the API.
+func conversationDetailFromRow(row *logstore.WarpConversation) schemas.WarpConversationDetail {
+	messages := make([]schemas.WarpStoredMessage, 0, len(row.Messages))
+	// Summed here rather than left at zero: the list endpoint reports these from
+	// SumWarpMessageUsage, so the same thread showed spend in the sidebar and
+	// nothing at all once it was opened.
+	totalTokens := 0
+	totalCost := 0.0
+	for _, message := range row.Messages {
+		stored := schemas.WarpStoredMessage{
+			Role:         message.Role,
+			Content:      message.Content,
+			Error:        message.Error,
+			FinishReason: message.FinishReason,
+			TotalTokens:  message.TotalTokens,
+			Cost:         message.Cost,
+			CreatedAt:    message.CreatedAt,
+		}
+		if message.ToolCallsJSON != "" {
+			// A transcript is still worth showing without its tool trace, so a
+			// decode failure drops the trace rather than the message.
+			_ = sonic.UnmarshalString(message.ToolCallsJSON, &stored.ToolCalls)
+		}
+		if message.QuestionJSON != "" {
+			// Same posture as the tool trace: a bad blob costs the card's
+			// options, never the message.
+			_ = sonic.UnmarshalString(message.QuestionJSON, &stored.Question)
+		}
+		totalTokens += message.TotalTokens
+		totalCost += message.Cost
+		messages = append(messages, stored)
+	}
+	// The real thread size when the store reports one, so a bounded transcript
+	// says how much it is standing in for. Fakes and stores that never set
+	// TotalMessages fall back to the returned slice, which also keeps the
+	// count honest if a store under-reports.
+	total := row.TotalMessages
+	if total < len(row.Messages) {
+		total = len(row.Messages)
+	}
+	return schemas.WarpConversationDetail{
+		WarpConversation: schemas.WarpConversation{
+			ID:           row.ID,
+			Title:        row.Title,
+			MessageCount: total,
+			TotalTokens:  totalTokens,
+			TotalCost:    totalCost,
+			CreatedAt:    row.CreatedAt,
+			UpdatedAt:    row.UpdatedAt,
+		},
+		Messages:  messages,
+		Truncated: total > len(row.Messages),
+	}
+}
+
+// recordTurn files a completed exchange and returns the thread id.
+//
+// It is the single bridge between the chat loop and history, so the streaming
+// and buffered transports file identically. A turn with no answer and no error
+// is not recorded: an aborted request that produced nothing would otherwise
+// leave an empty thread in the list.
+// persistedConversationID is the id to hand back when nothing was written.
+//
+// For a thread that already exists, that is its own id: it is still there. For a
+// new one there is no row behind the generated id, and returning it told the
+// client a thread existed - the next request then sends it as an existing
+// conversation, so the create is skipped and the append has nothing to attach
+// to. An empty id means "start one next time", which is the truth.
+func persistedConversationID(turn *Turn) string {
+	if turn.IsNew {
+		return ""
+	}
+	return turn.ConversationID
+}
+
+func (s *Service) recordTurn(ctx context.Context, turn *Turn, response ChatResponse) string {
+	// No history feature at all: the id is the client's own token, nothing will
+	// ever be created for it, and blanking it would drop the thread the client is
+	// tracking for no gain.
+	if s.conversations == nil {
+		return turn.ConversationID
+	}
+	if turn.question == "" {
+		return persistedConversationID(turn)
+	}
+	// A question counts as an outcome. Warp ending a turn by asking is a real
+	// exchange the person can come back to; skipping it left the thread
+	// uncreated, so reopening showed the question asked and no sign of a reply,
+	// and the answer typed next arrived as the opening line of an empty thread.
+	if response.Answer == "" && response.Error == nil && response.Question == nil {
+		return persistedConversationID(turn)
+	}
+
+	stored := schemas.WarpStoredMessage{Role: "assistant", Content: response.Answer}
+	if response.Error != nil {
+		stored.Error = response.Error.Message
+	}
+	// A turn that ended by asking is filed with the question as its content,
+	// regardless of whether the model also emitted preamble text before
+	// calling ask_user (e.g. "Let me check a few things first.") - that text
+	// still lands in response.Answer, and gating this on Answer == "" would
+	// silently file the preamble instead of the question the turn actually
+	// ended on. The thread id has already gone to the client on the done
+	// frame, so the thread must exist now or every later turn will arrive for
+	// a thread that was never created. Warp usually asks about the window or
+	// the scope first, which made this the common case rather than the edge.
+	if response.Question != nil {
+		stored.Content = response.Question.Question
+		stored.FinishReason = response.FinishReason
+		// The options travel structurally, not folded into the prose: a
+		// reopened thread must render the same selectable card the live turn
+		// showed, with the hints intact so a pick still sends "team:platform"
+		// rather than its label.
+		stored.Question = storedQuestionFrom(response.Question)
+	}
+	// Only the partial marker is filed. A normal stop is the default reading of
+	// any stored answer, and writing it on every row would say nothing.
+	if response.FinishReason == FinishReasonPartial {
+		stored.FinishReason = FinishReasonPartial
+	}
+	if response.Usage != nil {
+		stored.TotalTokens = response.Usage.TotalTokens
+		if response.Usage.Cost != nil {
+			stored.Cost = response.Usage.Cost.TotalCost
+		}
+	}
+	for _, call := range response.ToolCalls {
+		// Offsets are measured against the answer; a question turn files the
+		// question as its content, so an answer offset would split it at an
+		// unrelated point.
+		offset := call.TextOffset
+		if response.Question != nil {
+			offset = 0
+		}
+		stored.ToolCalls = append(stored.ToolCalls, schemas.WarpStoredToolCall{
+			Name: call.Name, DurationMs: call.DurationMs, Failed: call.Failed, TextOffset: offset,
+		})
+	}
+
+	// A cancelled request still has an answer worth filing, and its context is
+	// already done - so persistence gets its own short-lived context rather than
+	// inheriting one that would refuse the write.
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	// Only ever report an id that was actually filed. Falling back to the
+	// caller's own id handed the client a thread its owner-scoped endpoint
+	// cannot fetch - the exchange looks saved, and is not.
+	return s.persistTurn(writeCtx, turn.ConversationID, turn.IsNew, turn.questionRole, turn.question, stored)
+}
+
+// storedQuestionFrom converts the agent's question into its persisted form.
+func storedQuestionFrom(question *Question) *schemas.WarpStoredQuestion {
+	if question == nil {
+		return nil
+	}
+	options := make([]schemas.WarpStoredQuestionOpt, 0, len(question.Options))
+	for _, option := range question.Options {
+		options = append(options, schemas.WarpStoredQuestionOpt{Label: option.Label, Hint: option.Hint})
+	}
+	return &schemas.WarpStoredQuestion{
+		Question: question.Question, Options: options,
+		AllowOther: question.AllowOther, Kind: question.Kind,
+	}
+}
+
+// persistTurn saves one exchange, creating the thread on the first turn.
+//
+// It returns the conversation id so the client can keep appending, and never
+// returns an error to the caller: history is a convenience, and failing a
+// perfectly good answer because it could not be filed would trade the thing
+// someone asked for against the thing they did not.
+//
+// isNew, rather than an empty id, decides whether the thread row gets created.
+// The id is minted before the first model call so it can ride upstream as a
+// logging header, which means it is never empty by the time it reaches here -
+// and inferring "new" from emptiness would silently stop creating threads
+// altogether, leaving every message orphaned.
+func (s *Service) persistTurn(ctx context.Context, conversationID string, isNew bool, questionRole, question string, answer schemas.WarpStoredMessage) string {
+	if s.conversations == nil {
+		return ""
+	}
+	owner := OwnerFromContext(ctx)
+	now := time.Now().UTC()
+	// NewTurn accepts an assistant turn as the final message, so the stored role
+	// has to be the one the request carried. Hardcoding "user" attributed the
+	// assistant's words to the person who asked when the thread was reopened.
+	if questionRole == "" {
+		questionRole = "user"
+	}
+
+	// Tracks a thread this call brought into existence, so a failed append does
+	// not strand an empty conversation in the history list - a row that opens to
+	// nothing and can only be cleared by hand.
+	createdHere := false
+	if conversationID == "" {
+		conversationID = uuid.NewString()
+		isNew = true
+	}
+	create := func() bool {
+		if err := s.conversations.CreateWarpConversation(ctx, &logstore.WarpConversation{
+			ID:        conversationID,
+			OwnerID:   owner,
+			Title:     schemas.WarpConversationTitle(question),
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			s.warnf("failed to start warp conversation: %v", err)
+			return false
+		}
+		createdHere = true
+		// The prune deliberately does not run here: it moved to after the first
+		// successful append, so a failed save can never cost a pre-existing
+		// conversation its place at the cap.
+		return true
+	}
+	if isNew && !create() {
+		return ""
+	}
+
+	toolCallsJSON := ""
+	if len(answer.ToolCalls) > 0 {
+		if encoded, err := sonic.MarshalString(answer.ToolCalls); err == nil {
+			toolCallsJSON = encoded
+		}
+	}
+	questionJSON := ""
+	if answer.Question != nil {
+		if encoded, err := sonic.MarshalString(answer.Question); err == nil {
+			questionJSON = encoded
+		}
+	}
+
+	messages := []logstore.WarpMessage{
+		{ID: uuid.NewString(), Role: questionRole, Content: question, CreatedAt: now},
+		{
+			ID: uuid.NewString(), Role: "assistant", Content: answer.Content,
+			ToolCallsJSON: toolCallsJSON, QuestionJSON: questionJSON, Error: answer.Error, FinishReason: answer.FinishReason,
+			TotalTokens: answer.TotalTokens, Cost: answer.Cost, CreatedAt: now,
+		},
+	}
+	err := s.conversations.AppendWarpMessages(ctx, owner, conversationID, messages)
+	if errors.Is(err, logstore.ErrWarpConversationNotFound) && !isNew {
+		// The client holds an id the server minted but never filed a thread
+		// for - a first turn that was lost, or a thread pruned since. Starting
+		// the thread now under that id keeps the conversation rather than
+		// dropping every turn from here on.
+		// The append is retried whether or not create() succeeded. Two
+		// continuations for the same missing id both get ErrWarpConversationNotFound;
+		// the loser's create() fails on the duplicate key, and returning here
+		// dropped its turn. Retrying is safe because the append is ownership
+		// scoped: it lands if the winner filed the thread under this owner, and
+		// stays not-found if the id belongs to someone else.
+		create()
+		err = s.conversations.AppendWarpMessages(ctx, owner, conversationID, messages)
+	}
+	if err != nil {
+		s.warnf("failed to append warp messages: %v", err)
+		// Only when it is still empty. createdHere says this request created the
+		// row, not that it is the only one using it: a concurrent continuation can
+		// have appended successfully in between, and deleting then takes that
+		// request's messages with it. The emptiness check distinguishes "nothing
+		// was ever filed here" from "somebody else got there first", and it runs
+		// in the same store operation as the delete - as a separate count, an
+		// append landing between the two was deleted with the thread. A failed
+		// check leaves the thread: an empty thread in the list is a blemish,
+		// deleting somebody's transcript is data loss.
+		if createdHere {
+			if _, cleanupErr := s.conversations.DeleteWarpConversationIfEmpty(ctx, owner, conversationID); cleanupErr != nil {
+				s.warnf("failed to remove empty warp conversation %s: %v", conversationID, cleanupErr)
+			}
+		}
+		return ""
+	}
+	if createdHere {
+		// Prune on creation rather than on a timer: it is the only moment the
+		// count can grow, and it keeps the cap enforced without a background
+		// job. After the first append, not before it: at the cap, pruning first
+		// deleted the owner's oldest completed conversation to make room for a
+		// thread whose messages might then fail to land - and the failure
+		// cleanup can only remove the new empty thread, never restore the
+		// pruned one. Pruning after, the new thread is the newest and complete,
+		// so the prune can only ever take genuinely surplus old threads.
+		if _, err := s.conversations.PruneWarpConversations(ctx, owner, schemas.WarpMaxConversationsPerOwner); err != nil {
+			s.warnf("failed to prune warp conversations: %v", err)
+		}
+	}
+	return conversationID
+}

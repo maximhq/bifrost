@@ -48,6 +48,24 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
+		// Fable 5.1+ rejects forced tool use outright. Drop the choice so the model
+		// answers under the default "auto" rather than the provider returning a 400.
+		if openaiReq.ChatParameters.ToolChoice.IsForced() &&
+			!caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(capModel)) {
+			openaiReq.ChatParameters.ToolChoice = nil
+		}
+		// The Anthropic integration emits the provider-generic forced tool choice "any".
+		// OpenAI accepts only "none", "auto" and "required" as string tool choices and
+		// rejects "any" with HTTP 400, so map it to "required" on a copy of the choice
+		// without mutating the caller's parameters. Destinations that accept "any"
+		// natively keep it.
+		if tc := openaiReq.ChatParameters.ToolChoice; tc != nil && tc.ChatToolChoiceStr != nil &&
+			*tc.ChatToolChoiceStr == string(schemas.ChatToolChoiceTypeAny) &&
+			!caps.ToolChoiceAnySupported(toolChoiceAnySupported(bifrostReq.Provider, capModel)) {
+			openaiReq.ChatParameters.ToolChoice = &schemas.ChatToolChoice{
+				ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeRequired)),
+			}
+		}
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 
 		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
@@ -72,22 +90,29 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(caps)
+		openaiReq.stripUnsupportedSamplingParams(caps)
 		// URL-sourced documents are NOT inlined here. Chat Completions rejects file_url, so they
 		// still have to be resolved before the request goes out - but that is a network fetch that
 		// can fail, and this function has no way to report a failure. Callers invoke
 		// ResolveChatFileURLs after conversion, where the error can propagate; see its doc comment.
 		return openaiReq
-	case schemas.Cerebras, schemas.Wafer:
-		openaiReq.filterOpenAISpecificParameters(caps)
-		openaiReq.stripReasoningDetails()
-		return openaiReq
 	case schemas.DeepSeek:
 		openaiReq.filterOpenAISpecificParameters(caps)
+		// DeepSeek's chat-completions endpoint still uses the legacy max_tokens
+		// field and ignores max_completion_tokens.
+		if openaiReq.MaxCompletionTokens != nil {
+			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
+			openaiReq.MaxCompletionTokens = nil
+		}
 		// DeepSeek is asymmetric: it rejects reasoning_content on ordinary assistant
 		// turns, but *requires* it to be replayed on assistant tool_call turns and 400s
-		// without it. Stripping both (as Cerebras/Wafer do) forced thinking off for every
-		// tool-calling conversation — see issue #5887.
+		// without it. Stripping both forced thinking off for every tool-calling conversation
+		// — see issue #5887.
 		openaiReq.stripReasoningDetailsExceptToolCalls()
+		return openaiReq
+	case schemas.Groq, schemas.Cerebras:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.renameAssistantReasoningToAlias()
 		return openaiReq
 	case schemas.XAI:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -105,6 +130,15 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	case schemas.OpencodeGo, schemas.OpencodeZen:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// OpenCode's chat-completions endpoints still use the legacy max_tokens
+		// field and ignore max_completion_tokens.
+		if openaiReq.MaxCompletionTokens != nil {
+			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
+			openaiReq.MaxCompletionTokens = nil
+		}
+		return openaiReq
+	case schemas.Ollama:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		// Ollama's chat-completions endpoints still use the legacy max_tokens
 		// field and ignore max_completion_tokens.
 		if openaiReq.MaxCompletionTokens != nil {
 			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
@@ -148,22 +182,6 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	}
 }
 
-// providerRejectsServiceTier reports whether the provider's endpoint implements
-// service_tier at all. Bedrock Mantle does not: its OpenAI-compatible surface on
-// bedrock-mantle.{region}.api.aws rejects the field outright ("'priority' is not
-// supported for 'service_tier' on this model"). Provider bedrock reaches these
-// converters only through the deprecated in-provider Mantle routing in
-// bedrock/mantle.go — every other Bedrock path uses Converse — so it means the
-// same endpoint and the same rejection.
-func providerRejectsServiceTier(provider schemas.ModelProvider) bool {
-	switch provider {
-	case schemas.BedrockMantle, schemas.Bedrock:
-		return true
-	default:
-		return false
-	}
-}
-
 // serviceTierForModel filters a requested tier against the final target model's
 // capabilities. Omitting an unsupported tier lets the provider use its default
 // instead of returning an unsupported-tier error.
@@ -171,14 +189,16 @@ func serviceTierForModel(caps schemas.ModelCaps, tier *schemas.BifrostServiceTie
 	if tier == nil {
 		return nil
 	}
-	// Checked before the datasheet: ServiceTierSupported falls back to "keep the
-	// tier" when the catalog has no row for the pair, and Mantle model ids
-	// (openai.gpt-5.6-terra, ...) generally have none — so the fallback would
-	// forward a field the endpoint 400s on.
-	if providerRejectsServiceTier(caps.Provider()) {
-		return nil
+	fallback := true
+	if caps.Provider() == schemas.Bedrock || caps.Provider() == schemas.BedrockMantle {
+		// Bedrock defaults to Standard when the field is omitted. Non-standard
+		// tiers are model-specific, so unknown catalog state must fail closed.
+		if *tier == schemas.BifrostServiceTierDefault || *tier == schemas.BifrostServiceTierAuto {
+			return nil
+		}
+		fallback = false
 	}
-	if !caps.ServiceTierSupported(*tier, true) {
+	if !caps.ServiceTierSupported(*tier, fallback) {
 		return nil
 	}
 	return tier
@@ -237,6 +257,32 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		}
+		// A model that always reasons rejects "none"; "minimal" normalizes to its lowest level.
+		if e := req.ChatParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone &&
+			!caps.CanDisableReasoning(defaultCanDisableReasoning(caps.Model())) {
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(caps.Model())))
+		}
+	}
+}
+
+// stripUnsupportedSamplingParams drops sampling fields OpenAI rejects at the request's reasoning effort.
+func (req *OpenAIChatRequest) stripUnsupportedSamplingParams(caps schemas.ModelCaps) {
+	effort := ""
+	if req.ChatParameters.Reasoning != nil && req.ChatParameters.Reasoning.Effort != nil {
+		effort = *req.ChatParameters.Reasoning.Effort
+	}
+	model := caps.Model()
+	if samplingParamUnsupported(caps, schemas.FieldTopP, model, effort) {
+		req.ChatParameters.TopP = nil
+	}
+	if samplingParamUnsupported(caps, schemas.FieldTemperature, model, effort) {
+		req.ChatParameters.Temperature = nil
+	}
+	if samplingParamUnsupported(caps, schemas.FieldTopLogprobs, model, effort) {
+		req.ChatParameters.TopLogProbs = nil
+	}
+	if samplingParamUnsupported(caps, schemas.FieldLogprobs, model, effort) {
+		req.ChatParameters.LogProbs = nil
 	}
 }
 
@@ -262,18 +308,6 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	}
 }
 
-// stripReasoningDetails for providers that throw error for reasoning_details in assistant messages
-// e.g. Cerebras, DeepSeek
-func (req *OpenAIChatRequest) stripReasoningDetails() {
-	for i := range req.Messages {
-		assistantMessage := req.Messages[i].OpenAIChatAssistantMessage
-		if assistantMessage == nil {
-			continue
-		}
-		assistantMessage.Reasoning = nil
-	}
-}
-
 // stripReasoningDetailsExceptToolCalls strips reasoning_content from assistant messages that
 // carry no tool calls, and preserves it on assistant tool_call turns. This is DeepSeek's
 // contract: reasoning_content "must be passed back to the API in all subsequent user
@@ -287,6 +321,21 @@ func (req *OpenAIChatRequest) stripReasoningDetailsExceptToolCalls() {
 		assistantMessage := req.Messages[i].OpenAIChatAssistantMessage
 		if assistantMessage == nil || len(assistantMessage.ToolCalls) > 0 {
 			continue
+		}
+		assistantMessage.Reasoning = nil
+	}
+}
+
+// renameAssistantReasoningToAlias moves replayed assistant reasoning from
+// reasoning_content to the "reasoning" key, for providers that only accept the latter.
+func (req *OpenAIChatRequest) renameAssistantReasoningToAlias() {
+	for i := range req.Messages {
+		assistantMessage := req.Messages[i].OpenAIChatAssistantMessage
+		if assistantMessage == nil || assistantMessage.Reasoning == nil {
+			continue
+		}
+		if assistantMessage.ReasoningAlias == nil {
+			assistantMessage.ReasoningAlias = assistantMessage.Reasoning
 		}
 		assistantMessage.Reasoning = nil
 	}

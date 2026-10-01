@@ -288,21 +288,18 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 	// We need to change it to https://generativelanguage.googleapis.com/download/v1beta
 	baseURL := strings.Replace(provider.networkConfig.BaseURL, "/v1beta", "/download/v1beta", 1)
 
-	// Ensure fileName has proper format
-	fileID := fileName
-	if !strings.HasPrefix(fileID, "files/") {
-		fileID = "files/" + fileID
+	filePath, bifrostErr := geminiResourcePath(fileName, "files", "file_id")
+	if bifrostErr != nil {
+		return nil, nil, bifrostErr
 	}
 
-	url := fmt.Sprintf("%s/%s:download?alt=media", baseURL, fileID)
+	url := fmt.Sprintf("%s/%s:download?alt=media", baseURL, filePath)
 
 	provider.logger.Debug("gemini batch results file download url: " + url)
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodGet)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)

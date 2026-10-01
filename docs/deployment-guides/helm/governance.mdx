@@ -173,7 +173,7 @@ bifrost:
         is_active: true
         budget_id: "budget-dev"
         rate_limit_id: "rate-limit-standard"
-        # No provider_configs → all providers allowed
+        allow_all_providers: true  # access to every provider, including ones added later
 
       # 2. OpenAI only - restricted to two models
       - id: "vk-openai-prod"
@@ -390,27 +390,65 @@ bifrost:
 
 ## Complexity Router Configuration
 
-If you use `complexity_tier` in routing rules, you can seed the analyzer thresholds and keyword lists from Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`.
+If you use `complexity_tier` in routing rules, choose Jev or Semantic as the primary classifier in Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`. Jev uses the configured Typesafe provider and its enabled key. Semantic needs an embedding provider and reference phrases.
 
-Omit this block, or leave `complexityAnalyzerConfig: null`, to use the built-in defaults.
+Omit this block, or leave `complexityAnalyzerConfig: null`, to leave complexity classification disabled. To enable it, supply all three `keywords` lists. They are required by the current config shape even when Jev is primary, though Jev does not use the phrases. In the default split mode, supplied phrases merge with stored built-in defaults; with `sourceOfTruth: config.json`, the supplied lists are the complete phrase set.
+
+For Jev as the primary classifier:
 
 ```yaml
 bifrost:
   governance:
     complexityAnalyzerConfig:
-      tier_boundaries:
-        simple_medium: 0.15
-        medium_complex: 0.35
-        complex_reasoning: 0.60
+      classifier: jev
+      jev:
+        previous_message_count: 1
+        timeout: "1.5s"
+        criteria:                      # Optional: omit to use the shipped tier guidance
+          COMPLEX:
+            definition: "Advanced expertise combined with substantial reasoning, design, or changes that must stay consistent across several components."
+      session:
+        enabled: true
       keywords:
-        code_keywords: ["function", "class", "api", "debug", "deploy"]
-        reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
-        technical_keywords: ["architecture", "kubernetes", "latency", "authentication"]
-        simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
+        simple_keywords: ["fix the grammar in this sentence."]
+        medium_keywords: ["apply a standard method to this technical question."]
+        complex_keywords: ["design a solution under several competing constraints."]
 ```
 
+`jev.previous_message_count` accepts 0 to 5 earlier user messages in addition to the current request. Jev usage counts toward request cost and budgets.
+
+`jev.criteria` optionally overrides the tier guidance Jev classifies against. Its keys are `SIMPLE`, `MEDIUM`, and `COMPLEX`, each with an optional `definition` (max 500 characters), `signals`, and `examples` (each max 12 items of 300 characters). A supplied list replaces the whole default list, and anything omitted uses the shipped default. See [Tier guidance](/features/complexity-router#tier-guidance) for the defaults and how to write your own. To use Jev after an inconclusive semantic result, keep the semantic configuration below, set `semantic.fallback: jev`, and optionally include the `jev` settings above.
+
+For Semantic as the primary classifier:
+
+```yaml
+bifrost:
+  governance:
+    complexityAnalyzerConfig:
+      semantic:
+        provider: "openai"
+        embedding_model: "text-embedding-3-small"
+        timeout: "1.5s"
+        min_similarity: 0
+        message_history_count: 1
+        count_toward_budgets: false
+        vector_store: "embedded"
+      session:
+        enabled: true
+      keywords:
+        simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
+        medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
+        complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
+```
+
+`session.enabled` is optional and defaults to `false` for both classifiers. When enabled, an identified session retains its highest observed tier for 24 hours of inactivity; normally sequential turns can escalate while lower proposals keep the stored tier. Overlapping requests for the same session are best-effort and resolve by last writer wins. The lifetime is built in and is separate from provider prompt-cache TTLs.
+
 <Note>
-In the default split mode, runtime UI and API edits are preserved while the matching Helm-rendered section is unchanged. When Helm changes a section, tier boundaries are replaced from the rendered `config.json`, while keyword lists are merged additively with stored runtime keywords (union with duplicates removed). Use `bifrost.sourceOfTruth: config.json` only when Helm should replace stored governance state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full startup rules.
+In the default split mode, runtime UI and API edits are preserved while the matching Helm-rendered section is unchanged. When Helm changes a section, keyword lists are merged additively with stored runtime phrases (union with duplicates removed), and the semantic block is replaced as one unit. Use `bifrost.sourceOfTruth: config.json` only when Helm should replace stored config state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full startup rules.
+</Note>
+
+<Note>
+Existing releases that still use `code_keywords`, `technical_keywords`, and `reasoning_keywords` remain valid during upgrade. Bifrost maps them into the three reference-phrase lists; new configurations should use the three-list shape shown above. Legacy `tier_boundaries` also remain accepted when present, but are optional and ignored by semantic routing.
 </Note>
 
 ---

@@ -34,6 +34,9 @@ const mcpServerName = "bifrost"
 // MCPToolExecutor interface defines the method needed for executing MCP tools
 type MCPToolManager interface {
 	GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool
+	// GetMCPServerInstructions returns the upstream instructions this request may see,
+	// already aggregated and size-bounded. Scoped by the same context the tool filter reads.
+	GetMCPServerInstructions(ctx context.Context) string
 	ExecuteChatMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
 	ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 }
@@ -48,6 +51,18 @@ type MCPGatewayAdmitter interface {
 	// deployment has nothing to resolve access with, or the request presented nothing), and it is
 	// served unrestricted, as every other path serves it.
 	AdmitMCPGatewayRequest(ctx *schemas.BifrostContext) (schemas.Access, *schemas.BifrostError)
+}
+
+// mcpSlugResolver is the optional capability behind a /mcp/<slug> endpoint: it resolves the tools a
+// request may see for the Virtual MCP or MCP client the slug names, gated on the caller's grant.
+// Satisfied by the same admitter that resolves gateway access. Absent (or nil) means there is no
+// governance store to resolve against, so /mcp/<slug> is refused.
+type mcpSlugResolver interface {
+	// VirtualMCPToolAccess returns the served tool include-list and whether the slug's Virtual MCP is
+	// assigned to the request's key (assigned=false → 403). Tools are narrowed to the request's access.
+	VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, assigned bool)
+	// MCPClientToolAccess is the same for a single MCP client the slug names (ok=false → 403).
+	MCPClientToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, ok bool)
 }
 
 // VirtualKeyCache resolves a virtual key by its row ID from an in-memory cache,
@@ -142,6 +157,9 @@ func (h *MCPServerHandler) RegisterRoutes(r *router.Router, middlewares ...schem
 	// MCP server endpoint - supports both POST (JSON-RPC) and GET (SSE)
 	r.POST("/mcp", lib.ChainMiddlewares(h.handleMCPServer, middlewares...))
 	r.GET("/mcp", lib.ChainMiddlewares(h.handleMCPServerSSE, middlewares...))
+	// Virtual MCP endpoints: same handlers, narrowed to the slug's vMCP in admit.
+	r.POST("/mcp/{slug}", lib.ChainMiddlewares(h.handleMCPServer, middlewares...))
+	r.GET("/mcp/{slug}", lib.ChainMiddlewares(h.handleMCPServerSSE, middlewares...))
 }
 
 func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
@@ -335,14 +353,36 @@ func (h *MCPServerHandler) server() *server.MCPServer {
 	return h.mcpServer.Load()
 }
 
+// forwardServerInstructions answers initialize with the upstream servers' own usage guidance,
+// which the MCP spec carries in this field and which a gateway that drops it eats on the
+// client's behalf. Runs as an AfterInitialize hook rather than through server.WithInstructions
+// because that option is fixed at construction, and one server here serves every caller: the
+// text has to be resolved per request, from the same context the tool filter reads, or a caller
+// narrowed to one upstream would be handed the instructions of servers it cannot reach.
+//
+// Silent when the aggregate is empty, so no upstream instructions means no field at all rather
+// than an empty one.
+func (h *MCPServerHandler) forwardServerInstructions(ctx context.Context, _ any, _ *mcp.InitializeRequest, result *mcp.InitializeResult) {
+	if result == nil {
+		return
+	}
+	if instructions := h.toolManager.GetMCPServerInstructions(ctx); instructions != "" {
+		result.Instructions = instructions
+	}
+}
+
 // buildServer registers every available tool on a fresh server. A tool's handler reads nothing
 // about the caller: what a request may see and call rides on its context, and both the tool filter
 // and the executor read it from there.
 func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *server.MCPServer {
+	hooks := &server.Hooks{}
+	hooks.AddAfterInitialize(h.forwardServerInstructions)
+
 	mcpServer := server.NewMCPServer(
 		mcpServerName,
 		version,
 		server.WithToolCapabilities(true),
+		server.WithHooks(hooks),
 	)
 	// Per-request tool filter so tools/list answers with what this request may see.
 	server.WithToolFilter(h.makeIncludeClientsFilter())(mcpServer)
@@ -380,25 +420,7 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 			if err != nil {
 				logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
 				if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
-					// Two surfaces share this error: per-user OAuth uses
-					// AuthorizeURL (the upstream provider's authorize page);
-					// per-user headers uses SubmitURL (the workspace landing
-					// page where the user submits their header values).
-					// Pick whichever Kind populated.
-					url := authReq.AuthorizeURL
-					action := "connect your account"
-					if authReq.Kind == schemas.MCPAuthRequiredKindHeaders {
-						url = authReq.SubmitURL
-						action = "submit the required headers"
-					}
-					message := fmt.Sprintf(
-						"Authentication required for %s. Open this URL to %s: %s",
-						authReq.MCPClientName, action, url,
-					)
-					if schemas.MCPAuthURLHasTempTokenFragment(url) {
-						message += schemas.MCPAuthTempTokenReminder
-					}
-					return mcp.NewToolResultError(message), nil
+					return mcp.NewToolResultError(mcpAuthRequiredToolResult(authReq)), nil
 				}
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
 			}
@@ -514,8 +536,64 @@ func (h *MCPServerHandler) admit(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 		return &mcpRefusal{status: status, message: bifrost.GetErrorMessage(refused)}
 	}
 
+	// A /mcp/<slug> endpoint serves one Virtual MCP or one MCP client: gate on the caller's grant and
+	// narrow the tools to it. The plain /mcp route carries no slug and serves the full access.
+	if slug, _ := ctx.UserValue("slug").(string); slug != "" {
+		return h.admitBySlug(bifrostCtx, slug, access)
+	}
+
 	stampToolAccess(bifrostCtx, access)
 	return nil
+}
+
+// mcpAuthRequiredToolResult is the text a tool result carries when a tool could not run because the
+// caller still has to authenticate with the upstream server. The interactive kinds point the caller
+// at a page to open: per-user OAuth at the provider's authorize page, per-user headers at the
+// workspace page where the header values are submitted. Delegated exchange has no page to open,
+// because what needs fixing is the credential on the request itself, so its resolver's message is
+// the whole answer and is passed through as written. An interactive kind that arrived without a
+// page to open falls back to its message the same way, rather than prompting the caller to open
+// nothing.
+func mcpAuthRequiredToolResult(authReq *schemas.MCPAuthRequiredError) string {
+	url := authReq.AuthorizeURL
+	action := "connect your account"
+	switch authReq.Kind {
+	case schemas.MCPAuthRequiredKindExchange:
+		url = ""
+	case schemas.MCPAuthRequiredKindHeaders:
+		url = authReq.SubmitURL
+		action = "submit the required headers"
+	}
+	if url == "" {
+		if authReq.Message != "" {
+			return authReq.Message
+		}
+		return fmt.Sprintf("Authentication required for %s.", authReq.MCPClientName)
+	}
+	message := fmt.Sprintf("Authentication required for %s. Open this URL to %s: %s", authReq.MCPClientName, action, url)
+	if schemas.MCPAuthURLHasTempTokenFragment(url) {
+		message += schemas.MCPAuthTempTokenReminder
+	}
+	return message
+}
+
+// admitBySlug narrows an already-admitted request to the Virtual MCP or MCP client its slug names,
+// stamping the served tools; 403 if the caller may reach neither.
+func (h *MCPServerHandler) admitBySlug(bifrostCtx *schemas.BifrostContext, slug string, access schemas.Access) *mcpRefusal {
+	resolver, ok := h.admitter.(mcpSlugResolver)
+	if !ok {
+		return &mcpRefusal{status: fasthttp.StatusForbidden, message: "access_denied"}
+	}
+	// Slugs are unique across both namespaces, so try the Virtual MCP first, then a single client.
+	if served, assigned := resolver.VirtualMCPToolAccess(bifrostCtx, slug, access); assigned {
+		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, served)
+		return nil
+	}
+	if served, ok := resolver.MCPClientToolAccess(bifrostCtx, slug, access); ok {
+		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, served)
+		return nil
+	}
+	return &mcpRefusal{status: fasthttp.StatusForbidden, message: "access_denied"}
 }
 
 // admitAccess asks governance what the request may reach. Without an admitter there is nothing to
@@ -565,14 +643,27 @@ func (h *MCPServerHandler) discoveryEnabled() bool {
 // by governance, from the grant it resolves for it, so both paths refuse it the same way.
 //
 // Authentication priority:
-//  1. JWT Bearer token (when MCPServerAuthMode is both or oauth)
-//  2. Header credentials, or an identity an upstream auth layer stamped (headers or both)
-//  3. Anonymous access (when EnforceAuthOnInference is false)
+//  1. An identity an upstream auth layer already authenticated (headers or both)
+//  2. JWT Bearer token (when MCPServerAuthMode is both or oauth)
+//  3. Header credentials (headers or both)
+//  4. Anonymous access (when EnforceAuthOnInference is false)
 //
 // When MCPServerAuthMode is oauth (strict), header credentials are rejected.
 func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) error {
 	enforceAuth, authMode := h.authSettings()
 	discoveryEnabled := authMode == tables.MCPServerAuthModeBoth || authMode == tables.MCPServerAuthModeOAuth
+
+	// --- Identity an upstream auth layer already authenticated ---
+	// An upstream auth layer that verified the request's bearer against its own identity
+	// provider stamps the user it names, and converting the request copied that onto
+	// bifrostCtx. Such a bearer is a JWT this server never issued, so the JWT path below
+	// would refuse it on the key id; the stamped user is the settled identity, and
+	// governance resolves what it may reach. Accepted wherever header credentials are:
+	// oauth strict mode admits only tokens this server issued and is excluded.
+	if authMode != tables.MCPServerAuthModeOAuth &&
+		bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyUserID) != "" {
+		return nil
+	}
 
 	// --- JWT path ---
 	if rawJWT := extractBearerJWT(ctx); rawJWT != "" && discoveryEnabled {

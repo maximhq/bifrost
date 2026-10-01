@@ -806,6 +806,12 @@ bifrost:
         connectionType: "websocket"
         websocketConfig:
           url: "wss://mcp.example.com/ws"
+      - name: "per-user-headers-server"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/headers"
+        authType: "per_user_headers"
+        perUserHeaderKeys: ["Authorization", "X-Api-Key"]
     toolManagerConfig:
       toolExecutionTimeout: 60
       maxAgentDepth: 5
@@ -831,6 +837,11 @@ assert_field_value 'mcp client[1] connection_string' '.mcp.client_configs.[1].co
 assert_field_value 'mcp client[2] name' '.mcp.client_configs.[2].name' '"ws-server"'
 assert_field_value 'mcp client[2] connection_type (ws->sse)' '.mcp.client_configs.[2].connection_type' '"sse"'
 assert_field_value 'mcp client[2] connection_string' '.mcp.client_configs.[2].connection_string' '"wss://mcp.example.com/ws"'
+
+# per_user_headers client
+assert_field_value 'mcp client[3] auth_type' '.mcp.client_configs.[3].auth_type' '"per_user_headers"'
+assert_field_value 'mcp client[3] per_user_header_keys[0]' '.mcp.client_configs.[3].per_user_header_keys.[0]' '"Authorization"'
+assert_field_value 'mcp client[3] per_user_header_keys[1]' '.mcp.client_configs.[3].per_user_header_keys.[1]' '"X-Api-Key"'
 
 # Tool manager config
 assert_field_value 'mcp tool_manager_config.tool_execution_timeout' '.mcp.tool_manager_config.tool_execution_timeout' '60'
@@ -1144,6 +1155,16 @@ bifrost:
         stream_replay_event_interval_ms: 25
         provider_config_ids:
           - 1
+      - id: 2
+        name: "Current input only"
+        enabled: true
+        target: "llm"
+        cel_expression: 'provider == "openai"'
+        apply_to: "input"
+        send_all_conversation_turns: false
+        max_turns_to_send: 0
+        provider_config_ids:
+          - 1
     providers:
       - id: 1
         provider_name: "bedrock"
@@ -1166,6 +1187,8 @@ assert_field_value 'guardrails rule[0].sampling_rate' '.guardrails_config.guardr
 assert_field_value 'guardrails rule[0].timeout' '.guardrails_config.guardrail_rules.[0].timeout' '1000'
 assert_field_value 'guardrails rule[0].stream_replay_event_interval_ms' '.guardrails_config.guardrail_rules.[0].stream_replay_event_interval_ms' '25'
 assert_field 'guardrails rule[0].provider_config_ids' '.guardrails_config.guardrail_rules.[0].provider_config_ids'
+assert_field_value 'guardrails rule[1].send_all_conversation_turns' '.guardrails_config.guardrail_rules.[1].send_all_conversation_turns' 'false'
+assert_field_value 'guardrails rule[1].max_turns_to_send' '.guardrails_config.guardrail_rules.[1].max_turns_to_send' '0'
 
 assert_field 'guardrails_config.guardrail_providers' '.guardrails_config.guardrail_providers'
 assert_field_value 'guardrails provider[0].id' '.guardrails_config.guardrail_providers.[0].id' '1'

@@ -163,7 +163,7 @@ func TestProviderScopedLimitsFundOnlyTheirOwnProvider(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := resolverCtx(store, providerScopeTestVKValue)
 
-			settled := resolveLimits(ctx, store, tc.provider, tc.model)
+			settled := settleAttemptLimits(ctx, store, tc.provider, tc.model)
 			require.NotNil(t, settled, "the key resolves, so the request has a grant to settle limits on")
 
 			assert.ElementsMatch(t, tc.budgets, limitIDsOf(settled.Budgets()),

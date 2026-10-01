@@ -300,6 +300,11 @@ func (f *HTTPClientFactory) createFasthttpClient(purpose ClientPurpose) *fasthtt
 // past a few dead connections to a live one while staying well under fasthttp's internal
 // attempt cap. Retrying is safe here because the failure occurs before the server processes
 // the request (during dial / response-header parsing).
+//
+// Since maximhq/bifrost#7035 this callback is only reached for failures on a
+// connection reused from the pool: contextTransport.RoundTrip reports failures
+// on a freshly dialed socket with retry=false, so a real upstream failure is
+// counted against Bifrost's own max_retries instead of being retried here.
 const maxStaleConnRetries = 3
 
 func StaleConnectionRetryIfErr(_ *fasthttp.Request, attempts int, err error) (resetTimeout bool, retry bool) {
