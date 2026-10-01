@@ -34,6 +34,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
 | `mcp` | object | MCP server and tool configuration | [MCP](#mcp) |
 | `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
+| `proxy_config` | object | Global outbound proxy and which components use it (SCIM directory sync, inference, API) | [Client](/deployment-guides/config-json/client#global-proxy) |
 | `auth_config` | object | **Deprecated** - use `governance.auth_config` | [Client](/deployment-guides/config-json/client#authentication) |
 
 ---
@@ -490,6 +491,24 @@ Optional tuning for the WebSocket gateway (Responses API WebSocket mode, Realtim
 | `pool.max_total_connections` | `1000` | Max total idle upstream connections |
 | `pool.idle_timeout_seconds` | `600` | Evict idle connections after this many seconds |
 | `pool.max_connection_lifetime_seconds` | `7200` | Max lifetime of any upstream connection |
+
+---
+
+## `proxy_config`
+
+The global outbound proxy from the dashboard's Proxy page. `enable_for_scim` *(enterprise)*, `enable_for_inference` and `enable_for_api` choose which components use it. Applied when new or changed under split mode, and on every startup under `source_of_truth: "config.json"`.
+
+```json
+{
+  "proxy_config": {
+    "enabled": true,
+    "url": "http://proxy.example.com:8080",
+    "enable_for_scim": true
+  }
+}
+```
+
+Full documentation: [Client → Global Proxy](/deployment-guides/config-json/client#global-proxy).
 
 ---
 
