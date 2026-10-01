@@ -180352,6 +180352,103 @@
           }
         }
       ]
+    },
+    {
+      "name": "131. Cohere tool_choice auto stays unforced (cohere-tool-choice-auto)",
+      "description": "Cohere only accepts tool_choice REQUIRED or NONE, and omitting tool_choice lets the model decide. core/providers/cohere mapped an OpenAI tool_choice \"auto\" to REQUIRED on chat completions, so every request that sent tool_choice \"auto\" with tools forced Cohere to call a tool, and to the unsupported value AUTO on the Responses path. Fix: \"auto\" omits tool_choice on both converters. Each case asks for a plain-text answer with a tool available and tool_choice \"auto\", and pins HTTP 200 with a text answer and no tool call.",
+      "item": [
+        {
+          "name": "cohere cohere/command-a-03-2025 /v1/chat/completions tool_choice auto does not force a tool call (cohere-tool-choice-auto)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cohere/command-a-03-2025 tool_choice auto leaves the tool optional', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices && j.choices.length, 'no choices: ' + pm.response.text()).to.be.above(0);",
+                  "  var choice = j.choices[0];",
+                  "  pm.expect(choice.finish_reason, 'tool call was forced: ' + pm.response.text()).to.not.equal('tool_calls');",
+                  "  pm.expect(choice.message.tool_calls || [], 'tool call was forced: ' + pm.response.text()).to.have.lengthOf(0);",
+                  "  pm.expect(choice.message.content, 'no text answer: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"cohere/command-a-03-2025\",\"max_tokens\":20,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word hello. Do not call any tool.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"auto\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cohere cohere/command-a-03-2025 /v1/responses tool_choice auto does not force a tool call (cohere-tool-choice-auto)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cohere/command-a-03-2025 Responses tool_choice auto is accepted and leaves the tool optional', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'no output: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  var calls = j.output.filter(function (item) { return item.type === 'function_call'; });",
+                  "  pm.expect(calls, 'tool call was forced: ' + pm.response.text()).to.have.lengthOf(0);",
+                  "  var messages = j.output.filter(function (item) { return item.type === 'message'; });",
+                  "  pm.expect(messages.length, 'no text answer: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"cohere/command-a-03-2025\",\"max_output_tokens\":20,\"input\":\"Reply with the single word hello. Do not call any tool.\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":\"auto\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
