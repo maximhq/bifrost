@@ -238,6 +238,34 @@ var retryableBedrockExceptions = map[string]int{
 	"modelTimeoutException":       504, // native 408; processing timeout, transient
 }
 
+type converseStreamProgress struct {
+	messageStopped bool
+	eventCount     int
+	lastEventType  string
+	lastPayload    []byte
+}
+
+func (progress *converseStreamProgress) observe(message eventstream.Message, event *BedrockStreamEvent) {
+	progress.eventCount++
+	progress.lastEventType = "unknown"
+	if header := message.Headers.Get(":event-type"); header != nil {
+		progress.lastEventType = header.String()
+	}
+	progress.lastPayload = append(progress.lastPayload[:0], message.Payload[:min(len(message.Payload), 4096)]...)
+	if event.StopReason != nil && *event.StopReason != "" {
+		progress.messageStopped = true
+	}
+}
+
+func (progress *converseStreamProgress) incompleteError(usage *schemas.BifrostLLMUsage) *schemas.BifrostError {
+	streamError := providerUtils.NewBifrostUpstreamConnectionError(
+		fmt.Sprintf("Bedrock Converse stream ended before messageStop (events: %d, last event: %q)", progress.eventCount, progress.lastEventType),
+		io.ErrUnexpectedEOF,
+	)
+	streamError.ExtraFields.BilledUsage = usage
+	return streamError
+}
+
 // newBedrockStreamException builds a BifrostError from an AWS EventStream
 // exception message (any :message-type other than "event"). It preserves the
 // upstream exception type — the payload's "__type" when present, else the
@@ -1570,6 +1598,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			}
 		}()
 		var finishReason *string
+		var progress converseStreamProgress
 		chunkIndex := 0
 
 		// Process AWS Event Stream format using proper decoder
@@ -1604,6 +1633,13 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				}
 				// End of stream - this is normal
 				if err == io.EOF {
+					if !progress.messageStopped {
+						normalizeUsage()
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						streamErr := providerUtils.EnrichError(ctx, progress.incompleteError(usage), jsonData, progress.lastPayload, provider.sendBackRawRequest, provider.sendBackRawResponse, time.Since(startTime))
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
+						return
+					}
 					break
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1651,6 +1687,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
+
+				progress.observe(message, &streamEvent)
 
 				if streamEvent.Usage != nil {
 					// Accumulate usage information instead of overwriting
@@ -1994,6 +2032,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		}()
 
 		var streamTrace *BedrockConverseTrace
+		var progress converseStreamProgress
 		chunkIndex := 0
 
 		// Create stream state for stateful conversions (used by Converse API path)
@@ -2027,6 +2066,13 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					return
 				}
 				if err == io.EOF {
+					if !progress.messageStopped {
+						normalizeUsage()
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						streamErr := providerUtils.EnrichError(ctx, progress.incompleteError(billedUsage), jsonData, progress.lastPayload, provider.sendBackRawRequest, provider.sendBackRawResponse, time.Since(startTime))
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
+						return
+					}
 					// Converse API: finalize any open items at end of stream.
 					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage, streamTrace)
 					for i, finalResponse := range finalResponses {
@@ -2099,6 +2145,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
+
+				progress.observe(message, &streamEvent)
 
 				if streamEvent.Trace != nil {
 					streamTrace = streamEvent.Trace
