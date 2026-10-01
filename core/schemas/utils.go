@@ -1408,6 +1408,11 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.Async = new(*original.ResponsesToolMessage.Async)
 		}
 
+		if original.ResponsesToolMessage.ToolsetName != nil {
+			copyToolsetName := *original.ResponsesToolMessage.ToolsetName
+			copy.ResponsesToolMessage.ToolsetName = &copyToolsetName
+		}
+
 		if original.ResponsesToolMessage.Error != nil {
 			copyError := ResponsesToolMessageError{}
 			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr != nil {
