@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/maximhq/bifrost/core/keyselectors"
 	"github.com/maximhq/bifrost/core/mcp"
@@ -3089,53 +3088,6 @@ func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall
 		}
 	}
 	return bifrost.MCPManager.ExecuteChatTool(ctx, toolCall)
-}
-
-// ExecuteRawMCPTool executes an MCP tool call while preserving the upstream
-// CallToolResult for protocol gateways and other MCP-to-MCP callers.
-func (bifrost *Bifrost) ExecuteRawMCPTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*mcpgo.CallToolResult, *schemas.BifrostError) {
-	if ctx == nil {
-		ctx = bifrost.ctx
-	} else {
-		ensureMCPRawStorageContext(ctx)
-		ensureMCPTracerContext(ctx, bifrost.getTracer())
-		bifrost.setModelCatalogOnContext(ctx)
-	}
-	if bifrost.MCPManager == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error:          &schemas.ErrorField{Message: "mcp is not configured in this bifrost instance"},
-			ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest},
-		}
-	}
-	if manager, ok := bifrost.MCPManager.(interface {
-		ExecuteRawTool(*schemas.BifrostContext, *schemas.ChatAssistantMessageToolCall) (*mcpgo.CallToolResult, *schemas.BifrostError)
-	}); ok {
-		return manager.ExecuteRawTool(ctx, toolCall)
-	}
-
-	// Custom MCPManagerInterface implementations compiled before raw execution was
-	// added still work. They retain their existing text-only behavior until they
-	// opt in to ExecuteRawTool.
-	message, bErr := bifrost.MCPManager.ExecuteChatTool(ctx, toolCall)
-	if bErr != nil {
-		return nil, bErr
-	}
-	var text string
-	if message != nil && message.Content != nil {
-		if message.Content.ContentStr != nil {
-			text = *message.Content.ContentStr
-		} else {
-			for _, block := range message.Content.ContentBlocks {
-				if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
-					text += *block.Text
-				}
-			}
-		}
-	}
-	result := mcpgo.NewToolResultText(text)
-	result.IsError = message != nil && message.ChatToolMessage != nil && message.ChatToolMessage.IsError != nil && *message.ChatToolMessage.IsError
-	return result, nil
 }
 
 // ExecuteResponsesMCPTool executes an MCP tool call and returns the result as a responses

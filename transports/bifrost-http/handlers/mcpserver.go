@@ -38,14 +38,6 @@ type MCPToolManager interface {
 	ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 }
 
-// MCPRawToolManager is implemented by tool managers that can retain the
-// protocol-native CallToolResult. Keeping it separate preserves compatibility
-// with alternate MCPToolManager implementations, which continue to use the
-// text fallback below.
-type MCPRawToolManager interface {
-	ExecuteRawMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*mcp.CallToolResult, *schemas.BifrostError)
-}
-
 // MCPGatewayAdmitter decides whether a /mcp request may be served, and what it may reach. It runs
 // the request through the same governance funnel every tool execution passes, so a caller is told at
 // initialize and tools/list exactly what tools/call would tell them, by the same rules.
@@ -398,27 +390,6 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 				},
 			}
 
-			// Preserve the upstream result when the manager supports protocol-native
-			// execution. This keeps binary content, resources, structuredContent,
-			// metadata, and isError intact across the MCP-to-MCP gateway.
-			if rawToolManager, ok := h.toolManager.(MCPRawToolManager); ok {
-				toolResult, err := rawToolManager.ExecuteRawMCPTool(ctx, &toolCall)
-				if err != nil {
-					logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
-					if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
-						return mcp.NewToolResultError(mcpAuthRequiredToolResult(authReq)), nil
-					}
-					return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
-				}
-				if toolResult == nil {
-					return mcp.NewToolResultError("Tool execution returned no result"), nil
-				}
-				logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
-				return toolResult, nil
-			}
-
-			// Backwards-compatible fallback for tool managers that expose only the
-			// model-facing chat result.
 			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 			if err != nil {
 				logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
@@ -428,6 +399,22 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
 			}
 			logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
+
+			// The existing Chat API retains its text projection and optionally carries
+			// the native result. A getter assertion also supports older core releases.
+			if toolMessage != nil {
+				if carrier, ok := any(toolMessage.ChatToolMessage).(interface{ GetMCPToolResult() any }); ok {
+					if native := carrier.GetMCPToolResult(); native != nil {
+						toolResult, ok := native.(*mcp.CallToolResult)
+						if !ok {
+							return mcp.NewToolResultError("Tool execution returned an invalid protocol result"), nil
+						}
+						if toolResult != nil {
+							return toolResult, nil
+						}
+					}
+				}
+			}
 
 			// Extract content from tool message
 			var resultText string
@@ -446,7 +433,9 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 			}
 
 			// Return result using mcp-go helper
-			return mcp.NewToolResultText(resultText), nil
+			result := mcp.NewToolResultText(resultText)
+			result.IsError = toolMessage != nil && toolMessage.ChatToolMessage != nil && toolMessage.ChatToolMessage.IsError != nil && *toolMessage.ChatToolMessage.IsError
+			return result, nil
 		}
 
 		// Convert description from *string to string

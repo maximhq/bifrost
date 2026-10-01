@@ -12,7 +12,8 @@ import (
 )
 
 type richToolResultManager struct {
-	result *mcp.CallToolResult
+	result  *mcp.CallToolResult
+	isError bool
 }
 
 func (m *richToolResultManager) GetAvailableMCPTools(context.Context) []schemas.ChatTool {
@@ -22,18 +23,14 @@ func (m *richToolResultManager) GetAvailableMCPTools(context.Context) []schemas.
 func (m *richToolResultManager) ExecuteChatMCPTool(context.Context, *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
 	text := "Attachment report.pdf"
 	return &schemas.ChatMessage{
-		Role:    schemas.ChatMessageRoleTool,
-		Content: &schemas.ChatMessageContent{ContentStr: &text},
+		Role:            schemas.ChatMessageRoleTool,
+		ChatToolMessage: &schemas.ChatToolMessage{MCPToolResult: m.result, IsError: &m.isError},
+		Content:         &schemas.ChatMessageContent{ContentStr: &text},
 	}, nil
 }
 
 func (m *richToolResultManager) ExecuteResponsesMCPTool(context.Context, *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
 	return nil, nil
-}
-
-// ExecuteRawMCPTool returns the protocol-native result used by the gateway path.
-func (m *richToolResultManager) ExecuteRawMCPTool(context.Context, *schemas.ChatAssistantMessageToolCall) (*mcp.CallToolResult, *schemas.BifrostError) {
-	return m.result, nil
 }
 
 // A tool result for an auth-required error points the caller at a page when there is one to open,
@@ -178,4 +175,28 @@ func TestMCPGatewayPreservesRawToolResult(t *testing.T) {
 	wantJSON, err := json.Marshal(want)
 	require.NoError(t, err)
 	require.JSONEq(t, string(wantJSON), string(envelope.Result))
+}
+
+func TestMCPGatewayLegacyTextResult(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, isError := range []bool{false, true} {
+		manager := &richToolResultManager{isError: isError}
+		handler := &MCPServerHandler{toolManager: manager}
+		server := handler.buildServer([]schemas.ChatTool{{
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "fixture-tool", Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+		}})
+		response := server.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fixture-tool","arguments":{}}}`))
+		responseJSON, err := json.Marshal(response)
+		require.NoError(t, err)
+		var envelope struct {
+			Result json.RawMessage `json:"result"`
+		}
+		require.NoError(t, json.Unmarshal(responseJSON, &envelope))
+		want := mcp.NewToolResultText("Attachment report.pdf")
+		want.IsError = isError
+		wantJSON, err := json.Marshal(want)
+		require.NoError(t, err)
+		require.JSONEq(t, string(wantJSON), string(envelope.Result))
+	}
 }

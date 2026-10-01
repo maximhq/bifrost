@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -114,5 +116,99 @@ func TestRunWithPluginPipelineAppliesChatRedactionToRawResult(t *testing.T) {
 	}
 	if gotRaw.IsError {
 		t.Fatal("post-hook isError mutation was not applied to the native result")
+	}
+}
+
+// resultReturningPipeline exercises the existing public APIs without an upstream server.
+type resultReturningPipeline struct {
+	redactingRawResultPipeline
+	response *schemas.BifrostMCPResponse
+	redact   bool
+}
+
+func (p resultReturningPipeline) RunMCPPreHooks(_ *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
+	return req, &schemas.MCPPluginShortCircuit{Response: p.response}, 1
+}
+
+func (p resultReturningPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, response *schemas.BifrostMCPResponse, err *schemas.BifrostError, count int) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	if p.redact {
+		return p.redactingRawResultPipeline.RunMCPPostHooks(ctx, response, err, count)
+	}
+	return response, err
+}
+
+func TestExistingMCPExecuteAPIsPreserveNativeResult(t *testing.T) {
+	for _, responses := range []bool{false, true} {
+		t.Run(fmt.Sprintf("responses=%v", responses), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			native := mcpgo.NewToolResultText("legacy text")
+			message := createToolResponseMessage(schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("call-1")}, "legacy text", false)
+			response := &schemas.BifrostMCPResponse{ChatMessage: message, MCPToolResult: native}
+			if responses {
+				response.ChatMessage = nil
+				response.ResponsesMessage = message.ToResponsesToolMessage()
+			}
+			pipeline := resultReturningPipeline{response: response}
+			manager := &MCPManager{
+				pluginPipelineProvider: func() PluginPipeline { return pipeline },
+				releasePluginPipeline:  func(PluginPipeline) {},
+			}
+			var result any
+			var wireMessage any
+			if responses {
+				got, err := manager.ExecuteResponsesTool(ctx, &schemas.ResponsesToolMessage{Name: schemas.Ptr("fixture-tool"), CallID: schemas.Ptr("call-1")})
+				if err != nil || got == nil || got.ResponsesToolMessage == nil {
+					t.Fatalf("existing Responses API failed: result=%+v error=%+v", got, err)
+				}
+				if got.Output == nil || got.Output.ResponsesToolCallOutputStr == nil || *got.Output.ResponsesToolCallOutputStr != "legacy text" {
+					t.Fatal("legacy Responses text result changed")
+				}
+				result = got.MCPToolResult
+				wireMessage = got
+			} else {
+				got, err := manager.ExecuteChatTool(ctx, &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("fixture-tool")}})
+				if err != nil || got == nil || got.ChatToolMessage == nil {
+					t.Fatalf("existing Chat API failed: result=%+v error=%+v", got, err)
+				}
+				if got.Content == nil || got.Content.ContentStr == nil || *got.Content.ContentStr != "legacy text" {
+					t.Fatal("legacy Chat text result changed")
+				}
+				result = got.GetMCPToolResult()
+				wireMessage = got
+			}
+			encoded, marshalErr := json.Marshal(wireMessage)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			var fields map[string]any
+			if err := json.Unmarshal(encoded, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := fields["MCPToolResult"]; exists {
+				t.Fatal("native MCP result leaked into LLM wire payload")
+			}
+			if result != native {
+				t.Fatalf("existing API lost the native result: %+v", result)
+			}
+		})
+	}
+}
+
+func TestExistingChatMCPAPIAppliesPostHookRedaction(t *testing.T) {
+	native := mcpgo.NewToolResultText("Attachment secret.pdf")
+	message := createToolResponseMessage(schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("call-1")}, "Attachment secret.pdf", false)
+	pipeline := resultReturningPipeline{response: &schemas.BifrostMCPResponse{ChatMessage: message, MCPToolResult: native}, redact: true}
+	manager := &MCPManager{pluginPipelineProvider: func() PluginPipeline { return pipeline }, releasePluginPipeline: func(PluginPipeline) {}}
+	got, err := manager.ExecuteChatTool(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("fixture-tool")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := got.GetMCPToolResult().(*mcpgo.CallToolResult)
+	if !ok || result == nil {
+		t.Fatal("missing native result")
+	}
+	text, ok := result.Content[0].(mcpgo.TextContent)
+	if !ok || text.Text != "Attachment [redacted]" {
+		t.Fatalf("native result bypassed post-hook redaction: %+v", result)
 	}
 }
