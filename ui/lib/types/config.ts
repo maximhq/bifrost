@@ -671,6 +671,7 @@ export interface CompatConfig {
 	should_drop_params: boolean;
 	should_convert_params: boolean;
 	azure_deepseek: boolean;
+	force_reasoning_only_models_to_responses: boolean;
 }
 
 // Core Bifrost configuration types
@@ -753,6 +754,7 @@ export const DefaultCoreConfig: CoreConfig = {
 		should_drop_params: false,
 		should_convert_params: false,
 		azure_deepseek: false,
+		force_reasoning_only_models_to_responses: true,
 	},
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,

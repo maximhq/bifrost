@@ -64,11 +64,12 @@ type TableClientConfig struct {
 	VKRotationCooldownNS                  int64                          `gorm:"column:vk_rotation_cooldown_ns;default:0" json:"-"`               // Rotation grace period in nanoseconds (Go duration encoding); 0 = previous value stops working immediately
 
 	// Compat plugin feature flags
-	CompatConvertTextToChat      bool `gorm:"column:compat_convert_text_to_chat;default:false" json:"-"`
-	CompatConvertChatToResponses bool `gorm:"column:compat_convert_chat_to_responses;default:false" json:"-"`
-	CompatShouldDropParams       bool `gorm:"column:compat_should_drop_params;default:false" json:"-"`
-	CompatShouldConvertParams    bool `gorm:"column:compat_should_convert_params;default:false" json:"-"`
-	CompatAzureDeepseek          bool `gorm:"column:compat_azure_deepseek;default:false" json:"-"`
+	CompatConvertTextToChat                   bool `gorm:"column:compat_convert_text_to_chat;default:false" json:"-"`
+	CompatConvertChatToResponses              bool `gorm:"column:compat_convert_chat_to_responses;default:false" json:"-"`
+	CompatShouldDropParams                    bool `gorm:"column:compat_should_drop_params;default:false" json:"-"`
+	CompatShouldConvertParams                 bool `gorm:"column:compat_should_convert_params;default:false" json:"-"`
+	CompatAzureDeepseek                       bool `gorm:"column:compat_azure_deepseek;default:false" json:"-"`
+	CompatForceReasoningOnlyModelsToResponses bool `gorm:"column:compat_force_reasoning_only_models_to_responses;default:false" json:"-"`
 
 	// MCPServerAuthMode controls how /mcp authenticates inbound clients.
 	// Stored as a plain varchar column so it can be read without JSON parsing.
