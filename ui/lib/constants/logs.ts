@@ -64,6 +64,7 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"ollama",
 	"openai",
 	"openrouter",
+	"parasail",
 	"sgl",
 	"vertex",
 	"vllm",
