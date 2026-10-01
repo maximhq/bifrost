@@ -233,6 +233,12 @@ The `RootSpan` is the inbound HTTP request span. The `Spans` array contains ever
     "Status": "ok",
     "StatusMsg": "",
     "Attributes": {
+      "http.request.method": "POST",
+      "http.route": "/v1/chat/completions",
+      "http.response.status_code": 200,
+      "url.scheme": "http",
+      "url.path": "/v1/chat/completions",
+      "user_agent.original": "bruno-runtime/3.5.0",
       "http.method": "POST",
       "http.url": "/v1/chat/completions",
       "http.status_code": 200,
