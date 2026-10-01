@@ -1842,6 +1842,10 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		copy.Text = &copyText
 	}
 
+	if original.ToolName != nil {
+		copy.ToolName = new(*original.ToolName)
+	}
+
 	// Reasoning replay fields: Signature and EncryptedContent are echoed back
 	// verbatim to the provider, so they must survive the deep copy.
 	if original.Signature != nil {
