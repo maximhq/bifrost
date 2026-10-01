@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -426,7 +427,8 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
 	}
-	geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+	// Copy: keys are deleted below, and each retry converts the same request again.
+	geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 
 	// Set response modalities to indicate this is an image generation request
 	geminiReq.GenerationConfig.ResponseModalities = []Modality{ModalityImage}
@@ -585,7 +587,8 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 		// Handle extra parameters for Imagen-specific fields
 		if bifrostReq.Params.ExtraParams != nil {
-			req.ExtraParams = bifrostReq.Params.ExtraParams
+			// Copy: keys are deleted below, and each retry converts the same request again.
+			req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 			if addWatermark, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["addWatermark"]); ok {
 				delete(req.ExtraParams, "addWatermark")
 				req.Parameters.AddWatermark = addWatermark
@@ -781,7 +784,8 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		// Copy: keys are deleted below, and each retry converts the same request again.
+		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 
 		// Prefer explicit aspect_ratio; fall back to deriving aspect ratio + resolution from size.
 		imageConfig := &GeminiImageConfig{}
@@ -1008,7 +1012,8 @@ func ToImagenImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 		var hasMaskData bool
 		var dilation *float64
 		var maskClasses []int
-		req.ExtraParams = bifrostReq.Params.ExtraParams
+		// Copy: keys are deleted below, and each retry converts the same request again.
+		req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 		// Check if user provided a mask
 		if len(bifrostReq.Params.Mask) > 0 {
 			hasMaskData = true

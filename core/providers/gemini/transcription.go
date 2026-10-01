@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -115,7 +116,8 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		// Copy: keys are deleted below, and each retry converts the same request again.
+		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
 			// Safety settings
