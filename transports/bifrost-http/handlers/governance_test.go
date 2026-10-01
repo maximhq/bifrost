@@ -4906,9 +4906,7 @@ func TestRunVKExpiryCleanupJob_DeletesFlaggedExpiredKeysAndNotifiesOnce(t *testi
 	assert.Equal(t, schemas.NotificationSeveritySuccess, n.Severity)
 	assert.Equal(t, schemas.NotificationAudienceAll, n.Audience)
 	assert.Equal(t, "Expired virtual keys deleted", n.Title)
-	assert.Contains(t, n.Message, "Deleted 2 expired virtual keys")
-	assert.Contains(t, n.Message, "alpha")
-	assert.Contains(t, n.Message, "beta")
+	assert.Equal(t, "Deleted 2 expired virtual keys.", n.Message)
 	assert.Equal(t, vkExpiryCleanupActionPath, n.ActionPath)
 	assert.NotEmpty(t, n.ActionLabel)
 }
@@ -5033,16 +5031,10 @@ func TestRunVKExpiryCleanupJob_ListErrorFailsJob(t *testing.T) {
 	assert.Empty(t, *published)
 }
 
-func TestVKExpiryCleanupNotification_TruncatesLongNameLists(t *testing.T) {
-	names := make([]string, vkExpiryCleanupMaxNamesInNotification+5)
-	for i := range names {
-		names[i] = fmt.Sprintf("key-%d", i)
-	}
-	n := vkExpiryCleanupNotification(vkExpiryCleanupMeta{Deleted: names, Failed: []string{"stuck"}})
+func TestVKExpiryCleanupNotification_CountsOnly(t *testing.T) {
+	n := vkExpiryCleanupNotification(vkExpiryCleanupMeta{Deleted: []string{"alpha"}, Failed: []string{"stuck", "jammed"}})
 	assert.Equal(t, schemas.NotificationSeverityWarning, n.Severity)
-	assert.Contains(t, n.Message, "and 5 more")
-	assert.Contains(t, n.Message, "1 could not be deleted: stuck")
-	assert.NotContains(t, n.Message, fmt.Sprintf("key-%d,", vkExpiryCleanupMaxNamesInNotification))
+	assert.Equal(t, "Deleted 1 expired virtual key. 2 could not be deleted.", n.Message)
 }
 
 func TestVirtualKeyDeleteAfterExpire_APIValidation(t *testing.T) {
