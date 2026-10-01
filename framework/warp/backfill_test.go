@@ -203,7 +203,7 @@ func TestWarpBackfillCancellationDuringIndexingNotCounted(t *testing.T) {
 	defer cancel()
 	cancelID := logs[2].ID
 	cancelDuringIndex := func(bctx *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-		if request.Input != nil && request.Input.Text != nil && strings.Contains(*request.Input.Text, cancelID) {
+		if strings.Contains(embeddingRequestText(request), cancelID) {
 			cancel()
 			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "caller cancelled"}}
 		}
@@ -657,7 +657,7 @@ func TestWarpBackfillSuccessResetsConsecutiveFailures(t *testing.T) {
 	// nothing about which call lands "first" or "the Nth" is deterministic.
 	successID := logs[len(logs)/2].ID
 	flaky := func(ctx *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-		if request.Input != nil && request.Input.Text != nil && strings.Contains(*request.Input.Text, successID) {
+		if strings.Contains(embeddingRequestText(request), successID) {
 			return backfillEmbeddingExecutor(ctx, request)
 		}
 		return failingBackfillEmbeddingExecutor(ctx, request)
@@ -710,7 +710,7 @@ func TestWarpBackfillDoesNotCountVanishedLogsAsFailures(t *testing.T) {
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithEmbeddingExecutor(func(ctx *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-			if strings.Contains(*request.Input.Text, "poison entry") {
+			if strings.Contains(embeddingRequestText(request), "poison entry") {
 				return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "embedding failed"}}
 			}
 			return backfillEmbeddingExecutor(ctx, request)
@@ -843,7 +843,7 @@ func TestWarpBackfillResumesFromFailedRunCheckpoint(t *testing.T) {
 	// order regardless of completion order.
 	successID := logs[0].ID
 	firstThenFailing := func(ctx *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-		if request.Input != nil && request.Input.Text != nil && strings.Contains(*request.Input.Text, successID) {
+		if strings.Contains(embeddingRequestText(request), successID) {
 			return backfillEmbeddingExecutor(ctx, request)
 		}
 		return failingBackfillEmbeddingExecutor(ctx, request)
