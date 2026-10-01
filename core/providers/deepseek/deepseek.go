@@ -156,6 +156,55 @@ func requiresDeepSeekThinkingDisabled(request *schemas.BifrostChatRequest) bool 
 	return false
 }
 
+// stampServedModel records the model DeepSeek actually served as the server-side
+// fallback model when it differs from the requested one, so pricing follows it.
+func stampServedModel(extraFields *schemas.BifrostResponseExtraFields, usage *schemas.BifrostLLMUsage, requested, served string) {
+	if served == "" || strings.EqualFold(served, requested) {
+		return
+	}
+	if extraFields != nil && extraFields.RoutingInfo.ServerSideFallbackModel == nil {
+		extraFields.RoutingInfo.ServerSideFallbackModel = new(served)
+	}
+	if usage != nil && usage.ServerSideFallbackModel == nil {
+		usage.ServerSideFallbackModel = new(served)
+	}
+}
+
+// servedModelPostHookRunner stamps the served model on every stream chunk, error and
+// the accumulated stream usage once any chunk has revealed it.
+func servedModelPostHookRunner(requested string, next schemas.PostHookRunner) schemas.PostHookRunner {
+	var served string
+	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		var usage *schemas.BifrostLLMUsage
+		if result != nil {
+			switch {
+			case result.ChatResponse != nil:
+				if result.ChatResponse.Model != "" {
+					served = result.ChatResponse.Model
+				}
+				usage = result.ChatResponse.Usage
+			case result.TextCompletionResponse != nil:
+				if result.TextCompletionResponse.Model != "" {
+					served = result.TextCompletionResponse.Model
+				}
+				usage = result.TextCompletionResponse.Usage
+			case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil:
+				if result.ResponsesStreamResponse.Response.Model != "" {
+					served = result.ResponsesStreamResponse.Response.Model
+				}
+			}
+			stampServedModel(result.GetExtraFields(), usage, requested, served)
+		}
+		if accumulated, ok := ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage).(*schemas.BifrostLLMUsage); ok {
+			stampServedModel(nil, accumulated, requested, served)
+		}
+		if bifrostErr != nil {
+			stampServedModel(nil, bifrostErr.ExtraFields.BilledUsage, requested, served)
+		}
+		return next(ctx, result, bifrostErr)
+	}
+}
+
 // GetProviderKey returns the provider identifier for DeepSeek.
 func (provider *DeepSeekProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.DeepSeek
@@ -181,7 +230,7 @@ func (provider *DeepSeekProvider) ListModels(ctx *schemas.BifrostContext, keys [
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *DeepSeekProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	return openai.HandleOpenAITextCompletionRequest(
+	resp, bifrostErr := openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/beta/completions"),
@@ -195,6 +244,10 @@ func (provider *DeepSeekProvider) TextCompletion(ctx *schemas.BifrostContext, ke
 		nil,
 		provider.logger,
 	)
+	if resp != nil {
+		stampServedModel(&resp.ExtraFields, resp.Usage, request.Model, resp.Model)
+	}
+	return resp, bifrostErr
 }
 
 // TextCompletionStream performs a streaming text completion request to DeepSeek's API.
@@ -214,7 +267,7 @@ func (provider *DeepSeekProvider) TextCompletionStream(ctx *schemas.BifrostConte
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		nil,
-		postHookRunner,
+		servedModelPostHookRunner(request.Model, postHookRunner),
 		nil,
 		nil,
 		provider.logger,
@@ -224,6 +277,14 @@ func (provider *DeepSeekProvider) TextCompletionStream(ctx *schemas.BifrostConte
 
 // ChatCompletion performs a chat completion request to DeepSeek's Anthropic-compatible API.
 func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	resp, bifrostErr := provider.chatCompletion(ctx, key, request)
+	if resp != nil {
+		stampServedModel(&resp.ExtraFields, resp.Usage, request.Model, resp.Model)
+	}
+	return resp, bifrostErr
+}
+
+func (provider *DeepSeekProvider) chatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		return anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
@@ -265,6 +326,7 @@ func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	postHookRunner = servedModelPostHookRunner(request.Model, postHookRunner)
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.DeepSeek,
@@ -324,7 +386,7 @@ func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 // Responses performs a Responses API request against DeepSeek's Anthropic-compatible endpoint.
 func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
-		return anthropic.HandleAnthropicResponsesRequest(
+		resp, bifrostErr := anthropic.HandleAnthropicResponsesRequest(
 			ctx,
 			provider.client,
 			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
@@ -339,6 +401,10 @@ func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key sch
 			nil,
 			provider.logger,
 		)
+		if resp != nil {
+			stampServedModel(&resp.ExtraFields, nil, request.Model, resp.Model)
+		}
+		return resp, bifrostErr
 	}
 
 	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
@@ -347,6 +413,7 @@ func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key sch
 	}
 
 	response := chatResponse.ToBifrostResponsesResponse()
+	stampServedModel(&response.ExtraFields, nil, request.Model, response.Model)
 
 	return response, nil
 }
@@ -376,7 +443,7 @@ func (provider *DeepSeekProvider) ResponsesStream(ctx *schemas.BifrostContext, p
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
-			postHookRunner,
+			servedModelPostHookRunner(request.Model, postHookRunner),
 			nil,
 			nil,
 			provider.logger,
