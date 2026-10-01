@@ -252,6 +252,23 @@ bifrost:
   #       enabled: "env.BIFROST_AUDIT_VERBOSE"
   featureFlags: {}
 
+  # Global outbound proxy (the dashboard's proxy settings page) and which components use it.
+  # Renders into config.json's top-level proxy_config. Under sourceOfTruth "split" it is applied
+  # when new or changed and dashboard edits are kept otherwise; under "config.json" it is applied
+  # on every startup. Leave unset to manage the proxy from the dashboard.
+  # proxyConfig:
+  #   enabled: true
+  #   type: "http"                       # only http is supported
+  #   url: "http://proxy.example.com:8080"
+  #   username: "env.PROXY_USERNAME"     # optional; env.VAR_NAME supported
+  #   password: "env.PROXY_PASSWORD"     # optional; env.VAR_NAME supported
+  #   noProxy: "localhost,.internal.example.com"
+  #   timeout: 30                        # seconds
+  #   skipTlsVerify: false
+  #   enableForScim: true                # Enterprise: SCIM directory sync and identity-provider requests
+  #   enableForInference: false
+  #   enableForApi: false
+
   # Client configuration
   client:
     dropExcessRequests: false
