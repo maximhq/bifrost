@@ -332,6 +332,33 @@ Define organizational entities and attach rate limits directly. Team budgets ref
 }
 ```
 
+### Access profiles on teams, customers, and business units
+
+<Info>Enterprise-only.</Info>
+
+A team, customer, or business unit can hold one [access profile](/enterprise/access-profiles) instead of budgets and a rate limit of its own. Name it with `access_profile` on the entity's entry; the profile itself is declared under the top-level `access_profiles`:
+
+```json
+{
+  "access_profiles": [
+    { "name": "Engineering Baseline", "budgets": [{ "max_limit": 500, "reset_duration": "1M" }] }
+  ],
+  "governance": {
+    "customers": [{ "id": "customer-acme", "name": "Acme Corp", "access_profile": "Engineering Baseline" }],
+    "teams": [{ "id": "team-ml", "name": "ML Team", "access_profile": "Engineering Baseline" }],
+    "business_units": [{ "id": "bu-emea", "name": "EMEA", "access_profile": "Engineering Baseline" }]
+  }
+}
+```
+
+Attaching works exactly as it does from the dashboard: the entity gets its own copy of the profile, with budgets that start from zero, and every virtual key the entity owns is adopted into it.
+
+- **Split mode (default).** `access_profile` is part of the entity's entry, so it is applied when the entry is new or changed. While the entry stays unchanged, the dashboard is free to attach a different profile or detach it, and that choice is kept. Changing anything in the entry (its `access_profile`, name, or any other field) applies the entry again, profile included. Leaving `access_profile` out means the file does not manage the entity's profile, so whatever the dashboard attached stays.
+- **With `source_of_truth: "config.json"`** and the entity's section (`teams`, `customers`, or `business_units`) present, the declared profile is enforced on every startup, and an entry without `access_profile` has its profile removed. Removing a profile keeps the entity's virtual keys; they go back to their own configuration.
+- **Spend is kept when nothing changed.** An entity that already holds the declared profile keeps its copy and the spend on it. Edits to the profile itself reach every entity holding it through the usual propagation.
+- **The profile is not attached to an entity with limits of its own.** A profile replaces an entity's budgets and rate limit, so in either mode the declared profile is not attached while the entity still has them, and a warning is logged. (Under `source_of_truth: "config.json"` the file's limits are applied first, so declaring both limits and `access_profile` on one entry always ends this way.) Remove the limits from the file, or migrate the entity onto the profile from the dashboard, which carries its spend across.
+- **Unknown names are skipped.** An `access_profile` that names no profile, or an entity that does not exist, is reported in the startup logs and skipped; the rest of the file still applies.
+
 ---
 
 ## Projects
