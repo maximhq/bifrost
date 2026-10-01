@@ -3662,6 +3662,11 @@
                       },
                       "description": "Custom labels to add to Prometheus metrics"
                     },
+                    "metrics_enabled": {
+                      "type": "boolean",
+                      "description": "Serve the /metrics scrape endpoint. Defaults to true when omitted.",
+                      "default": true
+                    },
                     "overhead_breakdown_enabled": {
                       "type": "boolean",
                       "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component label). Off by default. Requires tracing to be active, since the breakdown is computed from completed trace spans.",
