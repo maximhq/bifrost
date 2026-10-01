@@ -731,6 +731,34 @@ func TestServerInstructions_EmptyWhenNoClientAdvertisesAny(t *testing.T) {
 	assert.Equal(t, "", manager.GetAggregatedServerInstructions(context.Background()))
 }
 
+// An edit to any field must not quietly drop the client's own instruction cap:
+// UpdateClient rebuilds ExecutionConfig field by field, so a field missing from
+// that literal reverts to the global default in memory while the DB row keeps
+// the override.
+func TestServerInstructions_PerClientCapSurvivesClientUpdate(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+
+	// Longer than the cap below, shorter than the global default, so only the
+	// per-client override can produce a truncation.
+	instructions := strings.Repeat("Rule: check permissions first. ", 8)
+	cfg := inProcessClientConfig("capped_client", buildInProcessServerWithInstructions(t, "capped-srv", instructions))
+	cfg.MaxInstructionsLength = 40
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
+
+	require.Contains(t, manager.GetAggregatedServerInstructions(context.Background()), "[truncated:",
+		"per-client cap should apply before any update")
+
+	// Mirrors the update handler, which resends the cap alongside the edit.
+	updated := *cfg
+	updated.ToolsToExecute = []string{"echo"}
+	require.NoError(t, manager.UpdateClient(cfg.ID, &updated))
+
+	assert.Contains(t, manager.GetAggregatedServerInstructions(context.Background()), "[truncated:",
+		"per-client cap must survive an unrelated edit")
+}
+
 // startInstructionsServer launches one examples/mcps/instructions-test-server
 // process advertising the given name and instructions, and returns its /mcp URL.
 // Skips the calling test when the fixture has not been built, matching how the
