@@ -862,6 +862,10 @@
                 "type": "string",
                 "description": "Associated rate limit ID"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this customer holds. The profile governs everything under the customer and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap the customer's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
@@ -933,6 +937,10 @@
                 "type": "object",
                 "description": "Team claims data"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this team holds. The profile governs everything under the team and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap the team's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
@@ -986,6 +994,10 @@
                 "type": "object",
                 "description": "Business unit claims data"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this business unit holds. The profile governs everything under the business unit and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "team_ids": {
                 "type": "array",
                 "description": "Team IDs to assign to this business unit",
@@ -1017,10 +1029,12 @@
               },
               "dac": {
                 "type": "string",
-                "description": "Data Access Control scope: own-data (user's own records), team-data (user's team records), all-data (unrestricted). Defaults to all-data.",
+                "description": "Data Access Control scope: own-data (user's own records), team-data (plus records of the user's teams), business-unit-data (plus records of the user's business units), customer-data (everything under the customers the user reaches through their teams or business units), all-data (unrestricted). Defaults to all-data.",
                 "enum": [
                   "own-data",
                   "team-data",
+                  "business-unit-data",
+                  "customer-data",
                   "all-data"
                 ],
                 "default": "all-data"
@@ -1033,6 +1047,8 @@
                   "enum": [
                     "own-data",
                     "team-data",
+                    "business-unit-data",
+                    "customer-data",
                     "all-data"
                   ]
                 }
