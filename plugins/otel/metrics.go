@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -274,12 +275,10 @@ func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 		opts = append(opts, otlpmetrichttp.WithHeaders(config.Headers))
 	}
 
-	// HTTP metrics insecure mode disables TLS entirely (unlike the trace HTTP client
-	// which uses InsecureSkipVerify). buildTLSConfig is bypassed for that case.
-	if config.TLSCACert == "" && config.Insecure {
-		opts = append(opts, otlpmetrichttp.WithInsecure())
-	} else {
-		tlsConfig, err := buildTLSConfig(config.TLSCACert, false)
+	// The endpoint scheme decides the transport, so Insecure only relaxes certificate
+	// verification. The SDK rejects a TLS config on a plaintext endpoint.
+	if u, err := url.Parse(config.Endpoint); err == nil && u.Scheme == "https" {
+		tlsConfig, err := buildTLSConfig(config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
