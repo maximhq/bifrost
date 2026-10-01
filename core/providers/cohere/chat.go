@@ -215,28 +215,15 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 			cohereReq.Tools = cohereTools
 		}
 
-		// Convert tool choice
-		if bifrostReq.Params.ToolChoice != nil {
-			toolChoice := bifrostReq.Params.ToolChoice
-
-			if toolChoice.ChatToolChoiceStr != nil {
-				switch schemas.ChatToolChoiceType(*toolChoice.ChatToolChoiceStr) {
-				case schemas.ChatToolChoiceTypeNone:
-					toolChoice := ToolChoiceNone
-					cohereReq.ToolChoice = &toolChoice
-				default:
-					toolChoice := ToolChoiceRequired
-					cohereReq.ToolChoice = &toolChoice
-				}
-			} else if toolChoice.ChatToolChoiceStruct != nil {
-				switch toolChoice.ChatToolChoiceStruct.Type {
-				case schemas.ChatToolChoiceTypeFunction:
-					toolChoice := ToolChoiceRequired
-					cohereReq.ToolChoice = &toolChoice
-				default:
-					toolChoice := ToolChoiceAuto
-					cohereReq.ToolChoice = &toolChoice
-				}
+		// Convert tool choice. Cohere only accepts REQUIRED and NONE; leaving
+		// tool_choice unset lets the model decide, which is what "auto" means.
+		if toolChoice := bifrostReq.Params.ToolChoice; toolChoice != nil {
+			if toolChoice.ChatToolChoiceStr != nil && schemas.ChatToolChoiceType(*toolChoice.ChatToolChoiceStr) == schemas.ChatToolChoiceTypeNone {
+				choice := ToolChoiceNone
+				cohereReq.ToolChoice = &choice
+			} else if toolChoice.IsForced() {
+				choice := ToolChoiceRequired
+				cohereReq.ToolChoice = &choice
 			}
 		}
 	}

@@ -1600,8 +1600,8 @@ func convertBifrostToolChoiceToCohereToolChoice(toolChoice schemas.ResponsesTool
 			choice := ToolChoiceRequired
 			return &choice
 		case "auto":
-			choice := ToolChoiceAuto
-			return &choice
+			// Cohere has no AUTO value; omitting tool_choice lets the model decide.
+			return nil
 		default:
 			choice := ToolChoiceRequired
 			return &choice
