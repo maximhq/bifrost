@@ -1,10 +1,13 @@
 package llmtests
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -207,8 +210,8 @@ func TestProviderToolValidation(t *testing.T) {
 			name:     "Vertex/mixed_supported_and_unsupported",
 			provider: schemas.Vertex,
 			tools: []schemas.ResponsesTool{
-				{Type: schemas.ResponsesToolTypeWebSearch},   // allowed
-				{Type: schemas.ResponsesToolTypeFunction},    // allowed
+				{Type: schemas.ResponsesToolTypeWebSearch},       // allowed
+				{Type: schemas.ResponsesToolTypeFunction},        // allowed
 				{Type: schemas.ResponsesToolTypeCodeInterpreter}, // rejected
 			},
 			expectErr: true,
@@ -765,15 +768,15 @@ func TestProviderAnthropicRequestPipeline(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                    string
-		provider                schemas.ModelProvider
-		model                   string
-		tools                   []schemas.ResponsesTool
-		expectConversionErr     bool
-		errSubstr               string
-		expectedWebSearchType   string // expected web_search tool type after conversion
-		expectedBetaHeaders     []string
-		unexpectedBetaHeaders   []string
+		name                  string
+		provider              schemas.ModelProvider
+		model                 string
+		tools                 []schemas.ResponsesTool
+		expectConversionErr   bool
+		errSubstr             string
+		expectedWebSearchType string // expected web_search tool type after conversion
+		expectedBetaHeaders   []string
+		unexpectedBetaHeaders []string
 	}{
 		// ── Vertex: web_search with filters → basic version, no dynamic headers ──
 		{
@@ -1269,6 +1272,81 @@ func TestRawBodyToolVersionRemapping(t *testing.T) {
 				assert.Equal(t, tt.expectedToolType, toolType,
 					"expected tool type %s but got %s for provider %s",
 					tt.expectedToolType, toolType, tt.provider)
+			}
+		})
+	}
+}
+
+// TestBedrockGuardrailTraceResponsePipeline exercises the same Sonic decoder used
+// by the Bedrock provider, followed by both Responses conversion directions.
+func TestBedrockGuardrailTraceResponsePipeline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		trace string
+	}{
+		{
+			name:  "input assessment keyed by guardrail ID",
+			trace: `{"guardrail":{"inputAssessment":{"input-guardrail":{"contentPolicy":{"filters":[{"type":"VIOLENCE","confidence":"HIGH","action":"BLOCKED"}]}}}}}`,
+		},
+		{
+			name:  "output assessments keyed by guardrail ID",
+			trace: `{"guardrail":{"outputAssessments":{"output-guardrail":[{"wordPolicy":{"customWords":[{"match":"blocked word","action":"BLOCKED"}]}},{"contentPolicy":{"filters":[{"type":"HATE","confidence":"LOW","action":"NONE"}]}}]}}}`,
+		},
+		{
+			name:  "action reason and model output",
+			trace: `{"guardrail":{"actionReason":"Guardrail blocked the response","modelOutput":["redacted response"],"action":"INTERVENED"}}`,
+		},
+		{name: "empty trace", trace: `{}`},
+		{name: "empty guardrail", trace: `{"guardrail":{}}`},
+		{name: "absent trace"},
+		{name: "null trace", trace: `null`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"output":{"message":{"role":"assistant","content":[{"text":"guarded reply"}]}},"stopReason":"end_turn","usage":{"inputTokens":3,"outputTokens":2,"totalTokens":5},"metrics":{"latencyMs":1}`
+			if tc.trace != "" {
+				body += `,"trace":` + tc.trace
+			}
+			body += `}`
+
+			var response bedrock.BedrockConverseResponse
+			require.NoError(t, sonic.Unmarshal([]byte(body), &response))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			converted, err := response.ToBifrostResponsesResponse(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, converted.Usage)
+			assert.Equal(t, 5, converted.Usage.TotalTokens)
+			require.Len(t, converted.Output, 1)
+
+			// JSON decoding changes provider_extra_fields from typed values to maps.
+			// Both forms must retain the original wire trace, not just each other.
+			encoded, err := sonic.Marshal(converted)
+			require.NoError(t, err)
+			var decoded schemas.BifrostResponsesResponse
+			require.NoError(t, sonic.Unmarshal(encoded, &decoded))
+			for _, value := range []*schemas.BifrostResponsesResponse{converted, &decoded} {
+				if tc.trace == "" || tc.trace == "null" {
+					assert.NotContains(t, value.ProviderExtraFields, "trace")
+				} else {
+					require.Contains(t, value.ProviderExtraFields, "trace")
+					trace, err := sonic.Marshal(value.ProviderExtraFields["trace"])
+					require.NoError(t, err)
+					assert.JSONEq(t, tc.trace, string(trace))
+				}
+
+				roundTrip, err := bedrock.ToBedrockConverseResponse(value)
+				require.NoError(t, err)
+				if tc.trace == "" || tc.trace == "null" {
+					assert.Nil(t, roundTrip.Trace)
+				} else {
+					trace, err := sonic.Marshal(roundTrip.Trace)
+					require.NoError(t, err)
+					assert.JSONEq(t, tc.trace, string(trace))
+				}
 			}
 		})
 	}

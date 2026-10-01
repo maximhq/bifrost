@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -723,4 +724,37 @@ func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	// TLSNextProto must be set to empty map to truly disable HTTP/2 ALPN negotiation
 	assert.NotNil(t, transport.TLSNextProto)
 	assert.Empty(t, transport.TLSNextProto)
+}
+
+// TestResponses_GuardrailTraceFromHTTP covers the actual provider response decoder
+// with a local Converse response; the literal test bearer avoids IAM signing.
+func TestResponses_GuardrailTraceFromHTTP(t *testing.T) {
+	const trace = `{"guardrail":{"actionReason":"Guardrail blocked the response","inputAssessment":{"input-guardrail":{"contentPolicy":{"filters":[{"type":"VIOLENCE","confidence":"HIGH","action":"BLOCKED"}]}}},"outputAssessments":{"output-guardrail":[{"wordPolicy":{"customWords":[{"match":"blocked word","action":"BLOCKED"}]}},{}]},"modelOutput":["redacted response"],"action":"INTERVENED"}}`
+	const responseBody = `{"output":{"message":{"role":"assistant","content":[{"text":"guarded reply"}]}},"stopReason":"end_turn","usage":{"inputTokens":3,"outputTokens":2,"totalTokens":5},"metrics":{"latencyMs":1},"trace":` + trace + `}`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/model/"+testConverseStreamModel+"/converse", r.URL.Path)
+		assert.Equal(t, "Bearer test-api-key", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, err := io.WriteString(w, responseBody)
+		assert.NoError(t, err)
+	}))
+	defer ts.Close()
+
+	provider := newTestProviderWithServer(t, ts)
+	request := testResponsesRequest()
+	request.Model = testConverseStreamModel
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	response, bifrostErr := provider.Responses(ctx, testBedrockKey(), request)
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, response)
+	assert.Equal(t, testConverseStreamModel, response.Model)
+	require.NotNil(t, response.Usage)
+	assert.Equal(t, 5, response.Usage.TotalTokens)
+	require.Contains(t, response.ProviderExtraFields, "trace")
+	encodedTrace, err := sonic.Marshal(response.ProviderExtraFields["trace"])
+	require.NoError(t, err)
+	assert.JSONEq(t, trace, string(encodedTrace))
 }
