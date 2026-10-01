@@ -1,5 +1,32 @@
 # Warp Agent Configuration Schemas
 
+WarpModel:
+  type: object
+  description: |
+    One provider and model pair Warp may run on, with the provider key it is
+    pinned to. The pair is what identifies an entry: a chat request names the
+    model it wants by `provider` and `model`, so no two entries may share both.
+  properties:
+    provider:
+      type: string
+      description: A provider registered in this Bifrost deployment.
+      minLength: 1
+      pattern: '\S'
+      example: anthropic
+    model:
+      type: string
+      minLength: 1
+      pattern: '\S'
+      example: claude-sonnet-5
+    api_key_id:
+      type: string
+      description: |
+        Which of the provider's configured keys this model uses. A reference,
+        not a credential. Omitted when the provider's whole key pool is used.
+  required:
+    - provider
+    - model
+
 WarpConfig:
   type: object
   description: |
@@ -25,17 +52,29 @@ WarpConfig:
       description: Whether the operator has switched Warp on.
     provider:
       type: string
-      description: The model provider that runs the agent loop, e.g. `openai`.
+      description: |
+        The provider of Warp's default model, e.g. `openai`. The default answers
+        every chat request that names no model.
       example: openai
     model:
       type: string
+      description: Warp's default model.
       example: gpt-4o
     api_key_id:
       type: string
       description: |
-        Which of the provider's configured keys Warp uses. A reference, not a
-        credential, so it round-trips in the clear - there is nothing here worth
-        redacting. Empty when the provider needs no key.
+        Which of the provider's configured keys the default model uses. A
+        reference, not a credential, so it round-trips in the clear - there is
+        nothing here worth redacting. Empty when the provider needs no key.
+    additional_models:
+      type: array
+      description: |
+        The other models an operator has exposed. A chat request may name any of
+        them, or the default, by `provider` and `model`; nothing else is
+        accepted. Omitted when only the default is configured.
+      maxItems: 20
+      items:
+        $ref: '#/WarpModel'
     max_iterations:
       type: integer
       description: |
@@ -192,6 +231,19 @@ WarpConfigInput:
         Which of the provider's configured keys Warp should use. Empty is valid
         and common: a provider on a trusted network, or one using ambient IAM
         credentials, needs no key at all.
+    additional_models:
+      type: array
+      description: |
+        The models to expose beside the default (`provider` and `model` above).
+        Replaced whole on every write, like the default itself: leaving the
+        field out clears the list.
+
+        Every entry must be complete whether or not `enabled` is true, must name
+        a registered provider, and must not repeat the `provider` and `model` of
+        the default or of another entry. Any of those is rejected with `400`.
+      maxItems: 20
+      items:
+        $ref: '#/WarpModel'
     max_iterations:
       type: integer
       minimum: 0
@@ -342,6 +394,19 @@ WarpSessionRequest:
         Continues an existing thread in the caller's history. Omit it to start a
         new one; the new thread's id comes back on the `done` event or in the
         JSON body.
+    provider:
+      type: string
+      description: |
+        With `model`, names which of Warp's configured models answers this turn:
+        the default, or one of `additional_models`. Omit both to use the
+        default. A pair the operator has not exposed is rejected with `400`, so
+        a request can only ever choose among the configured models, and the
+        provider key is always the configured entry's own.
+      example: anthropic
+    model:
+      type: string
+      description: See `provider`. The two are given together or not at all.
+      example: claude-sonnet-5
     stream:
       type: boolean
       default: true

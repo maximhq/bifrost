@@ -25,6 +25,11 @@ var (
 	// varchar(36) column - persistTurn returns an empty id and the turn
 	// silently vanishes from history.
 	ErrBadConversationID = errors.New("conversation_id is too long")
+	// ErrModelNotAvailable is returned when a chat request names a provider and
+	// model the operator has not exposed. Refused rather than answered on the
+	// default: a panel holding a model that was since removed should be told,
+	// not silently billed against a different one.
+	ErrModelNotAvailable = errors.New("model is not available for warp")
 )
 
 // MaxConversationIDChars matches the warp_conversations id column
@@ -88,6 +93,13 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 	}
 	if bodyBytes > MaxHistoryBytes {
 		return nil, fmt.Errorf("%w: %d bytes exceeds the %d byte limit", ErrConversationTooLong, bodyBytes, MaxHistoryBytes)
+	}
+	// From here on config is the selected model's: the agent, the pinned key
+	// and pricing all read Provider, Model and APIKeyID off it.
+	provider, model := schemas.ModelProvider(strings.TrimSpace(string(request.Provider))), strings.TrimSpace(request.Model)
+	config, ok := config.ForModel(provider, model)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s/%s", ErrModelNotAvailable, provider, model)
 	}
 	conversationID := strings.TrimSpace(request.ConversationID)
 	// Refused before the model runs, not discovered at the append after it.

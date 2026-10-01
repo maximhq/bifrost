@@ -3,6 +3,7 @@ package configstore
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/require"
@@ -188,4 +189,41 @@ func TestWarpConfigMigrationAddsTemperatureReasoningColumns(t *testing.T) {
 	for _, column := range []string{"temperature", "reasoning_effort"} {
 		require.Truef(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, column), "missing %s", column)
 	}
+}
+
+// A deployment whose warp_config predates the model list gains the column with
+// its row untouched: NULL reads as no additional models, and the default it was
+// already running on is still there.
+func TestWarpConfigMigrationAddsAdditionalModelsColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableWarpConfig{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableWarpConfig{}, "additional_models"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "additional_models"),
+		"precondition: the column must be absent to reproduce the upgrade path")
+	// Raw SQL, not Create: the model carries the column this test just dropped.
+	now := time.Now().UTC()
+	require.NoError(t, db.Exec(
+		"INSERT INTO warp_config (id, enabled, provider, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		tables.WarpConfigRowID, true, "openai", "gpt-4o", now, now).Error)
+
+	require.NoError(t, migrationAddWarpAdditionalModelsColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "additional_models"))
+
+	store := &RDBConfigStore{}
+	store.db.Store(db)
+	config, err := store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	require.Nil(t, config.AdditionalModels, "an existing row must come back with no additional models")
+	require.Equal(t, "gpt-4o", config.Model)
+
+	// And the column holds what a save writes to it.
+	models := `[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-1"}]`
+	config.AdditionalModels = &models
+	require.NoError(t, store.UpsertWarpConfig(ctx, config))
+	config, err = store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, config.AdditionalModels)
+	require.JSONEq(t, models, *config.AdditionalModels)
 }
