@@ -3,6 +3,14 @@
  * telemetry. These types mirror core/schemas/warp.go.
  */
 
+/** One provider and model pair Warp may run on. Mirrors schemas.WarpModel. */
+export interface WarpModel {
+	provider: string;
+	model: string;
+	/** Which of the provider's keys this model is pinned to. Empty for any key. */
+	api_key_id?: string;
+}
+
 /** What the read API returns. The stored credential is never included. */
 export interface WarpConfig {
 	/**
@@ -19,6 +27,11 @@ export interface WarpConfig {
 	 * credential, so it round-trips in the clear. Empty when none is needed.
 	 */
 	api_key_id?: string;
+	/**
+	 * The other models an operator exposed. `provider` and `model` above stay
+	 * the default; the panel's switcher offers the default followed by these.
+	 */
+	additional_models?: WarpModel[];
 	max_iterations: number;
 	request_timeout_seconds: number;
 	/**
@@ -55,6 +68,8 @@ export interface WarpConfigInput {
 	provider: string;
 	model: string;
 	api_key_id?: string;
+	/** Replaced whole on every write: leaving it out clears the list. */
+	additional_models?: WarpModel[];
 	max_iterations?: number;
 	request_timeout_seconds?: number;
 	/** Zero means "use the default". There is no maximum. */

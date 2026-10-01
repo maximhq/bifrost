@@ -11,6 +11,7 @@ import {
 	type WarpUsage,
 } from "@/components/warp/warpStream.utils";
 import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
+import type { WarpModel } from "@/lib/types/warp";
 import { getApiBaseUrl } from "@/lib/utils/port";
 
 /** What the panel renders while an answer is in flight, plus the last turn's error. */
@@ -98,7 +99,8 @@ export class WarpStreamSession {
 		this.patch({ text: "", toolCalls: [], isStreaming: false });
 	};
 
-	send = async (history: WarpTurn[], question: string): Promise<void> => {
+	/** `model` names one of the exposed models; omitted, the server's default answers. */
+	send = async (history: WarpTurn[], question: string, model?: Pick<WarpModel, "provider" | "model">): Promise<void> => {
 		this.stop();
 		const controller = new AbortController();
 		this.abortController = controller;
@@ -180,6 +182,8 @@ export class WarpStreamSession {
 					],
 					// Omitted on a chat's first message so the server opens a new thread.
 					conversation_id: this.conversationId || undefined,
+					provider: model?.provider,
+					model: model?.model,
 					stream: true,
 					// Sent every turn: named dates need the IANA zone, since DST can differ from today's offset.
 					timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -190,12 +194,16 @@ export class WarpStreamSession {
 
 			if (!response.ok) {
 				let reason = "";
+				// A refusal the server worded for the asker, such as a model that is no longer exposed.
+				let message = "";
 				try {
-					reason = ((await response.json()) as { reason?: string }).reason ?? "";
+					const body = (await response.json()) as { reason?: string; error?: { message?: string } };
+					reason = body.reason ?? "";
+					message = body.error?.message ?? "";
 				} catch {
 					reason = "";
 				}
-				throw new Error(encodeTurnError(reason || undefined, reason ? "" : `Warp request failed (${response.status})`));
+				throw new Error(encodeTurnError(reason || undefined, reason ? "" : message || `Warp request failed (${response.status})`));
 			}
 
 			const reader = response.body?.getReader();

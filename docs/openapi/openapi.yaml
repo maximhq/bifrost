@@ -2092,6 +2092,8 @@ components:
     NotificationList:
       $ref: "./schemas/management/notifications.yaml#/NotificationList"
     # Warp
+    WarpModel:
+      $ref: "./schemas/management/warp.yaml#/WarpModel"
     WarpConfig:
       $ref: "./schemas/management/warp.yaml#/WarpConfig"
     WarpConfigInput:

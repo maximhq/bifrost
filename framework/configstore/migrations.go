@@ -513,6 +513,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_ttft_timeout_ms_column_to_routing_targets"}, run: migrationAddTTFTTimeoutMsColumnToRoutingTargets},
 	{IDs: []string{"add_web_search_cost_per_request_column"}, run: migrationAddWebSearchCostPerRequestColumn},
 	{IDs: []string{"move_pricing_override_search_context_to_web_search"}, run: migrationMovePricingOverrideSearchContextToWebSearch},
+	{IDs: []string{"add_warp_additional_models_column"}, run: migrationAddWarpAdditionalModelsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -601,6 +602,33 @@ func migrationAddWarpTemperatureReasoningColumns(ctx context.Context, db *gorm.D
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: dropping a configured temperature or reasoning effort would lose operator settings", migrationName)
+		},
+	})
+}
+
+// migrationAddWarpAdditionalModelsColumn adds the list of models an operator
+// exposes beside Warp's default, so the panel can offer more than one.
+//
+// It arrives NULL on an existing row, which reads as "no additional models":
+// the deployment keeps running on the one provider and model it already had.
+func migrationAddWarpAdditionalModelsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_additional_models_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			// Only the column this migration owns, not a full-model AutoMigrate;
+			// see migrationAddWarpLogEmbeddingColumns.
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "additional_models"); err != nil {
+				return fmt.Errorf("add additional_models column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: the default model lives in its own columns, so dropping
+			// this costs the extra choices and leaves Warp answering.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "additional_models")
 		},
 	})
 }

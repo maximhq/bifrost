@@ -183427,6 +183427,414 @@
           ]
         }
       ]
+    },
+    {
+      "name": "131. Warp runs on one of several exposed models (warp-models)",
+      "description": "Warp ran on exactly one provider and model, set in its config and used for every question. An administrator can now expose several: provider and model stay the default, additional_models lists the others, and POST /api/warp/chat may name any of them with provider and model. The pair is a selection among what the config exposes and nothing else: a pair that is not listed is refused with 400 before any model is called, and the provider key is always the configured entry's own, never something the request can name. These cases save a default (openai/gpt-4o-mini) with one additional model (openai/gpt-4.1-nano), ask one cheap question on the additional model, and read the log row back to pin that the call really went to it. Red before the change: the config write dropped additional_models, the chat body's provider and model were ignored so the turn ran on the default and was logged as gpt-4o-mini, and an unlisted model answered 200 on the default instead of 400. Writing the list is a config write, so it sits behind the existing admin gate on PUT /api/warp/config (local admin in OSS, Warp Update in enterprise); the handler tests pin that. Requires the warp flag to be unlocked and the profile's vector store to be reachable; the flag and the previous Warp config are restored at the end.",
+      "item": [
+        {
+          "name": "openai warp-models setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-models: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag = (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0];",
+                  "pm.test('warp-models: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "pm.collectionVariables.set('warpModelsFlagWas', flag && flag.enabled ? 'true' : 'false');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai warp-models setup: enable warp feature flag",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-models: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        },
+        {
+          "name": "openai warp-models setup: read current warp config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-models: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.set('warpModelsConfigWas', pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-models: configure a default and an additional model",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpModelsConfigWas') || '{}');",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  additional_models: [{ provider: 'openai', model: 'gpt-4.1-nano' }],",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || ''",
+                  "};",
+                  "pm.collectionVariables.set('warpModelsConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-models: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var saved = pm.response.json();",
+                  "pm.test('warp-models: the default is still the top-level provider and model', function () {",
+                  "  pm.expect(saved.provider, pm.response.text()).to.equal('openai');",
+                  "  pm.expect(saved.model, pm.response.text()).to.equal('gpt-4o-mini');",
+                  "});",
+                  "pm.test('warp-models: the additional model round-trips', function () {",
+                  "  pm.expect(saved.additional_models, 'additional_models missing: ' + pm.response.text()).to.eql([{ provider: 'openai', model: 'gpt-4.1-nano' }]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpModelsConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4.1-nano warp-models: chat runs on the additional model it names",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-models: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "pm.test('warp-models: turn succeeded on the named model', function () {",
+                  "  pm.expect(body.error, 'turn failed: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.answer, 'no answer: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(body.conversation_id, 'no conversation id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('warpModelsConversation', body.conversation_id || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"provider\":\"openai\",\"model\":\"gpt-4.1-nano\",\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai gpt-4.1-nano warp-models: the model call is logged on the named model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-models: logs list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('warpModelsLogTries'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "var tries = Number(pm.collectionVariables.get('warpModelsLogTries') || 0);",
+                  "if (logs.length < 1 && tries < 10) {",
+                  "  // The async log writer flushes in 1s batches.",
+                  "  pm.collectionVariables.set('warpModelsLogTries', tries + 1);",
+                  "  setTimeout(function () {}, 1500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('warpModelsLogTries');",
+                  "pm.test('warp-models: every call of the turn went to the named model, not the default', function () {",
+                  "  pm.expect(logs.length, 'no log rows for the conversation: ' + pm.response.text()).to.be.at.least(1);",
+                  "  logs.forEach(function (l) {",
+                  "    pm.expect(l.app, 'row not labelled Warp: ' + JSON.stringify([l.app, l.user_agent])).to.equal('Warp');",
+                  "    pm.expect(l.provider, 'row not on the named provider: ' + l.provider).to.equal('openai');",
+                  "    pm.expect(String(l.model), 'row ran on ' + l.model + ', not the model the request named').to.include('gpt-4.1-nano');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?session_id={{warpModelsConversation}}&limit=10"
+          }
+        },
+        {
+          "name": "openai warp-models: chat naming a model that is not exposed is refused [EXPECT-400]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-models: an unlisted model is a 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('warp-models: the refusal says the model is not available', function () {",
+                  "  pm.expect(pm.response.text()).to.include('model is not available for warp');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"provider\":\"openai\",\"model\":\"gpt-4o\",\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-models: an additional model repeating the default is rejected [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = JSON.parse(pm.collectionVariables.get('warpModelsConfigBody') || '{}');",
+                  "body.additional_models = [{ provider: 'openai', model: 'gpt-4o-mini' }];",
+                  "pm.collectionVariables.set('warpModelsDuplicateBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-models: a repeated provider and model is a 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('warp-models: the rejection names the repeat', function () {",
+                  "  pm.expect(pm.response.text()).to.include('already listed');",
+                  "});",
+                  "pm.collectionVariables.unset('warpModelsDuplicateBody');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpModelsDuplicateBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-models cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-models: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('warpModelsConfigBody');",
+                  "pm.collectionVariables.unset('warpModelsConversation');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpModelsConfigWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-models cleanup: restore warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('warpModelsFlagBody', JSON.stringify({ enabled: pm.collectionVariables.get('warpModelsFlagWas') === 'true' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-models: flag restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpModelsFlagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
     }
   ]
 }
