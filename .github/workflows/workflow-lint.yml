@@ -4,10 +4,21 @@ name: Workflow Lint
 # that is the only point they CAN run: release-pipeline.yml triggers on push to main,
 # so a job added there with a broken egress allowlist would first execute during a
 # real release, with the release riding on it.
+#
+# The paths below are every input check-egress-allowlist.sh reads, not just the
+# workflow files: the harness collection, its seeded provider config and the
+# non-test provider Go sources all feed the set of hosts the harness dials. With
+# only .github/workflows/** here, a PR that adds a new host to the collection
+# merges without this check running and the failure lands on the next, unrelated
+# PR that edits a workflow.
 on:
   pull_request:
     paths:
       - ".github/workflows/**"
+      - "tests/e2e/api/collections/provider-harness.json"
+      - "tests/integrations/python/config.json"
+      - "core/providers/**/*.go"
+      - "!core/providers/**/*_test.go"
 
 permissions:
   contents: read
