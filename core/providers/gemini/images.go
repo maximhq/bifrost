@@ -427,14 +427,14 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
 	}
-	// Copy: keys are deleted below, and each retry converts the same request again.
-	geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 
 	// Set response modalities to indicate this is an image generation request
 	geminiReq.GenerationConfig.ResponseModalities = []Modality{ModalityImage}
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
+		// Copy: keys are deleted below, and each retry converts the same request again.
+		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 
 		// Prefer explicit aspect_ratio; fall back to deriving aspect ratio + resolution from size.
 		imageConfig := &GeminiImageConfig{}

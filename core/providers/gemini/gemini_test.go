@@ -5270,6 +5270,16 @@ func TestImageRequestExtraParamsSurviveRetries(t *testing.T) {
 	})
 }
 
+func TestToGeminiImageGenerationRequestNilParams(t *testing.T) {
+	req := gemini.ToGeminiImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Vertex,
+		Model:    "gemini-3.1-flash-image-preview",
+		Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+	})
+	require.NotNil(t, req)
+	assert.Empty(t, req.GetExtraParams())
+}
+
 func TestWebSearchOptionsMapsToGoogleSearchTool(t *testing.T) {
 	baseReq := func(params *schemas.ChatParameters) *schemas.BifrostChatRequest {
 		return &schemas.BifrostChatRequest{
