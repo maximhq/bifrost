@@ -384,11 +384,19 @@ export const createColumns = (
 				if (!isValid) {
 					return <div className="truncate text-xs">N/A</div>;
 				}
+				// The row opens the detail sheet on click, which a keyboard can't do. This
+				// button is that entry point: it has no handler of its own, so Enter and
+				// Space fire a click that bubbles to the cell's onRowClick.
 				return (
-					<div className="flex flex-col leading-tight">
+					<button
+						type="button"
+						data-testid="logs-row-open-btn"
+						aria-label={`${format(date, "MMM dd HH:mm:ss")} ${formatDistanceToNow(date, { addSuffix: true })}, open log details`}
+						className="focus-visible:ring-ring flex cursor-pointer flex-col rounded-sm text-left leading-tight focus-visible:ring-2 focus-visible:outline-none"
+					>
 						<span className="font-mono text-xs tabular-nums">{format(date, "MMM dd  HH:mm:ss")}</span>
 						<span className="text-muted-foreground text-[10.5px] tabular-nums">{formatDistanceToNow(date, { addSuffix: true })}</span>
-					</div>
+					</button>
 				);
 			},
 		},

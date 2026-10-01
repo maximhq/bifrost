@@ -420,6 +420,100 @@ func testTextCompletionRequest() *schemas.BifrostTextCompletionRequest {
 }
 
 // testResponsesRequest returns a minimal BifrostResponsesRequest for streaming tests.
+func TestConverseStreamRequiresMessageStop(t *testing.T) {
+	testCases := []struct {
+		name      string
+		payloads  []string
+		wantError bool
+	}{
+		{name: "empty", wantError: true},
+		{name: "unrecognized", payloads: []string{`{"unexpected":"upstream failure"}`}, wantError: true},
+		{name: "partial", payloads: []string{`{"role":"assistant"}`, `{"contentBlockIndex":0,"delta":{"text":"hello"}}`}, wantError: true},
+		{name: "usage_without_stop", payloads: []string{`{"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}`}, wantError: true},
+		{name: "completed", payloads: []string{`{"role":"assistant"}`, `{"contentBlockIndex":0,"delta":{"text":"hello"}}`, `{"stopReason":"end_turn"}`, `{"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}`}},
+		{name: "filtered", payloads: []string{`{"role":"assistant"}`, `{"stopReason":"guardrail_intervened"}`}},
+	}
+	for _, api := range []string{"chat", "responses"} {
+		for _, testCase := range testCases {
+			t.Run(api+"/"+testCase.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					writer.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+					writer.WriteHeader(http.StatusOK)
+					encoder := eventstream.NewEncoder()
+					for _, payload := range testCase.payloads {
+						assert.NoError(t, encoder.Encode(writer, eventstream.Message{
+							Headers: eventstream.Headers{
+								{Name: ":message-type", Value: eventstream.StringValue("event")},
+								{Name: ":event-type", Value: eventstream.StringValue("testEvent")},
+							},
+							Payload: []byte(payload),
+						}))
+					}
+				}))
+				defer server.Close()
+				provider := newTestProviderWithServer(t, server)
+				provider.sendBackRawResponse = true
+				ctx := testBedrockCtx()
+				var stream chan *schemas.BifrostStreamChunk
+				var requestError *schemas.BifrostError
+				if api == "chat" {
+					request := testChatRequest()
+					request.Model = testConverseStreamModel
+					stream, requestError = provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, testBedrockKey(), request)
+				} else {
+					request := testResponsesRequest()
+					request.Model = testConverseStreamModel
+					stream, requestError = provider.ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), request)
+				}
+				require.Nil(t, requestError)
+				var streamError *schemas.BifrostError
+				completed := false
+				for chunk := range stream {
+					if chunk.BifrostError != nil {
+						streamError = chunk.BifrostError
+					}
+					if chunk.BifrostResponsesStreamResponse != nil && chunk.BifrostResponsesStreamResponse.Type == schemas.ResponsesStreamResponseTypeCompleted {
+						completed = true
+					}
+					if chunk.BifrostChatResponse != nil {
+						for _, choice := range chunk.BifrostChatResponse.Choices {
+							if choice.FinishReason != nil {
+								completed = true
+							}
+						}
+					}
+				}
+				if testCase.wantError {
+					require.NotNil(t, streamError)
+					assert.False(t, completed)
+					assert.False(t, streamError.IsBifrostError)
+					require.NotNil(t, streamError.StatusCode)
+					assert.Equal(t, http.StatusBadGateway, *streamError.StatusCode)
+					assert.Contains(t, streamError.Error.Message, "before messageStop")
+					if len(testCase.payloads) > 0 {
+						assert.NotNil(t, streamError.ExtraFields.RawResponse)
+					}
+					if testCase.name == "usage_without_stop" {
+						require.NotNil(t, streamError.ExtraFields.BilledUsage)
+						assert.Equal(t, 2, streamError.ExtraFields.BilledUsage.TotalTokens)
+					}
+				} else {
+					assert.Nil(t, streamError)
+				}
+			})
+		}
+	}
+}
+
+func TestConverseStreamDiagnosticsBounded(t *testing.T) {
+	var progress converseStreamProgress
+	progress.observe(eventstream.Message{Payload: []byte(strings.Repeat("x", 8192))}, &BedrockStreamEvent{})
+	assert.Len(t, progress.lastPayload, 4096)
+	progress.observe(eventstream.Message{Payload: []byte("next")}, &BedrockStreamEvent{})
+	assert.Equal(t, "next", string(progress.lastPayload))
+	assert.Equal(t, 2, progress.eventCount)
+}
+
 func testResponsesRequest() *schemas.BifrostResponsesRequest {
 	msgType := schemas.ResponsesMessageType("message")
 	roleUser := schemas.ResponsesMessageRoleType("user")

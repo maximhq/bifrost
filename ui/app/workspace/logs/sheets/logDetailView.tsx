@@ -2013,12 +2013,13 @@ export function LogDetailView({
 										onFilterByParentRequestId ? (
 											<Tooltip>
 												<TooltipTrigger asChild>
-													<code
-														className="block max-w-full min-w-0 cursor-pointer truncate font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+													<button
+														type="button"
+														className="block max-w-full min-w-0 cursor-pointer truncate text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
 														onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
 													>
 														{log.parent_request_id}
-													</code>
+													</button>
 												</TooltipTrigger>
 												<TooltipContent sideOffset={6} className="max-w-md break-all">
 													{log.parent_request_id} · Filter this session
@@ -3365,9 +3366,7 @@ export function LogDetailView({
 															.map((b, i) => {
 																const src = b.image_url?.url;
 																if (!src) return null;
-																return (
-																	<img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />
-																);
+																return <img key={`${i}-${src}`} src={src} alt="Attachment" className="mt-2 max-w-full rounded border" />;
 															})}
 													{text &&
 														Array.isArray(message.content) &&
@@ -3652,7 +3651,7 @@ export function LogDetailView({
 														<img
 															key={`${i}-${b.image_url}`}
 															src={b.image_url}
-															alt="Attached image"
+															alt="Attachment"
 															className="mt-2 max-w-full rounded border"
 														/>
 													))}

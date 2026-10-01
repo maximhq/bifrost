@@ -18,7 +18,7 @@ export function ModelFilterSelect({
 }: ModelFilterSelectProps) {
 	return (
 		<Select value={selectedModel} onValueChange={onModelChange}>
-			<SelectTrigger className="!h-7.5 w-[110px] text-xs sm:w-[130px]" data-testid={testId} size="sm">
+			<SelectTrigger aria-label="Filter by model" className="!h-7.5 w-[110px] text-xs sm:w-[130px]" data-testid={testId} size="sm">
 				<SelectValue placeholder={placeholder} />
 			</SelectTrigger>
 			<SelectContent className="w-[300px] max-w-[var(--radix-popper-available-width)]">

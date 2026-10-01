@@ -10,6 +10,8 @@
 		"copy-build": "rm -rf ../transports/bifrost-http/ui && cp -r out ../transports/bifrost-http/ui",
 		"start": "vite preview",
 		"lint": "oxlint",
+		"lint:a11y": "oxlint -c .oxlintrc.a11y.json",
+		"lint:a11y:enterprise": "oxlint -c .oxlintrc.a11y.json app/enterprise/",
 		"format": "oxfmt",
 		"format:check": "oxfmt --check",
 		"format:enterprise": "oxfmt app/enterprise/"
