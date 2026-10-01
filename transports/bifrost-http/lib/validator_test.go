@@ -2884,6 +2884,99 @@ func TestSchemaBedrockKeyConfigSTSFields(t *testing.T) {
 		}
 	})
 
+	t.Run("bedrock profile rejects explicit credentials", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [{
+						"name": "invalid-profile-key",
+						"weight": 1,
+						"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+						"bedrock_key_config": {
+							"region": "us-east-1",
+							"profile": "team-a",
+							"access_key": "AKIAEXAMPLE",
+							"secret_key": "secret"
+						}
+					}]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("bedrock profile combined with explicit credentials should fail schema validation")
+		}
+	})
+
+	t.Run("bedrock profile rejects whitespace-only name", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [{
+						"name": "invalid-profile-key",
+						"weight": 1,
+						"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+						"bedrock_key_config": {
+							"region": "us-east-1",
+							"profile": "   "
+						}
+					}]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("whitespace-only bedrock profile should fail schema validation")
+		}
+	})
+
+	t.Run("bedrock profile accepts empty static credential fields", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [{
+						"name": "profile-key",
+						"weight": 1,
+						"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+						"bedrock_key_config": {
+							"region": "us-east-1",
+							"profile": "team-a",
+							"access_key": "",
+							"secret_key": ""
+						}
+					}]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("bedrock profile with empty static credential fields should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("bedrock profile rejects API key value", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [{
+						"name": "invalid-api-key",
+						"value": "bedrock-api-key",
+						"weight": 1,
+						"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+						"bedrock_key_config": {
+							"region": "us-east-1",
+							"profile": "team-a"
+						}
+					}]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("bedrock profile combined with API key value should fail schema validation")
+		}
+	})
+
 	t.Run("bedrock config with batch_s3_config validates successfully", func(t *testing.T) {
 		compiled := compileSchema(t)
 		config := `{

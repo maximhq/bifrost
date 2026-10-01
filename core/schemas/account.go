@@ -780,6 +780,7 @@ type BedrockKeyConfig struct {
 	AccessKey    SecretVar  `json:"access_key,omitempty"`    // AWS access key for authentication
 	SecretKey    SecretVar  `json:"secret_key,omitempty"`    // AWS secret access key for authentication
 	SessionToken *SecretVar `json:"session_token,omitempty"` // AWS session token for temporary credentials
+	Profile      *SecretVar `json:"profile,omitempty"`       // Named AWS profile, including SSO profiles
 	Region       *SecretVar `json:"region,omitempty"`        // AWS region for service access
 	ARN          *SecretVar `json:"arn,omitempty"`           // Amazon Resource Name for resource identification
 	// IAM role for STS AssumeRole
@@ -804,6 +805,7 @@ type BedrockKeyConfig struct {
 }
 
 // NOTE: To use Bedrock IAM role authentication, set both AccessKey and SecretKey to empty strings.
+// To use a non-default named profile (including SSO), set Profile while leaving AccessKey/SecretKey empty.
 // To use Bedrock API Key authentication, set Value in Key struct instead.
 
 // BedrockMantleKeyConfig represents the Bedrock Mantle-specific configuration. Mantle serves

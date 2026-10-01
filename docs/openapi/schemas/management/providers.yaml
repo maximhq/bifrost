@@ -116,6 +116,15 @@ BedrockKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     arn:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
+    profile:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Named profile from ~/.aws/config or ~/.aws/credentials (including SSO). Used when access_key/secret_key are empty. Composes with role_arn.
+    role_arn:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    external_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    session_name:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
     batch_s3_config:
       type: object
       properties:

@@ -119,6 +119,37 @@ func TestMergeUpdatedKey_Value(t *testing.T) {
 	})
 }
 
+func TestMergeUpdatedKey_BedrockProfile(t *testing.T) {
+	const profileName = "corporate-bedrock-profile-east"
+	oldRaw := schemas.Key{
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Profile: schemas.NewSecretVar(profileName),
+			Region:  schemas.NewSecretVar("us-east-1"),
+		},
+	}
+	masked := oldRaw.BedrockKeyConfig.Profile.Redacted()
+	if !masked.IsMaskedPlaceholder() {
+		t.Fatal("test setup: profile preview is not a masked placeholder")
+	}
+	update := schemas.Key{
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Profile: masked,
+			Region:  schemas.NewSecretVar("us-west-2"),
+		},
+	}
+
+	merged, err := (&ProviderHandler{}).mergeUpdatedKey(oldRaw, update)
+	if err != nil {
+		t.Fatalf("mergeUpdatedKey returned error: %v", err)
+	}
+	if got := merged.BedrockKeyConfig.Profile.GetValue(); got != profileName {
+		t.Fatalf("profile got %q, want stored %q", got, profileName)
+	}
+	if got := merged.BedrockKeyConfig.Region.GetValue(); got != "us-west-2" {
+		t.Fatalf("region edit was lost: got %q", got)
+	}
+}
+
 // TestMergeUpdatedKey_Name locks in the invariant that a PUT update omitting
 // name must not clear the stored one. config_keys.name carries a global unique
 // index, so silently clearing it lets the first such update claim "" and wedge
@@ -509,6 +540,87 @@ func TestValidateProviderKeyRequiredNestedFields(t *testing.T) {
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("expected no error, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestValidateProviderKeyBedrockProfile(t *testing.T) {
+	region := schemas.NewSecretVar("us-east-1")
+	cases := []struct {
+		name    string
+		key     schemas.Key
+		wantErr string
+	}{
+		{
+			name: "profile only",
+			key: schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				Profile: schemas.NewSecretVar("team-a"), Region: region,
+			}},
+		},
+		{
+			name: "profile with assume role",
+			key: schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				Profile: schemas.NewSecretVar("team-a"), Region: region, RoleARN: schemas.NewSecretVar("arn:aws:iam::123456789012:role/Bedrock"),
+			}},
+		},
+		{
+			name: "profile through environment reference",
+			key: schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				Profile: schemas.NewSecretVar("env.BIFROST_BEDROCK_PROFILE"), Region: region,
+			}},
+		},
+		{
+			name: "blank profile",
+			key: schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				Profile: schemas.NewSecretVar(""), Region: region,
+			}},
+			wantErr: "bedrock_key_config.profile",
+		},
+		{
+			name: "whitespace-only profile",
+			key: schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				Profile: schemas.NewSecretVar("   "), Region: region,
+			}},
+			wantErr: "bedrock_key_config.profile",
+		},
+		{
+			name: "profile with static credentials",
+			key: schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				Profile: schemas.NewSecretVar("team-a"), Region: region,
+				AccessKey: *schemas.NewSecretVar("AKIAEXAMPLE"), SecretKey: *schemas.NewSecretVar("secret"),
+			}},
+			wantErr: "bedrock_key_config.profile",
+		},
+		{
+			name: "profile with explicit session token",
+			key: schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				Profile: schemas.NewSecretVar("team-a"), Region: region, SessionToken: schemas.NewSecretVar("temporary-token"),
+			}},
+			wantErr: "bedrock_key_config.profile",
+		},
+		{
+			name: "profile with Bedrock API key",
+			key: schemas.Key{
+				Value: *schemas.NewSecretVar("bedrock-api-key"),
+				BedrockKeyConfig: &schemas.BedrockKeyConfig{
+					Profile: schemas.NewSecretVar("team-a"), Region: region,
+				},
+			},
+			wantErr: "bedrock_key_config.profile",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateProviderKeyURL(schemas.Bedrock, tc.key)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected valid Bedrock key, got %v", err)
 				}
 				return
 			}

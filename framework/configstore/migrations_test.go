@@ -704,6 +704,21 @@ func forEachProviderMigrationDB(t *testing.T, testSuffix string) []namedDB {
 	return dbs
 }
 
+func TestMigrationAddBedrockProfileColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE config_keys (id INTEGER PRIMARY KEY, bedrock_region TEXT)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE migrations (id VARCHAR(255) PRIMARY KEY)").Error)
+
+	require.False(t, db.Migrator().HasColumn(&tables.TableKey{}, "bedrock_profile"))
+	require.NoError(t, migrationAddBedrockProfileColumn(context.Background(), db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "bedrock_profile"))
+
+	// A rolling upgrade can encounter a column already added by another process.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_bedrock_profile_column").Error)
+	require.NoError(t, migrationAddBedrockProfileColumn(context.Background(), db, testMigrationLogger))
+}
+
 // setupVKTestDBWithoutRotationColumns creates an in-memory SQLite database with
 // governance_virtual_keys in its pre-rotation-migration shape: none of the
 // previous_value*/rotated_at columns and no idx_virtual_key_previous_value_hash
