@@ -12,6 +12,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 - Added `bifrost.governance.complexityAnalyzerConfig.jev.criteria` (renders into `complexity_analyzer_config.jev.criteria`): per-tier overrides of the Typesafe Jev `definition`, `signals`, and `examples`, keyed by `SIMPLE`, `MEDIUM`, or `COMPLEX` (exact case). Any tier or field left out sends the shipped default; a definition is at most 500 characters, and each list at most 12 items of 300 characters.
 - Added `bifrost.mcp.toolManagerConfig.maxInstructionsPerClient` and `.maxInstructionsTotal` (`max_instructions_per_client` / `max_instructions_total`) to bound forwarded MCP server instructions in bytes; 0 keeps the built-in defaults.
+- Added `access_profile` to `bifrost.governance.customers[]`, `.teams[]`, and `.businessUnits[]` (renders into `governance.{customers,teams,business_units}[].access_profile`), the enterprise access profile the entity holds in place of its own budgets and rate limit.
+- `bifrost.governance.roles[].dac` and `.entity_dac` now accept `business-unit-data` and `customer-data` (`governance.roles[].dac` / `entity_dac`).
+- Documented `ttft_timeout_ms` on `bifrost.governance.routingRules[].targets[]` (`governance.routing_rules[].targets[].ttft_timeout_ms`) in the values schema.
+- Added `bifrost.proxyConfig` (renders into the top-level `proxy_config`): the global outbound proxy from the dashboard's proxy settings page, including `enableForScim` (`enable_for_scim`), `enableForInference` and `enableForApi`; reconciled with the same config hash as the other sections.
 
 ### 2.1.44
 
