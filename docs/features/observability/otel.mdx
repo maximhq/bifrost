@@ -730,6 +730,65 @@ Langfuse only supports HTTP protocol. Do not use gRPC.
 See the [Langfuse OpenTelemetry documentation](https://langfuse.com/integrations/native/opentelemetry) for more details.
 
 </Tab>
+<Tab title="Confident AI">
+
+[Confident AI](https://www.confident-ai.com/) is an LLM observability and evaluation platform that accepts OpenTelemetry traces at its OTLP endpoint.
+
+<Tabs>
+<Tab title="UI">
+
+Configure the OTel plugin with the following settings:
+
+| Field | Value |
+|-------|-------|
+| **Collector URL** | `https://otel.confident-ai.com/v1/traces` (US) or `https://eu.otel.confident-ai.com/v1/traces` (EU) |
+| **Trace Type** | `genai_extension` |
+| **Protocol** | `http` (required - the Confident AI traces endpoint is OTLP/HTTP) |
+| **Headers** | `x-confident-api-key`: `env.CONFIDENT_API_KEY` |
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "service_name": "bifrost",
+        "collector_url": "https://otel.confident-ai.com/v1/traces",
+        "trace_type": "genai_extension",
+        "protocol": "http",
+        "headers": {
+          "x-confident-api-key": "env.CONFIDENT_API_KEY"
+        }
+      }
+    }
+  ]
+}
+```
+
+For the EU region, use `https://eu.otel.confident-ai.com/v1/traces` instead. A self-hosted Confident AI deployment uses the OTLP traces endpoint of that deployment.
+
+</Tab>
+</Tabs>
+
+Set up the environment variable with your Confident AI project API key:
+
+```bash
+export CONFIDENT_API_KEY="<your-confident-project-key>"
+```
+
+Find the project API key in your project settings on [Confident AI](https://app.confident-ai.com).
+
+<Note>
+Confident AI only supports the HTTP protocol. Do not use gRPC.
+</Note>
+
+See the [Confident AI Bifrost documentation](https://www.confident-ai.com/docs/integrations/third-party/bifrost) for more details.
+
+</Tab>
 <Tab title="Databricks">
 
 Databricks' [Zerobus Ingest OTLP endpoint](https://docs.databricks.com/gcp/en/ingestion/opentelemetry/) writes OpenTelemetry data directly into Unity Catalog Delta tables. Each signal targets its **own** table (traces → the spans table, metrics → the metrics table), passed via the `x-databricks-zerobus-table-name` header in `catalog.schema.table` format. Because the header value differs per signal, put it in [`trace_headers` / `metrics_headers`](#per-signal-headers) and keep the shared `Authorization` bearer token in `headers`.
