@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -23,9 +22,7 @@ const (
 	vkExpiryCleanupStartupDelay = 30 * time.Second
 	vkExpiryCleanupTickInterval = time.Hour
 	vkExpiryCleanupTickJitter   = 5 * time.Minute
-	// vkExpiryCleanupMaxNamesInNotification bounds the names listed in the notification body.
-	vkExpiryCleanupMaxNamesInNotification = 20
-	vkExpiryCleanupActionPath             = "/workspace/virtual-keys"
+	vkExpiryCleanupActionPath   = "/workspace/virtual-keys"
 )
 
 // vkExpiryCleanupJobID derives the job ID from the UTC day so every node enqueues
@@ -234,12 +231,13 @@ func (h *GovernanceHandler) publishExpiryCleanupNotification(ctx context.Context
 }
 
 // vkExpiryCleanupNotification builds the notification for a run that deleted at least one key.
+// It carries counts only; the names stay in the job metadata.
 func vkExpiryCleanupNotification(meta vkExpiryCleanupMeta) schemas.NotificationInput {
 	severity := schemas.NotificationSeveritySuccess
-	message := fmt.Sprintf("Deleted %d expired virtual key%s: %s.", len(meta.Deleted), pluralSuffix(len(meta.Deleted)), joinNamesTruncated(meta.Deleted))
+	message := fmt.Sprintf("Deleted %d expired virtual key%s.", len(meta.Deleted), pluralSuffix(len(meta.Deleted)))
 	if len(meta.Failed) > 0 {
 		severity = schemas.NotificationSeverityWarning
-		message += fmt.Sprintf(" %d could not be deleted: %s.", len(meta.Failed), joinNamesTruncated(meta.Failed))
+		message += fmt.Sprintf(" %d could not be deleted.", len(meta.Failed))
 	}
 	return schemas.NotificationInput{
 		Audience:    schemas.NotificationAudienceAll,
@@ -249,16 +247,6 @@ func vkExpiryCleanupNotification(meta vkExpiryCleanupMeta) schemas.NotificationI
 		ActionLabel: "View virtual keys",
 		ActionPath:  vkExpiryCleanupActionPath,
 	}
-}
-
-// joinNamesTruncated lists up to vkExpiryCleanupMaxNamesInNotification names and
-// summarises the rest as a count.
-func joinNamesTruncated(names []string) string {
-	if len(names) <= vkExpiryCleanupMaxNamesInNotification {
-		return strings.Join(names, ", ")
-	}
-	shown := names[:vkExpiryCleanupMaxNamesInNotification]
-	return fmt.Sprintf("%s and %d more", strings.Join(shown, ", "), len(names)-len(shown))
 }
 
 // pluralSuffix returns "s" for any count other than one.
