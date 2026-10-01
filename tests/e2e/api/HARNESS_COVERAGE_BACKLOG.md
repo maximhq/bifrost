@@ -228,7 +228,7 @@ Normalized embeddings remain available through `/v1/embeddings`, `/openai/v1/emb
 
 - [x] **Titan V2 baseline** (`inputText`, one vector out, `inputTextTokenCount` to usage) - folder 53.A1
 - [x] **Titan `dimensions`** (1024 default | 512 | 256) - folder 53.A2
-- [x] **Titan array-input collapse** (no batch shape; Bifrost joins with `" \n"`, returns 1 vector) - folder 53.A3
+- [x] **Titan array-input rejection** (no batch shape; the array used to be joined into one `inputText`, now a 400; #3471) - folder 53.A3
 - [x] **Titan `normalize`** (default true; proven via L2 norm of the returned vector) - folder 53.A4 / 53.A5
 - [x] **Titan `embeddingTypes`** (camelCase; `embeddingsByType` recovered through `x-bf-send-back-raw-response`) - folder 53.A6
 - [x] **Titan native InvokeModel typed envelopes** (`binary` alone and `float` + `binary`) — folder 58.A / 58.B (PR #6335)
@@ -241,7 +241,8 @@ Normalized embeddings remain available through `/v1/embeddings`, `/openai/v1/emb
 - [x] **Cohere v4 `output_dimension`** (256 | 512 | 1024 | 1536) - folder 53.B6 / 53.D4
 - [x] **Usage backfill from `X-Amzn-Bedrock-Input-Token-Count`** (Cohere embed omits usage from the body; #3917) - folder 53.B7
 - [ ] **Titan G1** (`amazon.titan-embed-text-v1`) - `inputText` only, no `dimensions`/`normalize`; sending either is expected to be rejected
-- [ ] **Titan multimodal** (`amazon.titan-embed-image-v1`) - `inputImage` is not mapped by `ToBedrockTitanEmbeddingRequest` at all
+- [x] **Titan multimodal** (`amazon.titan-embed-image-v1`) - `inputImage` now mapped from image content parts and from the native invoke body, plus `embeddingConfig.outputEmbeddingLength` (#3632) - folder 112.A / 112.B
+- [x] **Nova multimodal** (`amazon.nova-2-multimodal-embeddings-v1:0`) - the third Bedrock embedding envelope: `taskType: SINGLE_EMBEDDING` + one modality, per-vector modality labels, `detailLevel`, and `AUDIO_VIDEO_SEPARATE` returning two vectors for one input - folder 114.A / 114.B
 - [x] **Cohere v4 multimodal** (`images` data-URI array, `inputs` interleaved text+image blocks) - `ToBedrockCohereEmbeddingRequest` now builds `inputs[]` from multimodal content parts - folder 111.F1
 - [ ] **Cohere v3** (`cohere.embed-english-v3`) - fixed 1024 dims, `truncate` is `NONE|START|END` on v3 versus `NONE|LEFT|RIGHT` on v4, so the shared converter cannot validate the enum
 - [ ] **`truncate` / `max_tokens` passthrough** to Cohere on Bedrock
