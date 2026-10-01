@@ -108813,6 +108813,98 @@
                   }
                 }
               },
+              "profile": {
+                "type": "object",
+                "description": "Named profile from ~/.aws/config or ~/.aws/credentials (including SSO). Used when access_key/secret_key are empty. Composes with role_arn.",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
+              "role_arn": {
+                "type": "object",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
+              "external_id": {
+                "type": "object",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
+              "session_name": {
+                "type": "object",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
               "batch_s3_config": {
                 "type": "object",
                 "properties": {
