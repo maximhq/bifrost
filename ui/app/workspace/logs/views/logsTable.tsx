@@ -329,6 +329,7 @@ export function LogsDataTable({
 							disableSearch
 							hideClear
 							className="h-7 w-fit gap-1 text-xs"
+							aria-label="Rows per page"
 							data-testid="page-size-select"
 						/>
 					</div>
