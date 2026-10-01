@@ -699,6 +699,8 @@ bifrost:
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
         #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
+        #     excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
+        #     export_raw_payloads: false  # Raw provider request/response bodies on spans; needs raw storage on the provider
         #     overhead_breakdown_enabled: false # Export the per-component overhead histogram bifrost_overhead_component_microseconds (requires metrics_enabled and an active trace)
         #
         # Single-profile shape:
@@ -734,6 +736,7 @@ bifrost:
         # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
         # Note: "*" captures all headers including sensitive ones like Authorization.
         # request_headers: []
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # Export the per-component overhead histogram bifrost_overhead_component_microseconds
         # (overhead latency split by the overhead_component attribute). Requires metrics_enabled
         # and an active trace, since the breakdown is computed from completed spans (default: false)
@@ -770,6 +773,7 @@ bifrost:
         # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
         # disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # Agentless mode (direct to Datadog API, no local agent):
         # agentless: true
         # api_key: "env.DD_API_KEY"   # Required for agentless mode (supports env.VAR_NAME)
@@ -793,6 +797,8 @@ bifrost:
         custom_labels: {}
         disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Column names to omit, matched exactly (e.g. "tools"); trace_id and timestamp cannot be excluded
+        # export_raw_payloads: false  # Store raw provider request/response bodies; needs raw storage on the provider
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
@@ -815,6 +821,7 @@ bifrost:
         auto_create_topic: false
         disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
@@ -828,6 +835,7 @@ bifrost:
         auto_create_topic: false
         disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
@@ -842,6 +850,7 @@ bifrost:
         enable_events: true
         enable_metrics: true
         disable_content_logging: false # events include prompt/response content by default; set true for metadata only
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # source: "bifrost"            # HEC source field (default: bifrost)
         # sourcetype: "bifrost:llm"    # HEC sourcetype for events (metrics use bifrost:metric; default: bifrost:llm)
         # host: ""                     # HEC host field (defaults to the server hostname)
