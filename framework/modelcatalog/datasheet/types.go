@@ -11,6 +11,7 @@ package datasheet
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -639,7 +640,7 @@ func withRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Dur
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		select {
 		case <-ctx.Done():
-			return zero, ctx.Err()
+			return zero, retryAbortErr(ctx, lastErr)
 		default:
 		}
 
@@ -650,7 +651,7 @@ func withRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Dur
 			}
 			select {
 			case <-ctx.Done():
-				return zero, ctx.Err()
+				return zero, retryAbortErr(ctx, lastErr)
 			case <-time.After(backoff):
 			}
 		}
@@ -661,6 +662,15 @@ func withRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Dur
 		lastErr = err
 	}
 	return zero, lastErr
+}
+
+// retryAbortErr keeps the last attempt's error when ctx ends mid-retry, since
+// a bare "context deadline exceeded" hides which URL failed and why.
+func retryAbortErr(ctx context.Context, lastErr error) error {
+	if lastErr == nil {
+		return ctx.Err()
+	}
+	return fmt.Errorf("%w (last attempt: %v)", ctx.Err(), lastErr)
 }
 
 // convertEntryToTablePricing converts a parsed Entry from the upstream
