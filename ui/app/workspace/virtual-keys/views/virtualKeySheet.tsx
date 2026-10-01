@@ -397,14 +397,26 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
 	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
-	// On create, the VK is governed unless the role grants CreateStandalone (the freedom to
-	// create ungoverned keys); the profile that will apply comes from vkCreationPolicy. If
-	// governed, lock the governance fields up front — the server applies the profile regardless.
-	const { data: vkCreationPolicy } = useGetMyVKCreationPolicyQuery(undefined, {
+	// On create, the VK is governed when the role lacks CreateStandalone (the freedom to create
+	// ungoverned keys) *and* vkCreationPolicy resolves a profile to govern with — with no profile
+	// the server creates the key ungoverned. If governed, lock the governance fields up front:
+	// the server applies the profile regardless.
+	const {
+		data: vkCreationPolicy,
+		isError: isVkCreationPolicyError,
+		refetch: refetchVkCreationPolicy,
+	} = useGetMyVKCreationPolicyQuery(undefined, {
 		skip: isEditing,
 		refetchOnMountOrArgChange: true,
 	});
-	const willBeGovernedOnCreate = !isEditing && !hasCreateStandalone;
+	// Only a resolved profile governs. "Managed by your access profile" is a claim about a
+	// specific profile, so it is never made on a guess: a caller who holds none gets the plain
+	// form, which is exactly the key the server will create for them.
+	const willBeGovernedOnCreate = !isEditing && !hasCreateStandalone && !!vkCreationPolicy?.has_access_profile;
+	// A failed lookup is not an answer either, and it neither locks the form nor blocks the
+	// create: the server governs the key correctly whatever this form shows, so all that is at
+	// stake is whether these fields survive. It says so and offers a retry.
+	const isVkCreationPolicyUnresolved = !isEditing && !hasCreateStandalone && isVkCreationPolicyError;
 	const isManagedByProfile = (isEditing && isManagedByProfileHook) || willBeGovernedOnCreate;
 	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
 	const UserPicker = getUserPicker();

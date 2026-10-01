@@ -16,7 +16,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
 import { buildHaystack } from "./lib/haystack.mjs";
-import { walkRequests, buildProducerIndex, chainedDependencies } from "./lib/chained-vars.mjs";
+import { walkRequests, buildProducerIndex, chainedDependencies, scriptDependencies } from "./lib/chained-vars.mjs";
 import { retryableNames } from "./lib/rate-limit-retry.mjs";
 import {
   DEFAULT_TARGET_SECONDS,
@@ -446,10 +446,19 @@ const filterTree = (items, keep) => {
 // in this collection), so this never balloons a shard.
 const expandWithProducers = (selected, entries) => {
   const producerIndex = buildProducerIndex(entries);
+  // Both kinds of chain: a {{var}} in the body or URL, and a collectionVariables.get() in a
+  // script. The second is the cache-parity rounds - see scriptDependencies - and was the gap that
+  // let --rerun-failed replay every "round 2 (read)" without its "round 1 (write)", and let a
+  // cost slice put the two rounds of one cell in different newman processes. Both read as
+  // read=0 write=N: a cold write, not a cache defect.
+  const depsOf = (item) => [
+    ...chainedDependencies(item, producerIndex),
+    ...scriptDependencies(item, producerIndex),
+  ];
   const position = new Map(entries.map(({ item }, i) => [item, i]));
   const consumersOf = new Map();
   for (const { item } of entries) {
-    for (const { variable } of chainedDependencies(item, producerIndex)) {
+    for (const { variable } of depsOf(item)) {
       if (!consumersOf.has(variable)) consumersOf.set(variable, []);
       consumersOf.get(variable).push(item);
     }
@@ -465,7 +474,7 @@ const expandWithProducers = (selected, entries) => {
     // request that sets nothing while the actual producer is never pulled in -
     // leaving the consumer to fail on an unsubstituted {{var}}, which is the
     // failure this whole function exists to prevent.
-    for (const { producer, producerItem: dep, variable } of chainedDependencies(item, producerIndex)) {
+    for (const { producer, producerItem: dep, variable } of depsOf(item)) {
       for (const step of consumersOf.get(variable) || []) {
         if (keep.has(step) || position.get(step) >= position.get(item)) continue;
         keep.add(step);

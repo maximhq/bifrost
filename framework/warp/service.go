@@ -48,6 +48,12 @@ type Service struct {
 	// narrows describe_virtual_key to reporting itself unavailable, the same
 	// pattern semantic search already uses for its own optional dependency.
 	governance GovernanceReader
+	// vkDecorator and userGovernance are the governance overlays the HTTP
+	// layer may hand in (see VirtualKeyDecorator and UserGovernanceReader).
+	// Both nil by default: the key row is taken as is, and describe_user_limits
+	// is not offered.
+	vkDecorator    VirtualKeyDecorator
+	userGovernance UserGovernanceReader
 	// responses is the gateway client's responses path, which Warp chats
 	// through. Set once at construction; tests replace chatOverride instead, so
 	// the loop can be driven by a scripted model.
@@ -149,6 +155,20 @@ func WithConfigStore(store configstore.WarpStore) Option {
 // otherwise be narrowed from.
 func WithGovernanceReader(reader GovernanceReader) Option {
 	return func(s *Service) { s.governance = reader }
+}
+
+// WithVirtualKeyDecorator sets the overlay describe_virtual_key applies to a
+// key row before projecting it. The HTTP layer owns the overlays (standalone
+// key rehydration, the enterprise access-profile resolver), so it builds the
+// decorator and hands it in here.
+func WithVirtualKeyDecorator(decorator VirtualKeyDecorator) Option {
+	return func(s *Service) { s.vkDecorator = decorator }
+}
+
+// WithUserGovernanceReader offers describe_user_limits, answered by reader. A
+// nil reader leaves the tool out, which is what an OSS deployment wants.
+func WithUserGovernanceReader(reader UserGovernanceReader) Option {
+	return func(s *Service) { s.userGovernance = reader }
 }
 
 // NewService builds a Service over the deployment's config store. A store that

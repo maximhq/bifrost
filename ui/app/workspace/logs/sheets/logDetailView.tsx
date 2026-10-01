@@ -42,9 +42,19 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
+import { getLogRoutingPanel } from "@/lib/registries/logs";
 import { useGetLogsQuery, useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
-import { BatchRequestCounts, ContentBlock, LLMUsage, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
+import {
+	BatchRequestCounts,
+	ContentBlock,
+	InputCostDetails,
+	LLMUsage,
+	LogEntry,
+	OutputCostDetails,
+	OverheadBucket,
+	ResponsesMessage,
+} from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -53,6 +63,7 @@ import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappin
 import { extractResponsesItemPayload, summarizeResponsesToolCall } from "@/lib/utils/responsesItems";
 import { isJson } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import "@enterprise/lib/registrations/logs";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench, X } from "lucide-react";
@@ -75,6 +86,7 @@ import {
 	isClientToolCallItem,
 	nextSessionLookupStart,
 	isResponsesToolCallItem,
+	isShownMetadataKey,
 	parseRoutingDecisionLine,
 	pickNextSessionLog,
 	resolveRawJsonNoticeState,
@@ -430,6 +442,35 @@ const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
 	}
 	lines.push(`Input tokens: ${formatExactNumber(total)}`);
 	return lines.join("\n");
+};
+
+const INPUT_COST_LABELS: [keyof InputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["cached_read_cost", "Cache read"],
+	["cached_write_cost", "Cache write"],
+	["request_cost", "Per-request fee"],
+];
+
+const OUTPUT_COST_LABELS: [keyof OutputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["reasoning_cost", "Reasoning"],
+	["citation_cost", "Citations"],
+	["search_queries_cost", "Web search"],
+];
+
+// Lists the non-zero cost categories; undefined when there are none or text is the only one.
+const getCostDetailsTooltip = <T extends InputCostDetails | OutputCostDetails>(
+	details: T | undefined,
+	labels: [keyof T, string][],
+): string | undefined => {
+	if (!details) return undefined;
+	const set = labels.filter(([key]) => ((details[key] as number | undefined) ?? 0) > 0);
+	if (set.length === 0 || (set.length === 1 && set[0][0] === "text_cost")) return undefined;
+	return set.map(([key, label]) => `${label}: ${formatCostPrecise(details[key] as number)}`).join("\n");
 };
 
 // Helper to detect passthrough operations
@@ -1154,6 +1195,28 @@ function MessageHistoryCollapse({ count, children }: { count: number; children: 
 	);
 }
 
+function EmbeddingJsonBox({ title, value }: { title: string; value: unknown }) {
+	const json = JSON.stringify(value, null, 2);
+	return (
+		<CollapsibleBox title={title} onCopy={() => json} collapsedHeight={150}>
+			<CodeEditor
+				className="z-0 w-full"
+				shouldAdjustInitialHeight
+				maxHeight={450}
+				wrap
+				code={json}
+				lang="json"
+				readonly
+				options={{
+					scrollBeyondLastLine: false,
+					lineNumbers: "off",
+					alwaysConsumeMouseWheel: false,
+				}}
+			/>
+		</CollapsibleBox>
+	);
+}
+
 interface LogDetailViewProps {
 	log: LogEntry | null;
 	resolvedSelectedPromptName?: string; // Current prompt name from prompt-repo when `selected_prompt_id` is set; falls back to stored log name
@@ -1288,12 +1351,15 @@ export function LogDetailView({
 	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const complexityRouting = deriveComplexityRouting(log);
+	// A downstream build can draw its own routing record at the top of the Routing tab.
+	const RoutingPanel = getLogRoutingPanel();
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isRealtimeTranscription =
 		isRealtimeTurn && log.metadata?.realtime_event_type === "conversation.item.input_audio_transcription.completed";
 	const audioSeconds = log.token_usage?.audio_seconds;
 	const isBatch = isBatchOperation(log.object);
+	const isEmbedding = log.object === "embedding";
 	const batchDebug = log.batch_debug;
 	// Set on both the submission row and the aggregate cost row a settlement writes;
 	// only the latter carries accounting, which is what tells the two apart.
@@ -1760,11 +1826,13 @@ export function LogDetailView({
 					/>
 					<HeroStat
 						label="Cost"
-						// Decisions bill fractions of a cent per call (jev: $42 per 1B input
-						// tokens), so the shared 4-dp rounding floors every value to $0.0000.
+						// Routing classifiers add sidecar cost to normal inference
+						// requests, so keep those totals visible at useful precision.
 						value={
 							log.cost != null
-								? log.object === "decisions" || (log.status === "cancelled" && log.stream && log.provider === "anthropic")
+								? log.object === "decisions" ||
+									(log.cost_breakdown?.additional_cost_details?.routing_cost ?? 0) > 0 ||
+									(log.status === "cancelled" && log.stream && log.provider === "anthropic")
 									? formatCostPrecise(log.cost)
 									: formatCost(log.cost)
 								: "—"
@@ -2338,13 +2406,19 @@ export function LogDetailView({
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
 									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
-										<LogEntryDetailsView className="w-full" label="Input Cost" value={formatCostPrecise(log.cost_breakdown?.input_cost)} />
+										<LogEntryDetailsView
+											className="w-full"
+											label="Input Cost"
+											value={formatCostPrecise(log.cost_breakdown?.input_cost)}
+											tooltip={getCostDetailsTooltip(log.cost_breakdown?.input_cost_details, INPUT_COST_LABELS)}
+										/>
 									)}
 									{(log.cost_breakdown?.output_cost ?? 0) > 0 && (
 										<LogEntryDetailsView
 											className="w-full"
 											label="Output Cost"
 											value={formatCostPrecise(log.cost_breakdown?.output_cost)}
+											tooltip={getCostDetailsTooltip(log.cost_breakdown?.output_cost_details, OUTPUT_COST_LABELS)}
 										/>
 									)}
 									{(log.cost_breakdown?.total_cost ?? log.cost ?? 0) > 0 && (
@@ -2776,7 +2850,11 @@ export function LogDetailView({
 												label="Mechanism"
 												value={
 													<Badge variant="secondary" className="uppercase">
-														{call.output_tokens != null ? "LLM Classification" : "Embedding"}
+														{call.request_type === "decisions"
+															? "Jev Classification"
+															: call.output_tokens != null
+																? "LLM Classification"
+																: "Embedding"}
 													</Badge>
 												}
 											/>
@@ -2805,46 +2883,14 @@ export function LogDetailView({
 					{!isContainer &&
 						!isPassthrough &&
 						log.metadata &&
-						Object.keys(log.metadata).filter((k) => {
-							if (k === "isAsyncRequest") return false;
-							if (
-								isRealtimeTurn &&
-								[
-									"realtime_session_id",
-									"provider_session_id",
-									"realtime_source",
-									"realtime_event_type",
-									"realtime_transport",
-									"realtime_voice",
-									"realtime",
-								].includes(k)
-							)
-								return false;
-							return true;
-						}).length > 0 && (
+						Object.keys(log.metadata).some((k) => isShownMetadataKey(k, isRealtimeTurn)) && (
 							<>
 								<DottedSeparator />
 								<div className="space-y-4">
 									<BlockHeader title="Metadata" />
 									<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 										{Object.entries(log.metadata)
-											.filter(([key]) => {
-												if (key === "isAsyncRequest") return false;
-												if (
-													isRealtimeTurn &&
-													[
-														"realtime_session_id",
-														"provider_session_id",
-														"realtime_source",
-														"realtime_event_type",
-														"realtime_transport",
-														"realtime_voice",
-														"realtime",
-													].includes(key)
-												)
-													return false;
-												return true;
-											})
+											.filter(([key]) => isShownMetadataKey(key, isRealtimeTurn))
 											.map(([key, value]) => (
 												<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
 											))}
@@ -2881,7 +2927,7 @@ export function LogDetailView({
 						</TabsTrigger>
 					)}
 
-					{showTabs && !isPassthrough && !log.list_models_output && !isBatch && (
+					{showTabs && !isPassthrough && !log.list_models_output && !isBatch && !isEmbedding && (
 						<TabsTrigger value="tools" className="px-3">
 							Tools
 							{declaredTools.length ? (
@@ -3070,7 +3116,7 @@ export function LogDetailView({
 						</div>
 					)}
 					{/* Passthrough just renders the raw json, so there's nothing to filter */}
-					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough) && "hidden")}>
+					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough || isEmbedding) && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<button
@@ -3618,7 +3664,10 @@ export function LogDetailView({
 						);
 					})()}
 
-					{log.is_large_payload_request && !log.input_history?.length && !log.responses_input_history?.length && (
+					{log.is_large_payload_request &&
+						!log.input_history?.length &&
+						!log.responses_input_history?.length &&
+						!log.embedding_input?.length && (
 						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
 							Large payload request: input content was streamed directly to the provider and is not available for display.
 							{log.raw_request && " A truncated preview is available in the Raw JSON tab."}
@@ -3631,20 +3680,14 @@ export function LogDetailView({
 						</div>
 					)}
 
+					{log.embedding_input && log.embedding_input.length > 0 && (
+						<EmbeddingJsonBox
+							title="Input"
+							value={applyRedactionMappingToValue(log.embedding_input, activeInputRevealMapping)}
+						/>
+					)}
 					{log.status !== "processing" && log.embedding_output && log.embedding_output.length > 0 && !log.error_details?.error.message && (
-						<div className="bg-card space-y-3 rounded-sm border p-5">
-							<div className="text-sm font-medium">Embedding</div>
-							<LogChatMessageView
-								message={{
-									role: "assistant",
-									content: JSON.stringify(
-										log.embedding_output.map((embedding) => embedding.embedding),
-										null,
-										2,
-									),
-								}}
-							/>
-						</div>
+						<EmbeddingJsonBox title="Embedding" value={log.embedding_output.map((embedding) => embedding.embedding)} />
 					)}
 					{log.status !== "processing" && log.rerank_output && !log.error_details?.error.message && (
 						<CollapsibleBox title={`Rerank Output (${log.rerank_output.length})`} onCopy={() => JSON.stringify(log.rerank_output, null, 2)}>
@@ -3799,6 +3842,7 @@ export function LogDetailView({
 				</TabsContent>
 
 				<TabsContent value="routing" className="space-y-3">
+					{RoutingPanel && <RoutingPanel log={log} />}
 					{log.attempt_trail && log.attempt_trail.length > 1 && (
 						<CollapsibleBox
 							title={`Attempt Trail (${log.attempt_trail.length} attempts)`}
@@ -3930,7 +3974,7 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 		const isRealtimeTurn = log.object === "realtime.turn";
 		const isSpeech = log.object === "audio.speech" || log.object === "audio.speech.chunk";
 		const isTextCompletion = log.object === "text.completion" || log.object === "text.completion.chunk";
-		const isEmbedding = log.object === "list";
+		const isEmbedding = log.object === "embedding";
 
 		const extractTextFromMessage = (message: any): string => {
 			if (!message || !message.content) {
@@ -3994,7 +4038,10 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 			if (prompt) {
 				requestBody.prompt = prompt;
 			}
+		} else if (log.object === "embedding" && log.embedding_input && log.embedding_input.length > 0) {
+			requestBody.input = log.embedding_input;
 		} else if (isEmbedding && log.input_history && log.input_history.length > 0) {
+			// Fallback for logs written before embedding_input existed.
 			const texts: string[] = [];
 			for (const message of log.input_history) {
 				const messageTexts = extractTextsFromMessage(message);

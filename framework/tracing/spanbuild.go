@@ -274,12 +274,10 @@ func mergeExtraParamsJSON(dst map[string]any, extra map[string]any) map[string]a
 }
 
 func buildErrorSide(d *schemas.LLMSpanData, bifrostErr *schemas.BifrostError) {
-	if bifrostErr.Error == nil {
-		return
-	}
+	// Detail may be nil; appendError guards it. Built anyway so the status lands.
 	d.Error = &schemas.SpanError{
 		Detail:     bifrostErr.Error,
-		StatusCode: bifrostErr.StatusCode,
+		StatusCode: schemas.Ptr(bifrostErr.EffectiveHTTPStatus()),
 	}
 	// Billed usage is what the provider charged for a failed or cancelled turn;
 	// without it every span-based consumer records zero tokens.

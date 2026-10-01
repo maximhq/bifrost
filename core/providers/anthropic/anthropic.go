@@ -675,12 +675,24 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 		if usage.OutputTokensDetails.NumSearchQueries == nil || n > *usage.OutputTokensDetails.NumSearchQueries {
 			usage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(n)
 		}
+		if usage.ToolUsage == nil {
+			usage.ToolUsage = &schemas.ToolUsage{}
+		}
+		if usage.ToolUsage.WebSearch == nil || n > usage.ToolUsage.WebSearch.NumRequests {
+			usage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
+		}
 		if billedUsage != nil {
 			if billedUsage.CompletionTokensDetails == nil {
 				billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 			}
 			if billedUsage.CompletionTokensDetails.NumSearchQueries == nil || n > *billedUsage.CompletionTokensDetails.NumSearchQueries {
 				billedUsage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(n)
+			}
+			if billedUsage.ToolUsage == nil {
+				billedUsage.ToolUsage = &schemas.ToolUsage{}
+			}
+			if billedUsage.ToolUsage.WebSearch == nil || n > billedUsage.ToolUsage.WebSearch.NumRequests {
+				billedUsage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
 			}
 		}
 	}
@@ -1055,6 +1067,12 @@ func HandleAnthropicChatCompletionStreaming(
 					}
 					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.CompletionTokensDetails.NumSearchQueries == nil || n > *usage.CompletionTokensDetails.NumSearchQueries {
 						usage.CompletionTokensDetails.NumSearchQueries = &n
+					}
+					if usage.ToolUsage == nil {
+						usage.ToolUsage = &schemas.ToolUsage{}
+					}
+					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.ToolUsage.WebSearch == nil || n > usage.ToolUsage.WebSearch.NumRequests {
+						usage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
 					}
 				}
 				// Extended-thinking tokens. Max-merged like the other counters because usage
@@ -3039,6 +3057,11 @@ func HandleAnthropicCountTokensRequest(
 	}
 
 	return response, nil
+}
+
+// ModelRetrieve is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Anthropic provider.

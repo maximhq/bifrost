@@ -1,3 +1,4 @@
+import { isReservedMetadataKey } from "@/lib/registries/logs";
 import { isLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 
 /**
@@ -35,6 +36,28 @@ export function resolveRawJsonNoticeState({
 	if (isProvidersLoading || !providers) return "loading";
 	const match = providers.find((p) => p.name === provider);
 	return match && match.store_raw_request_response === false ? "storage-disabled" : "unknown";
+}
+
+// Realtime turn keys the sheet's header already shows, so its Metadata grid leaves them out.
+const REALTIME_HEADER_METADATA_KEYS = new Set([
+	"realtime_session_id",
+	"provider_session_id",
+	"realtime_source",
+	"realtime_event_type",
+	"realtime_transport",
+	"realtime_voice",
+	"realtime",
+]);
+
+/**
+ * isShownMetadataKey says whether the log sheet's Metadata grid lists a metadata key: the caller's
+ * own keys are listed, while the async marker, a realtime turn's header keys and keys under a
+ * reserved prefix (which a registered panel shows its own way) are not.
+ */
+export function isShownMetadataKey(key: string, isRealtimeTurn: boolean): boolean {
+	if (key === "isAsyncRequest") return false;
+	if (isReservedMetadataKey(key)) return false;
+	return !(isRealtimeTurn && REALTIME_HEADER_METADATA_KEYS.has(key));
 }
 
 export interface RoutingDecisionLine {

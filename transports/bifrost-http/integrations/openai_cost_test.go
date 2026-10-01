@@ -59,6 +59,36 @@ func TestOpenAIWireCostResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("responses keeps tool_usage top-level beside the flattened cost", func(t *testing.T) {
+		resp := &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{
+				TotalTokens: 15,
+				Cost:        &schemas.BifrostCost{TotalCost: 3},
+				ToolUsage:   &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 2}},
+			},
+		}
+		js, err := sonic.Marshal(openAIWireCostResponse(resp))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var wire struct {
+			ToolUsage *schemas.ToolUsage     `json:"tool_usage"`
+			Usage     map[string]interface{} `json:"usage"`
+		}
+		if err := sonic.Unmarshal(js, &wire); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if wire.ToolUsage == nil || wire.ToolUsage.WebSearch == nil || wire.ToolUsage.WebSearch.NumRequests != 2 {
+			t.Errorf("top-level tool_usage missing: %s", js)
+		}
+		if _, ok := wire.Usage["tool_usage"]; ok {
+			t.Errorf("usage must not carry tool_usage: %s", js)
+		}
+		if wire.Usage["cost"] != float64(3) {
+			t.Errorf("responses wire cost not flattened to float: %s", js)
+		}
+	})
+
 	t.Run("image renders cost as float total", func(t *testing.T) {
 		resp := &schemas.BifrostImageGenerationResponse{
 			Usage: &schemas.ImageUsage{Cost: &schemas.BifrostCost{TotalCost: 3}},

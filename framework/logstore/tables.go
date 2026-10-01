@@ -61,7 +61,7 @@ type SearchFilters struct {
 	VirtualKeyIDs        []string   `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs       []string   `json:"routing_rule_ids,omitempty"`
 	ComplexityTiers      []string   `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, jev, llm, session, skipped)
 	SessionID            string     `json:"session_id,omitempty"`            // Exact Bifrost session ID used for key stickiness and request correlation
 	TeamIDs              []string   `json:"team_ids,omitempty"`
 	CustomerIDs          []string   `json:"customer_ids,omitempty"`
@@ -238,7 +238,7 @@ type Log struct {
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
 	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
-	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "jev", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
 	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                                                                        // Raw complexity score behind the tier; unindexed (detail-view only)
 	SessionID               *string   `gorm:"type:varchar(255);index:idx_logs_session_id,where:session_id IS NOT NULL;index:idx_logs_session_id_timestamp,priority:1,where:session_id IS NOT NULL" json:"session_id,omitempty"` // Raw opaque session identity resolved at ingress for key stickiness and log correlation
 	SelectedPromptName      *string   `gorm:"type:varchar(255)" json:"selected_prompt_name"`
@@ -266,6 +266,7 @@ type Log struct {
 	ResponsesInputHistory   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ResponsesMessage
 	OutputMessage           string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ChatMessage
 	ResponsesOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ResponsesMessage
+	EmbeddingInput          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.EmbeddingInputItem
 	EmbeddingOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized [][]float32
 	RerankOutput            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.RerankResult
 	OCROutput               string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostOCRResponse
@@ -396,6 +397,7 @@ type Log struct {
 	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
 	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
 	ResponsesOutputParsed       []schemas.ResponsesMessage              `gorm:"-" json:"responses_output,omitempty"`
+	EmbeddingInputParsed        []schemas.EmbeddingInputItem            `gorm:"-" json:"embedding_input,omitempty"`
 	EmbeddingOutputParsed       []schemas.EmbeddingData                 `gorm:"-" json:"embedding_output,omitempty"`
 	RerankOutputParsed          []schemas.RerankResult                  `gorm:"-" json:"rerank_output,omitempty"`
 	OCROutputParsed             *schemas.BifrostOCRResponse             `gorm:"-" json:"ocr_output,omitempty"`
@@ -590,6 +592,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if l.EmbeddingInputParsed != nil {
+		if data, err := sonic.Marshal(l.EmbeddingInputParsed); err != nil {
+			return err
+		} else {
+			l.EmbeddingInput = string(data)
+		}
+	}
+
 	if l.EmbeddingOutputParsed != nil {
 		if data, err := sonic.Marshal(l.EmbeddingOutputParsed); err != nil {
 			return err
@@ -775,7 +785,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TokenUsageParsed != nil {
-		if data, err := sonic.Marshal(l.TokenUsageParsed); err != nil {
+		if data, err := sonic.Marshal(serializeTokenUsage(l.TokenUsageParsed)); err != nil {
 			return err
 		} else {
 			l.TokenUsage = string(data)
@@ -989,6 +999,12 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
+	if l.EmbeddingInput != "" {
+		if err := sonic.Unmarshal([]byte(l.EmbeddingInput), &l.EmbeddingInputParsed); err != nil {
+			l.EmbeddingInputParsed = nil
+		}
+	}
+
 	if l.EmbeddingOutput != "" {
 		if err := sonic.Unmarshal([]byte(l.EmbeddingOutput), &l.EmbeddingOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
@@ -1047,6 +1063,10 @@ func (l *Log) DeserializeFields() error {
 			// Without clearing the flag the row would stay marked degraded and
 			// billing would skip a row it can now price correctly.
 			l.usageRebuiltFromColumns = false
+			// Logs stores web search count in num_search_queries (legacy behaviour), we map it to tool_usage so that repricing bills it.
+			if u := l.TokenUsageParsed; u != nil && u.CompletionTokensDetails != nil && u.CompletionTokensDetails.NumSearchQueries != nil && *u.CompletionTokensDetails.NumSearchQueries > 0 {
+				u.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}}
+			}
 		}
 	}
 
@@ -1905,6 +1925,15 @@ type MCPToolLogStats struct {
 func (l *Log) BuildContentSummary() string {
 	var parts []string
 
+	// Add embedding input text parts
+	for _, item := range l.EmbeddingInputParsed {
+		for _, part := range item.Content {
+			if part.Type == schemas.EmbeddingContentPartTypeText && part.Text != nil && *part.Text != "" {
+				parts = append(parts, *part.Text)
+			}
+		}
+	}
+
 	// Add input messages
 	for _, msg := range l.InputHistoryParsed {
 		if msg.Content != nil {
@@ -2660,4 +2689,24 @@ type NodeUsageAggregate struct {
 	MaxTimestamp      time.Time          `json:"max_timestamp"`       // highest log timestamp included in the aggregate
 	MaxLogID          string             `json:"max_log_id"`          // log ID tiebreaker for MaxTimestamp
 	NextCursor        NodeUsageCursor    `json:"next_cursor"`         // stable cursor for the next incremental query
+}
+
+// serializeTokenUsage converts the new tool_usage block back to completion_tokens_details.num_search_queries
+// field (which is how existing logs store it)
+func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
+	if u.ToolUsage == nil {
+		return u
+	}
+	stored := *u
+	stored.ToolUsage = nil
+	if ws := u.ToolUsage.WebSearch; ws != nil && ws.NumRequests > 0 {
+		details := schemas.ChatCompletionTokensDetails{}
+		if u.CompletionTokensDetails != nil {
+			details = *u.CompletionTokensDetails
+		}
+		n := ws.NumRequests
+		details.NumSearchQueries = &n
+		stored.CompletionTokensDetails = &details
+	}
+	return &stored
 }

@@ -430,6 +430,88 @@
           }
         },
         {
+          "id": "validation-model-not-exposed",
+          "name": "Rejects a model the configuration does not expose",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Rejects a model the configuration does not expose\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "chat"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"provider\":\"openai\",\"model\":\"warp-e2e-not-an-exposed-model\",\"stream\":false}"
+            }
+          }
+        },
+        {
+          "id": "validation-model-without-provider",
+          "name": "Rejects a model named without its provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Rejects a model named without its provider\", function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "chat"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"model\":\"warp-e2e-not-an-exposed-model\",\"stream\":false}"
+            }
+          }
+        },
+        {
           "id": "validation-oversize",
           "name": "Rejects a conversation over 256 KB",
           "event": [
@@ -1986,7 +2068,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAny\":[\"semantic_search_logs\",\"query_logs\",\"get_log_detail\"]}});"
+                  "warp.prerequest({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAll\":[\"query_logs\"],\"answerAll\":[\"sample of[^.]{0,40}\\\\d[\\\\d,]*[^.]{0,40}(of|out of)[^.]{0,20}\\\\d[\\\\d,]*\",\"(not[ -]|un)representative\"]}});"
                 ]
               }
             },
@@ -1996,7 +2078,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAny\":[\"semantic_search_logs\",\"query_logs\",\"get_log_detail\"]}});"
+                  "warp.test({\"name\":\"Summarises what people ask about\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAll\":[\"query_logs\"],\"answerAll\":[\"sample of[^.]{0,40}\\\\d[\\\\d,]*[^.]{0,40}(of|out of)[^.]{0,20}\\\\d[\\\\d,]*\",\"(not[ -]|un)representative\"]}});"
                 ]
               }
             }

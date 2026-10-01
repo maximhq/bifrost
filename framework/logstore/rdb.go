@@ -2326,6 +2326,7 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 	baseQuery := s.scopedLogsDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
+	baseQuery = baseQuery.Where("model IS NOT NULL AND model != ''")
 
 	// Query grouped by bucket and model with status counts
 	var results []struct {
@@ -4671,6 +4672,14 @@ var metadataSystemKeys = map[string]struct{}{
 	"isAsyncRequest": {},
 }
 
+// isMetadataSystemKey reports whether a metadata key is the system's rather than the caller's, and
+// so stays out of the filter data. Every key under schemas.LoadBalancerMetadataPrefix is: it is
+// the router's own record of an attempt, not caller metadata.
+func isMetadataSystemKey(key string) bool {
+	_, isSystem := metadataSystemKeys[key]
+	return isSystem || strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix)
+}
+
 const (
 	// maxMetadataRows is the maximum number of recent rows to scan for metadata keys.
 	maxMetadataRows = 1000
@@ -4710,7 +4719,7 @@ func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, qu
 			continue
 		}
 		for key, val := range parsed {
-			if _, isSystem := metadataSystemKeys[key]; isSystem {
+			if isMetadataSystemKey(key) {
 				continue
 			}
 			if !isValidMetadataKey(key) {

@@ -54,6 +54,10 @@ func TestTypedResourceIDsStayOnExpectedEndpoint(t *testing.T) {
 			_, bifrostErr := provider.ResponsesDelete(newCtx(), keys[0], &schemas.BifrostResponsesDeleteRequest{ResponseID: id})
 			return bifrostErr
 		}},
+		{"GET model", "GET /v1/models/", "", func(id string) *schemas.BifrostError {
+			_, bifrostErr := provider.ModelRetrieve(newCtx(), keys[0], &schemas.BifrostModelRetrieveRequest{Model: id})
+			return bifrostErr
+		}},
 	}
 	invalidIDs := []string{
 		"../models?#", "%2e%2e%2fmodels%3f%23", "%252e%252e%252fmodels",

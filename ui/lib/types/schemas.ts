@@ -850,6 +850,7 @@ export const allowedRequestsSchema = z.object({
 	video_remix: z.boolean(),
 	count_tokens: z.boolean(),
 	list_models: z.boolean(),
+	model_retrieve: z.boolean().optional(),
 	websocket_responses: z.boolean(),
 	realtime: z.boolean(),
 });
@@ -1012,6 +1013,8 @@ export const coreConfigSchema = z.object({
 	mcp_tool_execution_timeout: z.number().min(1).default(30),
 	mcp_code_mode_binding_level: z.enum(["server", "tool"]).default("server"),
 	mcp_disable_auto_tool_inject: z.boolean().default(false),
+	mcp_max_instructions_per_client: z.number().int().min(0).default(0),
+	mcp_max_instructions_total: z.number().int().min(0).default(0),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
 });
 
@@ -1113,6 +1116,7 @@ export const otelConfigSchema = z
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 		request_headers: z.array(z.string()).default([]),
 		disable_content_logging: z.boolean().default(false),
+		export_raw_payloads: z.boolean().default(false),
 		group_traces_by_session: z.boolean().default(false),
 		disable_root_span_content: z.boolean().default(false),
 	})
@@ -1388,6 +1392,7 @@ export const mcpClientUpdateSchema = z
 		tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 		tool_sync_interval: z.number().min(0, "Tool sync interval must be 0 or a positive number of minutes").optional(), // 0 = use global, >0 = custom interval in minutes
 		tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
+		max_instructions_length: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server instruction byte cap
 		allowed_extra_headers: z
 			.array(z.string())
 			.optional()

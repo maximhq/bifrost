@@ -341,6 +341,7 @@ type ChatReasoning struct {
 	Effort    *string `json:"effort,omitempty"`     // "none" |  "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
 	MaxTokens *int    `json:"max_tokens,omitempty"` // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 	Display   *string `json:"display,omitempty"`    // Anthropic thinking.display: "summarized" | "omitted" (requires model support for adaptive thinking)
+	Type      *string `json:"type,omitempty"`       // Anthropic thinking.type: "between_tools" (no up-front thinking); independent of effort
 }
 
 // ChatPrediction represents predicted output content for the model to reference (OpenAI only).
@@ -1946,6 +1947,7 @@ type BifrostLLMUsage struct {
 	// bills as several. Distinct from ChatCompletionTokensDetails.NumSearchQueries, which
 	// counts web-search calls made during a chat turn.
 	SearchUnits *int         `json:"search_units,omitempty"`
+	ToolUsage   *ToolUsage   `json:"tool_usage,omitempty"`
 	Cost        *BifrostCost `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
@@ -2042,6 +2044,7 @@ type ChatCompletionTokensDetails struct {
 	AcceptedPredictionTokens int  `json:"accepted_prediction_tokens,omitempty"`
 	AudioTokens              int  `json:"audio_tokens,omitempty"`
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
+	// Deprecated: use BifrostLLMUsage.ToolUsage.WebSearch. Populated, will be removed in 3.0.0.
 	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
 	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
 	ImageTokens              *int `json:"image_tokens,omitempty"`
@@ -2128,9 +2131,50 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 		merged.CompletionTokensDetails.ImageTokens = sumOptionalInts(baseDetails.ImageTokens, addDetails.ImageTokens)
 	}
 
+	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
 	merged.Cost = base.Cost.Add(add.Cost)
 
 	return merged
+}
+
+type ToolUsage struct {
+	WebSearch *WebSearchToolUsage `json:"web_search,omitempty"`
+}
+
+// WebSearchToolUsage counts billable web search calls.
+type WebSearchToolUsage struct {
+	NumRequests int `json:"num_requests"`
+}
+
+// Add returns the per-tool sum of t and o; nil when both are nil.
+func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
+	if t == nil && o == nil {
+		return nil
+	}
+	sum := &ToolUsage{}
+	if t != nil && t.WebSearch != nil {
+		sum.WebSearch = &WebSearchToolUsage{NumRequests: t.WebSearch.NumRequests}
+	}
+	if o != nil && o.WebSearch != nil {
+		if sum.WebSearch == nil {
+			sum.WebSearch = &WebSearchToolUsage{}
+		}
+		sum.WebSearch.NumRequests += o.WebSearch.NumRequests
+	}
+	return sum
+}
+
+// DeepCopy returns an owned copy of t.
+func (t *ToolUsage) DeepCopy() *ToolUsage {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	if t.WebSearch != nil {
+		ws := *t.WebSearch
+		c.WebSearch = &ws
+	}
+	return &c
 }
 
 func cachedWriteTokens5m(details *ChatPromptTokensDetails) int {
@@ -2457,6 +2501,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		su := *u.SearchUnits
 		c.SearchUnits = &su
 	}
+	c.ToolUsage = u.ToolUsage.DeepCopy()
 	c.Cost = u.Cost.DeepCopy()
 	if u.CostInUsdTicks != nil {
 		t := *u.CostInUsdTicks

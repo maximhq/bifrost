@@ -76371,8 +76371,10 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get complexity analyzer config",
-        "description": "Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.\n",
-        "tags": ["Routing"],
+        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and Jev settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.",
+        "tags": [
+          "Routing"
+        ],
         "security": [
           {
             "ManagementBearerAuth": []
@@ -76394,6 +76396,16 @@
                   "allOf": [
                     {
                       "if": {
+                        "not": {
+                          "required": [
+                            "classifier"
+                          ],
+                          "properties": {
+                            "classifier": {
+                              "const": "jev"
+                            }
+                          }
+                        },
                         "properties": {
                           "session": {
                             "properties": {
@@ -76488,6 +76500,15 @@
                         }
                       }
                     },
+                    "classifier": {
+                      "type": "string",
+                      "enum": [
+                        "semantic",
+                        "jev"
+                      ],
+                      "default": "semantic",
+                      "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
+                    },
                     "semantic": {
                       "type": "object",
                       "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
@@ -76540,8 +76561,133 @@
                         },
                         "fallback": {
                           "type": "string",
-                          "enum": ["none", "llm"],
-                          "description": "What answers when semantic classification produces no tier (a match\nbelow `min_similarity`, a timeout, or an unfinished warmup). `none`\n(the default) records the request as skipped. `llm` asks the chat\nmodel configured in the analyzer's `llm` block, which is required\nwhen this is set.\n"
+                          "enum": [
+                            "none",
+                            "llm",
+                            "jev"
+                          ],
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                        }
+                      }
+                    },
+                    "jev": {
+                      "type": "object",
+                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "additionalProperties": false,
+                      "properties": {
+                        "previous_message_count": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 5,
+                          "default": 1,
+                          "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
+                        },
+                        "timeout": {
+                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          ]
+                        },
+                        "criteria": {
+                          "type": "object",
+                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "SIMPLE": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "MEDIUM": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "COMPLEX": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     },
@@ -76593,13 +76739,13 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": ["enabled"],
                       "properties": {
                         "enabled": {
                           "type": "boolean",
-                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                          "description": "Enable monotonic session tier retention; default is false."
                         }
                       }
                     }
@@ -76636,8 +76782,10 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update complexity analyzer config",
-        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present.\n",
-        "tags": ["Routing"],
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. Jev can be selected as the primary classifier or semantic fallback and uses configured Typesafe provider credentials.",
+        "tags": [
+          "Routing"
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -76650,6 +76798,16 @@
                 "allOf": [
                   {
                     "if": {
+                      "not": {
+                        "required": [
+                          "classifier"
+                        ],
+                        "properties": {
+                          "classifier": {
+                            "const": "jev"
+                          }
+                        }
+                      },
                       "properties": {
                         "session": {
                           "properties": {
@@ -76744,6 +76902,15 @@
                       }
                     }
                   },
+                  "classifier": {
+                    "type": "string",
+                    "enum": [
+                      "semantic",
+                      "jev"
+                    ],
+                    "default": "semantic",
+                    "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
+                  },
                   "semantic": {
                     "type": "object",
                     "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
@@ -76796,8 +76963,133 @@
                       },
                       "fallback": {
                         "type": "string",
-                        "enum": ["none", "llm"],
-                        "description": "What answers when semantic classification produces no tier (a match\nbelow `min_similarity`, a timeout, or an unfinished warmup). `none`\n(the default) records the request as skipped. `llm` asks the chat\nmodel configured in the analyzer's `llm` block, which is required\nwhen this is set.\n"
+                        "enum": [
+                          "none",
+                          "llm",
+                          "jev"
+                        ],
+                        "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                      }
+                    }
+                  },
+                  "jev": {
+                    "type": "object",
+                    "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "previous_message_count": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 5,
+                        "default": 1,
+                        "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
+                      },
+                      "timeout": {
+                        "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                          },
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          }
+                        ]
+                      },
+                      "criteria": {
+                        "type": "object",
+                        "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                        "additionalProperties": false,
+                        "properties": {
+                          "SIMPLE": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "definition": {
+                                "type": "string",
+                                "maxLength": 500,
+                                "description": "Replaces this tier's shipped definition. Omit to use the default."
+                              },
+                              "signals": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped signals. Omit to use the default."
+                              },
+                              "examples": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped examples. Omit to use the default."
+                              }
+                            }
+                          },
+                          "MEDIUM": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "definition": {
+                                "type": "string",
+                                "maxLength": 500,
+                                "description": "Replaces this tier's shipped definition. Omit to use the default."
+                              },
+                              "signals": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped signals. Omit to use the default."
+                              },
+                              "examples": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped examples. Omit to use the default."
+                              }
+                            }
+                          },
+                          "COMPLEX": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "definition": {
+                                "type": "string",
+                                "maxLength": 500,
+                                "description": "Replaces this tier's shipped definition. Omit to use the default."
+                              },
+                              "signals": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped signals. Omit to use the default."
+                              },
+                              "examples": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped examples. Omit to use the default."
+                              }
+                            }
+                          }
+                        }
                       }
                     }
                   },
@@ -76849,13 +77141,13 @@
                   },
                   "session": {
                     "type": "object",
-                    "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                    "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
                     "additionalProperties": false,
                     "required": ["enabled"],
                     "properties": {
                       "enabled": {
                         "type": "boolean",
-                        "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                        "description": "Enable monotonic session tier retention; default is false."
                       }
                     }
                   }
@@ -76885,6 +77177,16 @@
                   "allOf": [
                     {
                       "if": {
+                        "not": {
+                          "required": [
+                            "classifier"
+                          ],
+                          "properties": {
+                            "classifier": {
+                              "const": "jev"
+                            }
+                          }
+                        },
                         "properties": {
                           "session": {
                             "properties": {
@@ -76979,6 +77281,15 @@
                         }
                       }
                     },
+                    "classifier": {
+                      "type": "string",
+                      "enum": [
+                        "semantic",
+                        "jev"
+                      ],
+                      "default": "semantic",
+                      "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
+                    },
                     "semantic": {
                       "type": "object",
                       "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
@@ -77031,8 +77342,133 @@
                         },
                         "fallback": {
                           "type": "string",
-                          "enum": ["none", "llm"],
-                          "description": "What answers when semantic classification produces no tier (a match\nbelow `min_similarity`, a timeout, or an unfinished warmup). `none`\n(the default) records the request as skipped. `llm` asks the chat\nmodel configured in the analyzer's `llm` block, which is required\nwhen this is set.\n"
+                          "enum": [
+                            "none",
+                            "llm",
+                            "jev"
+                          ],
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                        }
+                      }
+                    },
+                    "jev": {
+                      "type": "object",
+                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "additionalProperties": false,
+                      "properties": {
+                        "previous_message_count": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 5,
+                          "default": 1,
+                          "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
+                        },
+                        "timeout": {
+                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          ]
+                        },
+                        "criteria": {
+                          "type": "object",
+                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "SIMPLE": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "MEDIUM": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "COMPLEX": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     },
@@ -77084,13 +77520,13 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": ["enabled"],
                       "properties": {
                         "enabled": {
                           "type": "boolean",
-                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                          "description": "Enable monotonic session tier retention; default is false."
                         }
                       }
                     }
@@ -77139,8 +77575,10 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Reset complexity analyzer config",
-        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved.\n",
-        "tags": ["Routing"],
+        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, Jev settings, semantic and LLM configuration, and session settings are preserved.",
+        "tags": [
+          "Routing"
+        ],
         "security": [
           {
             "ManagementBearerAuth": []
@@ -77162,6 +77600,16 @@
                   "allOf": [
                     {
                       "if": {
+                        "not": {
+                          "required": [
+                            "classifier"
+                          ],
+                          "properties": {
+                            "classifier": {
+                              "const": "jev"
+                            }
+                          }
+                        },
                         "properties": {
                           "session": {
                             "properties": {
@@ -77256,6 +77704,15 @@
                         }
                       }
                     },
+                    "classifier": {
+                      "type": "string",
+                      "enum": [
+                        "semantic",
+                        "jev"
+                      ],
+                      "default": "semantic",
+                      "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
+                    },
                     "semantic": {
                       "type": "object",
                       "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
@@ -77308,8 +77765,133 @@
                         },
                         "fallback": {
                           "type": "string",
-                          "enum": ["none", "llm"],
-                          "description": "What answers when semantic classification produces no tier (a match\nbelow `min_similarity`, a timeout, or an unfinished warmup). `none`\n(the default) records the request as skipped. `llm` asks the chat\nmodel configured in the analyzer's `llm` block, which is required\nwhen this is set.\n"
+                          "enum": [
+                            "none",
+                            "llm",
+                            "jev"
+                          ],
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                        }
+                      }
+                    },
+                    "jev": {
+                      "type": "object",
+                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "additionalProperties": false,
+                      "properties": {
+                        "previous_message_count": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 5,
+                          "default": 1,
+                          "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
+                        },
+                        "timeout": {
+                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          ]
+                        },
+                        "criteria": {
+                          "type": "object",
+                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "SIMPLE": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "MEDIUM": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "COMPLEX": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     },
@@ -77361,13 +77943,13 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": ["enabled"],
                       "properties": {
                         "enabled": {
                           "type": "boolean",
-                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                          "description": "Enable monotonic session tier retention; default is false."
                         }
                       }
                     }
@@ -77479,6 +78061,35 @@
                     "llm_default_prompt": {
                       "type": "string",
                       "description": "The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured."
+                    },
+                    "jev_defaults": {
+                      "type": "object",
+                      "description": "The shipped Jev per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.",
+                      "properties": {
+                        "criteria": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "definition": {
+                                "type": "string"
+                              },
+                              "signals": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "examples": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -77588,6 +78199,35 @@
                     "llm_default_prompt": {
                       "type": "string",
                       "description": "The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured."
+                    },
+                    "jev_defaults": {
+                      "type": "object",
+                      "description": "The shipped Jev per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.",
+                      "properties": {
+                        "criteria": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "definition": {
+                                "type": "string"
+                              },
+                              "signals": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "examples": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -78093,8 +78733,10 @@
         },
         "deprecated": true,
         "summary": "Get complexity analyzer config (deprecated path)",
-        "description": "Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.\n",
-        "tags": ["Routing"],
+        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and Jev settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
         "security": [
           {
             "ManagementBearerAuth": []
@@ -78116,6 +78758,16 @@
                   "allOf": [
                     {
                       "if": {
+                        "not": {
+                          "required": [
+                            "classifier"
+                          ],
+                          "properties": {
+                            "classifier": {
+                              "const": "jev"
+                            }
+                          }
+                        },
                         "properties": {
                           "session": {
                             "properties": {
@@ -78210,6 +78862,15 @@
                         }
                       }
                     },
+                    "classifier": {
+                      "type": "string",
+                      "enum": [
+                        "semantic",
+                        "jev"
+                      ],
+                      "default": "semantic",
+                      "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
+                    },
                     "semantic": {
                       "type": "object",
                       "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
@@ -78262,8 +78923,133 @@
                         },
                         "fallback": {
                           "type": "string",
-                          "enum": ["none", "llm"],
-                          "description": "What answers when semantic classification produces no tier (a match\nbelow `min_similarity`, a timeout, or an unfinished warmup). `none`\n(the default) records the request as skipped. `llm` asks the chat\nmodel configured in the analyzer's `llm` block, which is required\nwhen this is set.\n"
+                          "enum": [
+                            "none",
+                            "llm",
+                            "jev"
+                          ],
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                        }
+                      }
+                    },
+                    "jev": {
+                      "type": "object",
+                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "additionalProperties": false,
+                      "properties": {
+                        "previous_message_count": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 5,
+                          "default": 1,
+                          "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
+                        },
+                        "timeout": {
+                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          ]
+                        },
+                        "criteria": {
+                          "type": "object",
+                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "SIMPLE": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "MEDIUM": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "COMPLEX": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     },
@@ -78315,13 +79101,13 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": ["enabled"],
                       "properties": {
                         "enabled": {
                           "type": "boolean",
-                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                          "description": "Enable monotonic session tier retention; default is false."
                         }
                       }
                     }
@@ -78359,8 +79145,10 @@
         },
         "deprecated": true,
         "summary": "Update complexity analyzer config (deprecated path)",
-        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.\n",
-        "tags": ["Routing"],
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. Jev can be selected as the primary classifier or semantic fallback and uses configured Typesafe provider credentials. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -78373,6 +79161,16 @@
                 "allOf": [
                   {
                     "if": {
+                      "not": {
+                        "required": [
+                          "classifier"
+                        ],
+                        "properties": {
+                          "classifier": {
+                            "const": "jev"
+                          }
+                        }
+                      },
                       "properties": {
                         "session": {
                           "properties": {
@@ -78467,6 +79265,15 @@
                       }
                     }
                   },
+                  "classifier": {
+                    "type": "string",
+                    "enum": [
+                      "semantic",
+                      "jev"
+                    ],
+                    "default": "semantic",
+                    "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
+                  },
                   "semantic": {
                     "type": "object",
                     "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
@@ -78519,8 +79326,133 @@
                       },
                       "fallback": {
                         "type": "string",
-                        "enum": ["none", "llm"],
-                        "description": "What answers when semantic classification produces no tier (a match\nbelow `min_similarity`, a timeout, or an unfinished warmup). `none`\n(the default) records the request as skipped. `llm` asks the chat\nmodel configured in the analyzer's `llm` block, which is required\nwhen this is set.\n"
+                        "enum": [
+                          "none",
+                          "llm",
+                          "jev"
+                        ],
+                        "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                      }
+                    }
+                  },
+                  "jev": {
+                    "type": "object",
+                    "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "previous_message_count": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 5,
+                        "default": 1,
+                        "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
+                      },
+                      "timeout": {
+                        "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                          },
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          }
+                        ]
+                      },
+                      "criteria": {
+                        "type": "object",
+                        "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                        "additionalProperties": false,
+                        "properties": {
+                          "SIMPLE": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "definition": {
+                                "type": "string",
+                                "maxLength": 500,
+                                "description": "Replaces this tier's shipped definition. Omit to use the default."
+                              },
+                              "signals": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped signals. Omit to use the default."
+                              },
+                              "examples": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped examples. Omit to use the default."
+                              }
+                            }
+                          },
+                          "MEDIUM": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "definition": {
+                                "type": "string",
+                                "maxLength": 500,
+                                "description": "Replaces this tier's shipped definition. Omit to use the default."
+                              },
+                              "signals": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped signals. Omit to use the default."
+                              },
+                              "examples": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped examples. Omit to use the default."
+                              }
+                            }
+                          },
+                          "COMPLEX": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "definition": {
+                                "type": "string",
+                                "maxLength": 500,
+                                "description": "Replaces this tier's shipped definition. Omit to use the default."
+                              },
+                              "signals": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped signals. Omit to use the default."
+                              },
+                              "examples": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                },
+                                "description": "Replaces this tier's shipped examples. Omit to use the default."
+                              }
+                            }
+                          }
+                        }
                       }
                     }
                   },
@@ -78572,13 +79504,13 @@
                   },
                   "session": {
                     "type": "object",
-                    "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                    "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
                     "additionalProperties": false,
                     "required": ["enabled"],
                     "properties": {
                       "enabled": {
                         "type": "boolean",
-                        "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                        "description": "Enable monotonic session tier retention; default is false."
                       }
                     }
                   }
@@ -78608,6 +79540,16 @@
                   "allOf": [
                     {
                       "if": {
+                        "not": {
+                          "required": [
+                            "classifier"
+                          ],
+                          "properties": {
+                            "classifier": {
+                              "const": "jev"
+                            }
+                          }
+                        },
                         "properties": {
                           "session": {
                             "properties": {
@@ -78702,6 +79644,15 @@
                         }
                       }
                     },
+                    "classifier": {
+                      "type": "string",
+                      "enum": [
+                        "semantic",
+                        "jev"
+                      ],
+                      "default": "semantic",
+                      "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
+                    },
                     "semantic": {
                       "type": "object",
                       "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
@@ -78754,8 +79705,133 @@
                         },
                         "fallback": {
                           "type": "string",
-                          "enum": ["none", "llm"],
-                          "description": "What answers when semantic classification produces no tier (a match\nbelow `min_similarity`, a timeout, or an unfinished warmup). `none`\n(the default) records the request as skipped. `llm` asks the chat\nmodel configured in the analyzer's `llm` block, which is required\nwhen this is set.\n"
+                          "enum": [
+                            "none",
+                            "llm",
+                            "jev"
+                          ],
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                        }
+                      }
+                    },
+                    "jev": {
+                      "type": "object",
+                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "additionalProperties": false,
+                      "properties": {
+                        "previous_message_count": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 5,
+                          "default": 1,
+                          "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
+                        },
+                        "timeout": {
+                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          ]
+                        },
+                        "criteria": {
+                          "type": "object",
+                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "SIMPLE": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "MEDIUM": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "COMPLEX": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     },
@@ -78807,13 +79883,13 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": ["enabled"],
                       "properties": {
                         "enabled": {
                           "type": "boolean",
-                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                          "description": "Enable monotonic session tier retention; default is false."
                         }
                       }
                     }
@@ -78863,8 +79939,10 @@
         },
         "deprecated": true,
         "summary": "Reset complexity analyzer config (deprecated path)",
-        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.\n",
-        "tags": ["Routing"],
+        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, Jev settings, semantic and LLM configuration, and session settings are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
         "security": [
           {
             "ManagementBearerAuth": []
@@ -78886,6 +79964,16 @@
                   "allOf": [
                     {
                       "if": {
+                        "not": {
+                          "required": [
+                            "classifier"
+                          ],
+                          "properties": {
+                            "classifier": {
+                              "const": "jev"
+                            }
+                          }
+                        },
                         "properties": {
                           "session": {
                             "properties": {
@@ -78980,6 +80068,15 @@
                         }
                       }
                     },
+                    "classifier": {
+                      "type": "string",
+                      "enum": [
+                        "semantic",
+                        "jev"
+                      ],
+                      "default": "semantic",
+                      "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
+                    },
                     "semantic": {
                       "type": "object",
                       "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
@@ -79032,8 +80129,133 @@
                         },
                         "fallback": {
                           "type": "string",
-                          "enum": ["none", "llm"],
-                          "description": "What answers when semantic classification produces no tier (a match\nbelow `min_similarity`, a timeout, or an unfinished warmup). `none`\n(the default) records the request as skipped. `llm` asks the chat\nmodel configured in the analyzer's `llm` block, which is required\nwhen this is set.\n"
+                          "enum": [
+                            "none",
+                            "llm",
+                            "jev"
+                          ],
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                        }
+                      }
+                    },
+                    "jev": {
+                      "type": "object",
+                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "additionalProperties": false,
+                      "properties": {
+                        "previous_message_count": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 5,
+                          "default": 1,
+                          "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
+                        },
+                        "timeout": {
+                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          ]
+                        },
+                        "criteria": {
+                          "type": "object",
+                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "additionalProperties": false,
+                          "properties": {
+                            "SIMPLE": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "MEDIUM": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            },
+                            "COMPLEX": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "definition": {
+                                  "type": "string",
+                                  "maxLength": 500,
+                                  "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                },
+                                "signals": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                },
+                                "examples": {
+                                  "type": "array",
+                                  "maxItems": 12,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 300
+                                  },
+                                  "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     },
@@ -79085,13 +80307,13 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": ["enabled"],
                       "properties": {
                         "enabled": {
                           "type": "boolean",
-                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                          "description": "Enable monotonic session tier retention; default is false."
                         }
                       }
                     }
@@ -79224,7 +80446,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, jev, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -79876,7 +81098,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, jev, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -93438,7 +94660,7 @@
       "put": {
         "operationId": "updateWarpConfig",
         "summary": "Update Warp configuration",
-        "description": "Writes Warp's settings. **Administrators only.**\n\nA single write points the server at a provider key and a model it will\nthen call on its own behalf, which is not something an ordinary dashboard\nuser should be able to do. In OSS only the local admin may write; in\nenterprise the caller needs `Warp` Update. Anyone else gets `403`. The\nresponse carries the key reference back, not a redacted credential -\nthere is no secret stored here to redact.\n\n`api_key_id` is a reference, not a credential, so it round-trips in the\nclear and needs no omitted-versus-empty rule: omitting it writes an empty\nvalue and clears the stored reference.\n",
+        "description": "Writes Warp's settings. **Administrators only.**\n\nA single write points the server at a provider key and a model it will\nthen call on its own behalf, which is not something an ordinary dashboard\nuser should be able to do. In OSS only the local admin may write; in\nenterprise the caller needs `Warp` Update. Anyone else gets `403`. The\nresponse carries the key reference back, not a redacted credential -\nthere is no secret stored here to redact.\n\n`api_key_id` is a reference, not a credential, so it round-trips in the\nclear and needs no omitted-versus-empty rule: omitting it writes an empty\nvalue and clears the stored reference.\n\n`provider` and `model` are Warp's default model. `additional_models`\nlists the others a chat request may name, so this write is also what\ndecides which models dashboard users can switch between: they pick among\nwhat is stored here and cannot add to it.\n",
         "tags": ["Warp"],
         "requestBody": {
           "required": true,
@@ -93716,7 +94938,7 @@
       "post": {
         "operationId": "warpSession",
         "summary": "Ask Warp a question",
-        "description": "Runs Warp's agent loop over the deployment's telemetry and returns an\nanswer.\n\n**The route is always registered, and answers `503` while Warp cannot\nwork.** The body carries a machine-readable `reason`, so \"present but\nunusable\" stays distinguishable from \"absent\" without the state being\npermanent: a deployment that enables logging after startup begins serving\nthis route without a restart.\n\nThe model's context is client-sent: `messages` carries the thread so far.\nWhere Warp history is available the server also files each turn under\n`conversation_id` so the thread can be listed and reopened through\n`/api/warp/conversations`. Omit `conversation_id` to start a new thread;\nits id comes back on the `done` event or in the JSON body.\n\n**Data visibility equals the caller's own.** Every tool query runs against\nthe caller's row-level scope, so Warp can never surface data the caller\ncould not already retrieve from the logs API directly.\n\nWith `stream: true` (the default) the response is `text/event-stream`. Both\nmodes run the identical loop; only the sink differs.\n\nEnterprise RBAC: requires `WarpSession` View.\n",
+        "description": "Runs Warp's agent loop over the deployment's telemetry and returns an\nanswer.\n\n**The route is always registered, and answers `503` while Warp cannot\nwork.** The body carries a machine-readable `reason`, so \"present but\nunusable\" stays distinguishable from \"absent\" without the state being\npermanent: a deployment that enables logging after startup begins serving\nthis route without a restart.\n\nThe model's context is client-sent: `messages` carries the thread so far.\nWhere Warp history is available the server also files each turn under\n`conversation_id` so the thread can be listed and reopened through\n`/api/warp/conversations`. Omit `conversation_id` to start a new thread;\nits id comes back on the `done` event or in the JSON body.\n\n**Data visibility equals the caller's own.** Every tool query runs against\nthe caller's row-level scope, so Warp can never surface data the caller\ncould not already retrieve from the logs API directly.\n\nThe turn runs on Warp's default model unless the body names another with\n`provider` and `model`. Only a model the configuration exposes is\naccepted; anything else is a `400` and no model is called.\n\nWith `stream: true` (the default) the response is `text/event-stream`. Both\nmodes run the identical loop; only the sink differs.\n\nEnterprise RBAC: requires `WarpSession` View.\n",
         "tags": ["Warp"],
         "requestBody": {
           "required": true,
@@ -98486,19 +99708,22 @@
           "input": {
             "oneOf": [
               {
-                "type": "string"
+                "type": "string",
+                "description": "A single text to embed"
               },
               {
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "Several texts, one embedding each"
               },
               {
                 "type": "array",
                 "items": {
                   "type": "integer"
-                }
+                },
+                "description": "A single pre-tokenized input (OpenAI-compatible providers only)"
               },
               {
                 "type": "array",
@@ -98507,10 +99732,582 @@
                   "items": {
                     "type": "integer"
                   }
-                }
+                },
+                "description": "Several pre-tokenized inputs (OpenAI-compatible providers only)"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "description": "One entry of an embedding request's input - normally one item in, one embedding out.\nVertex `multimodalembedding@001` is the exception: it returns one vector per modality\npresent in the item, plus one per segment when a video part sets `video_config`. Those\nvectors carry `modality`, and video ones also carry `video_segment`.\nAccepts either shape:\n\n  [{\"type\": \"text\", \"text\": \"hi\"}]\n  {\"content\": [{\"type\": \"text\", \"text\": \"hi\"}], \"params\": {\"task_type\": \"RETRIEVAL_QUERY\"}}\n\n`params` overrides the request-level parameters for this item alone. Only providers with\na per-item wire format honour it (currently Gemini's `:batchEmbedContents`); others reject\nthe request rather than silently ignoring the override.\n",
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "description": "Exactly one modality field must be set, and it must match `type`.\nProvider support varies - see the provider pages for which part types each model accepts.\n",
+                        "required": [
+                          "type"
+                        ],
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "text",
+                              "image",
+                              "audio",
+                              "file",
+                              "video",
+                              "tokens"
+                            ]
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "image": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            },
+                            "oneOf": [
+                              {
+                                "required": [
+                                  "data"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "url"
+                                ]
+                              }
+                            ]
+                          },
+                          "audio": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            },
+                            "oneOf": [
+                              {
+                                "required": [
+                                  "data"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "url"
+                                ]
+                              }
+                            ]
+                          },
+                          "file": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            },
+                            "oneOf": [
+                              {
+                                "required": [
+                                  "data"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "url"
+                                ]
+                              }
+                            ]
+                          },
+                          "video": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            },
+                            "oneOf": [
+                              {
+                                "required": [
+                                  "data"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "url"
+                                ]
+                              }
+                            ]
+                          },
+                          "video_config": {
+                            "type": "object",
+                            "description": "Optional video segment selection, honoured by providers that return per-segment embeddings.",
+                            "properties": {
+                              "start_offset_sec": {
+                                "type": "integer"
+                              },
+                              "end_offset_sec": {
+                                "type": "integer"
+                              },
+                              "interval_sec": {
+                                "type": "integer",
+                                "minimum": 4,
+                                "description": "Gap between embeddings in seconds (minimum 4)"
+                              }
+                            }
+                          },
+                          "tokens": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "integer"
+                            }
+                          }
+                        },
+                        "oneOf": [
+                          {
+                            "required": [
+                              "text"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "image"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "audio"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "file"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "video"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "tokens"
+                            ]
+                          }
+                        ],
+                        "dependentSchemas": {
+                          "text": {
+                            "properties": {
+                              "type": {
+                                "const": "text"
+                              }
+                            }
+                          },
+                          "image": {
+                            "properties": {
+                              "type": {
+                                "const": "image"
+                              }
+                            }
+                          },
+                          "audio": {
+                            "properties": {
+                              "type": {
+                                "const": "audio"
+                              }
+                            }
+                          },
+                          "file": {
+                            "properties": {
+                              "type": {
+                                "const": "file"
+                              }
+                            }
+                          },
+                          "video": {
+                            "properties": {
+                              "type": {
+                                "const": "video"
+                              }
+                            }
+                          },
+                          "tokens": {
+                            "properties": {
+                              "type": {
+                                "const": "tokens"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "description": "One content entry - a list of typed parts aggregated into a single embedding"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "content"
+                      ],
+                      "properties": {
+                        "content": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "object",
+                            "description": "Exactly one modality field must be set, and it must match `type`.\nProvider support varies - see the provider pages for which part types each model accepts.\n",
+                            "required": [
+                              "type"
+                            ],
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "text",
+                                  "image",
+                                  "audio",
+                                  "file",
+                                  "video",
+                                  "tokens"
+                                ]
+                              },
+                              "text": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "image": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                },
+                                "oneOf": [
+                                  {
+                                    "required": [
+                                      "data"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "url"
+                                    ]
+                                  }
+                                ]
+                              },
+                              "audio": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                },
+                                "oneOf": [
+                                  {
+                                    "required": [
+                                      "data"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "url"
+                                    ]
+                                  }
+                                ]
+                              },
+                              "file": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                },
+                                "oneOf": [
+                                  {
+                                    "required": [
+                                      "data"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "url"
+                                    ]
+                                  }
+                                ]
+                              },
+                              "video": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                },
+                                "oneOf": [
+                                  {
+                                    "required": [
+                                      "data"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "url"
+                                    ]
+                                  }
+                                ]
+                              },
+                              "video_config": {
+                                "type": "object",
+                                "description": "Optional video segment selection, honoured by providers that return per-segment embeddings.",
+                                "properties": {
+                                  "start_offset_sec": {
+                                    "type": "integer"
+                                  },
+                                  "end_offset_sec": {
+                                    "type": "integer"
+                                  },
+                                  "interval_sec": {
+                                    "type": "integer",
+                                    "minimum": 4,
+                                    "description": "Gap between embeddings in seconds (minimum 4)"
+                                  }
+                                }
+                              },
+                              "tokens": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "oneOf": [
+                              {
+                                "required": [
+                                  "text"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "image"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "audio"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "file"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "video"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "tokens"
+                                ]
+                              }
+                            ],
+                            "dependentSchemas": {
+                              "text": {
+                                "properties": {
+                                  "type": {
+                                    "const": "text"
+                                  }
+                                }
+                              },
+                              "image": {
+                                "properties": {
+                                  "type": {
+                                    "const": "image"
+                                  }
+                                }
+                              },
+                              "audio": {
+                                "properties": {
+                                  "type": {
+                                    "const": "audio"
+                                  }
+                                }
+                              },
+                              "file": {
+                                "properties": {
+                                  "type": {
+                                    "const": "file"
+                                  }
+                                }
+                              },
+                              "video": {
+                                "properties": {
+                                  "type": {
+                                    "const": "video"
+                                  }
+                                }
+                              },
+                              "tokens": {
+                                "properties": {
+                                  "type": {
+                                    "const": "tokens"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "description": "One content entry - a list of typed parts aggregated into a single embedding"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "encoding_format": {
+                              "type": "string",
+                              "enum": [
+                                "float",
+                                "base64"
+                              ]
+                            },
+                            "dimensions": {
+                              "type": "integer"
+                            },
+                            "task_type": {
+                              "type": "string"
+                            },
+                            "title": {
+                              "type": "string"
+                            },
+                            "auto_truncate": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                },
+                "description": "Multimodal form. Each element is one input item and normally produces one embedding;\nthe parts inside an item are aggregated into that single vector. Vertex\n`multimodalembedding@001` instead returns one vector per modality, plus one per video\nsegment when `video_config` is set. An element may be a bare array of parts, or an\nobject carrying that item's own `params`.\n"
               }
             ],
-            "description": "Input for embedding - text or token arrays"
+            "description": "Text, pre-tokenized input, or multimodal content"
           },
           "fallbacks": {
             "type": "array",
@@ -98524,6 +100321,18 @@
           },
           "dimensions": {
             "type": "integer"
+          },
+          "task_type": {
+            "type": "string",
+            "description": "Intended downstream task (Gemini/Vertex text embeddings, e.g. RETRIEVAL_QUERY)"
+          },
+          "title": {
+            "type": "string",
+            "description": "Optional document title used alongside task_type=RETRIEVAL_DOCUMENT"
+          },
+          "auto_truncate": {
+            "type": "boolean",
+            "description": "Truncate inputs longer than the model's limit instead of erroring (Vertex text embeddings)"
           }
         }
       },
@@ -98536,13 +100345,48 @@
               "type": "object",
               "properties": {
                 "index": {
-                  "type": "integer"
+                  "type": "integer",
+                  "description": "Index of the input this vector belongs to"
                 },
                 "object": {
                   "type": "string"
                 },
+                "modality": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "image",
+                    "video",
+                    "audio"
+                  ],
+                  "description": "Set only when the provider returns one vector per modality for a single input\n(Vertex `multimodalembedding@001`). Absent when a single unified vector is returned.\n"
+                },
+                "video_segment": {
+                  "type": "object",
+                  "description": "Time range this video embedding covers. Present only when `modality` is `video`.",
+                  "properties": {
+                    "start_offset_sec": {
+                      "type": "integer"
+                    },
+                    "end_offset_sec": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "encoding_format": {
+                  "type": "string",
+                  "enum": [
+                    "float",
+                    "int8",
+                    "uint8",
+                    "binary",
+                    "ubinary",
+                    "base64"
+                  ],
+                  "description": "Set when the provider returns several representations of the same input\n(Cohere `embedding_types`), since int8/binary and uint8/ubinary are otherwise\nindistinguishable once decoded.\n"
+                },
                 "embedding": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "type": "string"
                     },
@@ -98559,6 +100403,12 @@
                         "items": {
                           "type": "number"
                         }
+                      }
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "integer"
                       }
                     }
                   ]
@@ -108284,10 +110134,7 @@
             "description": "Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires."
           },
           "delete_after_expire": {
-            "type": [
-              "boolean",
-              "null"
-            ],
+            "type": ["boolean", "null"],
             "description": "Per-key override for client.delete_expired_virtual_keys. Absent or null inherits the client setting; true or false decide for this key whether the daily cleanup job deletes it once expires_at has passed."
           },
           "previous_value_expires_at": {
@@ -108945,10 +110792,7 @@
             "description": "RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged."
           },
           "delete_after_expire": {
-            "type": [
-              "boolean",
-              "null"
-            ],
+            "type": ["boolean", "null"],
             "description": "Override client.delete_expired_virtual_keys for this key. true or false set it, null resets the key to inherit the client setting, omitted leaves it unchanged. A value requires an expiry; clearing expires_at resets it to inherit."
           }
         },
@@ -109573,6 +111417,12 @@
                   "exclusiveMinimum": 0,
                   "description": "Probability weight for this target (must be > 0; all target weights in a rule must sum to 1, e.g. 0.7 + 0.3 = 1.0)",
                   "example": 0.5
+                },
+                "ttft_timeout_ms": {
+                  "type": ["integer", "null"],
+                  "minimum": 0,
+                  "maximum": 300000,
+                  "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it."
                 }
               }
             }
@@ -109743,6 +111593,12 @@
                   "exclusiveMinimum": 0,
                   "description": "Probability weight for this target (must be > 0; all target weights in a rule must sum to 1, e.g. 0.7 + 0.3 = 1.0)",
                   "example": 0.5
+                },
+                "ttft_timeout_ms": {
+                  "type": ["integer", "null"],
+                  "minimum": 0,
+                  "maximum": 300000,
+                  "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it."
                 }
               }
             }
@@ -109872,6 +111728,12 @@
                   "exclusiveMinimum": 0,
                   "description": "Probability weight for this target (must be > 0; all target weights in a rule must sum to 1, e.g. 0.7 + 0.3 = 1.0)",
                   "example": 0.5
+                },
+                "ttft_timeout_ms": {
+                  "type": ["integer", "null"],
+                  "minimum": 0,
+                  "maximum": 300000,
+                  "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. 0 or omitted disables it."
                 }
               }
             }
@@ -111884,13 +113746,23 @@
             "nullable": true
           },
           "complexity_mechanism": {
-            "type": ["string", "null"],
-            "enum": ["semantic", "llm", "session", "skipped", null],
-            "description": "How the effective complexity tier was determined. session means retained session state supplied the tier; skipped means classification was demanded but produced no tier."
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "semantic",
+              "jev",
+              "llm",
+              "session",
+              "skipped",
+              null
+            ],
+            "description": "How the effective complexity tier was determined. jev means Typesafe Jev supplied the tier; session means retained session state supplied it; skipped means classification was demanded but produced no tier."
           },
           "complexity_score": {
             "type": "number",
-            "description": "Similarity score of the nearest reference phrase behind the tier. Absent for llm, session, and skipped decisions.",
+            "description": "Similarity score of the nearest reference phrase behind the tier. Absent for Jev, LLM, session, and skipped decisions.",
             "nullable": true
           },
           "session_id": {
@@ -114398,6 +116270,33 @@
           }
         }
       },
+      "WarpModel": {
+        "type": "object",
+        "description": "One provider and model pair Warp may run on, with the provider key it is\npinned to. The pair is what identifies an entry: a chat request names the\nmodel it wants by `provider` and `model`, so no two entries may share both.\n",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "A provider registered in this Bifrost deployment.",
+            "minLength": 1,
+            "pattern": "\\S",
+            "example": "anthropic"
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S",
+            "example": "claude-sonnet-5"
+          },
+          "api_key_id": {
+            "type": "string",
+            "description": "Which of the provider's configured keys this model uses. A reference,\nnot a credential. Omitted when the provider's whole key pool is used.\n"
+          }
+        },
+        "required": [
+          "provider",
+          "model"
+        ]
+      },
       "WarpConfig": {
         "type": "object",
         "description": "Warp's deployment-wide settings, as returned by the read API.\n\nThe stored provider credential is never included. `api_key_id` names which\nof the provider's configured keys Warp uses - a reference, not a secret, so\nthe settings form can render \"configured\" without the key itself ever\nleaving the server: a dashboard session is a weaker credential than the\nprovider key it would otherwise reveal.\n",
@@ -114412,16 +116311,25 @@
           },
           "provider": {
             "type": "string",
-            "description": "The model provider that runs the agent loop, e.g. `openai`.",
+            "description": "The provider of Warp's default model, e.g. `openai`. The default answers\nevery chat request that names no model.\n",
             "example": "openai"
           },
           "model": {
             "type": "string",
+            "description": "Warp's default model.",
             "example": "gpt-4o"
           },
           "api_key_id": {
             "type": "string",
-            "description": "Which of the provider's configured keys Warp uses. A reference, not a\ncredential, so it round-trips in the clear - there is nothing here worth\nredacting. Empty when the provider needs no key.\n"
+            "description": "Which of the provider's configured keys the default model uses. A\nreference, not a credential, so it round-trips in the clear - there is\nnothing here worth redacting. Empty when the provider needs no key.\n"
+          },
+          "additional_models": {
+            "type": "array",
+            "description": "The other models an operator has exposed. A chat request may name any of\nthem, or the default, by `provider` and `model`; nothing else is\naccepted. Omitted when only the default is configured.\n",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/WarpModel"
+            }
           },
           "max_iterations": {
             "type": "integer",
@@ -114562,6 +116470,14 @@
           "api_key_id": {
             "type": "string",
             "description": "Which of the provider's configured keys Warp should use. Empty is valid\nand common: a provider on a trusted network, or one using ambient IAM\ncredentials, needs no key at all.\n"
+          },
+          "additional_models": {
+            "type": "array",
+            "description": "The models to expose beside the default (`provider` and `model` above).\nReplaced whole on every write, like the default itself: leaving the\nfield out clears the list.\n\nEvery entry must be complete whether or not `enabled` is true, must name\na registered provider, and must not repeat the `provider` and `model` of\nthe default or of another entry. Any of those is rejected with `400`.\n",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/WarpModel"
+            }
           },
           "max_iterations": {
             "type": "integer",
@@ -114740,6 +116656,16 @@
             "type": "string",
             "maxLength": 36,
             "description": "Continues an existing thread in the caller's history. Omit it to start a\nnew one; the new thread's id comes back on the `done` event or in the\nJSON body.\n"
+          },
+          "provider": {
+            "type": "string",
+            "description": "With `model`, names which of Warp's configured models answers this turn:\nthe default, or one of `additional_models`. Omit both to use the\ndefault. A pair the operator has not exposed is rejected with `400`, so\na request can only ever choose among the configured models, and the\nprovider key is always the configured entry's own.\n",
+            "example": "anthropic"
+          },
+          "model": {
+            "type": "string",
+            "description": "See `provider`. The two are given together or not at all.",
+            "example": "claude-sonnet-5"
           },
           "stream": {
             "type": "boolean",

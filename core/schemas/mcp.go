@@ -335,6 +335,10 @@ type MCPToolManagerConfig struct {
 	MaxAgentDepth         int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
+	// MaxInstructionsPerClient bounds one server's forwarded instructions, in bytes. 0 is the default.
+	MaxInstructionsPerClient int `json:"max_instructions_per_client,omitempty"`
+	// MaxInstructionsTotal bounds the whole aggregate, in bytes. 0 is the default.
+	MaxInstructionsTotal int `json:"max_instructions_total,omitempty"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler so that tool_execution_timeout treats
@@ -374,6 +378,12 @@ func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
 const (
 	DefaultMaxAgentDepth        = 10
 	DefaultToolExecutionTimeout = 30 * time.Second
+
+	// Byte bounds on forwarded instructions. A gateway aggregating tens of upstreams can
+	// otherwise hand every caller an unbounded prefix, which on the inference path is billed
+	// on every request.
+	DefaultMaxInstructionsPerClient = 4096
+	DefaultMaxInstructionsTotal     = 16384
 )
 
 // CodeModeBindingLevel defines how tools are exposed in the VFS for code execution
@@ -383,6 +393,14 @@ const (
 	CodeModeBindingLevelServer CodeModeBindingLevel = "server"
 	CodeModeBindingLevelTool   CodeModeBindingLevel = "tool"
 )
+
+// MCPServerInstructions is one upstream's instructions, labeled with the client it came from.
+type MCPServerInstructions struct {
+	ClientName   string `json:"client_name"`
+	Instructions string `json:"instructions"`
+	// MaxLength is this server's own byte cap; 0 defers to the global one.
+	MaxLength int `json:"max_length,omitempty"`
+}
 
 // MCPAuthType defines the authentication type for MCP connections
 type MCPAuthType string
@@ -557,11 +575,12 @@ type MCPClientConfig struct {
 	// time. Ignored for per-user auth types (already always per-call
 	// regardless).
 	NeedsSessionStickiness *bool              `json:"needs_session_stickiness,omitempty"`
-	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`     // Per-client override for tool sync interval (0 = use global; negative values are rejected)
-	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"` // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
-	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`           // Tool pricing for each tool (cost per execution)
-	Disabled               bool               `json:"disabled"`                         // Whether the client is intentionally disabled (stops connection and workers)
-	ConfigHash             string             `json:"-"`                                // Config hash for reconciliation (not serialized)
+	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global; negative values are rejected)
+	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
+	MaxInstructionsLength  int                `json:"max_instructions_length,omitempty"` // Per-client override for the forwarded instruction byte cap (0 = use global from tool_manager_config)
+	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)
+	Disabled               bool               `json:"disabled"`                          // Whether the client is intentionally disabled (stops connection and workers)
+	ConfigHash             string             `json:"-"`                                 // Config hash for reconciliation (not serialized)
 	// AllowByDefault opens the client to every caller that has not been assigned it explicitly: all
 	// of its tools, with no per-caller configuration. An explicit assignment for a caller decides for
 	// that caller instead, including one that grants no tool at all.
@@ -573,6 +592,9 @@ type MCPClientConfig struct {
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+	// DiscoveredInstructions is the upstream's initialize `instructions`, persisted for the
+	// same reason DiscoveredTools is: per-call clients hold no connection to re-read it from.
+	DiscoveredInstructions string `json:"-"`
 
 	// PendingOAuthConfig holds the inline `oauth_config` block declared in
 	// config.json for shared-OAuth MCP clients (auth_type == "oauth").
@@ -980,11 +1002,14 @@ type MCPClientState struct {
 	ToolMap         map[string]ChatTool      // Available tools mapped by name
 	ToolNameMapping map[string]string        // Maps sanitized_name -> original_mcp_name (e.g., "notion_search" -> "notion-search")
 	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
-	CancelFunc      context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
-	State           MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
-	LastFailure     *MCPConnectionFailure    `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
-	ConnGeneration  uint64                   `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastToolsHash   string                   `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
+	// ServerInstructions is the upstream's initialize `instructions`, as of the last handshake.
+	// Overwritten (never appended to) on reconnect, so dropping it upstream drops it here.
+	ServerInstructions string                `json:"server_instructions,omitempty"`
+	CancelFunc         context.CancelFunc    `json:"-"` // Cancel function for SSE connections (not serialized)
+	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
+	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
+	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
+	LastToolsHash      string                `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.

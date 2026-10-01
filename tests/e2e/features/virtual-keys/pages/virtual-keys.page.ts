@@ -632,6 +632,19 @@ export class VirtualKeysPage extends BasePage {
   }
 
   /**
+   * Expand a provider config card in the open sheet and return its collapsed
+   * "Access & rate limits" summary.
+   */
+  async getProviderAccessSummary(index: number): Promise<Locator> {
+    const summary = this.page.getByTestId(`vk-access-summary-${index}`);
+    if (!(await summary.isVisible().catch(() => false))) {
+      await this.page.getByTestId(`vk-provider-header-${index}`).click();
+    }
+    await expect(summary).toBeVisible({ timeout: 5000 });
+    return summary;
+  }
+
+  /**
    * Pick the key's content-logging choice in the open sheet
    */
   async setContentLogging(choice: "inherit" | "disabled" | "enabled"): Promise<void> {

@@ -35,7 +35,7 @@ dependencies = [
     "google-genai>=1.50.0",
     "pydantic-ai>=0.1.0",
     "boto3>=1.34.0",
-    "cohere>=5.13.0",
+    "cohere>=5.21.1",
     # Testing utilities
     "websocket-client>=1.6.0",
     "httpx>=0.25.0",
@@ -51,9 +51,8 @@ dependencies = [
     "pytest-xdist>=3.8.0",
     "pyasn1>=0.6.4",
     "griffe>=2.3.0",
-    # typesafe-sdk is newer than exclude-newer above by design (no version
-    # existed at the cutoff); pinned exact and grafted into uv.lock so no
-    # other package re-resolves. Its deps are already satisfied by the lock.
+    # typesafe-sdk is newer than the global cutoff; its exact pin has a
+    # package-specific cutoff exception below.
     "typesafe-sdk==0.7.0",
 ]
 
@@ -150,8 +149,8 @@ exclude_lines = [
 # above would otherwise make uv treat it as an editable package, which changes the
 # root's entry in uv.lock and breaks `uv sync --frozen`.
 package = false
-# typesafe-sdk (the exception above) is grafted into uv.lock; every other
-# package stays at its pre-existing version, so this cutoff keeps the 7-day
-# minimum for them. Integration tests run with --frozen so the lock is used
-# as-is without re-resolving typesafe past this cutoff.
+# Preserve the existing cutoff for unrelated dependencies.
 exclude-newer = "2026-09-09T00:00:00Z"
+# Admit the PyJWT and urllib3 security fixes and the already-pinned typesafe-sdk release.
+exclude-newer-package = { pyjwt = "2026-10-02T00:00:00Z", urllib3 = "2026-10-02T00:00:00Z", typesafe-sdk = "2026-09-23T00:00:00Z" }
+constraint-dependencies = ["pyjwt==2.15.0", "urllib3==2.8.0"]
