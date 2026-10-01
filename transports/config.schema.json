@@ -8838,7 +8838,7 @@
         },
         "apiToken": {
           "type": "string",
-          "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
+          "description": "Okta API token for Admin API access (optional; enables background user/group reconciliation on the bulkSyncInterval schedule, 24h by default)"
         },
         "audience": {
           "type": "string",
@@ -8883,6 +8883,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -8974,6 +8980,12 @@
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         },
@@ -9047,6 +9059,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9130,6 +9148,12 @@
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         },
@@ -9202,6 +9226,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9292,6 +9322,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9421,6 +9457,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -11830,6 +11872,39 @@
         ],
         "additionalProperties": false
       }
+    },
+    "scim_attribute_project_mappings": {
+      "type": "array",
+      "description": "Attribute -> project mappings. Every matching rule applies: the user is added to each project it matches. Projects are never auto-created; a rule naming a missing project is dropped. Memberships added this way are removed when the rule stops matching; members added from the dashboard are kept.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "project": {
+            "type": "string",
+            "description": "Name of the project to add the user to on match"
+          }
+        },
+        "required": [
+          "attribute",
+          "value",
+          "project"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "scim_bulk_sync_interval": {
+      "type": "string",
+      "pattern": "^([0-9]+d|([0-9]+(\\.[0-9]+)?(h|m|s))+)$",
+      "default": "24h",
+      "description": "How often the directory reconcile lists the IdP's users through its admin API and deprovisions the ones it no longer returns, as whole days or h/m/s pairs (e.g. '12h', '1h30m', '7d'). Must be between 1h and 30d. Defaults to 24h. Inert when SCIM provisioning is enabled or the provider has no directory API access (e.g. Okta without apiToken)."
     },
     "scim_attribute_business_unit_mappings": {
       "type": "array",
