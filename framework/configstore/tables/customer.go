@@ -28,6 +28,12 @@ type TableCustomer struct {
 
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
+	// AccessProfile is a config-file-only field naming the enterprise access profile the customer holds
+	// in place of budgets and a rate limit of its own. Not persisted: the enterprise build attaches the
+	// profile when this entry is written from config.json (see Config.GovernanceFileSync). Part of the
+	// config hash, so changing it in the file is a change to the customer's declaration.
+	AccessProfile string `gorm:"-" json:"access_profile,omitempty"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`

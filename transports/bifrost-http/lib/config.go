@@ -549,6 +549,16 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// GovernanceFileSync names the teams and customers a LoadConfig wrote from config.json, as the file
+// declares them: the ones that are new, or whose declaration changed since the hash stored at the last
+// sync - every one the file declares, under source_of_truth config.json. Enterprise reads it to apply
+// what an entry declares beyond the OSS fields, such as access_profile, exactly where the entry
+// changed, so a dashboard edit to an unchanged entity is left alone.
+type GovernanceFileSync struct {
+	Teams     []configstoreTables.TableTeam
+	Customers []configstoreTables.TableCustomer
+}
+
 // Config represents a high-performance in-memory configuration store for Bifrost.
 // It provides thread-safe access to provider configurations with database persistence.
 //
@@ -567,6 +577,9 @@ type Config struct {
 	client     *bifrost.Bifrost
 
 	configPath string
+
+	// GovernanceFileSync is what the last LoadConfig wrote from config.json's teams and customers.
+	GovernanceFileSync GovernanceFileSync
 
 	// Stores
 	ConfigStore configstore.ConfigStore
@@ -3531,6 +3544,11 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		config.GovernanceConfig.ComplexityAnalyzerConfig = complexityAnalyzerConfigToUpdate
 	}
 	if config.ConfigStore != nil && hasChanges {
+		// Taken before the write, which strips the customers' inline budgets in place.
+		fileSync := GovernanceFileSync{
+			Teams:     append(append([]configstoreTables.TableTeam{}, teamsToAdd...), teamsToUpdate...),
+			Customers: append(append([]configstoreTables.TableCustomer{}, customersToAdd...), customersToUpdate...),
+		}
 		err := updateGovernanceConfigInStore(ctx, config,
 			budgetsToAdd, budgetsToUpdate,
 			rateLimitsToAdd, rateLimitsToUpdate,
@@ -3546,6 +3564,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		if err != nil {
 			logger.Fatal("failed to sync governance config: %v", err)
 		}
+		config.GovernanceFileSync = fileSync
 	}
 
 	// Sync pricing overrides into the model catalog in one batch to avoid

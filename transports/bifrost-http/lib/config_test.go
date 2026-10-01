@@ -353,6 +353,8 @@ EXPECTED BEHAVIORS SUMMARY
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14137,6 +14139,85 @@ func TestSQLite_Team_MigratedToProfile_SourceOfTruthAppliesTheFile(t *testing.T)
 	exists, limit := countBudget(t, config2, "team-1-budget")
 	assert.True(t, exists, "config.json is the source of truth, so its budget is applied")
 	assert.EqualValues(t, 999, limit)
+}
+
+// TestGovernanceHash_AccessProfileOnlyCountsWhenSet: an entry without access_profile hashes exactly as
+// it did before the field existed, so upgrading re-syncs nothing; naming or changing one is a change.
+func TestGovernanceHash_AccessProfileOnlyCountsWhenSet(t *testing.T) {
+	team := tables.TableTeam{ID: "team-1", Name: "Team One"}
+	plain, err := configstore.GenerateTeamHash(team)
+	require.NoError(t, err)
+	team.AccessProfile = "gold"
+	gold, err := configstore.GenerateTeamHash(team)
+	require.NoError(t, err)
+	team.AccessProfile = "silver"
+	silver, err := configstore.GenerateTeamHash(team)
+	require.NoError(t, err)
+	assert.NotEqual(t, plain, gold)
+	assert.NotEqual(t, gold, silver)
+
+	customer := tables.TableCustomer{ID: "customer-1", Name: "Acme"}
+	plainCustomer, err := configstore.GenerateCustomerHash(customer)
+	require.NoError(t, err)
+	customer.AccessProfile = "gold"
+	goldCustomer, err := configstore.GenerateCustomerHash(customer)
+	require.NoError(t, err)
+	assert.NotEqual(t, plainCustomer, goldCustomer)
+
+	// The hash an entry without the field had: ID and name only.
+	legacy := sha256.Sum256([]byte("team-1Team One"))
+	assert.Equal(t, hex.EncodeToString(legacy[:]), plain)
+}
+
+// syncedIDs lists what GovernanceFileSync reports, as "team:id=profile" and "customer:id=profile".
+func syncedIDs(config *Config) []string {
+	var out []string
+	for _, team := range config.GovernanceFileSync.Teams {
+		out = append(out, "team:"+team.ID+"="+team.AccessProfile)
+	}
+	for _, customer := range config.GovernanceFileSync.Customers {
+		out = append(out, "customer:"+customer.ID+"="+customer.AccessProfile)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestLoadConfig_GovernanceFileSyncReportsOnlyChangedEntries: the report names an entry when it is new
+// or its declaration changed, carrying its access_profile, and nothing on an unchanged restart - which
+// is what lets a dashboard change to an unchanged entity stand. Under source_of_truth config.json it
+// names every entry.
+func TestLoadConfig_GovernanceFileSyncReportsOnlyChangedEntries(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Customers: []tables.TableCustomer{{ID: "customer-1", Name: "Acme", AccessProfile: "gold"}},
+		Teams: []tables.TableTeam{
+			{ID: "team-1", Name: "Team One", AccessProfile: "gold"},
+			{ID: "team-2", Name: "Team Two"},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+	ctx := context.Background()
+
+	load := func() []string {
+		t.Helper()
+		config, err := LoadConfig(ctx, tempDir)
+		require.NoError(t, err)
+		defer config.Close(ctx)
+		return syncedIDs(config)
+	}
+
+	assert.Equal(t, []string{"customer:customer-1=gold", "team:team-1=gold", "team:team-2="}, load(), "first boot writes every entry")
+	assert.Empty(t, load(), "an unchanged file writes nothing")
+
+	configData.Governance.Teams[0].AccessProfile = "silver"
+	createConfigFile(t, tempDir, configData)
+	assert.Equal(t, []string{"team:team-1=silver"}, load(), "changing access_profile changes only that entry")
+
+	configData.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData)
+	assert.Equal(t, []string{"customer:customer-1=gold", "team:team-1=silver", "team:team-2="}, load(), "source of truth writes every entry")
 }
 
 // TestSQLite_Customer_HashMismatch_FileSync tests file sync when hash differs
