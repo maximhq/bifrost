@@ -306,6 +306,7 @@ const SidebarItemView = ({
 				tooltip={isSidebarCollapsed ? undefined : item.title}
 				className={buttonClassName}
 				onClick={handleClick}
+				aria-label={item.title}
 				data-testid={`sidebar-item-btn-${slug(item.title)}`}
 			>
 				{innerContent}
@@ -313,7 +314,13 @@ const SidebarItemView = ({
 		);
 	} else if (!item.hasAccess) {
 		menuButton = (
-			<SidebarMenuButton tooltip={item.title} data-nav-url={item.url} className={buttonClassName} aria-disabled="true">
+			<SidebarMenuButton
+				tooltip={item.title}
+				data-nav-url={item.url}
+				className={buttonClassName}
+				aria-disabled="true"
+				aria-label={item.title}
+			>
 				{innerContent}
 			</SidebarMenuButton>
 		);
@@ -324,6 +331,7 @@ const SidebarItemView = ({
 					href={item.url}
 					target="_blank"
 					rel="noopener noreferrer"
+					aria-label={item.title}
 					data-nav-url={item.url}
 					onClick={isSidebarCollapsed ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
 				>
@@ -337,6 +345,7 @@ const SidebarItemView = ({
 				<Link
 					to={item.url}
 					preload="intent"
+					aria-label={item.title}
 					data-nav-url={item.url}
 					onClick={isSidebarCollapsed ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
 				>
@@ -350,9 +359,12 @@ const SidebarItemView = ({
 		<SidebarMenuItem key={item.title}>
 			{isSidebarCollapsed && hasSubItems ? (
 				<Popover open={flyoutOpen} onOpenChange={setFlyoutOpen}>
-					<PopoverTrigger asChild onMouseEnter={openFlyout} onMouseLeave={closeFlyout}>
-						<div data-testid={`sidebar-flyout-trigger-${slug(item.title)}`}>{menuButton}</div>
-					</PopoverTrigger>
+					<div data-testid={`sidebar-flyout-trigger-${slug(item.title)}`}>
+						{/* The trigger must be the button itself: aria-haspopup/aria-expanded are invalid on a role-less div. */}
+						<PopoverTrigger asChild onMouseEnter={openFlyout} onMouseLeave={closeFlyout}>
+							{menuButton}
+						</PopoverTrigger>
+					</div>
 					<PopoverContent
 						side="right"
 						align="start"
