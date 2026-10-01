@@ -37,7 +37,7 @@ func (provider *ElevenlabsProvider) RealtimeHeaders(_ *schemas.BifrostContext, k
 		if strings.EqualFold(k, "xi-api-key") {
 			continue
 		}
-		headers[k] = v
+		headers[k] = v.GetValue()
 	}
 	return headers, nil
 }

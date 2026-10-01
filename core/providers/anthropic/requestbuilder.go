@@ -45,7 +45,7 @@ type AnthropicRequestBuildConfig struct {
 	// InjectBetaHeadersIntoBody = true (Vertex only). Both come from the
 	// caller's NetworkConfig at request time.
 	BetaHeaderOverrides  map[string]bool
-	ProviderExtraHeaders map[string]string
+	ProviderExtraHeaders map[string]schemas.SecretVar
 
 	// ShouldSendBackRawRequest / ShouldSendBackRawResponse control whether raw
 	// request/response bytes are attached to BifrostError.ExtraFields via
