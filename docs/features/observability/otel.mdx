@@ -45,6 +45,7 @@ The plugin supports multiple trace formats to match your observability platform:
 | `tls_ca_cert` | `string` | ❌ No | File path to client CA certificate for TLS. Optional. Works with both gRPC and HTTP protocol |
 | `group_traces_by_session` | `boolean` | ❌ No | Group requests sharing the same `x-bf-session-id` into one trace (default: `false`). See [Grouping Traces by Session](#grouping-traces-by-session) |
 | `disable_content_logging` | `boolean` | ❌ No | Drop message content from exported spans (default: `false`). See [Controlling Exported Content](#controlling-exported-content) |
+| `excluded_attributes` | `string[]` | ❌ No | Span attribute names to leave out of exported spans (default: none). See [Excluding Attributes](#excluding-attributes) |
 | `export_raw_payloads` | `boolean` | ❌ No | Attach raw provider request/response bodies to LLM spans (default: `false`). See [Raw Provider Payloads](#raw-provider-payloads) |
 | `disable_root_span_content` | `boolean` | ❌ No | Drop content from the **root span only**, keeping it on child spans (default: `false`). Overridden by `disable_content_logging`, which drops content from every span. See [Controlling Exported Content](#controlling-exported-content) |
 | `request_headers` | `string[]` | ❌ No | Request-header name patterns whose values are attached to the root span as `http.request.header.*` attributes. Supports exact names and wildcards (`x-custom-*`, `*`) |
@@ -850,6 +851,24 @@ These flags are **independent** of the global `client.disable_content_logging`, 
 
 Values captured via `request_headers` are attached to the root span **regardless** of either flag. Only enable header capture for headers you intend to export.
 </Warning>
+
+### Excluding Attributes
+
+Some span attributes are large and not needed downstream. Tool definitions are a common example. List the attribute names you want left out of exported spans:
+
+```json
+{
+  "excluded_attributes": ["gen_ai.request.tools"]
+}
+```
+
+Names are matched exactly, as they appear on the exported span. A name that does not match any attribute is ignored, so a typo silently has no effect. Check the spelling against a span you have already received.
+
+The raw payload attributes can be excluded the same way. Naming `bifrost.raw_request` or `bifrost.raw_response` keeps that body off exported spans while leaving the other one in place, which is finer-grained than turning [`export_raw_payloads`](#raw-provider-payloads) off entirely.
+
+<Note>
+Excluding an attribute controls what is **exported**, not what Bifrost collects. To stop provider-side raw-body capture, turn `store_raw_request_response` off on the provider. To stop OTEL raw-payload assembly and export, disable `export_raw_payloads` on every profile.
+</Note>
 
 ### Raw Provider Payloads
 
