@@ -87,6 +87,33 @@ func (in EmbeddingInput) AllSingleText() bool {
 	return true
 }
 
+// Texts returns the text of every text part, flattened across items. Connectors use
+// it to render the input as one attribute; it ignores media and token parts.
+func (in EmbeddingInput) Texts() []string {
+	var out []string
+	for _, item := range in {
+		for _, part := range item.Content {
+			if part.Text != nil {
+				out = append(out, *part.Text)
+			}
+		}
+	}
+	return out
+}
+
+// TokenIDs returns each token part's IDs, one slice per part, flattened across items.
+func (in EmbeddingInput) TokenIDs() [][]int {
+	var out [][]int
+	for _, item := range in {
+		for _, part := range item.Content {
+			if len(part.Tokens) > 0 {
+				out = append(out, part.Tokens)
+			}
+		}
+	}
+	return out
+}
+
 // RejectPerItemParams reports the first item carrying its own params. Providers whose
 // wire format has one parameter block per request call this rather than silently
 // dropping an override, which would return a correct-looking but wrong vector.
