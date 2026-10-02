@@ -8,7 +8,6 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -3982,23 +3981,29 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 	// Only set ThinkingConfig if the model actually supports thinking
 	caps := schemas.ResolveModelCaps(provider, capModel)
 	if params.Reasoning != nil && caps.SupportsReasoning(defaultSupportsReasoning(capModel)) {
+		includeThoughts := true
+		if params.Reasoning.Summary != nil && *params.Reasoning.Summary == "none" {
+			includeThoughts = false
+		}
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
-			IncludeThoughts: true,
+			IncludeThoughts: includeThoughts,
 		}
 
 		hasMaxTokens := params.Reasoning.MaxTokens != nil
-		hasEffort := params.Reasoning.Effort != nil
+		hasEffort := params.Reasoning.Effort != nil && *params.Reasoning.Effort != "none"
+		isDisabled := (params.Reasoning.Effort != nil && *params.Reasoning.Effort == "none") ||
+			(hasMaxTokens && *params.Reasoning.MaxTokens == 0)
 		supportsLevel := caps.SupportsReasoningEffort(isGemini3Plus(capModel)) // thinkingLevel vs thinkingBudget
 
-		// PRIORITY RULE: If both max_tokens and effort are present, use ONLY max_tokens (budget)
-		// This ensures we send only thinkingBudget to Gemini, not thinkingLevel
-
-		// Handle "none" effort explicitly (only if max_tokens not present)
-		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
+		if isDisabled {
 			setThinkingBudgetZeroIfSupported(&config, caps)
+		} else if supportsLevel && hasEffort {
+			// Gemini 3.0+ - use thinkingLevel (more native), including when cross-provider
+			// converters (e.g. Anthropic thinking.budget_tokens) populate both Effort and MaxTokens.
+			if level := effortToThinkingLevel(caps, *params.Reasoning.Effort); level != "" {
+				config.ThinkingConfig.ThinkingLevel = schemas.Ptr(level)
+			}
 		} else if hasMaxTokens {
-			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
-			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
 			case 0:
@@ -4012,27 +4017,19 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
 			}
 		} else if hasEffort {
-			// User provided effort only (no max_tokens)
-			if supportsLevel {
-				// Gemini 3.0+ - use thinkingLevel (more native)
-				if level := effortToThinkingLevel(caps, *params.Reasoning.Effort); level != "" {
-					config.ThinkingConfig.ThinkingLevel = schemas.Ptr(level)
-				}
-			} else {
-				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, capModel, DefaultCompletionMaxTokens)
-				if config.MaxOutputTokens > 0 {
-					maxTokens = int(config.MaxOutputTokens)
-				}
-				budgetRange := getThinkingBudgetRange(caps, maxTokens)
-				// Gemini < 3.0 - must convert effort to budget
-				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
-					*params.Reasoning.Effort,
-					budgetRange.Min,
-					budgetRange.Max,
-				)
-				if err == nil {
-					config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budgetTokens))
-				}
+			maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, capModel, DefaultCompletionMaxTokens)
+			if config.MaxOutputTokens > 0 {
+				maxTokens = int(config.MaxOutputTokens)
+			}
+			budgetRange := getThinkingBudgetRange(caps, maxTokens)
+			// Gemini < 3.0 - must convert effort to budget
+			budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
+				*params.Reasoning.Effort,
+				budgetRange.Min,
+				budgetRange.Max,
+			)
+			if err == nil {
+				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budgetTokens))
 			}
 		}
 	}
@@ -4113,29 +4110,7 @@ func responsesExtraParamsWithoutGenerationConfigKeys(extraParams map[string]inte
 // hard 400, guessing "not capable" costs only the built-in tool, so the safe default is to
 // drop rather than to send.
 func modelSupportsToolCombination(model string) bool {
-	name := strings.ToLower(model)
-	// Strip a provider prefix ("vertex/gemini-3.6-flash") and any publisher path.
-	if idx := strings.LastIndex(name, "/"); idx != -1 {
-		name = name[idx+1:]
-	}
-	const prefix = "gemini-"
-	if !strings.HasPrefix(name, prefix) {
-		return false
-	}
-	// Read the leading major version: "3-flash-preview" -> 3, "2.5-pro" -> 2.
-	rest := name[len(prefix):]
-	end := 0
-	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
-		end++
-	}
-	if end == 0 {
-		return false
-	}
-	major, err := strconv.Atoi(rest[:end])
-	if err != nil {
-		return false
-	}
-	return major >= 3
+	return isGemini3Plus(model)
 }
 
 // convertResponsesToolsToGemini converts Responses tools to Gemini tools.
