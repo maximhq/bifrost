@@ -140,6 +140,7 @@ const (
 	AnthropicAdvisorBetaHeaderPrefix             = "advisor-tool-"
 	AnthropicServerSideFallbackBetaHeaderPrefix  = "server-side-fallback-"
 	AnthropicFallbackCreditBetaHeaderPrefix      = "fallback-credit-"
+	AnthropicOutput300kBetaHeaderPrefix          = "output-300k-"
 	// Mid-conversation tool changes (Opus 5).
 	AnthropicMidConversationToolChangesBetaHeaderPrefix  = "mid-conversation-tool-changes-"
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix = "mid-conversation-output-config-"
