@@ -1218,6 +1218,13 @@ func bedrockPreCallback(_ lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifro
 			}
 		case *bedrock.BedrockInvokeRequest:
 			r.ModelID = fullModelID
+			// InvokeModel names its guardrail through request headers; Converse has no
+			// header form, so only this request type reads them.
+			r.ApplyGuardrailHeaders(
+				string(ctx.Request.Header.Peek(bedrock.GuardrailIdentifierHeader)),
+				string(ctx.Request.Header.Peek(bedrock.GuardrailVersionHeader)),
+				string(ctx.Request.Header.Peek(bedrock.GuardrailTraceHeader)),
+			)
 		default:
 			return errors.New("invalid request type for bedrock model extraction")
 		}

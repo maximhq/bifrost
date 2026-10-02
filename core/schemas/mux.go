@@ -198,6 +198,7 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 					Type:         ResponsesMessageContentBlockType(block.Type),
 					Text:         block.Text,
 					CacheControl: block.CacheControl,
+					GuardContent: block.GuardContent,
 				}
 
 				// Map image
@@ -609,8 +610,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				}
 
 				responseBlocks = append(responseBlocks, ResponsesMessageContentBlock{
-					Type: blockType,
-					Text: block.Text,
+					Type:         blockType,
+					Text:         block.Text,
+					GuardContent: block.GuardContent,
 				})
 				rb := &responseBlocks[len(responseBlocks)-1]
 
@@ -679,6 +681,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 						Type:         ResponsesMessageContentBlockType(block.Type),
 						Text:         block.Text,
 						CacheControl: block.CacheControl,
+						GuardContent: block.GuardContent,
 					}
 
 					// Map image
@@ -936,8 +939,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					}
 
 					chatBlocks[i] = ChatContentBlock{
-						Type: chatBlockType,
-						Text: block.Text,
+						Type:         chatBlockType,
+						Text:         block.Text,
+						GuardContent: block.GuardContent,
 					}
 
 					// Convert specific block types

@@ -1325,6 +1325,9 @@ type ChatContentBlock struct {
 	// CachePoint is a Bedrock-specific field for standalone cache point blocks
 	// When present without other content, this indicates a cache point marker
 	CachePoint *CachePoint `json:"cachePoint,omitempty"`
+
+	// GuardContent marks this text or image block for selective guardrail evaluation (Bedrock).
+	GuardContent *GuardContent `json:"guard_content,omitempty"`
 }
 
 // UnmarshalJSON normalizes Anthropic-style document content blocks

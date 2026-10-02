@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -385,6 +387,119 @@ func (r *BedrockInvokeRequest) IsCohereCommandRRequest() bool {
 
 // ToBedrockConverseRequest converts the invoke request to BedrockConverseRequest
 // so we can reuse ToBifrostResponsesRequest() for messages-based requests.
+// InvokeModel guardrail request headers, the AWS-native way to name a guardrail on the
+// InvokeModel and InvokeModelWithResponseStream APIs (Converse takes a body field instead).
+const (
+	GuardrailIdentifierHeader = guardrailIdentifierHeader
+	GuardrailVersionHeader    = guardrailVersionHeader
+	GuardrailTraceHeader      = guardrailTraceHeader
+)
+
+// ApplyGuardrailHeaders records the X-Amzn-Bedrock-Guardrail* request headers of an
+// InvokeModel ingress call on the request, as the Converse-shaped guardrailConfig extra
+// param that ToBedrockConverseRequest lifts into the typed config. AWS requires both the
+// identifier and the version, so one without the other is ignored. Header values win over a
+// body guardrailConfig, which is a Bifrost extension AWS itself never reads.
+func (r *BedrockInvokeRequest) ApplyGuardrailHeaders(identifier, version, trace string) {
+	if identifier == "" || version == "" {
+		return
+	}
+	if r.ExtraParams == nil {
+		r.ExtraParams = make(map[string]interface{}, 1)
+	} else {
+		// The map may be shared with other in-process requests, so this one gets its own copy.
+		r.ExtraParams = maps.Clone(r.ExtraParams)
+	}
+	config, _ := extraParamObject(r.ExtraParams["guardrailConfig"])
+	if config == nil {
+		config = make(map[string]interface{}, 3)
+	} else {
+		// A decoded map is the caller's own, possibly shared across requests, so write to a copy.
+		config = maps.Clone(config)
+	}
+	config["guardrailIdentifier"] = identifier
+	config["guardrailVersion"] = version
+	if trace != "" {
+		// The InvokeModel header takes ENABLED/DISABLED/ENABLED_FULL; Converse only accepts lowercase.
+		config["trace"] = strings.ToLower(trace)
+	}
+	r.ExtraParams["guardrailConfig"] = config
+}
+
+// liftInvokeGuardrailConfig folds guardrail fields that an InvokeModel body carries as
+// unknown top-level keys into the typed Converse GuardrailConfig, which is the only form
+// the Bedrock -> Bifrost converter reads (it never forwards arbitrary extra params).
+// amazon-bedrock-guardrailConfig is AWS's own InvokeModel field (tagSuffix,
+// streamProcessingMode); a Converse-shaped guardrailConfig is how an invoke client names
+// the guardrail through Bifrost, since the X-Amzn-Bedrock-Guardrail* request headers are
+// not read on this route. Either field may arrive as a decoded map (in-process) or as raw
+// JSON (HTTP ingress).
+func liftInvokeGuardrailConfig(req *BedrockConverseRequest) {
+	if req == nil || len(req.ExtraParams) == 0 {
+		return
+	}
+	config := req.GuardrailConfig
+	if raw, ok := extraParamObject(req.ExtraParams["guardrailConfig"]); ok {
+		delete(req.ExtraParams, "guardrailConfig")
+		if config == nil {
+			config = &BedrockGuardrailConfig{}
+		}
+		if value, ok := raw["guardrailIdentifier"].(string); ok {
+			config.GuardrailIdentifier = value
+		}
+		if value, ok := raw["guardrailVersion"].(string); ok {
+			config.GuardrailVersion = value
+		}
+		if value, ok := raw["trace"].(string); ok && value != "" {
+			config.Trace = &value
+		}
+		if value, ok := raw["streamProcessingMode"].(string); ok && value != "" {
+			config.StreamProcessingMode = &value
+		}
+		if value, ok := raw["tagSuffix"].(string); ok && value != "" {
+			config.TagSuffix = value
+		}
+	}
+	if raw, ok := extraParamObject(req.ExtraParams["amazon-bedrock-guardrailConfig"]); ok {
+		delete(req.ExtraParams, "amazon-bedrock-guardrailConfig")
+		if config == nil {
+			config = &BedrockGuardrailConfig{}
+		}
+		if value, ok := raw["tagSuffix"].(string); ok && value != "" {
+			config.TagSuffix = value
+		}
+		if value, ok := raw["streamProcessingMode"].(string); ok && value != "" {
+			config.StreamProcessingMode = &value
+		}
+	}
+	req.GuardrailConfig = config
+	if len(req.ExtraParams) == 0 {
+		req.ExtraParams = nil
+	}
+}
+
+// extraParamObject returns an extra param that is a JSON object, whether it was decoded
+// already (in-process callers) or captured as raw JSON by UnmarshalJSON (HTTP ingress).
+func extraParamObject(value any) (map[string]interface{}, bool) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return v, v != nil
+	case json.RawMessage:
+		var out map[string]interface{}
+		if err := sonic.Unmarshal(v, &out); err != nil || out == nil {
+			return nil, false
+		}
+		return out, true
+	case []byte:
+		var out map[string]interface{}
+		if err := sonic.Unmarshal(v, &out); err != nil || out == nil {
+			return nil, false
+		}
+		return out, true
+	}
+	return nil, false
+}
+
 func (r *BedrockInvokeRequest) ToBedrockConverseRequest() *BedrockConverseRequest {
 	converseReq := &BedrockConverseRequest{
 		ModelID:     r.ModelID,
@@ -395,6 +510,8 @@ func (r *BedrockInvokeRequest) ToBedrockConverseRequest() *BedrockConverseReques
 
 	// Convert system field: interface{} → []BedrockSystemMessage
 	converseReq.System = r.parseSystemMessages()
+
+	liftInvokeGuardrailConfig(converseReq)
 
 	// Handle InferenceConfig: if Nova-style InferenceConfig is set, use it directly.
 	// Otherwise, build from top-level fields.
@@ -1337,6 +1454,43 @@ func ToBedrockInvokeMessagesResponse(ctx *schemas.BifrostContext, resp *schemas.
 	return toBedrockInvokeAnthropicResponse(resp, model), nil
 }
 
+// bedrockInvokeGuardrailFields renders the guardrail outcome the way InvokeModel reports
+// it: amazon-bedrock-guardrailAction ("INTERVENED" or "NONE") whenever a guardrail
+// assessed the request, and amazon-bedrock-trace when the caller enabled the trace. The
+// Converse upstream carries the same assessment in trace.guardrail, which the provider
+// stores under ProviderExtraFields["trace"]; without it only an intervention is
+// reportable, from the stop reason.
+func bedrockInvokeGuardrailFields(resp *schemas.BifrostResponsesResponse) (string, json.RawMessage) {
+	if resp == nil {
+		return "", nil
+	}
+	// A native InvokeModel upstream already reported its outcome in AWS's own shape.
+	nativeAction, _ := resp.ProviderExtraFields[anthropic.BedrockInvokeGuardrailActionKey].(string)
+	nativeTrace, _ := resp.ProviderExtraFields[anthropic.BedrockInvokeGuardrailTraceKey].(json.RawMessage)
+	if nativeAction != "" || len(nativeTrace) > 0 {
+		return nativeAction, nativeTrace
+	}
+
+	var trace *BedrockConverseTrace
+	if resp.ProviderExtraFields != nil {
+		trace = extractBedrockTrace(resp.ProviderExtraFields["trace"])
+	}
+	var rawTrace json.RawMessage
+	if trace != nil {
+		if raw, err := providerUtils.MarshalSorted(trace); err == nil {
+			rawTrace = raw
+		}
+	}
+	intervened := resp.StopReason != nil && *resp.StopReason == "guardrail_intervened"
+	switch {
+	case intervened:
+		return "INTERVENED", rawTrace
+	case trace != nil && trace.Guardrail != nil:
+		return "NONE", rawTrace
+	}
+	return "", rawTrace
+}
+
 func ToBedrockInvokeImagesResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
 	if resp == nil {
 		return nil, fmt.Errorf("bifrost response is nil")
@@ -1548,6 +1702,7 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 	} else {
 		result.Model = model
 	}
+	result.GuardrailAction, result.Trace = bedrockInvokeGuardrailFields(resp)
 
 	// Convert output items to Anthropic content blocks
 	for _, item := range resp.Output {
@@ -1834,6 +1989,9 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 
 	bedrockEvent := &BedrockStreamEvent{
 		InvokeModelRawChunks: rawChunks,
+	}
+	if resp.Type == schemas.ResponsesStreamResponseTypeCompleted || resp.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+		bedrockEvent.InvokeModelGuardrailAction, bedrockEvent.InvokeModelTrace = bedrockInvokeGuardrailFields(resp.Response)
 	}
 
 	return "", bedrockEvent, nil

@@ -184477,6 +184477,444 @@
           }
         }
       ]
+    },
+    {
+      "name": "135. Bedrock guardrail selective evaluation (#7696)",
+      "description": "Regression for #7696. AWS Bedrock Guardrails can be scoped to part of a prompt in two ways: Converse guardContent blocks (messages and system) and InvokeModel inline <amazon-bedrock-guardrails-guardContent_{suffix}> tags plus amazon-bedrock-guardrailConfig.tagSuffix. Neither was usable through Bifrost: the Bedrock ingress parsed guardContent and then dropped it in the Bedrock -> Bifrost conversion (fail-open, the whole prompt was evaluated and agentic scaffolding tripped PROMPT_ATTACK), and guardrailConfig had no tagSuffix, so Claude requests served through Converse carried the tags as literal text. Fix: a guard_content marker on canonical text blocks that both Bedrock converters honour, tagSuffix on the guardrail config, inline tags translated into guardContent on the Converse egress, and guard markers rendered as tags with amazon-bedrock-guardrailConfig on the InvokeModel egress. Case 1 pins the message guardContent round-trip via the trace coverage, case 2 the system entry, case 3 the converse-stream route, case 4 the invoke route with guardrail request headers and inline tags (asserting the guardrail trace InvokeModel responses carry), case 5 the image arm of guardContent, case 6 the guard_content marker on the native Chat Completions surface (asserting the echoed raw Converse request). No case opens with an early-return status guard: AGENTS.md requires every unexpected status to fail loudly. All six need BEDROCK_GUARDRAIL_IDENTIFIER / BEDROCK_GUARDRAIL_VERSION in the environment, like the folder 4 guardrail cases.",
+      "item": [
+        {
+          "name": "Bedrock converse: guardContent block survives to AWS, coverage guarded below total (selective guardrail) - #7696",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// Walks trace.guardrail.inputAssessment whether AWS returns it as a map keyed by guardrail id or as an array.",
+                  "function eachAssessment(trace, fn) {",
+                  "  var a = (trace && trace.inputAssessment) || {};",
+                  "  if (Array.isArray(a)) { a.forEach(fn); return; }",
+                  "  Object.keys(a).forEach(function (k) { fn(a[k]); });",
+                  "}",
+                  "function coverageOf(trace) {",
+                  "  var found = null;",
+                  "  eachAssessment(trace, function (a) {",
+                  "    var m = (a && a.invocationMetrics) || {};",
+                  "    if (m.guardrailCoverage && m.guardrailCoverage.textCharacters) { found = m.guardrailCoverage.textCharacters; }",
+                  "  });",
+                  "  return found;",
+                  "}",
+                  "function outputText(b) {",
+                  "  var blocks = (b.output && b.output.message && b.output.message.content) || [];",
+                  "  return blocks.map(function (c) { return c.text || ''; }).join(' ');",
+                  "}",
+                  "",
+                  "// #7696: the Converse ingress parsed guardContent blocks and then dropped them in the Bedrock -> Bifrost",
+                  "// conversion, so the guarded question never reached AWS and the guardrail evaluated the whole prompt.",
+                  "// Red before the fix: the model never sees the question (no \"Paris\"), and any coverage reported has",
+                  "// guarded == total. Green after: the guardContent entry is rebuilt on egress.",
+                  "pm.test('Bedrock converse guardContent (selective guardrail) - #7696: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock converse guardContent (selective guardrail) - #7696: the guarded question reached the model', function () {",
+                  "  pm.expect(outputText(body).toLowerCase(), 'guardContent block stripped before AWS, the model never saw the question: ' + txt.slice(0, 400)).to.include('paris');",
+                  "});",
+                  "pm.test('Bedrock converse guardContent (selective guardrail) - #7696: guardrail evaluated only the guarded block', function () {",
+                  "  var trace = body.trace && body.trace.guardrail;",
+                  "  pm.expect(trace, 'trace.guardrail missing although trace: enabled was sent: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var coverage = coverageOf(trace);",
+                  "  if (coverage) {",
+                  "    pm.expect(coverage.guarded, 'no characters guarded: ' + JSON.stringify(coverage)).to.be.above(0);",
+                  "    pm.expect(coverage.guarded, 'whole prompt evaluated, selective evaluation lost: ' + JSON.stringify(coverage)).to.be.below(coverage.total);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Only answer with the city name.\"\n        },\n        {\n          \"guardContent\": {\n            \"text\": {\n              \"text\": \"What is the capital of France?\",\n              \"qualifiers\": [\n                \"query\"\n              ]\n            }\n          }\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 64\n  },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"trace\": \"enabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock converse: system guardContent entry survives to AWS (selective guardrail) - #7696",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// Walks trace.guardrail.inputAssessment whether AWS returns it as a map keyed by guardrail id or as an array.",
+                  "function eachAssessment(trace, fn) {",
+                  "  var a = (trace && trace.inputAssessment) || {};",
+                  "  if (Array.isArray(a)) { a.forEach(fn); return; }",
+                  "  Object.keys(a).forEach(function (k) { fn(a[k]); });",
+                  "}",
+                  "function coverageOf(trace) {",
+                  "  var found = null;",
+                  "  eachAssessment(trace, function (a) {",
+                  "    var m = (a && a.invocationMetrics) || {};",
+                  "    if (m.guardrailCoverage && m.guardrailCoverage.textCharacters) { found = m.guardrailCoverage.textCharacters; }",
+                  "  });",
+                  "  return found;",
+                  "}",
+                  "function outputText(b) {",
+                  "  var blocks = (b.output && b.output.message && b.output.message.content) || [];",
+                  "  return blocks.map(function (c) { return c.text || ''; }).join(' ');",
+                  "}",
+                  "",
+                  "// #7696: a guardContent entry in the system array was dropped the same way. The question lives only in",
+                  "// the guarded system entry, so without the fix the model never sees it and cannot answer \"Paris\".",
+                  "pm.test('Bedrock converse system guardContent (selective guardrail) - #7696: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock converse system guardContent (selective guardrail) - #7696: the guarded system entry reached the model', function () {",
+                  "  pm.expect(outputText(body).toLowerCase(), 'system guardContent stripped before AWS, the model never saw the question: ' + txt.slice(0, 400)).to.include('paris');",
+                  "});",
+                  "pm.test('Bedrock converse system guardContent (selective guardrail) - #7696: guardrail trace present', function () {",
+                  "  pm.expect(body.trace && body.trace.guardrail, 'trace.guardrail missing although trace: enabled was sent: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"system\": [\n    {\n      \"text\": \"You are a helpful assistant. Reply with the city name only.\"\n    },\n    {\n      \"guardContent\": {\n        \"text\": {\n          \"text\": \"The user wants to know the capital of France.\"\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Answer the question stated in the system prompt.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 64\n  },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"trace\": \"enabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock converse-stream: guardContent block survives, metadata carries guardrail trace (selective guardrail) - #7696",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// #7696 streaming variant: converse-stream shares the same ingress converter, so the guardContent block",
+                  "// was dropped there too. The stream is an AWS event stream; its metadata frame carries the guardrail trace.",
+                  "pm.test('Bedrock converse-stream guardContent (selective guardrail) - #7696: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected vnd.amazon.eventstream, got ' + ct).to.include('vnd.amazon.eventstream');",
+                  "});",
+                  "pm.test('Bedrock converse-stream guardContent (selective guardrail) - #7696: the guarded question reached the model', function () {",
+                  "  pm.expect(txt.toLowerCase(), 'guardContent block stripped before AWS, the model never saw the only question: ' + txt.slice(0, 400)).to.include('paris');",
+                  "});",
+                  "pm.test('Bedrock converse-stream guardContent (selective guardrail) - #7696: stream completes with a guardrail trace', function () {",
+                  "  pm.expect(txt, 'expected a messageStop event terminating the stream').to.include('messageStop');",
+                  "  pm.expect(txt, 'expected the metadata frame to carry trace.guardrail (trace: enabled was sent)').to.include('guardrail');",
+                  "});",
+                  "pm.test('Bedrock converse-stream guardContent (selective guardrail) - #7696: guardrail evaluated only the guarded block', function () {",
+                  "  var m = txt.match(/\"textCharacters\":\\{\"guarded\":(\\d+),\"total\":(\\d+)\\}/);",
+                  "  if (m) {",
+                  "    var guarded = parseInt(m[1], 10), total = parseInt(m[2], 10);",
+                  "    pm.expect(guarded, 'no characters guarded: ' + m[0]).to.be.above(0);",
+                  "    pm.expect(guarded, 'whole prompt evaluated, selective evaluation lost: ' + m[0]).to.be.below(total);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Only answer with the city name.\"\n        },\n        {\n          \"guardContent\": {\n            \"text\": {\n              \"text\": \"What is the capital of France?\",\n              \"qualifiers\": [\n                \"query\"\n              ]\n            }\n          }\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 64\n  },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"trace\": \"enabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock invoke: guardrail headers + inline guard tags + tagSuffix become guardContent on Converse egress (Haiku 4.5, selective guardrail) - #7696",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// #7696: an InvokeModel-dialect client names its guardrail through the X-Amzn-Bedrock-Guardrail* request",
+                  "// headers and scopes it with inline input tags plus amazon-bedrock-guardrailConfig.tagSuffix. Before the fix",
+                  "// the invoke ingress read neither, so no guardrail applied at all (no amazon-bedrock-trace in the reply)",
+                  "// and the tags reached the model as literal text. Now the headers become the typed guardrail config, the",
+                  "// tagged span a guardContent block (coverage guarded < total), and the reply carries the guardrail trace",
+                  "// and amazon-bedrock-guardrailAction the way InvokeModel reports them.",
+                  "pm.test('Bedrock invoke guardrail headers + inline guard tags (selective guardrail) - #7696: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock invoke guardrail headers + inline guard tags (selective guardrail) - #7696: the guarded question reached the model', function () {",
+                  "  var blocks = Array.isArray(body.content) ? body.content : [];",
+                  "  var text = blocks.map(function (b) { return b.text || ''; }).join(' ');",
+                  "  pm.expect(text.toLowerCase(), 'unexpected answer: ' + txt.slice(0, 400)).to.include('paris');",
+                  "  pm.expect(txt, 'the reserved tag must never be echoed back to the client').to.not.include('amazon-bedrock-guardrails-guardContent');",
+                  "});",
+                  "pm.test('Bedrock invoke guardrail headers + inline guard tags (selective guardrail) - #7696: guardrail applied and evaluated only the tagged span', function () {",
+                  "  pm.expect(body['amazon-bedrock-guardrailAction'], 'no guardrail applied, the request headers were ignored: ' + txt.slice(0, 400)).to.be.oneOf(['NONE', 'INTERVENED']);",
+                  "  var trace = body['amazon-bedrock-trace'] && body['amazon-bedrock-trace'].guardrail;",
+                  "  pm.expect(trace, 'amazon-bedrock-trace missing although X-Amzn-Bedrock-Trace: enabled was sent: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var a = trace.inputAssessment || {}; var coverage = null;",
+                  "  (Array.isArray(a) ? a : Object.keys(a).map(function (k) { return a[k]; })).forEach(function (x) {",
+                  "    var m = (x && x.invocationMetrics) || {};",
+                  "    if (m.guardrailCoverage && m.guardrailCoverage.textCharacters) { coverage = m.guardrailCoverage.textCharacters; }",
+                  "  });",
+                  "  if (coverage) {",
+                  "    pm.expect(coverage.guarded, 'no characters guarded: ' + JSON.stringify(coverage)).to.be.above(0);",
+                  "    pm.expect(coverage.guarded, 'whole prompt evaluated, the inline tags were not translated: ' + JSON.stringify(coverage)).to.be.below(coverage.total);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Amzn-Bedrock-GuardrailIdentifier",
+                "value": "{{bedrockGuardrailIdentifier}}"
+              },
+              {
+                "key": "X-Amzn-Bedrock-GuardrailVersion",
+                "value": "{{bedrockGuardrailVersion}}"
+              },
+              {
+                "key": "X-Amzn-Bedrock-Trace",
+                "value": "enabled"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Only answer with the city name.\\n<amazon-bedrock-guardrails-guardContent_h7q2>What is the capital of France?</amazon-bedrock-guardrails-guardContent_h7q2>\"\n    }\n  ],\n  \"amazon-bedrock-guardrailConfig\": {\n    \"tagSuffix\": \"h7q2\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock converse: image guardContent block survives to AWS (selective guardrail) - #7696",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// Walks trace.guardrail.inputAssessment whether AWS returns it as a map keyed by guardrail id or as an array.",
+                  "function eachAssessment(trace, fn) {",
+                  "  var a = (trace && trace.inputAssessment) || {};",
+                  "  if (Array.isArray(a)) { a.forEach(fn); return; }",
+                  "  Object.keys(a).forEach(function (k) { fn(a[k]); });",
+                  "}",
+                  "function coverageOf(trace) {",
+                  "  var found = null;",
+                  "  eachAssessment(trace, function (a) {",
+                  "    var m = (a && a.invocationMetrics) || {};",
+                  "    if (m.guardrailCoverage && m.guardrailCoverage.textCharacters) { found = m.guardrailCoverage.textCharacters; }",
+                  "  });",
+                  "  return found;",
+                  "}",
+                  "function outputText(b) {",
+                  "  var blocks = (b.output && b.output.message && b.output.message.content) || [];",
+                  "  return blocks.map(function (c) { return c.text || ''; }).join(' ');",
+                  "}",
+                  "",
+                  "// #7696 follow-up: guardContent is a union of text and image; the image arm was not modelled at all, so a",
+                  "// guarded image was dropped on ingress. Red before the fix: the model sees no image and answers NOIMAGE.",
+                  "pm.test('Bedrock converse image guardContent (selective guardrail) - #7696: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock converse image guardContent (selective guardrail) - #7696: the guarded image reached the model', function () {",
+                  "  var text = outputText(body);",
+                  "  pm.expect(text, 'empty answer: ' + txt.slice(0, 400)).to.not.equal('');",
+                  "  pm.expect(text.toUpperCase(), 'guarded image stripped before AWS, the model saw no image: ' + txt.slice(0, 400)).to.not.include('NOIMAGE');",
+                  "});",
+                  "pm.test('Bedrock converse image guardContent (selective guardrail) - #7696: guardrail trace present', function () {",
+                  "  pm.expect(body.trace && body.trace.guardrail, 'trace.guardrail missing although trace: enabled was sent: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"guardContent\": {\n            \"image\": {\n              \"format\": \"png\",\n              \"source\": {\n                \"bytes\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n              }\n            }\n          }\n        },\n        {\n          \"text\": \"What color is this image? Answer with exactly one word. If you cannot see any image at all, answer exactly: NOIMAGE\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 32\n  },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"trace\": \"enabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock chat completions: guard_content marker on a text block renders guardContent (Haiku 4.5, selective guardrail) - #7696",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// #7696 follow-up: the native Chat Completions surface carries the same guard_content marker on content",
+                  "// blocks; the Bedrock chat egress renders it as a guardContent entry. The echoed raw Converse request is",
+                  "// the signal: without the fix the marked block is sent as plain text and no guardContent entry exists.",
+                  "pm.test('Bedrock chat completions guard_content (selective guardrail) - #7696: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock chat completions guard_content (selective guardrail) - #7696: the guarded question reached the model', function () {",
+                  "  var choice = (body.choices && body.choices[0]) || {};",
+                  "  var content = (choice.message && choice.message.content) || '';",
+                  "  pm.expect(String(content).toLowerCase(), 'unexpected answer: ' + txt.slice(0, 400)).to.include('paris');",
+                  "});",
+                  "pm.test('Bedrock chat completions guard_content (selective guardrail) - #7696: the marked block went to Converse as guardContent', function () {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "  pm.expect(raw, 'raw request capture missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var blocks = ((raw.messages || [])[0] || {}).content || [];",
+                  "  var guarded = blocks.filter(function (b) { return b && b.guardContent && b.guardContent.text && b.guardContent.text.text === 'What is the capital of France?'; });",
+                  "  pm.expect(guarded.length, 'guard_content marker ignored, the question was sent as a plain text block: ' + JSON.stringify(blocks)).to.eql(1);",
+                  "  pm.expect(guarded[0].guardContent.text.qualifiers, 'qualifiers not forwarded').to.eql(['query']);",
+                  "  var plain = blocks.filter(function (b) { return b && b.text === 'What is the capital of France?'; });",
+                  "  pm.expect(plain.length, 'the question must not also be sent as plain text').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Only answer with the city name.\"\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the capital of France?\",\n          \"guard_content\": {\n            \"qualifiers\": [\n              \"query\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"trace\": \"enabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
