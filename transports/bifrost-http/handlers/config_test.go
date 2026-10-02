@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -254,6 +255,53 @@ func TestGetPasswordPolicyFailures(t *testing.T) {
 			got := getPasswordPolicyFailures(tt.password)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("getPasswordPolicyFailures() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUpdateProxyConfig_InterceptionGuardWhenAuthBypassed pins that the fail-open bypass
+// cannot point the global proxy at a caller-chosen host or turn off its TLS verification:
+// either lets a third party read provider credentials for every proxied request. Saving
+// other fields against the stored proxy URL must still go through.
+func TestUpdateProxyConfig_InterceptionGuardWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const storedURL = "http://10.0.0.5:3128"
+	cases := []struct {
+		name    string
+		body    string
+		want403 bool
+	}{
+		{name: "same url, timeout edit", body: `{"enabled":true,"type":"http","url":"` + storedURL + `","timeout":30,"enable_for_inference":true}`, want403: false},
+		{name: "url changed", body: `{"enabled":true,"type":"http","url":"http://evil.example.com:8080","timeout":10,"enable_for_inference":true}`, want403: true},
+		{name: "skip_tls_verify turned on", body: `{"enabled":true,"type":"http","url":"` + storedURL + `","timeout":10,"skip_tls_verify":true,"enable_for_inference":true}`, want403: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			require.NoError(t, store.UpdateProxyConfig(context.Background(), &configtables.GlobalProxyConfig{
+				Enabled: true, Type: "http", URL: storedURL, Timeout: 10, EnableForInference: true,
+			}))
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+			h.updateProxyConfig(ctx)
+
+			got403 := ctx.Response.StatusCode() == fasthttp.StatusForbidden
+			require.Equal(t, tc.want403, got403, "status %d; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+			stored, err := store.GetProxyConfig(context.Background())
+			require.NoError(t, err)
+			if tc.want403 {
+				assert.Equal(t, storedURL, stored.URL)
+				assert.False(t, stored.SkipTLSVerify)
+				assert.Equal(t, 10, stored.Timeout)
+			} else {
+				require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+				assert.Equal(t, 30, stored.Timeout)
 			}
 		})
 	}
