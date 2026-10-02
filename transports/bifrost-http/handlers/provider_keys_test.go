@@ -1045,6 +1045,121 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 	}
 }
 
+// TestProviderKeyURL_RejectsLinkLocalDestination pins that a key-level server URL
+// (Ollama/SGL/VLLM) is held to the same destination rule as a provider base URL, even for a
+// genuinely authenticated admin: link-local and unspecified addresses are refused with 400,
+// while loopback and private hosts - the documented self-hosted setup - stay allowed.
+func TestProviderKeyURL_RejectsLinkLocalDestination(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	const storedURL = "http://localhost:11434"
+	cases := []struct {
+		name       string
+		stored     bool
+		body       string
+		wantStatus int
+	}{
+		{name: "create with link-local url", body: `{"name":"ollama-key","weight":1,"ollama_key_config":{"url":"http://169.254.169.254/"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "create with unspecified url", body: `{"name":"ollama-key","weight":1,"ollama_key_config":{"url":"http://0.0.0.0:11434"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "create with private url", body: `{"name":"ollama-key","weight":1,"ollama_key_config":{"url":"http://10.0.0.5:11434"}}`, wantStatus: fasthttp.StatusOK},
+		{name: "update to link-local url", stored: true, body: `{"weight":1,"ollama_key_config":{"url":"http://169.254.169.254/"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "update to loopback url", stored: true, body: `{"weight":1,"ollama_key_config":{"url":"http://127.0.0.1:11435"}}`, wantStatus: fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			providerConfig := configstore.ProviderConfig{}
+			if tc.stored {
+				providerConfig.Keys = []schemas.Key{{
+					ID: "key-1", Name: "ollama-key", Weight: 1,
+					OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar(storedURL)},
+				}}
+			}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Ollama: providerConfig}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(schemas.Ollama))
+			if tc.stored {
+				ctx.SetUserValue("key_id", "key-1")
+				h.updateProviderKey(ctx)
+			} else {
+				h.createProviderKey(ctx)
+			}
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			keys := h.inMemoryStore.Providers[schemas.Ollama].Keys
+			switch {
+			case tc.wantStatus != fasthttp.StatusOK && tc.stored:
+				if len(keys) != 1 || keys[0].OllamaKeyConfig.URL.GetValue() != storedURL {
+					t.Fatalf("expected stored url unchanged after 400, got %+v", keys)
+				}
+			case tc.wantStatus != fasthttp.StatusOK:
+				if len(keys) != 0 {
+					t.Fatalf("expected no key persisted after 400, got %d", len(keys))
+				}
+			default:
+				if len(keys) != 1 {
+					t.Fatalf("expected one key persisted, got %d", len(keys))
+				}
+			}
+		})
+	}
+}
+
+// TestProviderKeyRegion_RejectsHostShapedValues pins that a key-level or per-alias region can
+// only name a vendor region. Region is interpolated into the provider host
+// (<region>-aiplatform.googleapis.com, <service>.<region>.amazonaws.com), so a host-shaped value
+// would carry the key's credential to a caller-chosen host while region stays outside the
+// endpoint guard (a region-only Bedrock key must remain creatable without an admin session).
+func TestProviderKeyRegion_RejectsHostShapedValues(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name       string
+		provider   schemas.ModelProvider
+		body       string
+		wantStatus int
+	}{
+		{name: "bedrock valid region", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-gov-west-1"}}`, wantStatus: fasthttp.StatusOK},
+		{name: "bedrock host-shaped region", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"evil.example/#"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "bedrock region with userinfo", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1@evil.example"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "bedrock alias host-shaped region", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1"},"aliases":{"claude":{"model_id":"anthropic.claude-3","region":"evil.example/#"}}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "bedrock alias valid region", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1"},"aliases":{"claude":{"model_id":"anthropic.claude-3","region":"eu-west-1"}}}`, wantStatus: fasthttp.StatusOK},
+		{name: "vertex host-shaped region", provider: schemas.Vertex, body: `{"name":"k","weight":1,"vertex_key_config":{"project_id":"p","region":"attacker.example/x?","auth_credentials":"{}"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "mantle host-shaped region", provider: schemas.BedrockMantle, body: `{"name":"k","weight":1,"bedrock_mantle_key_config":{"region":"evil.example/#"}}`, wantStatus: fasthttp.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: {}}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(tc.provider))
+			h.createProviderKey(ctx)
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			if tc.wantStatus == fasthttp.StatusBadRequest {
+				if !strings.Contains(string(ctx.Response.Body()), "region") {
+					t.Fatalf("rejection must name the region field, got %s", ctx.Response.Body())
+				}
+				if len(h.inMemoryStore.Providers[tc.provider].Keys) != 0 {
+					t.Fatal("a rejected key must not be persisted")
+				}
+			}
+		})
+	}
+}
+
 // One RSA key for the whole file. Generating them is slow enough to notice per case.
 var (
 	handlerKeyOnce sync.Once

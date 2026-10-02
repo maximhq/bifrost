@@ -1164,6 +1164,14 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
 				return
 			}
+			// Every proxied request carries its provider credentials to this host, so the
+			// proxy URL follows the same destination rule as a provider base URL. Private
+			// and loopback hosts stay allowed (a self-hosted egress proxy is the normal
+			// setup); link-local and unspecified addresses never are.
+			if err := bifrost.ValidateExternalURL(payload.URL, true); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid proxy URL: %v", err))
+				return
+			}
 			// Validate timeout if provided
 			if payload.Timeout < 0 {
 				SendError(ctx, fasthttp.StatusBadRequest, "proxy timeout must be non-negative")
