@@ -1321,7 +1321,14 @@ func checkURLAccessibility(rawURL string) error {
 	}
 	resp, err := client.Get(rawURL)
 	if err != nil {
-		logger.Warn(fmt.Sprintf("URL accessibility check failed for %s: %v", rawURL, err))
+		// Log the host and the underlying transport error only: the full URL
+		// can carry userinfo or query secrets, and *url.Error echoes it back.
+		logErr := err
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			logErr = urlErr.Err
+		}
+		logger.Warn(fmt.Sprintf("URL accessibility check failed for host %s: %v", parsed.Hostname(), logErr))
 		return fmt.Errorf("URL is not accessible")
 	}
 	defer func() {
