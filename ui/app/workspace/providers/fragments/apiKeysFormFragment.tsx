@@ -1,6 +1,7 @@
 import { ModelAccessSelector } from "@/components/modelAccess";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { DefaultVertexAWSWorkloadIdentityConfig } from "@/lib/types/config";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
@@ -17,6 +18,10 @@ import { Control, UseFormReturn } from "react-hook-form";
 import { DeploymentsTable } from "./deploymentsTable";
 
 // Providers that support batch APIs
+// Vertex authentication methods offered by the key form. The backend picks the mode from which
+// fields are set; this discriminator only drives the tabs and validation.
+type VertexAuthType = "service_account" | "service_account_json" | "api_key" | "aws_workload_identity";
+
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure", "vertex", "wafer"];
 
 interface Props {
@@ -172,8 +177,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	// Auth type state for Databricks: 'pat' (personal access token) or 'oauth_m2m' (service principal)
 	const [databricksAuthType, setDatabricksAuthType] = useState<"pat" | "oauth_m2m">("pat");
 
-	// Auth type state for Vertex: 'service_account', 'service_account_json', or 'api_key'
-	const [vertexAuthType, setVertexAuthType] = useState<"service_account" | "service_account_json" | "api_key">("service_account");
+	// Auth type state for Vertex: 'service_account' (ADC), 'service_account_json', 'api_key', or
+	// 'aws_workload_identity' (GCP Workload Identity Federation from the workload's AWS identity)
+	const [vertexAuthType, setVertexAuthType] = useState<VertexAuthType>("service_account");
 
 	// Detect auth type from existing form values when editing
 	useEffect(() => {
@@ -200,12 +206,15 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	useEffect(() => {
 		if (form.formState.isDirty) return;
 		if (isVertex) {
+			const wifAudience = form.getValues("key.vertex_key_config.aws_workload_identity.audience");
 			const authCredentials = form.getValues("key.vertex_key_config.auth_credentials")?.value;
 			const authCredentialsEnv = form.getValues("key.vertex_key_config.auth_credentials")?.ref;
 			const apiKey = form.getValues("key.value")?.value;
 			const apiKeyEnv = form.getValues("key.value")?.ref;
-			let detected: "service_account" | "service_account_json" | "api_key" = "service_account";
-			if (authCredentials || authCredentialsEnv) {
+			let detected: VertexAuthType = "service_account";
+			if (wifAudience?.value || wifAudience?.ref) {
+				detected = "aws_workload_identity";
+			} else if (authCredentials || authCredentialsEnv) {
 				detected = "service_account_json";
 			} else if (apiKey || apiKeyEnv) {
 				detected = "api_key";
@@ -648,15 +657,31 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						<Tabs
 							value={vertexAuthType}
 							onValueChange={(v) => {
-								setVertexAuthType(v as "service_account" | "service_account_json" | "api_key");
-								form.setValue("key.vertex_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
-								if (v === "service_account" || v === "api_key") {
+								const next = v as VertexAuthType;
+								setVertexAuthType(next);
+								form.setValue("key.vertex_key_config._auth_type", next, { shouldDirty: true, shouldValidate: true });
+								if (next !== "service_account_json") {
 									// Clear auth credentials when switching away from service account JSON
 									form.setValue("key.vertex_key_config.auth_credentials", undefined, { shouldDirty: true });
 								}
-								if (v === "service_account" || v === "service_account_json") {
-									// Clear API key when switching away from API Key
-									form.setValue("key.value", undefined, { shouldDirty: true });
+								if (next !== "api_key") {
+									// Clear the API key when switching away from API Key. The update endpoint has patch
+									// semantics (an omitted field keeps its stored value), and the backend prefers a stored
+									// API key over federation or ADC, so this must be an explicit empty value, not undefined.
+									form.setValue("key.value", { value: "", ref: "" }, { shouldDirty: true });
+								}
+								if (next === "aws_workload_identity") {
+									// Seed the block so its inputs are controlled from the first keystroke
+									if (!form.getValues("key.vertex_key_config.aws_workload_identity")) {
+										form.setValue(
+											"key.vertex_key_config.aws_workload_identity",
+											{ ...DefaultVertexAWSWorkloadIdentityConfig },
+											{ shouldDirty: true },
+										);
+									}
+								} else {
+									// Drop the block entirely: an audience left behind would take precedence on the server
+									form.setValue("key.vertex_key_config.aws_workload_identity", undefined, { shouldDirty: true });
 								}
 							}}
 						>
@@ -667,6 +692,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								<TabsTrigger data-testid="apikey-vertex-service-account-json-tab" value="service_account_json">
 									Service Account (JSON)
 								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-vertex-aws-workload-identity-tab" value="aws_workload_identity">
+									Workload Identity (AWS)
+								</TabsTrigger>
 								<TabsTrigger data-testid="apikey-vertex-api-key-tab" value="api_key">
 									API Key
 								</TabsTrigger>
@@ -675,6 +703,12 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						{vertexAuthType === "service_account" && (
 							<p className="text-muted-foreground text-sm">
 								Uses the service account attached to your environment (GCE, GKE, Cloud Run). No credentials required.
+							</p>
+						)}
+						{vertexAuthType === "aws_workload_identity" && (
+							<p className="text-muted-foreground text-sm">
+								Exchanges the AWS identity attached to this workload (EKS IRSA or Pod Identity, ECS task role, EC2 instance profile) for a
+								GCP token through a Workload Identity Pool AWS provider. No GCP service account key and no AWS access key required.
 							</p>
 						)}
 					</div>
@@ -751,6 +785,141 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								</FormItem>
 							)}
 						/>
+					)}
+
+					{vertexAuthType === "aws_workload_identity" && (
+						<>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.audience`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Workload Identity Provider Audience (Required)</FormLabel>
+										<FormDescription>
+											The full resource name of the AWS provider in your Workload Identity Pool, shown as the audience in the GCP console.
+										</FormDescription>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-audience-input"
+												placeholder="//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/eks-pool/providers/aws or env.VERTEX_WIF_AUDIENCE"
+												inputClassName="font-mono text-sm"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.service_account_email`}
+								render={({ field }) => (
+									<FormItem>
+										<div className="flex items-center gap-2">
+											<FormLabel>Service Account to Impersonate (Optional)</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span>
+															<Info className="text-muted-foreground h-3 w-3" />
+														</span>
+													</TooltipTrigger>
+													<TooltipContent>
+														<p>
+															Leave empty to call Vertex AI as the federated principal directly (grant it roles/aiplatform.user). Set it to
+															impersonate a service account that has the Vertex AI role; the federated principal then needs
+															roles/iam.workloadIdentityUser on that service account.
+														</p>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</div>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-service-account-email-input"
+												placeholder="vertex-caller@my-project.iam.gserviceaccount.com or env.VERTEX_WIF_SA"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.token_lifetime_seconds`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Impersonated Token Lifetime in Seconds (Optional)</FormLabel>
+										<FormDescription>Only used with a service account. 600 to 43200; the default is 3600.</FormDescription>
+										<FormControl>
+											<Input
+												data-testid="apikey-vertex-aws-wif-token-lifetime-input"
+												type="number"
+												min={600}
+												max={43200}
+												step={60}
+												placeholder="3600"
+												value={field.value ?? ""}
+												onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+												onBlur={field.onBlur}
+												name={field.name}
+												ref={field.ref}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.aws_region`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>AWS Region (Optional)</FormLabel>
+										<FormDescription>
+											Region used to sign the STS request. Defaults to AWS_REGION, then instance metadata. Set it when neither is available
+											in the pod.
+										</FormDescription>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-aws-region-input"
+												placeholder="us-east-1 or env.AWS_REGION"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.aws_role_arn`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>AWS Role ARN to Assume (Optional)</FormLabel>
+										<FormDescription>
+											Assume this IAM role with the workload&apos;s credentials before the GCP exchange. Usually unnecessary: map the
+											workload&apos;s own role in the pool provider instead.
+										</FormDescription>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-aws-role-arn-input"
+												placeholder="arn:aws:iam::123456789012:role/VertexCaller or env.VERTEX_AWS_ROLE_ARN"
+												{...field}
+											/>
+										</FormControl>
+										{isRedacted(field.value?.value ?? "") && (
+											<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
+												<Info className="h-3 w-3" />
+												<span>Stored securely. Edit to update.</span>
+											</div>
+										)}
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</>
 					)}
 
 					{vertexAuthType === "api_key" && (
