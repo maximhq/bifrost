@@ -9,6 +9,7 @@ import (
 	"net"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -454,6 +455,109 @@ func TestVirtualKeyContentLoggingRoundTrip(t *testing.T) {
 	stored, err = store.GetVirtualKey(ctx, created.VirtualKey.ID)
 	require.NoError(t, err)
 	assert.Nil(t, stored.DisableContentLogging, "null clears the decision back to inherit")
+}
+
+// modelConfigTestGovernanceManager answers the two manager calls the model-config handlers make
+// from the store, so create/update tests run against a real config store without a plugin.
+type modelConfigTestGovernanceManager struct {
+	GovernanceManager
+	store configstore.ConfigStore
+}
+
+func (m *modelConfigTestGovernanceManager) ReloadModelConfig(ctx context.Context, id string) (*configstoreTables.TableModelConfig, error) {
+	return m.store.GetModelConfigByID(ctx, id)
+}
+
+func (m *modelConfigTestGovernanceManager) RemoveModelConfig(context.Context, string) error {
+	return nil
+}
+
+// ModelConfigIndexKey mirrors the store: a provider-less config collapses to its base model
+// (here a one-entry alias table stands in for the catalog), a provider-scoped one keeps its
+// canonical spelling.
+func (m *modelConfigTestGovernanceManager) ModelConfigIndexKey(model string, provider *string) string {
+	name := governance.CanonicalModelConfigName(model, provider)
+	if provider == nil && name == "gpt-4o-2024-08-06" {
+		return "gpt-4o"
+	}
+	return name
+}
+
+// TestModelConfig_RejectsCanonicalNameCollision pins that two configs which only differ in
+// spelling (case, whitespace, a provider prefix naming the config's own provider) cannot
+// coexist in the same scope and provider: the in-memory index keys them identically and the
+// later one would silently shadow the earlier one's limits. Create and rename both answer 409
+// naming the existing config; a different provider is a different identity.
+func TestModelConfig_RejectsCanonicalNameCollision(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &modelConfigTestGovernanceManager{store: store}}
+
+	create := func(body string) *fasthttp.RequestCtx {
+		ctx := newTestRequestCtx(body)
+		handler.createModelConfig(ctx)
+		return ctx
+	}
+	first := create(`{"model_name":"gpt-4o","provider":"openai","budgets":[{"max_limit":1,"reset_duration":"1h"}]}`)
+	require.Equal(t, fasthttp.StatusOK, first.Response.StatusCode(), "create resp=%s", first.Response.Body())
+	var created struct {
+		ModelConfig struct {
+			ID string `json:"id"`
+		} `json:"model_config"`
+	}
+	require.NoError(t, json.Unmarshal(first.Response.Body(), &created))
+	require.NotEmpty(t, created.ModelConfig.ID)
+
+	for _, spelling := range []string{"GPT-4O", " gpt-4o ", "openai/gpt-4o", "OpenAI/GPT-4o"} {
+		ctx := create(`{"model_name":` + strconv.Quote(spelling) + `,"provider":"openai"}`)
+		require.Equal(t, fasthttp.StatusConflict, ctx.Response.StatusCode(), "spelling %q resp=%s", spelling, ctx.Response.Body())
+		assert.Contains(t, string(ctx.Response.Body()), created.ModelConfig.ID, "the refusal names the colliding config")
+	}
+
+	other := create(`{"model_name":"GPT-4O","provider":"azure"}`)
+	require.Equal(t, fasthttp.StatusOK, other.Response.StatusCode(), "another provider is a distinct identity: %s", other.Response.Body())
+
+	mini := create(`{"model_name":"gpt-4o-mini","provider":"openai"}`)
+	require.Equal(t, fasthttp.StatusOK, mini.Response.StatusCode(), "resp=%s", mini.Response.Body())
+	var miniCreated struct {
+		ModelConfig struct {
+			ID string `json:"id"`
+		} `json:"model_config"`
+	}
+	require.NoError(t, json.Unmarshal(mini.Response.Body(), &miniCreated))
+
+	rename := newTestRequestCtx(`{"model_name":"GPT-4O"}`)
+	rename.SetUserValue("mc_id", miniCreated.ModelConfig.ID)
+	handler.updateModelConfig(rename)
+	require.Equal(t, fasthttp.StatusConflict, rename.Response.StatusCode(), "rename onto an existing canonical name resp=%s", rename.Response.Body())
+
+	same := newTestRequestCtx(`{"model_name":"GPT-4O-MINI"}`)
+	same.SetUserValue("mc_id", miniCreated.ModelConfig.ID)
+	handler.updateModelConfig(same)
+	require.Equal(t, fasthttp.StatusOK, same.Response.StatusCode(), "re-spelling a config's own name is not a collision: %s", same.Response.Body())
+}
+
+// TestModelConfig_RejectsProviderlessBaseAliasCollision: a provider-less config is indexed
+// under its catalog base name, so a provider-less dated alias and its base model share one key.
+// The collision check must use that same key, which only the governance store (with the
+// catalog) knows, rather than the catalog-independent spelling.
+func TestModelConfig_RejectsProviderlessBaseAliasCollision(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &modelConfigTestGovernanceManager{store: store}}
+
+	base := newTestRequestCtx(`{"model_name":"gpt-4o","budgets":[{"max_limit":1,"reset_duration":"1h"}]}`)
+	handler.createModelConfig(base)
+	require.Equal(t, fasthttp.StatusOK, base.Response.StatusCode(), "resp=%s", base.Response.Body())
+
+	dated := newTestRequestCtx(`{"model_name":"gpt-4o-2024-08-06"}`)
+	handler.createModelConfig(dated)
+	require.Equal(t, fasthttp.StatusConflict, dated.Response.StatusCode(), "a provider-less dated alias shares the base model's key: %s", dated.Response.Body())
+	assert.Contains(t, string(dated.Response.Body()), "gpt-4o")
+
+	scoped := newTestRequestCtx(`{"model_name":"gpt-4o-2024-08-06","provider":"openai"}`)
+	handler.createModelConfig(scoped)
+	require.Equal(t, fasthttp.StatusOK, scoped.Response.StatusCode(), "a provider-scoped dated alias keeps its own key: %s", scoped.Response.Body())
 }
 
 // TestCreateVirtualKeyWithNullContentLoggingInherits pins the create contract the OpenAPI schema

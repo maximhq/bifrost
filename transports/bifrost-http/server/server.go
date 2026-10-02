@@ -127,6 +127,7 @@ type ServerCallbacks interface {
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
 	ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error)
+	ModelConfigIndexKey(model string, provider *string) string
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
@@ -982,6 +983,16 @@ func (s *BifrostHTTPServer) RemoveCustomer(ctx context.Context, id string) error
 	}
 	governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(ctx, id)
 	return nil
+}
+
+// ModelConfigIndexKey reports the spelling the governance store indexes a model config
+// under (see LocalGovernanceStore.ModelConfigIndexKey); without the governance plugin it
+// falls back to the catalog-independent canonical name.
+func (s *BifrostHTTPServer) ModelConfigIndexKey(model string, provider *string) string {
+	if governancePlugin, err := s.getGovernancePlugin(); err == nil && governancePlugin != nil {
+		return governancePlugin.GetGovernanceStore().ModelConfigIndexKey(model, provider)
+	}
+	return governance.CanonicalModelConfigName(model, provider)
 }
 
 // ReloadModelConfig reloads a model config from the database into in-memory store
