@@ -378,6 +378,11 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction
 				copy.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction = &copyAction
 			}
+
+			if original.ResponsesToolMessage.Action.ResponsesToolCallActionStr != nil {
+				copyAction := *original.ResponsesToolMessage.Action.ResponsesToolCallActionStr
+				copy.ResponsesToolMessage.Action.ResponsesToolCallActionStr = &copyAction
+			}
 		}
 
 		if original.ResponsesToolMessage.Caller != nil {
