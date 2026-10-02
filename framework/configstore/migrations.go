@@ -521,6 +521,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vk_provider_config_provider_and_key_indexes"}, run: migrationAddVKProviderConfigProviderAndKeyIndexes},
 	{IDs: []string{"add_virtual_keys_created_at_id_index"}, run: migrationAddVirtualKeysCreatedAtIDIndex},
 	{IDs: []string{"add_batch_jobs_due_index"}, run: migrationAddBatchJobsDueIndex},
+	{IDs: []string{"make_mcp_oauth_flows_state_unique"}, run: migrationMakeMCPOauthFlowsStateUnique},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -12551,19 +12552,15 @@ func migrationCreateMCPOauthFlowsTable(ctx context.Context, db *gorm.DB, logger 
 			// 1) Create mcp_oauth_flows if it doesn't already exist. Wholly
 			// new as of this migration, same as mcp_oauth_tokens before it —
 			// this check is normally true on every deployment that reaches
-			// this step. TableMCPOauthFlow.State deliberately carries a
-			// plain (non-unique) index in its struct tag rather than
-			// uniqueIndex: CreateTable would otherwise build a unique index
-			// as part of table creation, before the backfill in step 2 runs.
-			// Step 3 below adds the real unique index after the backfill
-			// instead — the same create-after-backfill ordering
-			// migrationMergeOauthTokenTables needed for its partial unique
-			// indexes, applied here even though (unlike that migration) a
-			// real collision isn't expected: oauth_user_sessions.state
-			// already carries its own uniqueIndex today, so a straight copy
-			// of already-distinct values into an empty destination table
-			// can't collide against itself. Applied anyway rather than
-			// relying on that reasoning holding forever.
+			// this step. TableMCPOauthFlow.State now declares
+			// uniqueIndex:idx_mcp_oauth_flows_state, so CreateTable builds the
+			// unique index before the backfill in step 2. That cannot collide:
+			// oauth_user_sessions.state carries its own uniqueIndex, so a
+			// straight copy of already-distinct values into an empty table
+			// stays distinct. The tag used to declare a plain index under the
+			// same name, which turned step 3 into a no-op and left state
+			// non-unique; migrationMakeMCPOauthFlowsStateUnique repairs those
+			// databases.
 			if !mg.HasTable(&tables.TableMCPOauthFlow{}) {
 				logger.Info("[configstore] %s: creating table TableMCPOauthFlow", migrationName)
 				if err := mg.CreateTable(&tables.TableMCPOauthFlow{}); err != nil {
@@ -12600,9 +12597,8 @@ func migrationCreateMCPOauthFlowsTable(ctx context.Context, db *gorm.DB, logger 
 				}
 			}
 
-			// 3) Unique index on state, created after the backfill above —
-			// see the field comment on TableMCPOauthFlow.State and the note
-			// in step 1 for why this can't come from the struct tag.
+			// 3) Unique index on state. A no-op when CreateTable already built
+			// it from the struct tag; see the note in step 1.
 			if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_oauth_flows_state ON mcp_oauth_flows (state)`).Error; err != nil {
 				return fmt.Errorf("create unique index on mcp_oauth_flows.state: %w", err)
 			}
@@ -14836,6 +14832,172 @@ func batchJobsDueIndexMigration(ctx context.Context, migrationName string) *migr
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: it cleared next_check_at on accounted and unpriceable batch jobs, which dropping idx_batch_jobs_due cannot restore", migrationName)
+		},
+	}
+}
+
+// oauthFlowStateIndex is the lookup index on mcp_oauth_flows.state, and
+// oauthFlowStateTempIndex the UNIQUE index built beside it before the swap.
+const (
+	oauthFlowStateIndex     = "idx_mcp_oauth_flows_state"
+	oauthFlowStateTempIndex = "idx_mcp_oauth_flows_state_unique"
+)
+
+// indexState describes one index as the state-uniqueness migration needs it.
+type indexState struct {
+	exists bool
+	unique bool
+	valid  bool
+}
+
+// describeIndex reports whether index name exists on table, whether it is
+// UNIQUE, and (on Postgres) whether it is valid. SQLite indexes are always valid.
+func describeIndex(tx *gorm.DB, table, name string) (indexState, error) {
+	if tx.Dialector.Name() == "postgres" {
+		var row struct {
+			Count  int64
+			Unique bool
+			Valid  bool
+		}
+		err := tx.Raw(`
+			SELECT COUNT(*) AS count, COALESCE(bool_and(pi.indisunique), false) AS "unique", COALESCE(bool_and(pi.indisvalid), false) AS valid
+			FROM pg_class pc
+			JOIN pg_index pi ON pi.indrelid = pc.oid
+			JOIN pg_class ic ON ic.oid = pi.indexrelid
+			WHERE pc.relname = ? AND ic.relname = ? AND pg_catalog.pg_table_is_visible(pc.oid)
+		`, table, name).Scan(&row).Error
+		return indexState{exists: row.Count > 0, unique: row.Unique, valid: row.Valid}, err
+	}
+	var rows []struct {
+		Name   string
+		Unique int
+	}
+	if err := tx.Raw(fmt.Sprintf("PRAGMA index_list(%s)", table)).Scan(&rows).Error; err != nil {
+		return indexState{}, err
+	}
+	for _, r := range rows {
+		if r.Name == name {
+			return indexState{exists: true, unique: r.Unique == 1, valid: true}, nil
+		}
+	}
+	return indexState{}, nil
+}
+
+// renameOauthFlowStateTempIndex gives the built UNIQUE temp index the final
+// name. Postgres renames it in place, a catalog-only change. SQLite has no
+// ALTER INDEX ... RENAME, so it builds the final UNIQUE index (cheap: flows are
+// short-lived and few) and drops the temp one.
+func renameOauthFlowStateTempIndex(tx *gorm.DB) error {
+	if tx.Dialector.Name() == "postgres" {
+		return tx.Exec(fmt.Sprintf("ALTER INDEX %s RENAME TO %s", oauthFlowStateTempIndex, oauthFlowStateIndex)).Error
+	}
+	if err := tx.Exec(fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON mcp_oauth_flows (state)", oauthFlowStateIndex)).Error; err != nil {
+		return err
+	}
+	return tx.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", oauthFlowStateTempIndex)).Error
+}
+
+// keepNonUniqueOauthFlowState is the duplicate fallback: it logs the duplicate
+// count, drops any leftover temp index, and makes sure the non-unique lookup
+// index still exists, so OAuth callbacks keep an indexed lookup by state.
+func keepNonUniqueOauthFlowState(tx *gorm.DB, logger schemas.Logger, dups int64) error {
+	logger.Warn("[configstore] mcp_oauth_flows has %d duplicated state values; keeping the non-unique %s. To enforce uniqueness, remove the duplicated rows, delete the migrations row with id make_mcp_oauth_flows_state_unique, and restart: the migration then runs again.",
+		dups, oauthFlowStateIndex)
+	if err := dropIndexConcurrently(tx, "mcp_oauth_flows", oauthFlowStateTempIndex); err != nil {
+		return fmt.Errorf("drop index %s: %w", oauthFlowStateTempIndex, err)
+	}
+	return ensureIndexConcurrently(tx, "mcp_oauth_flows", oauthFlowStateIndex, "state", false)
+}
+
+// makeOauthFlowStateUnique converts idx_mcp_oauth_flows_state to UNIQUE without
+// blocking writes: it builds a UNIQUE temp index concurrently, drops the old
+// index, and renames the temp one into place. Each step is detected on re-entry,
+// so a run interrupted between the drop and the rename finishes on the next start.
+// Before checking for duplicates it deletes the expired pending or claiming
+// copies of duplicated states, rows DeleteExpiredOauthUserSessions would delete
+// anyway. Any duplicate left after that keeps the non-unique index (see
+// keepNonUniqueOauthFlowState) instead of failing startup.
+func makeOauthFlowStateUnique(tx *gorm.DB, logger schemas.Logger) error {
+	const table = "mcp_oauth_flows"
+	if !tx.Migrator().HasTable(table) {
+		return nil
+	}
+	final, err := describeIndex(tx, table, oauthFlowStateIndex)
+	if err != nil {
+		return fmt.Errorf("inspect index %s: %w", oauthFlowStateIndex, err)
+	}
+	if final.exists && final.unique && final.valid {
+		return dropIndexConcurrently(tx, "mcp_oauth_flows", oauthFlowStateTempIndex)
+	}
+	temp, err := describeIndex(tx, table, oauthFlowStateTempIndex)
+	if err != nil {
+		return fmt.Errorf("inspect index %s: %w", oauthFlowStateTempIndex, err)
+	}
+	if !final.exists && temp.exists && temp.unique && temp.valid {
+		return renameOauthFlowStateTempIndex(tx)
+	}
+
+	if err := tx.Exec(`DELETE FROM mcp_oauth_flows
+		WHERE expires_at < ? AND status IN ('pending', 'claiming')
+		AND state IN (SELECT state FROM mcp_oauth_flows GROUP BY state HAVING COUNT(*) > 1)`, time.Now()).Error; err != nil {
+		return fmt.Errorf("delete expired duplicate oauth flows: %w", err)
+	}
+	dups, err := countDuplicateHashes(tx, table, "state")
+	if err != nil {
+		return fmt.Errorf("count duplicate mcp_oauth_flows.state: %w", err)
+	}
+	if dups > 0 {
+		return keepNonUniqueOauthFlowState(tx, logger, dups)
+	}
+	if buildErr := ensureIndexConcurrently(tx, table, oauthFlowStateTempIndex, "state", true); buildErr != nil {
+		// A concurrent writer can add a duplicate between the count and the build.
+		// Only a real duplicate justifies the fallback.
+		dups, err = countDuplicateHashes(tx, table, "state")
+		if err != nil || dups == 0 {
+			return fmt.Errorf("create unique index %s: %w", oauthFlowStateTempIndex, buildErr)
+		}
+		return keepNonUniqueOauthFlowState(tx, logger, dups)
+	}
+	if final.exists {
+		if err := dropIndexConcurrently(tx, "mcp_oauth_flows", oauthFlowStateIndex); err != nil {
+			return fmt.Errorf("drop index %s: %w", oauthFlowStateIndex, err)
+		}
+	}
+	return renameOauthFlowStateTempIndex(tx)
+}
+
+// migrationMakeMCPOauthFlowsStateUnique makes mcp_oauth_flows.state UNIQUE on
+// databases where it is not. The state column's struct tag used to declare a
+// plain index named idx_mcp_oauth_flows_state, so CreateTable built it
+// non-unique and the later CREATE UNIQUE INDEX IF NOT EXISTS of the same name in
+// migrationCreateMCPOauthFlowsTable was a no-op: one CSRF state could map to
+// more than one flow. See makeOauthFlowStateUnique for the concurrent swap and
+// the duplicate fallback. Rollback refuses with an error: the migration deletes
+// expired duplicate pending/claiming flows and swaps in a UNIQUE index, and
+// neither can be restored.
+func migrationMakeMCPOauthFlowsStateUnique(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "make_mcp_oauth_flows_state_unique"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, mcpOauthFlowsStateUniqueMigration(ctx, migrationName, logger)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// mcpOauthFlowsStateUniqueMigration builds the migration applied by
+// migrationMakeMCPOauthFlowsStateUnique, so tests exercise the same Migrate and
+// Rollback callbacks the upgrade runs.
+func mcpOauthFlowsStateUniqueMigration(ctx context.Context, migrationName string, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return makeOauthFlowStateUnique(tx.WithContext(ctx), logger)
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: it deletes expired duplicate pending/claiming oauth flows and replaces the state index with a UNIQUE one, and neither can be restored", migrationName)
 		},
 	}
 }

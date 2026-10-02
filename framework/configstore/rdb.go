@@ -6238,23 +6238,139 @@ func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMod
 	}
 }
 
+// modelConfigScopeIDChunkSize is how many scope ids GetModelConfigsByScopeAndScopeIDs
+// reads per statement. The id list itself binds as one parameter; the chunk bounds
+// how many configs one read can return before its relations are loaded.
+var modelConfigScopeIDChunkSize = 1000
+
+// modelConfigPreloadBatchSize is the most model configs whose relations are loaded
+// in one statement, keeping each relation read well under the 30,000-parameter
+// budget even on dialects where the id list is not bound as a single parameter.
+var modelConfigPreloadBatchSize = 10000
+
 // GetModelConfigsByScopeAndScopeIDs retrieves model configs for a specific scope limited to the given scope IDs.
 // Pass tx to read through a caller's transaction and see its uncommitted writes.
 func (s *RDBConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, tx ...*gorm.DB) ([]tables.TableModelConfig, error) {
 	if len(scopeIDs) == 0 {
 		return nil, nil
 	}
+	// A repeated id would land in two chunks and return its configs twice; one
+	// IN list over the whole slice returned each row once. Keep first-seen order.
+	seen := make(map[string]struct{}, len(scopeIDs))
+	unique := make([]string, 0, len(scopeIDs))
+	for _, id := range scopeIDs {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	scopeIDs = unique
 	txDB := s.DB()
 	if len(tx) > 0 && tx[0] != nil {
 		txDB = tx[0]
 	}
+	db := txDB.WithContext(ctx)
 	var modelConfigs []tables.TableModelConfig
-	if err := txDB.WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").
-		Where("scope = ? AND scope_id IN ?", scope, scopeIDs).
-		Find(&modelConfigs).Error; err != nil {
-		return nil, err
+	// scope_id binds as one parameter per chunk, and the relations load below in
+	// batches, so neither the id list nor a large result can push a statement past
+	// the dialect's bind-parameter limit. Rows keep the per-chunk read order.
+	for start := 0; start < len(scopeIDs); start += modelConfigScopeIDChunkSize {
+		end := min(start+modelConfigScopeIDChunkSize, len(scopeIDs))
+		inClause, arg := queryscope.InStrings(db, "scope_id", scopeIDs[start:end])
+		var chunk []tables.TableModelConfig
+		if err := db.Where("scope = ?", scope).Where(inClause, arg).Find(&chunk).Error; err != nil {
+			return nil, err
+		}
+		for bStart := 0; bStart < len(chunk); bStart += modelConfigPreloadBatchSize {
+			bEnd := min(bStart+modelConfigPreloadBatchSize, len(chunk))
+			if err := loadModelConfigRelations(db, chunk[bStart:bEnd]); err != nil {
+				return nil, err
+			}
+		}
+		modelConfigs = append(modelConfigs, chunk...)
 	}
 	return modelConfigs, nil
+}
+
+// loadModelConfigRelations attaches Budgets, the legacy Budget and RateLimit to
+// configs, exactly what Preload("Budgets").Preload("Budget").Preload("RateLimit")
+// loads, but binds each id list as a single parameter instead of one per row. It
+// then re-applies the calendar-alignment stamp AfterFind would have applied had
+// the budgets been present when the configs were scanned.
+func loadModelConfigRelations(db *gorm.DB, configs []tables.TableModelConfig) error {
+	if len(configs) == 0 {
+		return nil
+	}
+	configIDs := make([]string, 0, len(configs))
+	var budgetIDs, rateLimitIDs []string
+	seenBudget := make(map[string]struct{})
+	seenRateLimit := make(map[string]struct{})
+	for i := range configs {
+		configIDs = append(configIDs, configs[i].ID)
+		if id := configs[i].BudgetID; id != nil {
+			if _, ok := seenBudget[*id]; !ok {
+				seenBudget[*id] = struct{}{}
+				budgetIDs = append(budgetIDs, *id)
+			}
+		}
+		if id := configs[i].RateLimitID; id != nil {
+			if _, ok := seenRateLimit[*id]; !ok {
+				seenRateLimit[*id] = struct{}{}
+				rateLimitIDs = append(rateLimitIDs, *id)
+			}
+		}
+	}
+
+	var owned []tables.TableBudget
+	if err := db.Where(queryscope.InStrings(db, "model_config_id", configIDs)).Find(&owned).Error; err != nil {
+		return err
+	}
+	ownedByConfig := make(map[string][]tables.TableBudget, len(configs))
+	for _, b := range owned {
+		if b.ModelConfigID != nil {
+			ownedByConfig[*b.ModelConfigID] = append(ownedByConfig[*b.ModelConfigID], b)
+		}
+	}
+
+	legacyBudgets := make(map[string]tables.TableBudget, len(budgetIDs))
+	if len(budgetIDs) > 0 {
+		var rows []tables.TableBudget
+		if err := db.Where(queryscope.InStrings(db, "id", budgetIDs)).Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, b := range rows {
+			legacyBudgets[b.ID] = b
+		}
+	}
+
+	rateLimits := make(map[string]tables.TableRateLimit, len(rateLimitIDs))
+	if len(rateLimitIDs) > 0 {
+		var rows []tables.TableRateLimit
+		if err := db.Where(queryscope.InStrings(db, "id", rateLimitIDs)).Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, rl := range rows {
+			rateLimits[rl.ID] = rl
+		}
+	}
+
+	for i := range configs {
+		mc := &configs[i]
+		mc.Budgets = ownedByConfig[mc.ID]
+		if mc.BudgetID != nil {
+			if b, ok := legacyBudgets[*mc.BudgetID]; ok {
+				mc.Budget = &b
+			}
+		}
+		if mc.RateLimitID != nil {
+			if rl, ok := rateLimits[*mc.RateLimitID]; ok {
+				mc.RateLimit = &rl
+			}
+		}
+		tables.StampCalendarAlignment(mc.CalendarAligned, mc.Budgets, nil)
+	}
+	return nil
 }
 
 // GetProviderGovernanceModelConfigs retrieves the wildcard "all models on a provider" configs
