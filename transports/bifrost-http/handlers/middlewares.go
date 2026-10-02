@@ -149,7 +149,7 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					if forwarded := clientForwardedIP(ctx); forwarded != "" {
 						logBuilder = logBuilder.Str("http.forwarded_for", forwarded)
 					}
-					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyExportTraceID).(string); ok && traceID != "" {
 						logBuilder = logBuilder.Str("trace_id", traceID)
 					}
 					// Emit the request ID alongside trace_id

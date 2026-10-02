@@ -156,6 +156,7 @@ NOT_DIALLED_HOSTS = {
     # Deliberately unresolvable - negative tests assert the failure path.
     "bifrost.invalid": "reserved .invalid TLD; negative-path tests assert it fails to resolve",
     # Documentation links inside descriptions and comments.
+    "ai.google.dev": "doc links in the Gemini thinking folder description, not request URLs",
     "anthropic.com": "doc link in a folder description",
     "www.anthropic.com": "doc link in a folder description",
     "platform.claude.com": "doc link in a folder description",

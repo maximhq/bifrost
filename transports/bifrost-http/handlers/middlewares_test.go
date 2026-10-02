@@ -2449,6 +2449,7 @@ func TestTracingMiddleware_AccessLogIncludesRequestID(t *testing.T) {
 	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
 	ctx.Request.Header.SetMethod("POST")
 	ctx.Request.Header.Set("x-request-id", "req-xyz")
+	ctx.Request.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 
 	// CORS owns the access-log defer and wraps TracingMiddleware, so the trace_id
 	// UserValue and x-request-id header set by tracing are visible when it runs.
@@ -2461,7 +2462,7 @@ func TestTracingMiddleware_AccessLogIncludesRequestID(t *testing.T) {
 	if got := fields["request_id"]; got != "req-xyz" {
 		t.Errorf("access log request_id = %q, want req-xyz", got)
 	}
-	if got := fields["trace_id"]; got == "" {
-		t.Error("expected access log to include a non-empty trace_id")
+	if got := fields["trace_id"]; got != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("access log trace_id = %q, want inherited W3C trace ID", got)
 	}
 }

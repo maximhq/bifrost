@@ -47,7 +47,7 @@ jobs:
           node-version: "25"
 
       - name: Install uv
-        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
           version: "0.11.0"
           python-version: "3.11"
@@ -120,7 +120,7 @@ jobs:
           node-version: "25"
 
       - name: Install uv
-        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
           version: "0.11.0"
           python-version: "3.11"
