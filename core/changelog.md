@@ -1,0 +1,4 @@
+- fix: bill openai service_tier fast at the priority rates and echo it to clients
+- fix: enforce tools_to_execute and tools_to_auto_execute at invocation time in code mode
+- fix: strip Gemini-only fields when falling back from Gemini to OpenAI Responses
+- fix: use the raw request path for auth checks and tidy SSRF helper formatting
