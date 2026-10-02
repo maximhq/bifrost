@@ -37,16 +37,32 @@ var testDialContextOverride func(ctx context.Context, network, addr string) (net
 // Mirrors core/providers/utils/fetch.go's FetchAndEncodeURL: dial-time IP
 // validation (defeats DNS rebinding, unlike a save-time-only check) and
 // redirect re-validation, so a 3xx mid-chain can't hop the guard.
+// oauthDiscoveryTransport is the one guarded transport every OAuth discovery,
+// registration and token-exchange client shares, so connections are reused
+// across flows and idle sockets are bounded instead of accumulating per call.
+var oauthDiscoveryTransport = newOAuthDiscoveryTransport(network.SSRFSafeDialContext(10 * time.Second))
+
+// newOAuthDiscoveryTransport builds a transport around dial with bounded idle
+// connection settings. Production uses the single shared instance above; a
+// test dialer override gets its own transport so it never mutates the shared one.
+func newOAuthDiscoveryTransport(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
+	return &http.Transport{
+		DialContext:         dial,
+		MaxIdleConns:        32,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+}
+
 func newOAuthDiscoveryHTTPClient(timeout time.Duration) *http.Client {
-	dialContext := network.SSRFSafeDialContext(10 * time.Second)
+	transport := oauthDiscoveryTransport
 	if testDialContextOverride != nil {
-		dialContext = testDialContextOverride
+		transport = newOAuthDiscoveryTransport(testDialContextOverride)
 	}
 	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DialContext: dialContext,
-		},
+		Timeout:   timeout,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
 				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)

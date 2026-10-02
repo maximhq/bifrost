@@ -27,7 +27,8 @@ import (
 // unguarded dialer for the whole package. Every test here talks to a
 // loopback-bound httptest.Server standing in for a remote OAuth provider,
 // which the production SSRF guard (newOAuthDiscoveryHTTPClient) correctly
-// refuses to dial. No test in this package exercises that guard itself; it
+// refuses to dial. TestNewOAuthDiscoveryHTTPClientBlocksLoopback clears this
+// override for its own scope to exercise the guard directly; the dialer itself
 // has its own unit coverage in core/network.
 func TestMain(m *testing.M) {
 	testDialContextOverride = (&net.Dialer{}).DialContext
