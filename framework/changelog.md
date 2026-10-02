@@ -1,0 +1,3 @@
+- feat: add ultrafast and priority above-272k pricing columns and bill long-context fast-tier requests at the published rates
+- fix: bill openai service_tier fast at the priority rates
+- chore: upgraded core to v1.11.1
