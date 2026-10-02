@@ -1964,6 +1964,10 @@ func (m *MockConfigStore) GetLatestSidekiqJobByKind(ctx context.Context, kind st
 	return nil, nil
 }
 
+func (m *MockConfigStore) ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error) {
 	return 0, nil
 }

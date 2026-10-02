@@ -978,6 +978,7 @@ type ConfigStore interface {
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
 	// Batch jobs - mutable coordination state for delayed batch accounting
