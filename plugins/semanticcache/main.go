@@ -45,6 +45,7 @@ type Config struct {
 	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                 // Include model in cache key (default: true)
 	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`              // Include provider in cache key (default: true)
 	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`          // Exclude system prompt in cache key (default: false)
+	CacheToolCallResponses       bool   `json:"cache_tool_call_responses,omitempty"`      // Persist responses that carry tool calls (default: false)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for Config so TTL accepts
@@ -679,6 +680,20 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// Now decide whether to actually write. Skipping the write still
 	// leaves cache_debug stamped above.
 	if plugin.shouldSkipCacheWrite(ctx) {
+		return res, nil, nil
+	}
+
+	// A cached tool call is replayed into a later caller's agent loop and
+	// executed under that caller's authority, with arguments the model chose
+	// for someone else's prompt. Unless the operator opted in, such responses
+	// are never persisted. For a stream the accumulator is marked failed so
+	// the chunks already buffered are dropped with it and nothing is flushed.
+	if !plugin.config.CacheToolCallResponses && responseHasToolCalls(res) {
+		if !isStream {
+			plugin.logger.Debug("Skipping cache write (namespace=%s, id=%s): response carries tool calls and cache_tool_call_responses is disabled", plugin.config.VectorStoreNamespace, storageID)
+		} else if plugin.failStreamAccumulator(requestID, storageID, isFinalChunk) {
+			plugin.logger.Debug("Skipping cache write (namespace=%s, id=%s): stream carries tool calls and cache_tool_call_responses is disabled", plugin.config.VectorStoreNamespace, storageID)
+		}
 		return res, nil, nil
 	}
 
