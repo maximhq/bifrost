@@ -5167,6 +5167,119 @@ func TestImagenImageEditSizeRoundtrip(t *testing.T) {
 	assert.Equal(t, "1:1", *imagenReq.Parameters.AspectRatio)
 }
 
+// The image converters run once per retry/fallback attempt on the same Bifrost
+// request. Moving ExtraParams keys into typed fields must not remove them from the
+// request, or the next attempt is sent without them.
+func TestImageRequestExtraParamsSurviveRetries(t *testing.T) {
+	pngPixel, _ := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+	)
+	editInput := &schemas.ImageEditInput{Prompt: "make it pop", Images: []schemas.ImageInput{{Image: pngPixel}}}
+	passthroughOnly := map[string]interface{}{"custom_passthrough": "keep-me"}
+
+	geminiExtraParams := func() map[string]interface{} {
+		return map[string]interface{}{
+			"safetySettings": []interface{}{
+				map[string]interface{}{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+			},
+			"cachedContent":      "cachedContents/abc123",
+			"labels":             map[string]interface{}{"team": "platform"},
+			"custom_passthrough": "keep-me",
+		}
+	}
+	assertGeminiRequest := func(t *testing.T, attempt int, req *gemini.GeminiGenerationRequest) {
+		t.Helper()
+		require.NotNil(t, req, "attempt %d", attempt)
+		require.Len(t, req.SafetySettings, 1, "attempt %d", attempt)
+		assert.Equal(t, "cachedContents/abc123", req.CachedContent, "attempt %d", attempt)
+		assert.Equal(t, map[string]string{"team": "platform"}, req.Labels, "attempt %d", attempt)
+		assert.Equal(t, passthroughOnly, req.GetExtraParams(), "attempt %d", attempt)
+	}
+
+	t.Run("gemini_generation", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Vertex,
+			Model:    "gemini-3.1-flash-image-preview",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params:   &schemas.ImageGenerationParameters{ExtraParams: geminiExtraParams()},
+		}
+		for attempt := 1; attempt <= 3; attempt++ {
+			assertGeminiRequest(t, attempt, gemini.ToGeminiImageGenerationRequest(bifrostReq))
+		}
+		assert.Equal(t, geminiExtraParams(), bifrostReq.Params.ExtraParams)
+	})
+
+	t.Run("gemini_edit", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostImageEditRequest{
+			Provider: schemas.Vertex,
+			Model:    "gemini-3.1-flash-image-preview",
+			Input:    editInput,
+			Params:   &schemas.ImageEditParameters{ExtraParams: geminiExtraParams()},
+		}
+		for attempt := 1; attempt <= 3; attempt++ {
+			assertGeminiRequest(t, attempt, gemini.ToGeminiImageEditRequest(bifrostReq))
+		}
+		assert.Equal(t, geminiExtraParams(), bifrostReq.Params.ExtraParams)
+	})
+
+	t.Run("imagen_generation", func(t *testing.T) {
+		extraParams := func() map[string]interface{} {
+			return map[string]interface{}{"personGeneration": "allow_adult", "addWatermark": false, "custom_passthrough": "keep-me"}
+		}
+		bifrostReq := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Vertex,
+			Model:    "imagen-4.0-generate-001",
+			Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+			Params:   &schemas.ImageGenerationParameters{ExtraParams: extraParams()},
+		}
+		for attempt := 1; attempt <= 3; attempt++ {
+			req := gemini.ToImagenImageGenerationRequest(bifrostReq)
+			require.NotNil(t, req, "attempt %d", attempt)
+			require.NotNil(t, req.Parameters.PersonGeneration, "attempt %d", attempt)
+			assert.Equal(t, "allow_adult", *req.Parameters.PersonGeneration, "attempt %d", attempt)
+			require.NotNil(t, req.Parameters.AddWatermark, "attempt %d", attempt)
+			assert.False(t, *req.Parameters.AddWatermark, "attempt %d", attempt)
+			assert.Equal(t, passthroughOnly, req.GetExtraParams(), "attempt %d", attempt)
+		}
+		assert.Equal(t, extraParams(), bifrostReq.Params.ExtraParams)
+	})
+
+	t.Run("imagen_edit", func(t *testing.T) {
+		extraParams := func() map[string]interface{} {
+			return map[string]interface{}{"maskMode": "MASK_MODE_BACKGROUND", "guidanceScale": 60, "custom_passthrough": "keep-me"}
+		}
+		bifrostReq := &schemas.BifrostImageEditRequest{
+			Provider: schemas.Vertex,
+			Model:    "imagen-3.0-capability-001",
+			Input:    editInput,
+			Params:   &schemas.ImageEditParameters{ExtraParams: extraParams()},
+		}
+		for attempt := 1; attempt <= 3; attempt++ {
+			req := gemini.ToImagenImageEditRequest(bifrostReq)
+			require.NotNil(t, req, "attempt %d", attempt)
+			require.Len(t, req.Instances, 1, "attempt %d", attempt)
+			refs := req.Instances[0].ReferenceImages
+			require.Len(t, refs, 2, "attempt %d: want the raw image and a mask reference", attempt)
+			require.NotNil(t, refs[1].MaskImageConfig, "attempt %d", attempt)
+			assert.Equal(t, "MASK_MODE_BACKGROUND", refs[1].MaskImageConfig.MaskMode, "attempt %d", attempt)
+			require.NotNil(t, req.Parameters.GuidanceScale, "attempt %d", attempt)
+			assert.Equal(t, 60, *req.Parameters.GuidanceScale, "attempt %d", attempt)
+			assert.Equal(t, passthroughOnly, req.GetExtraParams(), "attempt %d", attempt)
+		}
+		assert.Equal(t, extraParams(), bifrostReq.Params.ExtraParams)
+	})
+}
+
+func TestToGeminiImageGenerationRequestNilParams(t *testing.T) {
+	req := gemini.ToGeminiImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Vertex,
+		Model:    "gemini-3.1-flash-image-preview",
+		Input:    &schemas.ImageGenerationInput{Prompt: "test"},
+	})
+	require.NotNil(t, req)
+	assert.Empty(t, req.GetExtraParams())
+}
+
 func TestWebSearchOptionsMapsToGoogleSearchTool(t *testing.T) {
 	baseReq := func(params *schemas.ChatParameters) *schemas.BifrostChatRequest {
 		return &schemas.BifrostChatRequest{
