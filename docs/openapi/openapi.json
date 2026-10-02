@@ -112643,6 +112643,12 @@
             "type": "boolean",
             "default": false,
             "description": "Whether the client is intentionally disabled.\nWhen true, the client has no active connection or workers and its tools are not available for inference.\n"
+          },
+          "require_public_target": {
+            "type": "boolean",
+            "readOnly": true,
+            "default": false,
+            "description": "Server-set. True when the client was registered over the management API\nwith no admin credential check (dashboard auth unconfigured). Every\nconnection to the MCP server (initial, reconnect, per-call) must then\nresolve to a public address. Ignored in create/update request bodies\nand never cleared once set.\n"
           }
         }
       },

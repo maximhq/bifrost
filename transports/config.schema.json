@@ -5957,6 +5957,11 @@
           "description": "Only meaningful for connection_type 'http': whether this client maintains one persistent connection reused across every caller (true) or connects fresh per call (false, the default for newly created clients). SSE and STDIO always behave as sticky regardless of this field.",
           "default": false
         },
+        "require_public_target": {
+          "type": "boolean",
+          "description": "Server-managed. Set to true when the client was registered over the management API with no admin credential check; every connection to the MCP server (initial, reconnect, per-call) must then resolve to a public address. Once stored as true it is never cleared by the API or by config.json reconciliation; declaring it true here is honored.",
+          "default": false
+        },
         "tool_pricing": {
           "type": "object",
           "description": "Tool pricing map (tool name to cost per execution)",
