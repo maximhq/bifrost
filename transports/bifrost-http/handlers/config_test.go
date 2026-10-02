@@ -378,6 +378,30 @@ func TestCheckURLAccessibility_DoesNotReflectTransportErrors(t *testing.T) {
 	assert.Equal(t, "url is not reachable", err.Error())
 }
 
+// TestUpdateConfig_RejectsOAuthModeWithoutIssuerURL pins the HTTP side of the issuer_url
+// rule the OpenAPI description states: enabling issuance over PUT /api/config without a
+// pinned issuer is refused with 400 and names the field. The startup side (a config.json
+// doing the same fails validation at boot) is pinned by
+// TestLoadConfig_OAuthDiscoveryWithoutIssuerURLFailsBoot in lib.
+func TestUpdateConfig_RejectsOAuthModeWithoutIssuerURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	// The shared fixture pins an issuer so the issuance tests clear this rule; this test is
+	// about the rule itself, so start from a headers-mode config with no issuer stored.
+	cfg.ClientConfig.OAuth2ServerConfig = nil
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	for _, mode := range []string{"both", "oauth"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"mcp_server_auth_mode":"` + mode + `"}}`)
+			h.updateConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), "issuer_url")
+		})
+	}
+}
+
 // TestUpdateConfig_RejectsFileURLsOverAPI pins the API-side rule for all three
 // catalog URLs: PUT /api/config answers 400 and persists nothing.
 func TestUpdateConfig_RejectsFileURLsOverAPI(t *testing.T) {
