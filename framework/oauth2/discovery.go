@@ -25,6 +25,15 @@ import (
 // set it.
 var testDialContextOverride func(ctx context.Context, network, addr string) (net.Conn, error)
 
+// SetDiscoveryDialContextForTests overrides the dialer behind every OAuth
+// discovery, registration and token-exchange client. Test-only: other packages
+// whose tests stand up loopback-bound OAuth servers call it from their TestMain,
+// the same way core/mcp exposes SetDialContextForTests. Pass nil to restore the
+// guarded dialer.
+func SetDiscoveryDialContextForTests(dial func(ctx context.Context, network, addr string) (net.Conn, error)) {
+	testDialContextOverride = dial
+}
+
 // newOAuthDiscoveryHTTPClient builds an SSRF-hardened *http.Client for the OAuth
 // discovery/registration/token-exchange chain. Only the first request in that
 // chain targets an admin-supplied URL (an MCP client's connection_string) -
