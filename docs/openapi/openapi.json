@@ -94162,6 +94162,16 @@
               }
             }
           },
+          "403": {
+            "description": "The endpoint allows private-network delivery and the caller is not authenticated (dashboard auth unconfigured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Resource not found",
             "content": {
@@ -107586,7 +107596,7 @@
                         "additionalProperties": false
                       }
                     ],
-                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required for multi-host deployments; single-host can omit it (falls back to the request Host header). Supports env var syntax (\"env.MY_VAR\").\n"
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
                   },
                   "auth_code_ttl": {
                     "type": "integer",
@@ -107926,7 +107936,7 @@
                         "additionalProperties": false
                       }
                     ],
-                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required for multi-host deployments; single-host can omit it (falls back to the request Host header). Supports env var syntax (\"env.MY_VAR\").\n"
+                    "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the JWT iss claim. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A config.json that enables one of those modes without it fails validation at startup; a PUT /api/config that does the same is refused with HTTP 400. The issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax (\"env.MY_VAR\").\n"
                   },
                   "auth_code_ttl": {
                     "type": "integer",
@@ -109952,6 +109962,12 @@
             "type": "boolean",
             "default": false,
             "description": "Whether the client is intentionally disabled.\nWhen true, the client has no active connection or workers and its tools are not available for inference.\n"
+          },
+          "require_public_target": {
+            "type": "boolean",
+            "readOnly": true,
+            "default": false,
+            "description": "Server-set. True when the client was registered over the management API\nwith no admin credential check (dashboard auth unconfigured). Every\nconnection to the MCP server (initial, reconnect, per-call) must then\nresolve to a public address. Ignored in create/update request bodies\nand never cleared once set.\n"
           }
         }
       },

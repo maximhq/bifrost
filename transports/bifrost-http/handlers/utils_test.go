@@ -178,7 +178,7 @@ func TestCheckURLAccessibility_BlocksLoopbackByDefault(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected loopback target to be blocked, got nil error")
 	}
-	if err.Error() != "URL is not accessible" {
+	if err.Error() != "url is not reachable" {
 		t.Fatalf("expected a generic error (no reflected transport detail), got: %v", err)
 	}
 }

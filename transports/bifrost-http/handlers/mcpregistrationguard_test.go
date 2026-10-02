@@ -1,9 +1,14 @@
 package handlers
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -119,5 +124,83 @@ func TestRejectPrivateMCPTargetIfAuthBypassed_STDIOUnaffected(t *testing.T) {
 
 	if rejected {
 		t.Fatal("expected STDIO connection type to be unaffected by this check")
+	}
+}
+
+// TestRejectPrivateMCPTargetIfAuthBypassed_UnauthenticatedLookupFailureRejected
+// proves the registration gate fails closed: a target whose hostname cannot be
+// resolved gives the gate nothing to classify, so an unauthenticated caller is
+// refused rather than let through to the connect path. ".invalid" is reserved
+// (RFC 6761) and never resolves, with or without DNS in the test environment.
+func TestRejectPrivateMCPTargetIfAuthBypassed_UnauthenticatedLookupFailureRejected(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+	rejected := rejectPrivateMCPTargetIfAuthBypassed(ctx, string(schemas.MCPConnectionTypeHTTP), schemas.NewSecretVar("http://does-not-resolve.invalid/mcp"))
+
+	if !rejected {
+		t.Fatal("expected an unresolvable target to be rejected for an unauthenticated caller")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusForbidden, ctx.Response.StatusCode())
+	}
+}
+
+// failingMCPManager is the MCPManager an addMCPClient test gets when the
+// request must be refused before any manager call: every method it could
+// reach reports that it was reached.
+type failingMCPManager struct {
+	MCPManager
+}
+
+func (failingMCPManager) AddMCPClient(context.Context, *schemas.MCPClientConfig) error {
+	return errors.New("manager must not be reached")
+}
+
+func (failingMCPManager) VerifyHeadersConnection(context.Context, *schemas.MCPClientConfig, map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+	return nil, nil, "", errors.New("manager must not be reached")
+}
+
+func (failingMCPManager) RequiresPerCallConnection(*schemas.MCPClientConfig) bool { return false }
+
+// postMCPClient runs addMCPClient against a real sqlite store for an
+// unauthenticated (auth-bypassed) caller and returns the response status.
+func postMCPClient(t *testing.T, body string) (int, string) {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	h := &MCPHandler{
+		store:      &lib.Config{ConfigStore: newRealOAuth2Store(t), ClientConfig: &configstore.ClientConfig{}},
+		mcpManager: failingMCPManager{},
+	}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(body)
+	ctx := initCtx(&req)
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.addMCPClient(ctx)
+	return ctx.Response.StatusCode(), string(ctx.Response.Body())
+}
+
+// TestAddMCPClient_UnknownConnectionTypeRejected proves connection_type is
+// validated up front: a value outside the enum used to skip both
+// registration gates (neither of which matched it) and reach the connect
+// path. It must be a 400 before anything is dialed or stored.
+func TestAddMCPClient_UnknownConnectionTypeRejected(t *testing.T) {
+	status, body := postMCPClient(t, `{"name":"probe","connection_type":"streamable","connection_string":"http://127.0.0.1:1/mcp","auth_type":"none"}`)
+	if status != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status %d for an unknown connection_type, got %d: %s", fasthttp.StatusBadRequest, status, body)
+	}
+	if !strings.Contains(body, "connection_type") {
+		t.Errorf("expected the error to name connection_type, got %s", body)
+	}
+}
+
+// TestAddMCPClient_UnresolvableTargetRejected proves the fail-closed gate is
+// wired into the create path, not just unit-tested in isolation.
+func TestAddMCPClient_UnresolvableTargetRejected(t *testing.T) {
+	status, body := postMCPClient(t, `{"name":"probe","connection_type":"http","connection_string":"http://does-not-resolve.invalid/mcp","auth_type":"none"}`)
+	if status != fasthttp.StatusForbidden {
+		t.Fatalf("expected status %d for an unresolvable target, got %d: %s", fasthttp.StatusForbidden, status, body)
 	}
 }

@@ -9435,6 +9435,106 @@
               ]
             }
           }
+        },
+        {
+          "name": "[EXPECT-400] POST /genai_passthrough/v1@host/x with x-model-provider anthropic - passthrough path guard rejects before upstream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Passthrough path guard: a remainder whose first segment carries '@' would be concatenated",
+                  "// onto the provider BaseURL and could re-point the upstream authority. The router must reject",
+                  "// it with 400 before any provider dispatch - no live provider is involved in this case.",
+                  "pm.test('router rejects the path before dispatch', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('invalid passthrough path');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'request must not have been routed to a provider').to.not.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "anthropic"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1@127.0.0.1/x",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1@127.0.0.1",
+                "x"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] POST /anthropic_passthrough/v1/messages with unknown x-model-provider - passthrough path guard rejects before upstream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// x-model-provider selects the key pool and upstream for the catch-all passthrough, so it",
+                  "// must be a known provider. An unknown value is a 400 from the router, never a dispatch.",
+                  "pm.test('router rejects the unknown provider before dispatch', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('x-model-provider');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "not-a-provider"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Hello via Anthropic passthrough.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          }
         }
       ]
     },
@@ -185961,6 +186061,964 @@
               ]
             }
           }]
+        }
+      ]
+    },
+    {
+      "name": "137. Catalog URL scheme over the API (catalog-url-scheme)",
+      "description": "The pricing, model-parameters, and MCP library catalog URLs accept the file:// scheme only when set in config.json (air-gapped deployments). Over PUT /api/config a file:// value is refused with 400 before any state is touched, for every one of the three fields and regardless of whether the path exists. The openai keyword is only a harness filter label; no provider calls are made and nothing is persisted.",
+      "item": [
+        {
+          "name": "openai catalog-url-scheme: PUT /api/config rejects file:// pricing_url",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The datasheet and catalog URL fields are validated before PUT /api/config touches any state,",
+                  "// so a rejected request leaves the running configuration exactly as it was.",
+                  "pm.test('catalog-url-scheme pricing_url: PUT /api/config answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('catalog-url-scheme pricing_url: the error names where file:// belongs', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.include('config.json');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7}, \"framework_config\": {\"pricing_url\": \"file:///etc/hostname\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai catalog-url-scheme: PUT /api/config rejects file:// model_parameters_url",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The datasheet and catalog URL fields are validated before PUT /api/config touches any state,",
+                  "// so a rejected request leaves the running configuration exactly as it was.",
+                  "pm.test('catalog-url-scheme model_parameters_url: PUT /api/config answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('catalog-url-scheme model_parameters_url: the error names where file:// belongs', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.include('config.json');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7}, \"framework_config\": {\"model_parameters_url\": \"file:///etc/hostname\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai catalog-url-scheme: PUT /api/config rejects file:// mcp_library_url",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The datasheet and catalog URL fields are validated before PUT /api/config touches any state,",
+                  "// so a rejected request leaves the running configuration exactly as it was.",
+                  "pm.test('catalog-url-scheme mcp_library_url: PUT /api/config answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('catalog-url-scheme mcp_library_url: the error names where file:// belongs', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.include('config.json');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7}, \"framework_config\": {\"mcp_library_url\": \"file:///etc/hostname\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai catalog-url-scheme: PUT /api/config rejects relative file:// pricing_url even for a missing path",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The datasheet and catalog URL fields are validated before PUT /api/config touches any state,",
+                  "// so a rejected request leaves the running configuration exactly as it was.",
+                  "pm.test('catalog-url-scheme pricing_url: PUT /api/config answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('catalog-url-scheme pricing_url: the error names where file:// belongs', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.include('config.json');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7}, \"framework_config\": {\"pricing_url\": \"file://./does-not-exist.json\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "137. MCP client registration validation (mcp-registration-validation)",
+      "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an unauthenticated (auth-bypassed) registration whose target hostname cannot be resolved must be refused rather than handed to the connect path. Both run against the harness profile, which has no admin auth configured.",
+      "item": [
+        {
+          "name": "POST /api/mcp/client · unknown connection_type is rejected with 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An unknown connection_type used to match neither registration gate and reach the connect path.",
+                  "pm.test('unknown connection_type is a 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('error names connection_type', function () {",
+                  "  pm.expect(pm.response.text()).to.include('connection_type');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_mcp_enum_probe\",\n  \"connection_type\": \"streamable\",\n  \"connection_string\": \"http://127.0.0.1:1/mcp\",\n  \"auth_type\": \"none\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /api/mcp/client · unresolvable target is refused with 403 (fail closed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// .invalid never resolves (RFC 6761). With no admin auth configured the registration gate",
+                  "// has nothing to classify and must refuse, not fall through to the connect path.",
+                  "pm.test('unresolvable target is a 403 for an unauthenticated caller', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(403);",
+                  "});",
+                  "pm.test('error explains the public-address requirement', function () {",
+                  "  pm.expect(pm.response.text()).to.include('public address');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_mcp_unresolvable_probe\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"http://does-not-resolve.invalid/mcp\",\n  \"auth_type\": \"none\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "138. Provider endpoint updates require dashboard auth (provider-endpoint-updates)",
+      "description": "Management-plane regression for the default harness profile (tests/integrations/python/config.json, dashboard auth unconfigured). A caller admitted without a credential check must not be able to point the global proxy or a provider key's endpoint at a new host, and nothing may persist after the refusal. No provider calls are made; the openai keyword is only a harness filter label. Under a profile with dashboard auth enabled these rows return 401 and fail loudly on purpose - run them against the default profile.",
+      "item": [
+        {
+          "name": "[EXPECT-403] openai provider-endpoint-updates proxy url change refused without dashboard auth",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider-endpoint-updates proxy url change is refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('authenticated admin session');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/proxy-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true,\n  \"type\": \"http\",\n  \"url\": \"http://127.0.0.1:3128\",\n  \"timeout\": 0\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai provider-endpoint-updates proxy url unchanged after refused write",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider-endpoint-updates refused proxy url was not persisted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.url, 'failed: ' + pm.response.text()).to.not.equal('http://127.0.0.1:3128');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/proxy-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai provider-endpoint-updates azure key endpoint refused without dashboard auth",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider-endpoint-updates key endpoint is refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('azure_key_config.endpoint');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/azure/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "azure",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness-endpoint-guard\",\n  \"value\": \"harness-placeholder\",\n  \"weight\": 1,\n  \"azure_key_config\": {\n    \"endpoint\": \"https://harness-endpoint-guard.example.invalid\",\n    \"api_version\": \"2024-02-01\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai provider-endpoint-updates azure key not persisted after refused write",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider-endpoint-updates refused key was not persisted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  var keys = Array.isArray(j) ? j : (j.keys || []);",
+                  "  var leaked = keys.filter(function (k) { return k && k.name === 'harness-endpoint-guard'; });",
+                  "  pm.expect(leaked.length, 'failed: ' + pm.response.text()).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/azure/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "azure",
+                "keys"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "139. MCP OAuth2 server guards: issuance gating, metadata bounds, consent identity (mcp-oauth2-server)",
+      "description": "Pins the hardening of Bifrost's built-in MCP OAuth2 authorization server. The harness profile runs with mcp_server_auth_mode=both and a pinned issuer_url (both are now required together: config load and PUT /api/config reject oauth/both without issuer_url, and in headers mode /oauth2/register, /oauth2/authorize and /oauth2/token return 404 exactly like the discovery documents). Case 1 sends a 2049-char client_name and expects 400 invalid_client_metadata (the cap is 2048; folder 112 pins that 1024 is still accepted). Cases 2-3 register a client and open a consent flow, chaining the flow id and the consent token out of the 302 Location. Case 4 reads the flow with only that token and asserts available_modes offers vk but never session. Case 5 submits mode=session with only the token and expects 401: the anonymous session identity may only be granted by a consenting user Bifrost has authenticated, and the harness profile has no dashboard auth configured, which does not count. Case 6 submits mode=vk with the profile's virtual key and expects 200 with a redirect_url carrying code=, proving virtual-key consent is unaffected. Case 7 fetches the RFC 8414 document with a spoofed Host header and asserts the issuer, token_endpoint and jwks_uri do not follow it and that the response is Cache-Control: no-store. No provider spend.",
+      "item": [
+        {
+          "name": "[EXPECT-400] oauth2 register refuses a 2049-char client_name - mcp oauth2 server",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('mcpOauth2ServerClientId');",
+                  "pm.collectionVariables.unset('mcpOauth2ServerFlow');",
+                  "pm.collectionVariables.unset('mcpOauth2ServerToken');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oversize client_name refused exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('oversize client_name is refused as invalid_client_metadata - mcp oauth2 server', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error).to.equal('invalid_client_metadata');",
+                  "  pm.expect(body.error_description).to.include('client_name');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/oauth2/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_name\": \"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\", \"redirect_uris\": [\"https://harness.example/cb\"], \"token_endpoint_auth_method\": \"none\"}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-201] oauth2 register consent client - mcp oauth2 server",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('register exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(201);",
+                  "});",
+                  "pm.test('client registered - mcp oauth2 server', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.client_id).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('mcpOauth2ServerClientId', body.client_id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/oauth2/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_name\": \"mcp oauth2 server guards\", \"redirect_uris\": [\"https://harness.example/cb\"], \"token_endpoint_auth_method\": \"none\"}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-302] oauth2 authorize opens a consent flow - mcp oauth2 server",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerClientId'), 'register case must run first').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('authorize exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(302);",
+                  "});",
+                  "pm.test('redirect carries the consent flow and token - mcp oauth2 server', function () {",
+                  "  var location = pm.response.headers.get('Location') || '';",
+                  "  pm.expect(location).to.include('/oauth/consent?flow=');",
+                  "  pm.expect(location).not.to.include('error=');",
+                  "  var flow = location.match(/[?&]flow=([^&#]+)/);",
+                  "  var token = location.match(/#t=([^&]+)/);",
+                  "  pm.expect(flow, 'flow missing in redirect').not.to.equal(null);",
+                  "  pm.expect(token, 'token missing in redirect').not.to.equal(null);",
+                  "  pm.collectionVariables.set('mcpOauth2ServerFlow', decodeURIComponent(flow[1]));",
+                  "  pm.collectionVariables.set('mcpOauth2ServerToken', decodeURIComponent(token[1]));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/oauth2/authorize?client_id={{mcpOauth2ServerClientId}}&redirect_uri=https%3A%2F%2Fharness.example%2Fcb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&state=guard"
+          }
+        },
+        {
+          "name": "[EXPECT-200] consent flow detail offers no session mode to an anonymous consenter - mcp oauth2 server",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerFlow'), 'authorize case must run first').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerToken'), 'authorize case must run first').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('flow detail exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('anonymous consenter is offered vk but never session - mcp oauth2 server', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.available_modes).to.be.an('array').that.includes('vk');",
+                  "  pm.expect(body.available_modes).not.to.include('session');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{mcpOauth2ServerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{mcpOauth2ServerFlow}}"
+          }
+        },
+        {
+          "name": "[EXPECT-401] anonymous session-mode consent is refused - mcp oauth2 server",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerFlow'), 'authorize case must run first').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerToken'), 'authorize case must run first').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anonymous session consent exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});",
+                  "pm.test('refusal names the missing identity - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.text()).to.include('authenticated consenting user');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{mcpOauth2ServerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{mcpOauth2ServerFlow}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\":\"session\"}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] virtual-key consent still completes the grant - mcp oauth2 server",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerFlow'), 'authorize case must run first').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerToken'), 'authorize case must run first').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk consent exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('vk consent returns a redirect with an authorization code - mcp oauth2 server', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.redirect_url).to.be.a('string').and.include('code=');",
+                  "  pm.expect(body.redirect_url).to.include('state=guard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{mcpOauth2ServerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{mcpOauth2ServerFlow}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\": \"vk\", \"value\": \"sk-bf-test-key-nocontent\"}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] discovery document pins the configured issuer and is not cacheable - mcp oauth2 server",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('discovery exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('issuer is the configured value, not the request host, and the document is no-store - mcp oauth2 server', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.issuer).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.issuer).not.to.include('evil.example');",
+                  "  pm.expect(body.token_endpoint).not.to.include('evil.example');",
+                  "  pm.expect(body.jwks_uri).not.to.include('evil.example');",
+                  "  pm.expect((pm.response.headers.get('Cache-Control') || '').toLowerCase()).to.include('no-store');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "evil.example"
+              }
+            ],
+            "url": "{{baseUrl}}/.well-known/oauth-authorization-server"
+          }
+        }
+      ]
+    },
+    {
+      "name": "140. Pre-auth request limits: compressed body bounds and malformed realtime SDP (request-limits)",
+      "description": "Three request-size limits on routes reachable before authentication. (1) Request decompression runs ahead of routing and auth; its zstd decoder now caps the declared back-reference window and content size, so a tiny body whose frame header declares a 512 MiB window is answered 413 at once instead of making the process reserve that window. (2) The realtime calls route hands the request body to the SDP parser; an offer with an empty simulcast rid segment is answered with an HTTP status (client error when the offer is rejected, bad gateway when the stubbed upstream is reached) rather than dropping the connection, and the gateway stays up. (3) A liveness probe after the malformed offer confirms the gateway still serves. No case opens with a status-skipping guard: every unexpected status fails the assertion. The zstd case sends a fixture file body so the exact nine bytes reach the server unaltered.",
+      "item": [
+        {
+          "name": "zstd request body declaring an oversized window is rejected with 413 - request-limits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('zstd oversized-window body (request-limits): 413 Payload Too Large', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(413);",
+                  "});",
+                  "pm.test('zstd oversized-window body (request-limits): error names the size bound', function () {",
+                  "  pm.expect(txt.toLowerCase(), 'unexpected body: ' + txt.slice(0, 400)).to.include('window size exceeded');",
+                  "});",
+                  "pm.test('zstd oversized-window body (request-limits): answered quickly, no large reservation', function () {",
+                  "  pm.expect(pm.response.responseTime, 'response took ' + pm.response.responseTime + 'ms').to.be.below(2000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Encoding",
+                "value": "zstd"
+              }
+            ],
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/zstd-window-512mib.zst"
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "malformed realtime SDP offer gets an HTTP response, not a dropped connection - request-limits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Offer carrying an empty simulcast rid segment (a=simulcast:send ;). The request must receive an",
+                  "// HTTP status: the offer is either rejected as a client error (400) or forwarded and answered",
+                  "// by the upstream (401 for the probe secret, 502 when unreachable). The next request pins liveness.",
+                  "pm.test('malformed realtime SDP (request-limits): the gateway answers the request', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.be.oneOf([400, 401, 502]);",
+                  "});",
+                  "// The ek_ bearer is an ephemeral client secret the realtime auth gate admits even with",
+                  "// enforce_auth_on_inference on, so the offer reaches the SDP parser; a 401 here can only be",
+                  "// the upstream's answer to the probe secret, never the gateway's own admission refusal.",
+                  "pm.test('malformed realtime SDP (request-limits): the offer passed the realtime auth gate', function () {",
+                  "  pm.expect(txt, 'gateway refused admission: ' + txt.slice(0, 400)).to.not.include('authentication is required for realtime connections');",
+                  "  pm.expect(pm.response.code, 'gateway refused admission: ' + txt.slice(0, 400)).to.not.eql(403);",
+                  "});",
+                  "pm.test('malformed realtime SDP (request-limits): a rejected offer carries a JSON error body', function () {",
+                  "  if (pm.response.code === 400) {",
+                  "    var body = {};",
+                  "    try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "    pm.expect(body.error && body.error.message, 'unexpected 400 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/sdp"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer ek_request_limits_probe"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic: WMS\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:AAAA\r\na=ice-pwd:AAAAAAAAAAAAAAAAAAAAAA\r\na=fingerprint:sha-256 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\r\na=setup:actpass\r\na=mid:0\r\na=sendrecv\r\na=rtpmap:0 PCMU/8000\r\na=simulcast:send ;\r\n"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime/calls?model=openai/gpt-realtime",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime",
+                "calls"
+              ],
+              "query": [
+                {
+                  "key": "model",
+                  "value": "openai/gpt-realtime"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "gateway still serving after the malformed SDP offer - request-limits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gateway liveness after malformed SDP (request-limits): /health is 200', function () {",
+                  "  pm.expect(pm.response.code, 'gateway did not survive the previous request: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          }
         }
       ]
     }

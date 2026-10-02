@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -464,4 +465,44 @@ func TestWebhookHandlerHeaders(t *testing.T) {
 	reservedCtx := newWebhookRequestCtx(`{"name":"h2","url":"https://93.184.216.34/hook","events":["async_job.completed"],"headers":{"webhook-signature":"x"}}`, nil)
 	handler.createWebhookEndpoint(reservedCtx)
 	assert.Equal(t, fasthttp.StatusBadRequest, reservedCtx.Response.StatusCode())
+}
+
+// TestWebhookHandlerTestDeliveryRequiresAuthForPrivateEndpoints: a caller let
+// through because dashboard auth is unconfigured (BifrostContextKeyAuthBypassed)
+// cannot test-fire an endpoint registered with allow_private_network, since
+// the response reports the private receiver's status. The same caller may
+// still test a public endpoint, and an authenticated caller is unaffected
+// (TestWebhookHandlerTestDelivery).
+func TestWebhookHandlerTestDeliveryRequiresAuthForPrivateEndpoints(t *testing.T) {
+	handler, _ := newWebhookTestHandler(t)
+
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("private receiver must not be contacted for an unauthenticated test fire")
+	}))
+	defer receiver.Close()
+
+	body := fmt.Sprintf(`{"name":"private-fire","url":%q,"events":["async_job.completed"],"allow_private_network":true}`, receiver.URL)
+	createCtx := newWebhookRequestCtx(body, nil)
+	handler.createWebhookEndpoint(createCtx)
+	require.Equal(t, fasthttp.StatusCreated, createCtx.Response.StatusCode(), "body: %s", createCtx.Response.Body())
+	id := decodeJSONResponse(t, createCtx)["endpoint"].(map[string]any)["id"].(string)
+
+	testCtx := newWebhookRequestCtx("", map[string]string{"id": id})
+	testCtx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	handler.testWebhookEndpoint(testCtx)
+	require.Equal(t, fasthttp.StatusForbidden, testCtx.Response.StatusCode(), "body: %s", testCtx.Response.Body())
+	assert.NotContains(t, string(testCtx.Response.Body()), "receiver_status_code")
+
+	// A public endpoint is still testable without auth. The receiver is a
+	// blackholed TEST-NET-1 address with a one-second attempt budget, so the
+	// fire fails quickly, but it is not refused.
+	publicBody := `{"name":"public-fire","url":"https://192.0.2.1/hook","events":["async_job.completed"],"attempt_timeout_seconds":1}`
+	publicCreateCtx := newWebhookRequestCtx(publicBody, nil)
+	handler.createWebhookEndpoint(publicCreateCtx)
+	require.Equal(t, fasthttp.StatusCreated, publicCreateCtx.Response.StatusCode(), "body: %s", publicCreateCtx.Response.Body())
+	publicID := decodeJSONResponse(t, publicCreateCtx)["endpoint"].(map[string]any)["id"].(string)
+	publicCtx := newWebhookRequestCtx("", map[string]string{"id": publicID})
+	publicCtx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	handler.testWebhookEndpoint(publicCtx)
+	assert.Equal(t, fasthttp.StatusOK, publicCtx.Response.StatusCode(), "body: %s", publicCtx.Response.Body())
 }
