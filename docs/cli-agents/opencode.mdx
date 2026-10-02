@@ -15,6 +15,10 @@ If your Allowed Headers are already set to `*`, you can skip this note. If not a
 ## Setup
 
 <Tip>
+Using Bifrost Edge? Edge maintains the OpenCode provider, gateway identity, and allowed models. OpenCode does not currently support Edge subscription pass-through. Without Edge, add the provider manually or launch through Bifrost CLI as described below. See [Supported applications](/edge/supported-applications#supported-application-configuration).
+</Tip>
+
+<Tip>
 OpenCode sends `x-session-affinity` and `x-session-id` on every request, so a session sticks to the provider and key that served it and keeps hitting the same prompt cache, with nothing to configure. See [Session Affinity](/providers/session-affinity).
 </Tip>
 
