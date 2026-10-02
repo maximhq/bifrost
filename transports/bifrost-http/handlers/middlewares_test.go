@@ -911,8 +911,10 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 			ctx.Request.SetRequestURI(route)
 
 			nextCalled := false
+			bypassMarked := false
 			next := func(ctx *fasthttp.RequestCtx) {
 				nextCalled = true
+				bypassMarked, _ = ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
 			}
 
 			middleware := am.APIMiddleware()
@@ -921,6 +923,12 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 
 			if !nextCalled {
 				t.Errorf("Next handler should be called for whitelisted route %s", route)
+			}
+			// A whitelisted request reaches its handler with no credential checked, so
+			// handlers that gate on genuine auth (proxy config, dial targets) must see
+			// it as bypassed rather than as an authenticated admin.
+			if !bypassMarked {
+				t.Errorf("whitelisted route %s must be marked auth-bypassed", route)
 			}
 		})
 	}
