@@ -38,6 +38,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyAttemptTrail:            {},
 	BifrostContextKeyStreamGated:             {},
 	BifrostContextKeyMCPHealthCheckRequest:   {},
+	BifrostContextKeyMCPUnattendedExecution:  {},
 	BifrostContextKeyUpstreamLatency:         {},
 	BifrostContextKeyStreamOverhead:          {},
 	BifrostContextKeyRoutingInfo:             {},
