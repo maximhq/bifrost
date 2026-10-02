@@ -10,6 +10,8 @@ export interface PluginStatus {
 	status: string;
 	logs: string[];
 	types: PluginType[];
+	sha256?: string;
+	loaded_at?: string;
 }
 
 export interface Plugin {
