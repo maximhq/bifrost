@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 
@@ -12,10 +14,14 @@ import (
 )
 
 // mockConfigStoreForProxy embeds the interface so unimplemented methods
-// panic. The rejected-auth-bypassed path never calls any store method, so
-// none need overriding here.
+// panic. The change-aware gate reads the stored proxy config before deciding,
+// so that one lookup answers "nothing stored"; nothing else is reached.
 type mockConfigStoreForProxy struct {
 	configstore.ConfigStore
+}
+
+func (m *mockConfigStoreForProxy) GetProxyConfig(ctx context.Context) (*tables.GlobalProxyConfig, error) {
+	return nil, configstore.ErrNotFound
 }
 
 // TestUpdateProxyConfig_UnauthenticatedWriteRejected proves an unauthenticated
