@@ -185849,6 +185849,163 @@
           }
         }
       ]
+    },
+    {
+      "name": "140. Pre-auth request limits: compressed body bounds and malformed realtime SDP (request-limits)",
+      "description": "Three request-size limits on routes reachable before authentication. (1) Request decompression runs ahead of routing and auth; its zstd decoder now caps the declared back-reference window and content size, so a tiny body whose frame header declares a 512 MiB window is answered 413 at once instead of making the process reserve that window. (2) The realtime calls route hands the request body to the SDP parser; an offer with an empty simulcast rid segment is answered with an HTTP status (client error when the offer is rejected, bad gateway when the stubbed upstream is reached) rather than dropping the connection, and the gateway stays up. (3) A liveness probe after the malformed offer confirms the gateway still serves. No case opens with a status-skipping guard: every unexpected status fails the assertion. The zstd case sends a fixture file body so the exact nine bytes reach the server unaltered.",
+      "item": [
+        {
+          "name": "zstd request body declaring an oversized window is rejected with 413 - request-limits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('zstd oversized-window body (request-limits): 413 Payload Too Large', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(413);",
+                  "});",
+                  "pm.test('zstd oversized-window body (request-limits): error names the size bound', function () {",
+                  "  pm.expect(txt.toLowerCase(), 'unexpected body: ' + txt.slice(0, 400)).to.include('window size exceeded');",
+                  "});",
+                  "pm.test('zstd oversized-window body (request-limits): answered quickly, no large reservation', function () {",
+                  "  pm.expect(pm.response.responseTime, 'response took ' + pm.response.responseTime + 'ms').to.be.below(2000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Encoding",
+                "value": "zstd"
+              }
+            ],
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/zstd-window-512mib.zst"
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "malformed realtime SDP offer gets an HTTP response, not a dropped connection - request-limits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Offer carrying an empty simulcast rid segment (a=simulcast:send ;). The request must receive an",
+                  "// HTTP status: the offer is either rejected as a client error (400) or forwarded and answered",
+                  "// by the upstream (401 for the probe secret, 502 when unreachable). The next request pins liveness.",
+                  "pm.test('malformed realtime SDP (request-limits): the gateway answers the request', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.be.oneOf([400, 401, 502]);",
+                  "});",
+                  "// The ek_ bearer is an ephemeral client secret the realtime auth gate admits even with",
+                  "// enforce_auth_on_inference on, so the offer reaches the SDP parser; a 401 here can only be",
+                  "// the upstream's answer to the probe secret, never the gateway's own admission refusal.",
+                  "pm.test('malformed realtime SDP (request-limits): the offer passed the realtime auth gate', function () {",
+                  "  pm.expect(txt, 'gateway refused admission: ' + txt.slice(0, 400)).to.not.include('authentication is required for realtime connections');",
+                  "  pm.expect(pm.response.code, 'gateway refused admission: ' + txt.slice(0, 400)).to.not.eql(403);",
+                  "});",
+                  "pm.test('malformed realtime SDP (request-limits): a rejected offer carries a JSON error body', function () {",
+                  "  if (pm.response.code === 400) {",
+                  "    var body = {};",
+                  "    try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "    pm.expect(body.error && body.error.message, 'unexpected 400 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/sdp"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer ek_request_limits_probe"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic: WMS\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:AAAA\r\na=ice-pwd:AAAAAAAAAAAAAAAAAAAAAA\r\na=fingerprint:sha-256 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\r\na=setup:actpass\r\na=mid:0\r\na=sendrecv\r\na=rtpmap:0 PCMU/8000\r\na=simulcast:send ;\r\n"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime/calls?model=openai/gpt-realtime",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime",
+                "calls"
+              ],
+              "query": [
+                {
+                  "key": "model",
+                  "value": "openai/gpt-realtime"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "gateway still serving after the malformed SDP offer - request-limits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gateway liveness after malformed SDP (request-limits): /health is 200', function () {",
+                  "  pm.expect(pm.response.code, 'gateway did not survive the previous request: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
