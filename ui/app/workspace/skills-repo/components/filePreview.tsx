@@ -176,6 +176,7 @@ export function FilePreview({
 			<div className="flex h-full flex-col items-center justify-center gap-4 p-6">
 				<FileIcon className="text-muted-foreground h-10 w-10" />
 				<span className="text-muted-foreground max-w-full truncate font-mono text-xs">{fileName}</span>
+				{/* oxlint-disable-next-line jsx-a11y/media-has-caption -- previews of uploaded files have no caption source */}
 				<audio controls src={source.url} className="w-full max-w-md" />
 			</div>
 		);
@@ -185,6 +186,7 @@ export function FilePreview({
 	if (kind === "video" && source.url) {
 		return (
 			<div className="bg-muted/20 flex h-full items-center justify-center p-4">
+				{/* oxlint-disable-next-line jsx-a11y/media-has-caption -- previews of uploaded files have no caption source */}
 				<video controls src={source.url} className="max-h-full max-w-full" />
 			</div>
 		);

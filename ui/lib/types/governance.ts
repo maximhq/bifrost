@@ -109,20 +109,26 @@ export interface VirtualKey {
 	rate_limit_id?: string;
 	is_active: boolean;
 	expires_at?: string | null; // ISO 8601 UTC timestamp; null or absent means never expires
+	// Tri-state: absent/null inherits client.delete_expired_virtual_keys, true/false override it.
+	delete_after_expire?: boolean | null;
 	previous_value_expires_at?: string | null; // When set, the pre-rotation value still authenticates until this time
 	rotated_at?: string | null; // Timestamp of the last value rotation
 	calendar_aligned?: boolean;
 	// When true, every provider is allowed; provider_configs remain optional per-provider overrides
 	allow_all_providers?: boolean;
+	// Tri-state: absent/null inherits client.disable_content_logging, true forces content off for
+	// this key's traffic, false forces it on for the log store.
+	disable_content_logging?: boolean | null;
 	created_at: string;
 	updated_at: string;
-	// The third owner a key can have, alongside a team and a customer. Carried as an id only:
-	// business units are an enterprise table this model does not preload, so there is no
-	// `business_unit` relation to read a name from.
+	// The third owner a key can have, alongside a team and a customer. Business units are an
+	// enterprise table this model does not preload, so its name arrives on `business_unit` below.
 	business_unit_id?: string;
 	// Populated relationships
 	team?: Team;
 	customer?: Customer;
+	// Owning business unit, named by the enterprise build; absent in OSS and when unresolved.
+	business_unit?: { id: string; name: string };
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
 	// Read-only, server-computed: true when the VK is governed by an access profile.
@@ -238,6 +244,8 @@ export interface CreateVirtualKeyRequest {
 	calendar_aligned?: boolean;
 	allow_all_providers?: boolean; // When true, all providers are allowed
 	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
+	disable_content_logging?: boolean; // Omit to inherit the client setting; true forces content off, false forces it on
+	delete_after_expire?: boolean; // Omit to inherit client.delete_expired_virtual_keys; true/false override it; requires expires_at
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -256,6 +264,8 @@ export interface UpdateVirtualKeyRequest {
 	allow_all_providers?: boolean; // When true, all providers are allowed; omit to leave unchanged
 	reset_budget_usage?: boolean;
 	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
+	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
+	delete_after_expire?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged; a value requires an expiry
 }
 
 export interface BulkRotateVirtualKeysRequest {
@@ -617,7 +627,7 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_1080p?: number;
 	output_cost_per_video_per_second_4k?: number;
 	// Other
-	search_context_cost_per_query?: number;
+	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 	inference_geo_us_multiplier?: number;

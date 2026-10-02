@@ -11,6 +11,7 @@ package datasheet
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -88,6 +89,10 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 		case q.High != nil:
 			p.SearchContextCostPerQuery = q.High
 		}
+	}
+	// Older datasheet rows lack web_search_cost_per_request; fall back to the per-query search rate.
+	if p.WebSearchCostPerRequest == nil {
+		p.WebSearchCostPerRequest = p.SearchContextCostPerQuery
 	}
 	return nil
 }
@@ -220,7 +225,9 @@ type Options struct {
 	//
 	// SearchContextCostPerQuery is stored as a single float64, but the upstream datasheet
 	// represents it as a tiered object. See Entry.UnmarshalJSON.
-	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
+	SearchContextCostPerQuery *float64 `json:"search_context_cost_per_query,omitempty"`
+	// WebSearchCostPerRequest prices each server-side web search call (usage.tool_usage.web_search.num_requests).
+	WebSearchCostPerRequest       *float64 `json:"web_search_cost_per_request,omitempty"`
 	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
 	// InputCostPerQuery is the per-query rate rerank models bill on. Cohere and Bedrock both
 	// define a query (a "search unit") as one query against up to 100 document chunks, so a
@@ -633,7 +640,7 @@ func withRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Dur
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		select {
 		case <-ctx.Done():
-			return zero, ctx.Err()
+			return zero, retryAbortErr(ctx, lastErr)
 		default:
 		}
 
@@ -644,7 +651,7 @@ func withRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Dur
 			}
 			select {
 			case <-ctx.Done():
-				return zero, ctx.Err()
+				return zero, retryAbortErr(ctx, lastErr)
 			case <-time.After(backoff):
 			}
 		}
@@ -655,6 +662,15 @@ func withRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Dur
 		lastErr = err
 	}
 	return zero, lastErr
+}
+
+// retryAbortErr keeps the last attempt's error when ctx ends mid-retry, since
+// a bare "context deadline exceeded" hides which URL failed and why.
+func retryAbortErr(ctx context.Context, lastErr error) error {
+	if lastErr == nil {
+		return ctx.Err()
+	}
+	return fmt.Errorf("%w (last attempt: %v)", ctx.Err(), lastErr)
 }
 
 // convertEntryToTablePricing converts a parsed Entry from the upstream
@@ -779,6 +795,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerVideoPerSecond4k:    entry.OutputCostPerVideoPerSecond4k,
 
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
+		WebSearchCostPerRequest:       entry.WebSearchCostPerRequest,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
 		InputCostPerQuery:             entry.InputCostPerQuery,
 		InferenceGeoUSMultiplier:      entry.InferenceGeoUSMultiplier,
@@ -902,6 +919,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerVideoPerSecond4k:    pricing.OutputCostPerVideoPerSecond4k,
 
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
+		WebSearchCostPerRequest:       pricing.WebSearchCostPerRequest,
 		InputCostPerQuery:             pricing.InputCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
 		InferenceGeoUSMultiplier:      pricing.InferenceGeoUSMultiplier,

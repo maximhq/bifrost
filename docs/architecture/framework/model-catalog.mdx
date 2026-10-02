@@ -211,6 +211,7 @@ type PricingEntry struct {
 
     // Costs - Other
     SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
+    WebSearchCostPerRequest       *float64 `json:"web_search_cost_per_request,omitempty"`
     InputCostPerQuery             *float64 `json:"input_cost_per_query,omitempty"`
     CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
     CostPerRequest                *float64 `json:"cost_per_request,omitempty"`

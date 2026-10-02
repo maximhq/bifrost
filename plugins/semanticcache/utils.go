@@ -2,9 +2,12 @@ package semanticcache
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -167,6 +170,39 @@ func int32ToFloat32Embedding(values []int32) []float32 {
 	return embedding
 }
 
+// decodeBase64Embedding decodes a base64-encoded embedding of raw IEEE 754 float32 bytes (little-endian).
+func decodeBase64Embedding(s string) ([]float32, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		b, err = base64.URLEncoding.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("base64 decode failed: %w", err)
+		}
+	}
+	if len(b)%4 != 0 {
+		return nil, fmt.Errorf("base64 embedding byte length %d is not a multiple of 4", len(b))
+	}
+	vals := make([]float32, len(b)/4)
+	for i := range vals {
+		bits := binary.LittleEndian.Uint32(b[i*4 : i*4+4])
+		vals[i] = math.Float32frombits(bits)
+	}
+	return vals, nil
+}
+
+// uint8ToFloat32Embedding promotes a uint8/ubinary embedding to float32 for
+// cosine-similarity search in the semantic cache.
+func uint8ToFloat32Embedding(values []uint8) []float32 {
+	if len(values) == 0 {
+		return nil
+	}
+	embedding := make([]float32, len(values))
+	for i, value := range values {
+		embedding[i] = float32(value)
+	}
+	return embedding
+}
+
 // flattenToFloat32Embedding concatenates a 2D embedding (one inner slice per
 // input chunk) into a single flat []float32. Used when the provider returns
 // per-chunk embeddings that we want to store as a single vector.
@@ -200,6 +236,10 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		metadata["attachments"] = attachments
 	}
 
+	// request_family separates endpoints whose input and params hash the same,
+	// such as chat and responses (issue #7560). It is set after the params so
+	// extra params cannot override it. Stream variants share a family because
+	// "stream" is already in the hash.
 	switch req.RequestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		if req.TextCompletionRequest == nil {
@@ -208,6 +248,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
 			plugin.extractTextCompletionParametersToMetadata(req.TextCompletionRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.TextCompletionRequest
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		if req.ChatRequest == nil {
 			return nil, fmt.Errorf("chat payload is nil")
@@ -215,6 +256,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ChatRequest != nil && req.ChatRequest.Params != nil {
 			plugin.extractChatParametersToMetadata(req.ChatRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ChatCompletionRequest
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		if req.ResponsesRequest == nil {
 			return nil, fmt.Errorf("responses payload is nil")
@@ -222,6 +264,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
 			plugin.extractResponsesParametersToMetadata(req.ResponsesRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ResponsesRequest
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		if req.SpeechRequest == nil {
 			return nil, fmt.Errorf("speech payload is nil")
@@ -229,6 +272,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.SpeechRequest != nil && req.SpeechRequest.Params != nil {
 			plugin.extractSpeechParametersToMetadata(req.SpeechRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.SpeechRequest
 	case schemas.EmbeddingRequest:
 		if req.EmbeddingRequest == nil {
 			return nil, fmt.Errorf("embedding payload is nil")
@@ -236,6 +280,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.EmbeddingRequest != nil && req.EmbeddingRequest.Params != nil {
 			plugin.extractEmbeddingParametersToMetadata(req.EmbeddingRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.EmbeddingRequest
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		if req.TranscriptionRequest == nil {
 			return nil, fmt.Errorf("transcription payload is nil")
@@ -243,6 +288,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil {
 			plugin.extractTranscriptionParametersToMetadata(req.TranscriptionRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.TranscriptionRequest
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 		if req.ImageGenerationRequest == nil {
 			return nil, fmt.Errorf("image generation payload is nil")
@@ -250,6 +296,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil {
 			plugin.extractImageGenerationParametersToMetadata(req.ImageGenerationRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ImageGenerationRequest
 	default:
 		return nil, fmt.Errorf("unsupported request type for semantic caching")
 	}
@@ -687,25 +734,24 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		return normalizeText(req.SpeechRequest.Input.Input)
 	case schemas.EmbeddingRequest:
-		input := req.EmbeddingRequest.Input
-		out := schemas.EmbeddingInput{}
-		if input.Text != nil {
-			ns := normalizeText(*input.Text)
-			out.Text = &ns
-		} else if len(input.Texts) > 0 {
-			arr := make([]string, len(input.Texts))
-			for i, t := range input.Texts {
-				arr[i] = normalizeText(t)
+		// Deep copy contents and normalize text parts; non-text parts are
+		// copied as-is so multimodal inputs participate in cache hashing.
+		src := req.EmbeddingRequest.Input
+		copiedItems := make([]schemas.EmbeddingInputItem, len(src))
+		for i, item := range src {
+			copiedContent := make(schemas.EmbeddingContent, len(item.Content))
+			for j, part := range item.Content {
+				copied := part
+				if part.Type == schemas.EmbeddingContentPartTypeText && part.Text != nil {
+					normalized := normalizeText(*part.Text)
+					copied.Text = &normalized
+				}
+				copiedContent[j] = copied
 			}
-			out.Texts = arr
-		} else if input.Embedding != nil {
-			// Numeric embeddings aren't text-normalizable but must still appear
-			// in the hash payload, so copy the slice to avoid aliasing.
-			out.Embedding = append([]int(nil), input.Embedding...)
-		} else if input.Embeddings != nil {
-			out.Embeddings = append([][]int(nil), input.Embeddings...)
+			// Per-item params change the vector, so they belong in the hash.
+			copiedItems[i] = schemas.EmbeddingInputItem{Content: copiedContent, Params: item.Params}
 		}
-		return out
+		return copiedItems
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return req.TranscriptionRequest.Input
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
@@ -842,7 +888,13 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 	putIfSet(metadata, "max_tokens", params.MaxOutputTokens)
 	putIfSet(metadata, "parallel_tool_calls", params.ParallelToolCalls)
 	putIfSet(metadata, "background", params.Background)
-	putIfSet(metadata, "conversation", params.Conversation)
+	if params.Conversation != nil {
+		if params.Conversation.ResponsesResponseConversationStr != nil {
+			metadata["conversation"] = *params.Conversation.ResponsesResponseConversationStr
+		} else if params.Conversation.ResponsesResponseConversationStruct != nil {
+			metadata["conversation"] = params.Conversation.ResponsesResponseConversationStruct.ID
+		}
+	}
 	putSortedSetIfNonEmpty(metadata, "include", params.Include)
 	putIfSet(metadata, "instructions", params.Instructions)
 	putIfSet(metadata, "max_tool_calls", params.MaxToolCalls)

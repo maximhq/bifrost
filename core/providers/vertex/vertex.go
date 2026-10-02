@@ -34,9 +34,10 @@ import (
 
 type VertexError struct {
 	Error struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Status  string `json:"status"`
+		Code    int                                   `json:"code"`
+		Message string                                `json:"message"`
+		Status  string                                `json:"status"`
+		Details []gemini.GeminiGenerationErrorDetails `json:"details"`
 	} `json:"error"`
 }
 
@@ -138,13 +139,27 @@ func classifyURLSource(rawURL string, isAnthropicFamily bool) urlSourceDispositi
 	}
 }
 
+// vertexCredentialIdentity returns the string that identifies which credentials a key authenticates
+// with: a canonical description of the AWS workload identity config when federation is configured,
+// otherwise the raw auth credentials JSON, or "" for Application Default Credentials. It is the
+// input to getClientKey, so keys with identical credentials share one cached token source.
+func vertexCredentialIdentity(key schemas.Key) string {
+	if key.VertexKeyConfig == nil {
+		return ""
+	}
+	if key.VertexKeyConfig.AWSWorkloadIdentity.IsSet() {
+		return awsWorkloadIdentityCacheIdentity(key.VertexKeyConfig.AWSWorkloadIdentity)
+	}
+	return key.VertexKeyConfig.AuthCredentials.GetValue()
+}
+
 // getClientKey generates a unique key for caching token sources.
-// It uses a hash of the auth credentials for security.
-func getClientKey(authCredentials string) string {
-	if authCredentials == "" {
+// It uses a hash of the credential identity for security.
+func getClientKey(credentialIdentity string) string {
+	if credentialIdentity == "" {
 		return defaultCredentialsCacheKey
 	}
-	hash := sha256.Sum256([]byte(authCredentials))
+	hash := sha256.Sum256([]byte(credentialIdentity))
 	return hex.EncodeToString(hash[:])
 }
 
@@ -153,8 +168,8 @@ func getClientKey(authCredentials string) string {
 // - API returns authentication/authorization errors (401, 403)
 // - Token acquisition fails (tokenSource.Token() error)
 // This forces the next request to re-create the token source from scratch.
-func removeVertexClient(authCredentials string) {
-	clientKey := getClientKey(authCredentials)
+func removeVertexClient(key schemas.Key) {
+	clientKey := getClientKey(vertexCredentialIdentity(key))
 	vertexTokenSourcePool.Delete(clientKey)
 }
 
@@ -201,13 +216,16 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 
 // getAuthTokenSource returns an authenticated token source for Vertex AI API requests.
-// Token sources are cached in vertexTokenSourcePool keyed by a hash of the auth
-// credentials. The Google oauth2.TokenSource handles token refresh and expiry
-// internally, so caching the source is safe and avoids re-parsing credentials
-// on every request.
+// Token sources are cached in vertexTokenSourcePool keyed by a hash of the credential
+// identity (see vertexCredentialIdentity). The Google oauth2.TokenSource handles token
+// refresh and expiry internally, so caching the source is safe and avoids re-parsing
+// credentials on every request.
+//
+// Auth mode precedence: aws_workload_identity (AWS→GCP Workload Identity Federation),
+// then auth_credentials JSON, then Application Default Credentials.
 func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 	authCredentials := key.VertexKeyConfig.AuthCredentials
-	clientKey := getClientKey(authCredentials.GetValue())
+	clientKey := getClientKey(vertexCredentialIdentity(key))
 
 	// Fast path: return cached token source.
 	if cached, ok := vertexTokenSourcePool.Load(clientKey); ok {
@@ -216,12 +234,26 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 
 	// Slow path: create a new token source and cache it.
 	var tokenSource oauth2.TokenSource
-	if authCredentials.GetValue() == "" {
-		creds, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
+	if key.VertexKeyConfig.AWSWorkloadIdentity.IsSet() {
+		ts, err := newAWSFederatedTokenSource(context.Background(), key.VertexKeyConfig.AWSWorkloadIdentity)
 		if err != nil {
-			return nil, fmt.Errorf("failed to find default credentials in environment: %w", err)
+			return nil, err
 		}
-		tokenSource = creds.TokenSource
+		tokenSource = ts
+	} else if authCredentials.GetValue() == "" {
+		// GOOGLE_APPLICATION_CREDENTIALS may name a gcloud-generated AWS external_account JSON.
+		// Route it through the SDK-backed federation so IRSA / Pod Identity work under ADC too.
+		if ts, ok, err := awsFederatedTokenSourceFromADCFile(context.Background()); err != nil {
+			return nil, err
+		} else if ok {
+			tokenSource = ts
+		} else {
+			creds, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
+			if err != nil {
+				return nil, fmt.Errorf("failed to find default credentials in environment: %w", err)
+			}
+			tokenSource = creds.TokenSource
+		}
 	} else {
 		jsonData := []byte(authCredentials.GetValue())
 
@@ -252,11 +284,20 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 			return nil, fmt.Errorf("unsupported or restricted credential type: %s", meta.Type)
 		}
 
-		conf, err := google.CredentialsFromJSONWithType(context.Background(), jsonData, credType, cloudPlatformScope)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create credentials from auth credentials JSON: %w", err)
+		if credType == google.ExternalAccount && isAWSExternalAccountJSON(jsonData) {
+			// Google's built-in AWS credential source ignores IRSA / Pod Identity; use the SDK chain.
+			ts, err := newAWSFederatedTokenSourceFromJSON(context.Background(), jsonData)
+			if err != nil {
+				return nil, err
+			}
+			tokenSource = ts
+		} else {
+			conf, err := google.CredentialsFromJSONWithType(context.Background(), jsonData, credType, cloudPlatformScope)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create credentials from auth credentials JSON: %w", err)
+			}
+			tokenSource = conf.TokenSource
 		}
-		tokenSource = conf.TokenSource
 	}
 
 	// Cache the token source. If another goroutine raced and stored first, use
@@ -354,7 +395,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 			// Handle error response
 			if resp.StatusCode() != fasthttp.StatusOK {
 				if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-					removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+					removeVertexClient(key)
 				}
 
 				// Non-Google publishers may not be available in all regions;
@@ -367,17 +408,12 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 					break
 				}
 
+				apiErr := parseVertexError(resp)
 				respBody := append([]byte(nil), resp.Body()...)
-				statusCode := resp.StatusCode()
 				wait()
 				fasthttp.ReleaseRequest(req)
 				fasthttp.ReleaseResponse(resp)
-
-				var errorResp VertexError
-				if err := sonic.Unmarshal(respBody, &errorResp); err != nil {
-					return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-				}
-				return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, nil, nil), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+				return nil, providerUtils.EnrichError(ctx, apiErr, nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 			}
 
 			// Parse Vertex's publisher models response
@@ -850,7 +886,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -1289,7 +1325,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			providerUtils.MaterializeStreamErrorBody(ctx, resp)
 			// Remove client from pool for authentication/authorization errors
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-				removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+				removeVertexClient(key)
 			}
 			return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -1449,7 +1485,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			providerUtils.MaterializeStreamErrorBody(ctx, resp)
 			// Remove client from pool for authentication/authorization errors
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-				removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+				removeVertexClient(key)
 			}
 			return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -1703,15 +1739,29 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
 
+	isGeminiEmbedding2Request := isVertexGeminiEmbeddingModel(request.Model)
+	isNativeMultimodalRequest := isVertexNativeMultimodalEmbeddingModel(request.Model)
+
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToVertexEmbeddingRequest(request), nil
+			if isGeminiEmbedding2Request {
+				return ToVertexGeminiEmbeddingRequest(request)
+			}
+			if isNativeMultimodalRequest {
+				return ToVertexMultimodalEmbeddingRequest(request)
+			}
+			return ToVertexEmbeddingRequest(request)
 		},
 	)
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	authQuery := ""
+	if key.Value.GetValue() != "" {
+		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 	}
 
 	// For custom/fine-tuned models, validate projectNumber is set
@@ -1720,12 +1770,12 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 	}
 
-	// Build the native Vertex embedding API endpoint
-	authQuery := ""
-	if key.Value.GetValue() != "" {
-		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
+	// Gemini embedding models use :embedContent; all others (text + native multimodal) use :predict.
+	endpointSuffix := ":predict"
+	if isGeminiEmbedding2Request {
+		endpointSuffix = ":embedContent"
 	}
-	completeURL := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, ":predict")
+	completeURL := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, endpointSuffix)
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -1783,32 +1833,10 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 
-		errBody := resp.Body()
-
-		// Extract error message from Vertex's error format
-		errorMessage := "Unknown error"
-		if len(errBody) > 0 {
-			// Try to parse Vertex's error format
-			var vertexError map[string]interface{}
-			if err := sonic.Unmarshal(errBody, &vertexError); err != nil {
-				return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonBody, errBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-			}
-
-			if errorObj, exists := vertexError["error"]; exists {
-				if errorMap, ok := errorObj.(map[string]interface{}); ok {
-					if message, exists := errorMap["message"]; exists {
-						if msgStr, ok := message.(string); ok {
-							errorMessage = msgStr
-						}
-					}
-				}
-			}
-		}
-
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), nil, nil), jsonBody, errBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
@@ -1818,6 +1846,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	if isLargeResp {
 		respOwned = false
 		return &schemas.BifrostEmbeddingResponse{
+			Model: request.Model,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Latency:                 latency.Milliseconds(),
 				ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
@@ -1825,10 +1854,16 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		}, nil
 	}
 
-	// Parse Vertex's native embedding response using typed response
+	// Parse the provider's embedding response using the matching typed response
 	var vertexResponse VertexEmbeddingResponse
+	var geminiResponse gemini.GeminiEmbeddingResponse
+	var umErr error
 	pt, ph := providerUtils.StartResponseParseSpan(ctx)
-	umErr := sonic.Unmarshal(responseBody, &vertexResponse)
+	if isGeminiEmbedding2Request {
+		umErr = sonic.Unmarshal(responseBody, &geminiResponse)
+	} else {
+		umErr = sonic.Unmarshal(responseBody, &vertexResponse)
+	}
 	if pt != nil {
 		if umErr != nil {
 			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
@@ -1841,15 +1876,37 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	// Use centralized Vertex converter
+	var bifrostResponse *schemas.BifrostEmbeddingResponse
 	ct, ch := providerUtils.StartResponseConvertorSpan(ctx)
-	bifrostResponse := vertexResponse.ToBifrostEmbeddingResponse()
+	if isGeminiEmbedding2Request {
+		bifrostResponse = gemini.ToBifrostEmbeddingResponse(&geminiResponse, request.Model)
+	} else {
+		bifrostResponse = vertexResponse.ToBifrostEmbeddingResponse()
+	}
 	if ct != nil {
 		ct.EndSpan(ch, schemas.SpanStatusOk, "")
+	}
+
+	if bifrostResponse == nil {
+		return nil, providerUtils.EnrichError(
+			ctx,
+			providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, fmt.Errorf("provider returned empty embedding response")),
+			jsonBody,
+			responseBody,
+			provider.sendBackRawRequest,
+			provider.sendBackRawResponse,
+		)
 	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
+	bifrostResponse.Model = request.Model
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonBody)
+	}
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -1940,7 +1997,7 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 
 		errorMessage := parseDiscoveryEngineErrorMessage(resp.Body())
@@ -1954,7 +2011,12 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 				parsedError.Error.Message == schemas.ErrProviderResponseUnmarshal
 
 			if shouldOverride {
-				parsedError = providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), nil, nil)
+				overridden := providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), nil, nil)
+				if parsedError != nil {
+					// Keep the retry hint parseVertexError read from the response.
+					overridden.ExtraFields.RetryAfter = parsedError.ExtraFields.RetryAfter
+				}
+				parsedError = overridden
 			}
 		}
 
@@ -2171,7 +2233,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -2379,7 +2441,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -2544,7 +2606,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -2665,7 +2727,7 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
@@ -3014,9 +3076,9 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch create"), jsonData, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp, "batch create"), jsonData, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	var created VertexBatchPredictionJob
@@ -3155,9 +3217,9 @@ func (provider *VertexProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
-		return nil, 0, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch list"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, 0, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp, "batch list"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// GET request: no request body, so raw request capture is skipped by HandleProviderResponse.
@@ -3251,9 +3313,9 @@ func (provider *VertexProvider) vertexGetBatchJob(ctx *schemas.BifrostContext, k
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
-		return nil, nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch retrieve"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp, "batch retrieve"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	var job VertexBatchPredictionJob
@@ -3315,9 +3377,9 @@ func (provider *VertexProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch cancel"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp, "batch cancel"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	return &schemas.BifrostBatchCancelResponse{
@@ -3382,9 +3444,9 @@ func (provider *VertexProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
-		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp.Body(), resp.StatusCode(), "batch delete"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp, "batch delete"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	return &schemas.BifrostBatchDeleteResponse{
@@ -3692,7 +3754,7 @@ func gcsGetAuthHeader(key schemas.Key) (string, error) {
 	}
 	tok, err := tokenSrc.Token()
 	if err != nil {
-		removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		removeVertexClient(key)
 		return "", fmt.Errorf("failed to acquire GCS access token: %w", err)
 	}
 	return "Bearer " + tok.AccessToken, nil
@@ -3823,7 +3885,7 @@ func (provider *VertexProvider) gcsFileUploadDirect(
 
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "upload"), latency)
 	}
@@ -3897,7 +3959,7 @@ func (provider *VertexProvider) gcsFileUploadResumable(
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "resumable session initiation"), latency)
 	}
@@ -3995,7 +4057,7 @@ func (provider *VertexProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "list"), latency)
 	}
@@ -4078,7 +4140,7 @@ func (provider *VertexProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "retrieve"), latency)
 	}
@@ -4166,7 +4228,7 @@ func (provider *VertexProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 	// 204 = deleted; 404 = already gone — both succeed for an idempotent delete.
 	if resp.StatusCode() != fasthttp.StatusNoContent && resp.StatusCode() != fasthttp.StatusNotFound {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "delete"), latency)
 	}
@@ -4231,7 +4293,7 @@ func (provider *VertexProvider) fileContentByKey(ctx *schemas.BifrostContext, ke
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download"), latency)
 	}
@@ -4419,7 +4481,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -4481,6 +4543,11 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	}
 
 	return response, nil
+}
+
+// ModelRetrieve is not supported by the Vertex provider.
+func (provider *VertexProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Vertex provider.
@@ -4600,12 +4667,12 @@ func (provider *VertexProvider) Passthrough(
 	} else {
 		tokenSource, err := getAuthTokenSource(key)
 		if err != nil {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
 		token, err := tokenSource.Token()
 		if err != nil {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 			return nil, providerUtils.NewBifrostOperationError("error getting token", err)
 		}
 		fasthttpReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
@@ -4644,7 +4711,7 @@ func (provider *VertexProvider) Passthrough(
 
 	// Remove client from pool for authentication/authorization errors
 	if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-		removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		removeVertexClient(key)
 	}
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
@@ -4751,13 +4818,13 @@ func (provider *VertexProvider) PassthroughStream(
 	} else {
 		tokenSource, err := getAuthTokenSource(key)
 		if err != nil {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 			providerUtils.ReleaseStreamingResponse(ctx, resp)
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
 		token, err := tokenSource.Token()
 		if err != nil {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			removeVertexClient(key)
 			providerUtils.ReleaseStreamingResponse(ctx, resp)
 			return nil, providerUtils.NewBifrostOperationError("error getting token", err)
 		}
@@ -4812,7 +4879,7 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-		removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+		removeVertexClient(key)
 	}
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)

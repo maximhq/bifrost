@@ -803,3 +803,18 @@ func TestDispatcherQueuesOverflowOnSubsequentTicks(t *testing.T) {
 		assert.Equal(t, 1, store.running[id], "job %s must be claimed exactly once", id)
 	}
 }
+
+func TestSummarizerRegistry(t *testing.T) {
+	r := testRunner(newFakeStore())
+	r.RegisterSummarizer("counted", func(metadata string) JobSummary {
+		return JobSummary{Done: 3, Total: 10, Message: metadata}
+	})
+
+	got, ok := r.Summarize("counted", "hello")
+	require.True(t, ok)
+	assert.Equal(t, JobSummary{Done: 3, Total: 10, Message: "hello"}, got)
+
+	got, ok = r.Summarize("no-summarizer", "{}")
+	assert.False(t, ok, "kinds without a summarizer report no progress")
+	assert.Equal(t, JobSummary{}, got)
+}

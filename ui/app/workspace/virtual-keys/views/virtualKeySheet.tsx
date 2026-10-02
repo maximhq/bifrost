@@ -42,6 +42,7 @@ import {
 	useCreateVirtualKeyMutation,
 	useDetachVirtualMCPVirtualKeyMutation,
 	useGetAllKeysQuery,
+	useGetCoreConfigQuery,
 	useGetProvidersQuery,
 	useGetTeamQuery,
 	useGetVirtualKeyQuery,
@@ -51,7 +52,7 @@ import {
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
-import { diffVmcpAssignments, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
+import { createDeleteAfterExpire, diffVmcpAssignments, updateDeleteAfterExpire, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import {
 	type BudgetComparisonEntry,
@@ -172,6 +173,9 @@ const formSchema = z
 		userId: z.string().optional(),
 		isActive: z.boolean(),
 		expiresAt: z.string().nullable().optional(), // ISO 8601 datetime-local string, or null to clear
+		// Content logging for this key's traffic: inherit the client setting, force it off, or force it on.
+		contentLogging: z.enum(["inherit", "disabled", "enabled"]),
+		deleteAfterExpire: z.boolean(), // Only meaningful with an expiry; the daily cleanup job deletes the key once expired
 		// Budget
 		budgetCalendarAligned: z.boolean(),
 		budgets: z
@@ -249,9 +253,14 @@ const EXPIRY_PRESETS = [
 interface ExpiryFieldProps {
 	value: string | null | undefined;
 	onChange: (v: string | null) => void;
+	deleteAfterExpire: boolean;
+	onDeleteAfterExpireChange: (v: boolean) => void;
+	// The client-wide delete_expired_virtual_keys setting; the switch starts there and a
+	// matching value is sent as inherit.
+	deleteExpiredByDefault: boolean;
 }
 
-function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
+function ExpiryPickerField({ value, onChange, deleteAfterExpire, onDeleteAfterExpireChange, deleteExpiredByDefault }: ExpiryFieldProps) {
 	// Preset timestamps are computed from Date.now() at click time, so the picked
 	// preset can't be derived back from the value; track it for highlighting.
 	const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
@@ -267,9 +276,11 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 					type="button"
 					variant={!value ? "default" : "outline"}
 					size="sm"
+					data-testid="vk-expiry-never"
 					onClick={() => {
 						setSelectedPreset(null);
 						onChange(null);
+						onDeleteAfterExpireChange(deleteExpiredByDefault);
 					}}
 				>
 					Never
@@ -280,6 +291,7 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 						type="button"
 						variant={value && selectedPreset === label ? "default" : "outline"}
 						size="sm"
+						data-testid={`vk-expiry-preset-${label.replace(/\s+/g, "-")}`}
 						onClick={() => {
 							setSelectedPreset(label);
 							onChange(presetFromNow(ms));
@@ -299,10 +311,52 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 					}}
 				/>
 			</div>
+			{value && (
+				<div className="flex items-center justify-between gap-4 pt-1">
+					<div className="grid gap-0.5 leading-none">
+						<Label htmlFor="vk-delete-after-expire" className="text-sm font-normal">
+							Delete after expire
+						</Label>
+						<p className="text-muted-foreground text-xs">
+							The key is removed automatically within about a day of expiring.{" "}
+							{deleteAfterExpire === deleteExpiredByDefault
+								? `Follows the workspace default (${deleteExpiredByDefault ? "on" : "off"}), set under Settings → Security.`
+								: "Overrides the workspace default for this key."}
+						</p>
+					</div>
+					<Switch
+						id="vk-delete-after-expire"
+						checked={deleteAfterExpire}
+						onCheckedChange={onDeleteAfterExpireChange}
+						data-testid="vk-delete-after-expire"
+					/>
+				</div>
+			)}
 			<FormMessage />
 		</FormItem>
 	);
 }
+
+type ContentLoggingChoice = "inherit" | "disabled" | "enabled";
+
+// The wire field is tri-state (absent, true, false); the form shows it as three named choices.
+function contentLoggingChoice(disableContentLogging: boolean | null | undefined): ContentLoggingChoice {
+	if (disableContentLogging === true) return "disabled";
+	if (disableContentLogging === false) return "enabled";
+	return "inherit";
+}
+
+function contentLoggingValue(choice: ContentLoggingChoice): boolean | null {
+	if (choice === "disabled") return true;
+	if (choice === "enabled") return false;
+	return null;
+}
+
+const contentLoggingOptions: { value: ContentLoggingChoice; label: string }[] = [
+	{ value: "inherit", label: "Inherit gateway setting" },
+	{ value: "disabled", label: "Off for this key" },
+	{ value: "enabled", label: "On for this key" },
+];
 
 // A key owned by a profile-holding team, customer or business unit is governed by that profile: the
 // server discards the key's own providers, budgets, rate limits and MCP access. The editors for
@@ -327,6 +381,13 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	const [isOpen, setIsOpen] = useState(true);
 	const navigate = useNavigate();
 	const isEditing = !!virtualKey;
+	// The delete-after-expire switch starts at the client-wide default; a key stores a value only
+	// when it differs, so flipping the default later still reaches keys that never overrode it.
+	// clientDeleteDefault stays undefined until the config loads; the payload helpers then send the
+	// shown value explicitly.
+	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const clientDeleteDefault = coreConfig?.client_config?.delete_expired_virtual_keys;
+	const deleteExpiredByDefault = clientDeleteDefault ?? false;
 
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
@@ -336,14 +397,26 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
 	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
-	// On create, the VK is governed unless the role grants CreateStandalone (the freedom to
-	// create ungoverned keys); the profile that will apply comes from vkCreationPolicy. If
-	// governed, lock the governance fields up front — the server applies the profile regardless.
-	const { data: vkCreationPolicy } = useGetMyVKCreationPolicyQuery(undefined, {
+	// On create, the VK is governed when the role lacks CreateStandalone (the freedom to create
+	// ungoverned keys) *and* vkCreationPolicy resolves a profile to govern with — with no profile
+	// the server creates the key ungoverned. If governed, lock the governance fields up front:
+	// the server applies the profile regardless.
+	const {
+		data: vkCreationPolicy,
+		isError: isVkCreationPolicyError,
+		refetch: refetchVkCreationPolicy,
+	} = useGetMyVKCreationPolicyQuery(undefined, {
 		skip: isEditing,
 		refetchOnMountOrArgChange: true,
 	});
-	const willBeGovernedOnCreate = !isEditing && !hasCreateStandalone;
+	// Only a resolved profile governs. "Managed by your access profile" is a claim about a
+	// specific profile, so it is never made on a guess: a caller who holds none gets the plain
+	// form, which is exactly the key the server will create for them.
+	const willBeGovernedOnCreate = !isEditing && !hasCreateStandalone && !!vkCreationPolicy?.has_access_profile;
+	// A failed lookup is not an answer either, and it neither locks the form nor blocks the
+	// create: the server governs the key correctly whatever this form shows, so all that is at
+	// stake is whether these fields survive. It says so and offers a retry.
+	const isVkCreationPolicyUnresolved = !isEditing && !hasCreateStandalone && isVkCreationPolicyError;
 	const isManagedByProfile = (isEditing && isManagedByProfileHook) || willBeGovernedOnCreate;
 	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
 	const UserPicker = getUserPicker();
@@ -524,6 +597,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			// The attached user arrives from a separate request; synced in below once it loads.
 			userId: "",
 			isActive: virtualKey?.is_active ?? true,
+			contentLogging: contentLoggingChoice(virtualKey?.disable_content_logging),
+			deleteAfterExpire: virtualKey?.delete_after_expire ?? deleteExpiredByDefault,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
 						const d = new Date(virtualKey.expires_at);
@@ -600,6 +675,14 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		form.setValue("userId", assignedUserId);
 	}, [assignedUserId, isEditing, form]);
 
+	// The client config can arrive after the form was seeded; follow it while the user hasn't
+	// touched the switch and the key has no override of its own.
+	useEffect(() => {
+		if (form.formState.dirtyFields.deleteAfterExpire) return;
+		if (virtualKey?.delete_after_expire != null) return;
+		form.setValue("deleteAfterExpire", deleteExpiredByDefault);
+	}, [deleteExpiredByDefault, virtualKey?.delete_after_expire, form]);
+
 	// Get current provider configs from form
 	const providerConfigs = form.watch("providerConfigs") || [];
 
@@ -632,10 +715,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		isFetching: isOwnerProfileFetching,
 		error: ownerProfileError,
 		refetch: refetchOwnerProfile,
-	} = useGetEntityAccessProfileQuery(
-		{ entityType: owner?.entityType ?? "team", entityId: owner?.entityId ?? "" },
-		{ skip: !owner },
-	);
+	} = useGetEntityAccessProfileQuery({ entityType: owner?.entityType ?? "team", entityId: owner?.entityId ?? "" }, { skip: !owner });
 	// While a newly selected owner's lookup is in flight, data still holds the previous owner's
 	// response; matching the entity keeps that stale profile from locking the form.
 	const ownerProfile =
@@ -997,6 +1077,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					data: {
 						name: data.name,
 						description: data.description,
+						// Content logging is the key's own privacy setting, not profile-governed access, so a
+						// managed key keeps it editable and the save must carry it (null clears to inherit).
+						disable_content_logging: contentLoggingValue(data.contentLogging),
 					},
 				}).unwrap();
 				toast.success("Virtual key updated");
@@ -1035,6 +1118,15 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 							? { expires_at: "" }
 							: {}
 					: {};
+				const deleteAfterExpire = updateDeleteAfterExpire({
+					switchTouched: !!form.formState.dirtyFields.deleteAfterExpire,
+					expiryChanged,
+					hasExpiry: !!data.expiresAt,
+					value: data.deleteAfterExpire,
+					clientDefault: clientDeleteDefault,
+					storedOverride: virtualKey.delete_after_expire,
+				});
+				const deleteAfterExpirePayload = deleteAfterExpire !== undefined ? { delete_after_expire: deleteAfterExpire } : {};
 
 				const updateData: UpdateVirtualKeyRequest = {
 					name: data.name,
@@ -1048,7 +1140,11 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					calendar_aligned: data.budgetCalendarAligned,
 					allow_all_providers: data.allowAllProviders,
 					reset_budget_usage: resetBudgetUsage,
+					// null clears the key back to inheriting the client setting; the server keeps omitted and
+					// null apart, so this is always sent.
+					disable_content_logging: contentLoggingValue(data.contentLogging),
 					...expiryPayload,
+					...deleteAfterExpirePayload,
 				};
 
 				// Add budgets if enabled
@@ -1125,6 +1221,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				toast.success("Virtual key updated successfully");
 			} else {
 				// Create new virtual key
+				const createDeleteAfterExpireValue = createDeleteAfterExpire(data.deleteAfterExpire, clientDeleteDefault);
 				const createData: CreateVirtualKeyRequest = {
 					name: data.name,
 					description: data.description || undefined,
@@ -1137,8 +1234,16 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					// VK-level setting that governs both budget and rate-limit calendar alignment.
 					calendar_aligned: data.budgetCalendarAligned,
 					allow_all_providers: data.allowAllProviders,
-					// Optional expiry: send as UTC ISO string, or omit for no expiry
-					...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
+					// Optional expiry: send as UTC ISO string, or omit for no expiry. An omitted flag inherits
+					// the workspace default.
+					...(data.expiresAt
+						? {
+								expires_at: new Date(data.expiresAt).toISOString(),
+								...(createDeleteAfterExpireValue !== undefined ? { delete_after_expire: createDeleteAfterExpireValue } : {}),
+							}
+						: {}),
+					// Omitted means inherit on create.
+					...(data.contentLogging !== "inherit" ? { disable_content_logging: data.contentLogging === "disabled" } : {}),
 				};
 
 				// Add budgets if enabled
@@ -1333,6 +1438,36 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 										</FormItem>
 									)}
 								/>
+								{/* Content logging is a privacy setting on the key itself, not access governance, so it
+								stays editable for a profile-managed key too. */}
+								<FormField
+									control={form.control}
+									name="contentLogging"
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>Content logging</FormLabel>
+											{/* FormControl hands the trigger the label's id and aria attributes; hideClear because the
+											choice is an enum with no empty state. */}
+											<FormControl>
+												<ComboboxSelect
+													options={contentLoggingOptions}
+													value={field.value}
+													onValueChange={field.onChange}
+													disableSearch
+													hideClear
+													data-testid="vk-content-logging-select"
+													optionTestId={(value) => `vk-content-logging-option-${value}`}
+												/>
+											</FormControl>
+											<p className="text-muted-foreground text-xs">
+												Whether request and response content is stored in logs for this key&apos;s traffic. &quot;Off&quot; also strips
+												content from OpenTelemetry export. &quot;On&quot; overrides a gateway-wide off for the log store only. The
+												per-request header still applies when per-request overrides are allowed.
+											</p>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
 							</div>
 							{!isManagedByProfile && (
 								<div className="space-y-4">
@@ -1349,7 +1484,15 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 										<FormField
 											control={form.control}
 											name="expiresAt"
-											render={({ field }) => <ExpiryPickerField value={field.value} onChange={field.onChange} />}
+											render={({ field }) => (
+												<ExpiryPickerField
+													value={field.value}
+													onChange={field.onChange}
+													deleteAfterExpire={form.watch("deleteAfterExpire")}
+													onDeleteAfterExpireChange={(v) => form.setValue("deleteAfterExpire", v, { shouldDirty: true })}
+													deleteExpiredByDefault={deleteExpiredByDefault}
+												/>
+											)}
 										/>
 									</div>
 									{/* The owner's access profile supplies providers, MCP access, budgets and rate limits,
@@ -1441,7 +1584,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 																		</p>
 																		<p className="text-muted-foreground text-xs">
 																			Base {formatCurrency(budget.max_limit)}
-																			{hasActiveBudgetOverride(budget) ? ` · effective ${formatCurrency(getEffectiveBudgetLimit(budget))}` : ""}
+																			{hasActiveBudgetOverride(budget)
+																				? ` · effective ${formatCurrency(getEffectiveBudgetLimit(budget))}`
+																				: ""}
 																		</p>
 																	</div>
 																	<BudgetOverrideDialog
@@ -1456,7 +1601,6 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 														</div>
 													</div>
 												) : null}
-
 											</div>
 											{/* Rate Limiting Configuration */}
 											<div className="space-y-4">
@@ -1557,9 +1701,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 														<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
 														<AlertDialogDescription>
 															Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
-															token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap each
-															reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be
-															undone, but calendar alignment can be turned off later. This will take effect when you save.
+															token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap
+															each reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset
+															cannot be undone, but calendar alignment can be turned off later. This will take effect when you save.
 														</AlertDialogDescription>
 													</AlertDialogHeader>
 													<AlertDialogFooter>

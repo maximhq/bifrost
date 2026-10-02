@@ -53,8 +53,7 @@ func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
 	// inference_auth_enforced reports enforce_auth_on_inference - a separate toggle from
 	// dashboard auth (this endpoint's main subject) that gates /v1/* instead of the
 	// dashboard/admin API. Surfaced here so a locked dashboard doesn't look like the whole
-	// gateway is secured when this second, easily-missed control is still off; see
-	// GHSA-9vcc-9mmm-556x.
+	// gateway is secured when this second, easily-missed control is still off.
 	inferenceAuthEnforced := false
 	if clientConfig, err := h.configStore.GetClientConfig(ctx); err == nil && clientConfig != nil {
 		inferenceAuthEnforced = clientConfig.EnforceAuthOnInference

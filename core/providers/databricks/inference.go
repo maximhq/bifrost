@@ -194,6 +194,81 @@ func stripUnsupportedChatFields(ctx *schemas.BifrostContext, request *schemas.Bi
 	return &requestCopy
 }
 
+// mergeGeminiSystemPrompts folds every system and developer message into a single string
+// system message for Gemini-backed endpoints. Databricks maps chat messages onto Gemini's one
+// system_instruction and rejects anything more with "Gemini models only support one system
+// prompt" (400), counting each text part of a system message as a prompt of its own. Claude
+// Code sends its system prompt as several blocks, so it hits this on every request.
+//
+// The merged message takes the place of the first system message, so a system message from
+// later in the conversation moves to the front: Gemini has nowhere else to put it. Only text
+// parts are kept, since system_instruction takes text only. Other model families are left
+// alone, and the original request is not mutated.
+func mergeGeminiSystemPrompts(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if request == nil || !schemas.IsGeminiModelFamily(ctx, request.Model) {
+		return request
+	}
+
+	isSystem := func(msg schemas.ChatMessage) bool {
+		return msg.Role == schemas.ChatMessageRoleSystem || msg.Role == schemas.ChatMessageRoleDeveloper
+	}
+	systemCount := 0
+	needsMerge := false
+	for _, msg := range request.Input {
+		if !isSystem(msg) {
+			continue
+		}
+		systemCount++
+		if msg.Role == schemas.ChatMessageRoleDeveloper || (msg.Content != nil && msg.Content.ContentStr == nil) {
+			needsMerge = true
+		}
+	}
+	if systemCount == 0 || (systemCount == 1 && !needsMerge) {
+		return request
+	}
+
+	var texts []string
+	for _, msg := range request.Input {
+		if !isSystem(msg) || msg.Content == nil {
+			continue
+		}
+		if msg.Content.ContentStr != nil {
+			if *msg.Content.ContentStr != "" {
+				texts = append(texts, *msg.Content.ContentStr)
+			}
+			continue
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Text != nil && *block.Text != "" {
+				texts = append(texts, *block.Text)
+			}
+		}
+	}
+
+	merged := make([]schemas.ChatMessage, 0, len(request.Input)-systemCount+1)
+	placed := false
+	for _, msg := range request.Input {
+		if !isSystem(msg) {
+			merged = append(merged, msg)
+			continue
+		}
+		if placed {
+			continue
+		}
+		placed = true
+		joined := strings.Join(texts, "\n\n")
+		merged = append(merged, schemas.ChatMessage{
+			Name:    msg.Name,
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: &schemas.ChatMessageContent{ContentStr: &joined},
+		})
+	}
+
+	requestCopy := *request
+	requestCopy.Input = merged
+	return &requestCopy
+}
+
 // stripUnsupportedResponsesFields is stripUnsupportedChatFields for the Model Serving
 // Responses surface, which carries the same fields through a different params struct — minus
 // the chat-only knobs (stop, the penalties, top_k) and the Anthropic betas, which the
@@ -310,6 +385,7 @@ func withResponsesWireModel(ctx *schemas.BifrostContext, key schemas.Key, reques
 // ChatCompletion performs a chat completion request against the resolved Databricks surface.
 func (provider *DatabricksProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	request = stripUnsupportedChatFields(ctx, request)
+	request = mergeGeminiSystemPrompts(ctx, request)
 	request, bErr := inlineChatImageURLs(ctx, request)
 	if bErr != nil {
 		return nil, bErr
@@ -340,6 +416,7 @@ func (provider *DatabricksProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 // Databricks surface. Both surfaces emit OpenAI-shaped Server-Sent Events.
 func (provider *DatabricksProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	request = stripUnsupportedChatFields(ctx, request)
+	request = mergeGeminiSystemPrompts(ctx, request)
 	request, bErr := inlineChatImageURLs(ctx, request)
 	if bErr != nil {
 		return nil, bErr

@@ -425,7 +425,7 @@ def test_warp_credential_contract_is_current():
 
 
 def test_warp_chat_response_contract_is_current():
-    """WarpChatResponse mirrors warp.ChatResponse: usage is BifrostLLMUsage, not a bare
+    """WarpSessionResponse mirrors warp.ChatResponse: usage is BifrostLLMUsage, not a bare
     object, and error.code is the closed set the agent actually emits. The chat route is
     always registered and reports its unavailability as a 503 carrying a machine-readable
     reason, so that and the 413 for oversized conversations are the part of the contract a
@@ -449,7 +449,7 @@ def test_warp_chat_response_contract_is_current():
     if not emitted:
         problems.append("could not read any emitted error codes from framework/warp/agent.go")
 
-    response = schema_source["WarpChatResponse"]["properties"]
+    response = schema_source["WarpSessionResponse"]["properties"]
     usage = response["usage"]
     # Either a direct $ref, or allOf[$ref] - the latter is how OpenAPI 3.0 keeps a
     # description alongside a referenced schema.
@@ -458,60 +458,60 @@ def test_warp_chat_response_contract_is_current():
     ]
     if not refs:
         problems.append(
-            "schemas/management/warp.yaml WarpChatResponse.usage is a bare object; "
+            "schemas/management/warp.yaml WarpSessionResponse.usage is a bare object; "
             "reference BifrostLLMUsage so clients get typed token fields"
         )
     elif not any("usage.yaml#/BifrostLLMUsage" in ref for ref in refs):
-        problems.append(f"WarpChatResponse.usage references {refs}, not BifrostLLMUsage")
+        problems.append(f"WarpSessionResponse.usage references {refs}, not BifrostLLMUsage")
 
     error = response["error"]
     declared = sorted(((error.get("properties") or {}).get("code") or {}).get("enum") or [])
     if declared != emitted:
         problems.append(
-            f"WarpChatResponse.error.code enum is {declared}, but the agent emits {emitted}"
+            f"WarpSessionResponse.error.code enum is {declared}, but the agent emits {emitted}"
         )
     if sorted(error.get("required") or []) != ["code", "message"]:
-        problems.append("WarpChatResponse.error must require both code and message")
+        problems.append("WarpSessionResponse.error must require both code and message")
 
     # The bundle has to carry the resolved usage properties, not an empty object.
     # Looked up defensively: `check` only catches AssertionError, so a KeyError
     # here would abort the whole invariant script instead of reporting the very
     # drift this test exists to report.
     bundled = (bundle.get("components") or {}).get("schemas") or {}
-    if "WarpChatResponse" not in bundled:
-        problems.append("openapi.json does not define WarpChatResponse")
+    if "WarpSessionResponse" not in bundled:
+        problems.append("openapi.json does not define WarpSessionResponse")
     else:
-        bundled_usage = (bundled["WarpChatResponse"].get("properties") or {}).get("usage")
+        bundled_usage = (bundled["WarpSessionResponse"].get("properties") or {}).get("usage")
         if bundled_usage is None:
-            problems.append("openapi.json WarpChatResponse has no usage property")
+            problems.append("openapi.json WarpSessionResponse has no usage property")
         elif not (bundled_usage.get("properties") or bundled_usage.get("allOf") or bundled_usage.get("$ref")):
-            problems.append("openapi.json WarpChatResponse.usage resolved to an untyped object")
+            problems.append("openapi.json WarpSessionResponse.usage resolved to an untyped object")
 
-    chat_responses = (((path_source.get("warp-chat") or {}).get("post") or {}).get("responses") or {})
+    chat_responses = (((path_source.get("warp-session") or {}).get("post") or {}).get("responses") or {})
     if not chat_responses:
-        problems.append("paths/management/warp.yaml declares no warp-chat responses")
+        problems.append("paths/management/warp.yaml declares no warp-session responses")
     for status in ("503", "413"):
         if status not in chat_responses:
-            problems.append(f"paths/management/warp.yaml warp-chat does not declare {status}")
+            problems.append(f"paths/management/warp.yaml warp-session does not declare {status}")
     # The route is registered unconditionally, so a deployment that cannot answer
     # says so in a 503 body the dashboard branches on. A documented 404 would
     # send a generated client looking for a route that always exists.
     if "404" in chat_responses:
         problems.append(
-            "warp-chat documents a 404, but the route is always registered; "
+            "warp-session documents a 404, but the route is always registered; "
             "an unusable deployment answers 503 with a WarpUnavailable reason"
         )
     unavailable = chat_responses.get("503") or {}
     if "WarpUnavailable" not in json.dumps(unavailable.get("content") or {}):
-        problems.append("warp-chat 503 must return WarpUnavailable so the reason is machine-readable")
+        problems.append("warp-session 503 must return WarpUnavailable so the reason is machine-readable")
     if "413" in chat_responses and "content" not in chat_responses["413"]:
-        problems.append("warp-chat 413 returns a JSON error body but documents no schema")
+        problems.append("warp-session 413 returns a JSON error body but documents no schema")
     # The route is registered unconditionally now, so a deployment that cannot
     # answer says so in a 503 body the dashboard branches on. A documented 404
     # would send a generated client looking for a route that always exists.
     if "404" in chat_responses:
         problems.append(
-            "warp-chat documents a 404, but the route is always registered; "
+            "warp-session documents a 404, but the route is always registered; "
             "an unusable deployment answers 503 with a WarpUnavailable reason"
         )
     # Checked structurally, not by searching the serialized response. A substring
@@ -523,7 +523,7 @@ def test_warp_chat_response_contract_is_current():
     ref = (json_body.get("schema") or {}).get("$ref") or ""
     if not ref.endswith("#/WarpUnavailable"):
         problems.append(
-            "warp-chat 503 application/json must $ref WarpUnavailable directly "
+            "warp-session 503 application/json must $ref WarpUnavailable directly "
             f"so the reason stays machine-readable (found {ref!r})"
         )
 
@@ -661,7 +661,129 @@ def test_warp_config_input_models_the_enabled_contract():
     assert not problems, "Warp enabled-config contract:\n    " + "\n    ".join(problems)
 
 
+
+
+# Secret-shaped schemas that are deliberately object-only because they only ever appear in
+# responses, where the API never emits a bare string. Listed so the bare-string check below can
+# demand a string branch from every other secret value without a description heuristic.
+RESPONSE_ONLY_SECRET_PATHS = {
+    "/components/schemas/WebhookEndpoint/properties/headers/additionalProperties",  # RedactedSecretVar
+}
+
+
+def test_secret_capable_values_accept_bare_strings():
+    """schemas.SecretVar unmarshals a bare string as well as the {value, ref, type} object, so every
+    inlined secret value in the bundle must be a oneOf of both shapes. Fields are found by shape
+    (an object with exactly value/ref/type, or a oneOf containing one) rather than by description,
+    and the collection must stay non-trivial so a regression cannot hide behind an empty result."""
+    import json
+
+    def is_secret_object(node):
+        return (
+            isinstance(node, dict)
+            and node.get("type") == "object"
+            and set((node.get("properties") or {})) == {"value", "ref", "type"}
+        )
+
+    def is_secret_field(node):
+        if is_secret_object(node):
+            return True
+        branches = node.get("oneOf") if isinstance(node, dict) else None
+        return isinstance(branches, list) and any(is_secret_object(b) for b in branches)
+
+    def accepts_string(node):
+        branches = node.get("oneOf") if isinstance(node, dict) else None
+        if not isinstance(branches, list):
+            return False
+        return any(b.get("type") == "string" for b in branches) and any(is_secret_object(b) for b in branches)
+
+    source = load(HERE / "schemas" / "management" / "common.yaml")["EnvVar"]
+    assert accepts_string(source), "common.yaml#/EnvVar is object-only; it must be a oneOf [string, object]"
+
+    def collect(node, out, path=""):
+        if isinstance(node, dict):
+            if is_secret_field(node):
+                out.append((path, node))
+                return
+            for key, value in node.items():
+                collect(value, out, f"{path}/{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                collect(value, out, f"{path}[{index}]")
+
+    fields = []
+    collect(json.loads((HERE / "openapi.json").read_text(encoding="utf-8")), fields)
+    fields = [(path, node) for path, node in fields if path not in RESPONSE_ONLY_SECRET_PATHS]
+    assert len(fields) >= 35, f"only {len(fields)} secret-capable fields found in openapi.json; the collector is broken"
+    object_only = [path for path, node in fields if not accepts_string(node)]
+    assert not object_only, "openapi.json inlines object-only secret-capable value(s):\n    " + "\n    ".join(object_only)
+
+
+def test_vertex_aws_workload_identity_contract():
+    """The Vertex aws_workload_identity block is defined in transports/config.schema.json;
+    the OpenAPI source and bundle must document the same five fields, require the audience,
+    and reject unknown properties like the configuration contract does."""
+    import json
+
+    contract = json.loads(
+        (REPO_ROOT / "transports" / "config.schema.json").read_text(encoding="utf-8")
+    )
+    want = contract["$defs"]["vertex_key"]["allOf"][1]["properties"]["vertex_key_config"]["properties"]["aws_workload_identity"]
+
+    def check_block(where, vertex):
+        block = (vertex.get("properties") or {}).get("aws_workload_identity")
+        assert isinstance(block, dict), f"{where}: vertex_key_config has no aws_workload_identity"
+        assert set(block.get("properties") or {}) == set(want["properties"]), (
+            f"{where}: aws_workload_identity fields {sorted(block.get('properties') or {})} "
+            f"differ from config.schema.json {sorted(want['properties'])}"
+        )
+        assert block.get("required") == want["required"], f"{where}: required must be {want['required']}"
+        assert block.get("additionalProperties") is False, f"{where}: aws_workload_identity must set additionalProperties: false"
+        assert "force_single_region" in (vertex.get("properties") or {}), f"{where}: vertex_key_config is missing force_single_region"
+        # config.schema.json forbids a non-empty auth_credentials next to aws_workload_identity; the
+        # management schema must carry the same conditional so generated clients reject it too.
+        cond = vertex.get("if")
+        assert isinstance(cond, dict) and cond.get("required") == ["aws_workload_identity"], (
+            f"{where}: vertex_key_config needs `if: required: [aws_workload_identity]`"
+        )
+        then = ((vertex.get("then") or {}).get("properties") or {}).get("auth_credentials")
+        assert isinstance(then, dict), f"{where}: vertex_key_config `then` must constrain auth_credentials"
+        # The constraint must leave only the empty forms of a secret value: an empty string, or an
+        # object whose value and ref are both empty. Anything looser lets a credentials JSON through.
+        branches = then.get("anyOf")
+        assert isinstance(branches, list), f"{where}: `then` auth_credentials must be an anyOf of the empty forms"
+        empty_string = any(b.get("type") == "string" and b.get("maxLength") == 0 for b in branches)
+        empty_object = any(
+            b.get("type") == "object"
+            and all(((b.get("properties") or {}).get(field) or {}).get("maxLength") == 0 for field in ("value", "ref"))
+            for b in branches
+        )
+        assert empty_string and empty_object, f"{where}: `then` auth_credentials must permit only an empty string or an object with empty value and ref"
+
+    check_block("schemas/management/providers.yaml", load(HERE / "schemas" / "management" / "providers.yaml")["VertexKeyConfig"])
+
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    found = []
+
+    def collect(node):
+        if isinstance(node, dict):
+            vertex = node.get("vertex_key_config")
+            if isinstance(vertex, dict) and "properties" in vertex:
+                found.append(vertex)
+            for value in node.values():
+                collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    collect(bundle)
+    assert found, "openapi.json has no inlined vertex_key_config"
+    for vertex in found:
+        check_block("openapi.json", vertex)
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
+check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
+check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
 check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)

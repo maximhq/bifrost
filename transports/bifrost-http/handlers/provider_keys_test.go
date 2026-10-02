@@ -157,6 +157,101 @@ func TestMergeUpdatedKey_Name(t *testing.T) {
 	})
 }
 
+// TestDecodeKeyUpdate_PartialBody covers issue #7572: a PUT that names only
+// some fields must leave the others as stored. Omitted fields used to decode to
+// zero values, so a body carrying only models emptied the key's value and set
+// its weight to 0, and the update still returned 200.
+func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
+	h := &ProviderHandler{}
+	const rawValue = "sk-sglrealkey1234567890abcdefghij"
+	stored := func() schemas.Key {
+		return schemas.Key{
+			ID:                "key-1",
+			Name:              "sgl-key",
+			Value:             *schemas.NewSecretVar(rawValue),
+			Models:            schemas.WhiteList{"old-model"},
+			BlacklistedModels: schemas.BlackList{"blocked-model"},
+			Weight:            1,
+			SGLKeyConfig:      &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar("http://old:30000")},
+			Enabled:           schemas.Ptr(false),
+			UseForBatchAPI:    schemas.Ptr(true),
+			Description:       "primary",
+		}
+	}
+	update := func(t *testing.T, body string) schemas.Key {
+		t.Helper()
+		oldRaw := stored()
+		updateKey, err := decodeKeyUpdate([]byte(body), oldRaw)
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate returned error: %v", err)
+		}
+		updateKey.ID = oldRaw.ID
+		merged, err := h.mergeUpdatedKey(oldRaw, updateKey)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		return merged
+	}
+
+	t.Run("omitted fields keep their stored values", func(t *testing.T) {
+		merged := update(t, `{"models":["m1","m2"],"sgl_key_config":{"url":"http://new:30000"}}`)
+		if merged.Value.GetValue() != rawValue {
+			t.Fatalf("value: got %q, want the stored value", merged.Value.GetValue())
+		}
+		if merged.Weight != 1 {
+			t.Fatalf("weight: got %v, want 1", merged.Weight)
+		}
+		if len(merged.BlacklistedModels) != 1 || merged.BlacklistedModels[0] != "blocked-model" {
+			t.Fatalf("blacklisted_models: got %v, want [blocked-model]", merged.BlacklistedModels)
+		}
+		if merged.Enabled == nil || *merged.Enabled {
+			t.Fatalf("enabled: got %v, want the stored false", merged.Enabled)
+		}
+		if merged.UseForBatchAPI == nil || !*merged.UseForBatchAPI {
+			t.Fatalf("use_for_batch_api: got %v, want the stored true", merged.UseForBatchAPI)
+		}
+		if merged.Description != "primary" {
+			t.Fatalf("description: got %q, want primary", merged.Description)
+		}
+		// The fields that were sent still apply.
+		if len(merged.Models) != 2 || merged.Models[0] != "m1" {
+			t.Fatalf("models: got %v, want [m1 m2]", merged.Models)
+		}
+		if merged.SGLKeyConfig == nil || merged.SGLKeyConfig.URL.GetValue() != "http://new:30000" {
+			t.Fatalf("sgl_key_config.url: got %+v, want http://new:30000", merged.SGLKeyConfig)
+		}
+	})
+
+	t.Run("an omitted provider config is kept", func(t *testing.T) {
+		merged := update(t, `{"weight":2}`)
+		if merged.SGLKeyConfig == nil || merged.SGLKeyConfig.URL.GetValue() != "http://old:30000" {
+			t.Fatalf("sgl_key_config: got %+v, want the stored config", merged.SGLKeyConfig)
+		}
+		if merged.Weight != 2 {
+			t.Fatalf("weight: got %v, want 2", merged.Weight)
+		}
+	})
+
+	t.Run("fields sent explicitly empty are cleared", func(t *testing.T) {
+		merged := update(t, `{"value":"","weight":0,"models":[],"description":"","sgl_key_config":null}`)
+		if merged.Value.GetValue() != "" {
+			t.Fatalf("value: got %q, want it cleared", merged.Value.GetValue())
+		}
+		if merged.Weight != 0 {
+			t.Fatalf("weight: got %v, want 0", merged.Weight)
+		}
+		if len(merged.Models) != 0 {
+			t.Fatalf("models: got %v, want empty", merged.Models)
+		}
+		if merged.Description != "" {
+			t.Fatalf("description: got %q, want it cleared", merged.Description)
+		}
+		if merged.SGLKeyConfig != nil {
+			t.Fatalf("sgl_key_config: got %+v, want nil", merged.SGLKeyConfig)
+		}
+	})
+}
+
 func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 	h := &ProviderHandler{}
 	merge := func(oldRaw, update schemas.Key) schemas.Key {
@@ -792,4 +887,137 @@ func ecTestPEM(t *testing.T) string {
 		t.Fatalf("marshal ec: %v", err)
 	}
 	return string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}))
+}
+
+// TestMergeUpdatedKey_VertexAWSWorkloadIdentityRoleARN covers the one masked field inside the
+// Vertex federation block. GET renders aws_role_arn as a mask, so an edit that leaves it alone
+// sends the mask back; the merge must restore the stored ARN and must never persist the mask.
+// The identifiers in the block (audience, service account, region) are returned in clear and
+// therefore pass through untouched.
+func TestMergeUpdatedKey_VertexAWSWorkloadIdentityRoleARN(t *testing.T) {
+	h := &ProviderHandler{}
+	secret := func(value string) schemas.SecretVar { return *schemas.NewSecretVar(value) }
+	secretPtr := func(value string) *schemas.SecretVar { return schemas.NewSecretVar(value) }
+	mask := "arn:" + strings.Repeat("*", 24) + "Hop0"
+
+	stored := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: secret("my-project"),
+			Region:    secret("us-central1"),
+			AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{
+				Audience:            secret("//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws"),
+				ServiceAccountEmail: secretPtr("vertex@my-project.iam.gserviceaccount.com"),
+				AWSRoleARN:          secretPtr("arn:aws:iam::123456789012:role/VertexHop"),
+			},
+		},
+	}
+	update := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: secret("my-project"),
+			Region:    secret("us-central1"),
+			AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{
+				Audience:            secret("//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws"),
+				ServiceAccountEmail: secretPtr("other@my-project.iam.gserviceaccount.com"),
+				AWSRoleARN:          secretPtr(mask),
+			},
+		},
+	}
+
+	merged, err := h.mergeUpdatedKey(stored, update)
+	if err != nil {
+		t.Fatalf("mergeUpdatedKey returned error: %v", err)
+	}
+	if got := merged.VertexKeyConfig.AWSWorkloadIdentity.AWSRoleARN.GetValue(); got != "arn:aws:iam::123456789012:role/VertexHop" {
+		t.Errorf("expected stored aws_role_arn to be preserved, got %q", got)
+	}
+	if got := merged.VertexKeyConfig.AWSWorkloadIdentity.ServiceAccountEmail.GetValue(); got != "other@my-project.iam.gserviceaccount.com" {
+		t.Errorf("expected edited service_account_email to be applied, got %q", got)
+	}
+
+	// A mask with nothing stored behind it is a client bug and must be rejected, not persisted.
+	// The first merge rewrote the update's pointer in place, so send a fresh mask.
+	stored.VertexKeyConfig.AWSWorkloadIdentity = nil
+	update.VertexKeyConfig.AWSWorkloadIdentity.AWSRoleARN = secretPtr(mask)
+	if _, err := h.mergeUpdatedKey(stored, update); err == nil {
+		t.Fatal("expected masked aws_role_arn without a stored value to be rejected")
+	}
+
+	// Omitting the role ARN entirely (direct access, no hop) must not trip the guard.
+	update.VertexKeyConfig.AWSWorkloadIdentity.AWSRoleARN = nil
+	if _, err := h.mergeUpdatedKey(stored, update); err != nil {
+		t.Fatalf("expected federation block without aws_role_arn to merge cleanly, got: %v", err)
+	}
+}
+
+// TestValidateVertexKeyAuth pins the API-side counterpart of the config.schema.json rule: a Vertex key
+// must not carry both an aws_workload_identity block and a non-empty auth_credentials JSON. Without
+// this check the API silently let federation take precedence over a credentials JSON the operator
+// also supplied, while config.json rejected the same combination.
+func TestValidateVertexKeyAuth(t *testing.T) {
+	secret := func(v string) schemas.SecretVar { return *schemas.NewSecretVar(v) }
+	wif := &schemas.VertexAWSWorkloadIdentityConfig{Audience: secret("//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws")}
+	vertex := func(cfg *schemas.VertexKeyConfig) schemas.Key { return schemas.Key{VertexKeyConfig: cfg} }
+
+	err := validateVertexKeyAuth(schemas.Vertex, vertex(&schemas.VertexKeyConfig{
+		ProjectID: secret("p"), Region: secret("r"),
+		AuthCredentials:     secret(`{"type":"service_account"}`),
+		AWSWorkloadIdentity: wif,
+	}))
+	if err == nil {
+		t.Fatal("expected auth_credentials alongside aws_workload_identity to be rejected")
+	}
+	for _, want := range []string{"auth_credentials", "aws_workload_identity"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should name %s", err.Error(), want)
+		}
+	}
+
+	// An env reference for the credentials is just as much a second identity.
+	t.Setenv("TEST_VERTEX_CREDS", `{"type":"service_account"}`)
+	if err := validateVertexKeyAuth(schemas.Vertex, vertex(&schemas.VertexKeyConfig{
+		ProjectID: secret("p"), Region: secret("r"),
+		AuthCredentials: secret("env.TEST_VERTEX_CREDS"), AWSWorkloadIdentity: wif,
+	})); err == nil {
+		t.Fatal("expected env-referenced auth_credentials alongside aws_workload_identity to be rejected")
+	}
+
+	// A present block without an audience is a broken federation config, not "no federation": the
+	// configuration schema requires audience whenever the block exists, and so does the API.
+	for name, block := range map[string]*schemas.VertexAWSWorkloadIdentityConfig{
+		"empty block":    {},
+		"email only":     {ServiceAccountEmail: schemas.NewSecretVar("sa@p.iam.gserviceaccount.com")},
+		"empty audience": {Audience: secret("")},
+	} {
+		err := validateVertexKeyAuth(schemas.Vertex, vertex(&schemas.VertexKeyConfig{ProjectID: secret("p"), Region: secret("r"), AWSWorkloadIdentity: block}))
+		if err == nil || !strings.Contains(err.Error(), "audience") {
+			t.Errorf("%s: expected an audience error, got %v", name, err)
+		}
+	}
+	// token_lifetime_seconds mirrors the configuration schema bounds; zero means "not set".
+	for _, lifetime := range []int{599, 43201, -1} {
+		err := validateVertexKeyAuth(schemas.Vertex, vertex(&schemas.VertexKeyConfig{ProjectID: secret("p"), Region: secret("r"),
+			AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{Audience: wif.Audience, TokenLifetimeSeconds: lifetime}}))
+		if err == nil || !strings.Contains(err.Error(), "token_lifetime_seconds") {
+			t.Errorf("lifetime %d: expected a token_lifetime_seconds error, got %v", lifetime, err)
+		}
+	}
+
+	accepted := []schemas.Key{
+		vertex(&schemas.VertexKeyConfig{ProjectID: secret("p"), Region: secret("r"), AWSWorkloadIdentity: wif}),
+		vertex(&schemas.VertexKeyConfig{ProjectID: secret("p"), Region: secret("r"), AuthCredentials: secret(""), AWSWorkloadIdentity: wif}),
+		vertex(&schemas.VertexKeyConfig{ProjectID: secret("p"), Region: secret("r"), AuthCredentials: secret(`{"type":"service_account"}`)}),
+		vertex(&schemas.VertexKeyConfig{ProjectID: secret("p"), Region: secret("r")}),
+		vertex(&schemas.VertexKeyConfig{ProjectID: secret("p"), Region: secret("r"), AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{Audience: wif.Audience, TokenLifetimeSeconds: 600}}),
+		vertex(&schemas.VertexKeyConfig{ProjectID: secret("p"), Region: secret("r"), AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{Audience: wif.Audience, TokenLifetimeSeconds: 43200}}),
+		{Value: secret("api-key")},
+	}
+	for i, key := range accepted {
+		if err := validateVertexKeyAuth(schemas.Vertex, key); err != nil {
+			t.Errorf("accepted case %d rejected: %v", i, err)
+		}
+	}
+	// Other providers never carry the block and are never touched.
+	if err := validateVertexKeyAuth(schemas.OpenAI, vertex(&schemas.VertexKeyConfig{AuthCredentials: secret("x"), AWSWorkloadIdentity: wif})); err != nil {
+		t.Errorf("non-vertex provider must not be validated: %v", err)
+	}
 }

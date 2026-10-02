@@ -4690,6 +4690,67 @@ func chatFileBlockDocument(t *testing.T, file *schemas.ChatInputFile) *bedrock.B
 	return result.Messages[0].Content[1].Document
 }
 
+// A file content block carrying cache_control must be followed by a standalone
+// cachePoint block, exactly as text and image blocks already are (#7613). Without it
+// the document is billed as fresh input on every request and the client's cache
+// breakpoint is silently lost on the wire.
+func TestDocumentBlockCacheControlEmitsCachePoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		ttl         *string
+		expectedTTL *string
+	}{
+		{"DefaultTTL", nil, nil},
+		{"OneHourTTL", schemas.Ptr("1h"), schemas.Ptr("1h")},
+		{"UnsupportedTTLDropsToDefault", schemas.Ptr("1m"), nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Summarise the attached document.")},
+								{
+									Type: schemas.ChatContentBlockTypeFile,
+									File: &schemas.ChatInputFile{
+										Filename: schemas.Ptr("a.pdf"),
+										FileData: schemas.Ptr("data:application/pdf;base64,JVBERi0xLjQK"),
+									},
+									CacheControl: &schemas.CacheControl{
+										Type: schemas.CacheControlTypeEphemeral,
+										TTL:  tt.ttl,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.Len(t, result.Messages, 1)
+
+			content := result.Messages[0].Content
+			require.Len(t, content, 3, "expected text, document, cachePoint; got %+v", content)
+			require.NotNil(t, content[0].Text)
+			require.NotNil(t, content[1].Document)
+			require.NotNil(t, content[2].CachePoint, "cache_control on a file block must emit a trailing cachePoint block")
+			assert.Equal(t, bedrock.BedrockCachePointTypeDefault, content[2].CachePoint.Type)
+			assert.Equal(t, tt.expectedTTL, content[2].CachePoint.TTL)
+		})
+	}
+}
+
 // The standard OpenAI chat `type:"file"` part carries the document's MIME type only
 // inside the file_data data URL - file_type is a Bifrost extension normal clients
 // don't send. Without reading it, every non-PDF document was labeled format "pdf"
@@ -6121,7 +6182,7 @@ func TestToBedrockChatCompletionRequest_AliasesLongMCPToolNames(t *testing.T) {
 	assert.NotEqual(t, toolName, alias)
 	assert.Contains(t, alias, "_list_network_requests")
 	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
-	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	assert.Regexp(t, `^t[0-9a-f]{8}_`, alias)
 	require.NotNil(t, result.ToolConfig.ToolChoice)
 	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
 	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
@@ -6165,7 +6226,7 @@ func TestToBedrockChatCompletionRequest_AliasesToolNamesWithInvalidChars(t *test
 	alias := result.ToolConfig.Tools[0].ToolSpec.Name
 	assert.NotEqual(t, toolName, alias, "name with disallowed chars must be aliased")
 	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
-	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	assert.Regexp(t, `^t[0-9a-f]{8}_`, alias)
 	require.NotNil(t, result.ToolConfig.ToolChoice)
 	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
 	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
@@ -6260,7 +6321,7 @@ func TestToBedrockResponsesRequest_AliasesLongMCPToolNames(t *testing.T) {
 	assert.NotEqual(t, toolName, alias)
 	assert.Contains(t, alias, "_notion-notion-search")
 	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
-	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	assert.Regexp(t, `^t[0-9a-f]{8}_`, alias)
 	require.NotNil(t, result.ToolConfig.ToolChoice)
 	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
 	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
@@ -8045,4 +8106,468 @@ collect:
 	require.Equal(t, 13, final.Usage.PromptTokens, "prompt_tokens")
 	require.Equal(t, 29, final.Usage.CompletionTokens, "completion_tokens")
 	require.Equal(t, 42, final.Usage.TotalTokens, "total_tokens")
+}
+
+// guardTag returns the InvokeModel input-tagging pair for suffix, as AWS documents it.
+func guardTag(suffix string) (string, string) {
+	return "<amazon-bedrock-guardrails-guardContent_" + suffix + ">", "</amazon-bedrock-guardrails-guardContent_" + suffix + ">"
+}
+
+// allConverseContent flattens every message's content blocks in order, so the assertions do
+// not depend on whether consecutive same-role turns were merged.
+func allConverseContent(req *bedrock.BedrockConverseRequest) []bedrock.BedrockContentBlock {
+	var blocks []bedrock.BedrockContentBlock
+	for _, msg := range req.Messages {
+		blocks = append(blocks, msg.Content...)
+	}
+	return blocks
+}
+
+// TestGuardContentRoundTrip pins #7696: guardContent entries in messages and system survive
+// Bedrock -> Bifrost -> Bedrock with their qualifiers, and untagged text is kept beside them.
+// Before the fix both were silently dropped (system=0, message=0).
+func TestGuardContentRoundTrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+		System: []bedrock.BedrockSystemMessage{
+			{Text: schemas.Ptr("You are a helpful assistant.")},
+			{GuardContent: &bedrock.BedrockGuardContent{Text: &bedrock.BedrockGuardContentText{
+				Text: "trusted grounding text", Qualifiers: []bedrock.BedrockContentQualifier{bedrock.ContentQualifierGrounding}}}},
+		},
+		Messages: []bedrock.BedrockMessage{{
+			Role: bedrock.BedrockMessageRoleUser,
+			Content: []bedrock.BedrockContentBlock{
+				{Text: schemas.Ptr("untagged text")},
+				{GuardContent: &bedrock.BedrockGuardContent{Text: &bedrock.BedrockGuardContentText{
+					Text: "What is the capital of France?", Qualifiers: []bedrock.BedrockContentQualifier{bedrock.ContentQualifierQuery}}}},
+			},
+		}},
+	}
+
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	marked := 0
+	for _, msg := range bifrostReq.Input {
+		require.NotNil(t, msg.Content)
+		for _, block := range msg.Content.ContentBlocks {
+			if block.GuardContent != nil {
+				marked++
+				require.NotNil(t, block.Text, "a guard marker rides on a text block")
+			}
+		}
+	}
+	assert.Equal(t, 2, marked, "one marked system block and one marked user block in canonical form")
+
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+
+	require.Len(t, result.System, 2)
+	require.NotNil(t, result.System[0].Text)
+	assert.Equal(t, "You are a helpful assistant.", *result.System[0].Text)
+	require.NotNil(t, result.System[1].GuardContent, "system guardContent stripped in round-trip")
+	require.NotNil(t, result.System[1].GuardContent.Text)
+	assert.Equal(t, "trusted grounding text", result.System[1].GuardContent.Text.Text)
+	assert.Equal(t, []bedrock.BedrockContentQualifier{bedrock.ContentQualifierGrounding}, result.System[1].GuardContent.Text.Qualifiers)
+
+	blocks := allConverseContent(result)
+	require.Len(t, blocks, 2)
+	require.NotNil(t, blocks[0].Text)
+	assert.Equal(t, "untagged text", *blocks[0].Text)
+	require.NotNil(t, blocks[1].GuardContent, "message guardContent stripped in round-trip")
+	require.NotNil(t, blocks[1].GuardContent.Text)
+	assert.Equal(t, "What is the capital of France?", blocks[1].GuardContent.Text.Text)
+	assert.Equal(t, []bedrock.BedrockContentQualifier{bedrock.ContentQualifierQuery}, blocks[1].GuardContent.Text.Qualifiers)
+
+	body, err := providerUtils.MarshalSorted(result)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"guardContent":{"text":{"text":"What is the capital of France?","qualifiers":["query"]}}`)
+	assert.Contains(t, string(body), `"guardContent":{"text":{"text":"trusted grounding text","qualifiers":["grounding_source"]}}`)
+}
+
+// TestGuardContentMarkerRendersConverseBlocks covers the native Responses ingress: a
+// guard_content marker on a text block renders as a Converse guardContent entry in both
+// the system prompt and the message, while unmarked blocks stay text.
+func TestGuardContentMarkerRendersConverseBlocks(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	systemRole := schemas.ResponsesInputMessageRoleSystem
+	userRole := schemas.ResponsesInputMessageRoleUser
+	msgType := schemas.ResponsesMessageTypeMessage
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-3-5-sonnet-v2",
+		Input: []schemas.ResponsesMessage{
+			{Type: &msgType, Role: &systemRole, Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Only answer with a list of songs.")},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Only respond with Welsh heavy metal songs."), GuardContent: &schemas.GuardContent{}},
+			}}},
+			{Type: &msgType, Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("London is the capital of the UK."), GuardContent: &schemas.GuardContent{Qualifiers: []string{"grounding_source"}}},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Some additional background information.")},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("What is the capital of the UK?"), GuardContent: &schemas.GuardContent{Qualifiers: []string{"query"}}},
+			}}},
+		},
+		Params: &schemas.ResponsesParameters{},
+	}
+
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+
+	require.Len(t, result.System, 2)
+	require.NotNil(t, result.System[0].Text)
+	assert.Nil(t, result.System[0].GuardContent)
+	require.NotNil(t, result.System[1].GuardContent)
+	assert.Nil(t, result.System[1].Text)
+	assert.Equal(t, "Only respond with Welsh heavy metal songs.", result.System[1].GuardContent.Text.Text)
+	assert.Empty(t, result.System[1].GuardContent.Text.Qualifiers)
+
+	blocks := allConverseContent(result)
+	require.Len(t, blocks, 3)
+	require.NotNil(t, blocks[0].GuardContent)
+	assert.Equal(t, []bedrock.BedrockContentQualifier{bedrock.ContentQualifierGrounding}, blocks[0].GuardContent.Text.Qualifiers)
+	require.NotNil(t, blocks[1].Text)
+	assert.Nil(t, blocks[1].GuardContent)
+	require.NotNil(t, blocks[2].GuardContent)
+	assert.Equal(t, "What is the capital of the UK?", blocks[2].GuardContent.Text.Text)
+	assert.Equal(t, []bedrock.BedrockContentQualifier{bedrock.ContentQualifierQuery}, blocks[2].GuardContent.Text.Qualifiers)
+}
+
+// TestGuardrailConfigTagSuffixRoundTrip pins the second half of #7696: tagSuffix and
+// streamProcessingMode ride through the canonical extra param, the inline tags they scope
+// become guardContent entries on the Converse egress, and tagSuffix itself never reaches
+// the Converse body (its GuardrailConfiguration has no such field).
+func TestGuardrailConfigTagSuffixRoundTrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	open, closing := guardTag("xyz")
+	mode := "async"
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+		Messages: []bedrock.BedrockMessage{{
+			Role:    bedrock.BedrockMessageRoleUser,
+			Content: []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Here is context.\n" + open + "What is the capital of France?" + closing)}},
+		}},
+		GuardrailConfig: &bedrock.BedrockGuardrailConfig{
+			GuardrailIdentifier:  "test-guardrail-id",
+			GuardrailVersion:     "DRAFT",
+			StreamProcessingMode: &mode,
+			TagSuffix:            "xyz",
+		},
+	}
+
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	config, ok := bifrostReq.Params.ExtraParams["guardrailConfig"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "xyz", config["tagSuffix"])
+	assert.Equal(t, "async", config["streamProcessingMode"])
+
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result.GuardrailConfig)
+	assert.Equal(t, "test-guardrail-id", result.GuardrailConfig.GuardrailIdentifier)
+	require.NotNil(t, result.GuardrailConfig.StreamProcessingMode)
+	assert.Equal(t, "async", *result.GuardrailConfig.StreamProcessingMode)
+	assert.Empty(t, result.GuardrailConfig.TagSuffix, "tagSuffix must be consumed before a Converse marshal")
+
+	blocks := allConverseContent(result)
+	require.Len(t, blocks, 2)
+	require.NotNil(t, blocks[0].Text)
+	assert.Equal(t, "Here is context.\n", *blocks[0].Text)
+	require.NotNil(t, blocks[1].GuardContent)
+	assert.Equal(t, "What is the capital of France?", blocks[1].GuardContent.Text.Text)
+
+	body, err := providerUtils.MarshalSorted(result)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "tagSuffix")
+	assert.NotContains(t, string(body), "amazon-bedrock-guardrails-guardContent")
+	assert.Contains(t, string(body), `"streamProcessingMode":"async"`)
+}
+
+// TestInlineGuardTagsBecomeGuardContentOnConverse covers the tag-splitting rules of the
+// Converse egress bridge on both the Responses and Chat paths.
+func TestInlineGuardTagsBecomeGuardContentOnConverse(t *testing.T) {
+	open, closing := guardTag("xyz")
+	guardrail := func(suffix string) map[string]interface{} {
+		config := map[string]interface{}{"guardrailIdentifier": "test-guardrail-id", "guardrailVersion": "DRAFT"}
+		if suffix != "" {
+			config["tagSuffix"] = suffix
+		}
+		return config
+	}
+	type want struct {
+		text  string
+		guard bool
+	}
+	cases := []struct {
+		name   string
+		suffix string
+		text   string
+		want   []want
+	}{
+		{
+			name:   "single pair after context",
+			suffix: "xyz",
+			text:   "Only answer with a list of songs.\n" + open + "Create a playlist of heavy metal songs." + closing,
+			want:   []want{{"Only answer with a list of songs.\n", false}, {"Create a playlist of heavy metal songs.", true}},
+		},
+		{
+			name:   "multiple pairs with a tail",
+			suffix: "xyz",
+			text:   "Q1: " + open + "How many objects?" + closing + " Q2: " + open + "How do I download?" + closing + " Thanks.",
+			want:   []want{{"Q1: ", false}, {"How many objects?", true}, {" Q2: ", false}, {"How do I download?", true}, {" Thanks.", false}},
+		},
+		{
+			name:   "whitespace-only gaps are dropped",
+			suffix: "xyz",
+			text:   "\n" + open + "guarded" + closing + "\n   ",
+			want:   []want{{"guarded", true}},
+		},
+		{
+			name:   "unterminated tag stays literal",
+			suffix: "xyz",
+			text:   "prefix " + open + "never closed",
+			want:   []want{{"prefix " + open + "never closed", false}},
+		},
+		{
+			name:   "tags with a different suffix stay literal",
+			suffix: "abc",
+			text:   "prefix " + open + "other suffix" + closing,
+			want:   []want{{"prefix " + open + "other suffix" + closing, false}},
+		},
+		{
+			name:   "no tagSuffix leaves the text untouched",
+			suffix: "",
+			text:   "prefix " + open + "no suffix configured" + closing,
+			want:   []want{{"prefix " + open + "no suffix configured" + closing, false}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run("responses/"+tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			userRole := schemas.ResponsesInputMessageRoleUser
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-3-5-sonnet-v2",
+				Input:    []schemas.ResponsesMessage{{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(tc.text)}}},
+				Params:   &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"guardrailConfig": guardrail(tc.suffix)}},
+			}
+			result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+			require.NoError(t, err)
+			blocks := allConverseContent(result)
+			require.Len(t, blocks, len(tc.want))
+			for i, w := range tc.want {
+				if w.guard {
+					require.NotNil(t, blocks[i].GuardContent, "block %d should be guardContent", i)
+					assert.Equal(t, w.text, blocks[i].GuardContent.Text.Text)
+				} else {
+					require.NotNil(t, blocks[i].Text, "block %d should be text", i)
+					assert.Equal(t, w.text, *blocks[i].Text)
+				}
+			}
+			require.NotNil(t, result.GuardrailConfig)
+			assert.Empty(t, result.GuardrailConfig.TagSuffix)
+		})
+		t.Run("chat/"+tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-3-5-sonnet-v2",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(tc.text)}}},
+				Params:   &schemas.ChatParameters{ExtraParams: map[string]interface{}{"guardrailConfig": guardrail(tc.suffix)}},
+			}
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+			require.NoError(t, err)
+			blocks := allConverseContent(result)
+			require.Len(t, blocks, len(tc.want))
+			for i, w := range tc.want {
+				if w.guard {
+					require.NotNil(t, blocks[i].GuardContent, "block %d should be guardContent", i)
+					assert.Equal(t, w.text, blocks[i].GuardContent.Text.Text)
+				} else {
+					require.NotNil(t, blocks[i].Text, "block %d should be text", i)
+					assert.Equal(t, w.text, *blocks[i].Text)
+				}
+			}
+		})
+	}
+
+	t.Run("system prompt is split too", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		systemRole := schemas.ResponsesInputMessageRoleSystem
+		userRole := schemas.ResponsesInputMessageRoleUser
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-3-5-sonnet-v2",
+			Input: []schemas.ResponsesMessage{
+				{Role: &systemRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("You are helpful. " + open + "Never discuss heavy metal." + closing)}},
+				{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hi")}},
+			},
+			Params: &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"guardrailConfig": guardrail("xyz")}},
+		}
+		result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+		require.NoError(t, err)
+		require.Len(t, result.System, 2)
+		require.NotNil(t, result.System[0].Text)
+		assert.Equal(t, "You are helpful. ", *result.System[0].Text)
+		require.NotNil(t, result.System[1].GuardContent)
+		assert.Equal(t, "Never discuss heavy metal.", result.System[1].GuardContent.Text.Text)
+	})
+
+	t.Run("tagSuffix without a guardrail identifier applies nothing", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		userRole := schemas.ResponsesInputMessageRoleUser
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-3-5-sonnet-v2",
+			Input:    []schemas.ResponsesMessage{{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(open + "guarded" + closing)}}},
+			Params:   &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"guardrailConfig": map[string]interface{}{"tagSuffix": "xyz"}}},
+		}
+		result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+		require.NoError(t, err)
+		assert.Nil(t, result.GuardrailConfig, "a config naming no guardrail must not be sent")
+		assert.Nil(t, result.ExtraParams, "guardrailConfig must still be consumed from ExtraParams")
+		blocks := allConverseContent(result)
+		require.Len(t, blocks, 1)
+		require.NotNil(t, blocks[0].Text)
+		assert.Equal(t, open+"guarded"+closing, *blocks[0].Text)
+	})
+}
+
+// testGuardPNG is a 1x1 PNG, the same fixture the harness uses for image ingress cases.
+const testGuardPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+
+// TestGuardContentImageRoundTrip: a guardContent image entry survives Bedrock -> Bifrost ->
+// Bedrock as an image block carrying the guard marker, and is rebuilt with the same bytes.
+func TestGuardContentImageRoundTrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+		Messages: []bedrock.BedrockMessage{{
+			Role: bedrock.BedrockMessageRoleUser,
+			Content: []bedrock.BedrockContentBlock{
+				{GuardContent: &bedrock.BedrockGuardContent{Image: &bedrock.BedrockGuardContentImage{
+					Format: "png", Source: bedrock.BedrockGuardContentImageSource{Bytes: schemas.Ptr(testGuardPNG)}}}},
+				{Text: schemas.Ptr("What color is this image?")},
+			},
+		}},
+	}
+
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	var imageBlock *schemas.ResponsesMessageContentBlock
+	for i := range bifrostReq.Input {
+		for j := range bifrostReq.Input[i].Content.ContentBlocks {
+			if bifrostReq.Input[i].Content.ContentBlocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeImage {
+				imageBlock = &bifrostReq.Input[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, imageBlock, "guarded image dropped on ingress")
+	require.NotNil(t, imageBlock.GuardContent, "guarded image lost its marker on ingress")
+	require.NotNil(t, imageBlock.ResponsesInputMessageContentBlockImage)
+	assert.Equal(t, "data:image/png;base64,"+testGuardPNG, *imageBlock.ResponsesInputMessageContentBlockImage.ImageURL)
+
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	blocks := allConverseContent(result)
+	require.Len(t, blocks, 2)
+	require.NotNil(t, blocks[0].GuardContent, "guarded image stripped on egress")
+	require.NotNil(t, blocks[0].GuardContent.Image)
+	assert.Nil(t, blocks[0].Image)
+	assert.Equal(t, "png", blocks[0].GuardContent.Image.Format)
+	require.NotNil(t, blocks[0].GuardContent.Image.Source.Bytes)
+	assert.Equal(t, testGuardPNG, *blocks[0].GuardContent.Image.Source.Bytes)
+	require.NotNil(t, blocks[1].Text)
+
+	body, err := providerUtils.MarshalSorted(result)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"guardContent":{"image":{"format":"png","source":{"bytes":"`+testGuardPNG+`"}}}`)
+}
+
+// TestGuardContentImageRejectsUnassessableFormats: AWS assesses only png/jpeg bytes, so a
+// marked gif is an explicit error rather than an image the guardrail silently skips.
+func TestGuardContentImageRejectsUnassessableFormats(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	userRole := schemas.ResponsesInputMessageRoleUser
+	gif := "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-3-5-sonnet-v2",
+		Input: []schemas.ResponsesMessage{{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+			ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &gif},
+			GuardContent:                           &schemas.GuardContent{},
+		}}}}},
+		Params: &schemas.ResponsesParameters{},
+	}
+	_, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "guard_content image format")
+}
+
+// TestChatGuardMarkersRenderConverseBlocks: the Chat path honours guard_content on text and
+// image blocks in messages and on text blocks in the system prompt.
+func TestChatGuardMarkersRenderConverseBlocks(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	png := "data:image/png;base64," + testGuardPNG
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-3-5-sonnet-v2",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("You are helpful.")},
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Only discuss geography."), GuardContent: &schemas.GuardContent{}},
+			}}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("What is the capital of France?"), GuardContent: &schemas.GuardContent{Qualifiers: []string{"query"}}},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: png}, GuardContent: &schemas.GuardContent{}},
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Answer briefly.")},
+			}}},
+		},
+		Params: &schemas.ChatParameters{},
+	}
+
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+
+	require.Len(t, result.System, 2)
+	require.NotNil(t, result.System[0].Text)
+	require.NotNil(t, result.System[1].GuardContent)
+	assert.Equal(t, "Only discuss geography.", result.System[1].GuardContent.Text.Text)
+
+	blocks := allConverseContent(result)
+	require.Len(t, blocks, 3)
+	require.NotNil(t, blocks[0].GuardContent)
+	require.NotNil(t, blocks[0].GuardContent.Text)
+	assert.Equal(t, []bedrock.BedrockContentQualifier{bedrock.ContentQualifierQuery}, blocks[0].GuardContent.Text.Qualifiers)
+	require.NotNil(t, blocks[1].GuardContent)
+	require.NotNil(t, blocks[1].GuardContent.Image)
+	assert.Equal(t, "png", blocks[1].GuardContent.Image.Format)
+	assert.Equal(t, testGuardPNG, *blocks[1].GuardContent.Image.Source.Bytes)
+	assert.Nil(t, blocks[1].Image)
+	require.NotNil(t, blocks[2].Text)
+	assert.Nil(t, blocks[2].GuardContent)
+}
+
+// TestGuardTagSuffixValidation_ConversePath: the same tagSuffix constraint is enforced where
+// the Converse egress would otherwise split text on a malformed tag, on both converters.
+func TestGuardTagSuffixValidation_ConversePath(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	userRole := schemas.ResponsesInputMessageRoleUser
+	for _, bad := range []string{"xy>z", "with space", "toolongtoolongtoolong"} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			extra := map[string]interface{}{"guardrailConfig": map[string]interface{}{"guardrailIdentifier": "gr", "guardrailVersion": "1", "tagSuffix": bad}}
+			_, err := bedrock.ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "anthropic.claude-3-5-sonnet-v2",
+				Input:  []schemas.ResponsesMessage{{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params: &schemas.ResponsesParameters{ExtraParams: extra}})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "tagSuffix")
+			_, err = bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: "anthropic.claude-3-5-sonnet-v2",
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params: &schemas.ChatParameters{ExtraParams: extra}})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "tagSuffix")
+		})
+	}
 }

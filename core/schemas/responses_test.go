@@ -922,7 +922,7 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 				Annotations: &map[string]any{"readOnlyHint": true},
 			}}},
 			ResponsesMCPApprovalResponse: &ResponsesMCPApprovalResponse{
-				ApprovalResponseID: "approval_1", Approve: true, Reason: Ptr("allowed"),
+				ApprovalRequestID: "approval_1", Approve: true, Reason: Ptr("allowed"),
 			},
 			ResponsesAdvisorCall: &ResponsesAdvisorCall{
 				ResultType:       "advisor_result",
@@ -1367,4 +1367,329 @@ func TestResponsesWebSearchSourceRoundTrip(t *testing.T) {
 			t.Fatalf("expected no name key on a plain url source, got %v", source["name"])
 		}
 	})
+}
+
+// TestResponsesOpenAIWireShapes pins OpenAI Responses shapes that previously failed
+// to decode or re-encoded lossily: each input must survive an unmarshal/marshal
+// round trip unchanged.
+func TestResponsesOpenAIWireShapes(t *testing.T) {
+	assertRoundTrip := func(t *testing.T, v any, in string) {
+		t.Helper()
+		if err := Unmarshal([]byte(in), v); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		out, err := MarshalSorted(v)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got, want any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+		if err := json.Unmarshal([]byte(in), &want); err != nil {
+			t.Fatalf("decode input: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round trip mismatch\n got: %s\nwant: %s", out, in)
+		}
+	}
+
+	t.Run("mcp_approval_response_keeps_approval_request_id", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesMessage{}, `{"type":"mcp_approval_response","approval_request_id":"mcpr_1","approve":true,"reason":"ok"}`)
+	})
+
+	t.Run("mcp_call_structured_errors", func(t *testing.T) {
+		for _, tc := range []struct{ in, text string }{
+			{`{"type":"mcp_call","id":"mcp_1","name":"search","arguments":"{}","error":{"type":"mcp_protocol_error","code":-32602,"message":"bad params"}}`, "bad params"},
+			{`{"type":"mcp_call","id":"mcp_2","name":"search","arguments":"{}","error":{"type":"http_error","code":502,"message":"upstream down"}}`, "upstream down"},
+			{`{"type":"mcp_call","id":"mcp_3","name":"search","arguments":"{}","error":{"type":"mcp_tool_execution_error","content":[{"type":"text","text":"boom"}]}}`, `[{"type":"text","text":"boom"}]`},
+			{`{"type":"mcp_call","id":"mcp_4","name":"search","arguments":"{}","error":"legacy string"}`, "legacy string"},
+		} {
+			msg := &ResponsesMessage{}
+			assertRoundTrip(t, msg, tc.in)
+			if got := msg.ResponsesToolMessage.Error.Text(); got != tc.text {
+				t.Fatalf("Text() = %q, want %q", got, tc.text)
+			}
+		}
+	})
+
+	t.Run("conversation_accepts_string_and_object", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesParameters{}, `{"conversation":"conv_1"}`)
+		assertRoundTrip(t, &ResponsesParameters{}, `{"conversation":{"id":"conv_1"}}`)
+	})
+
+	t.Run("reused_conversation_clears_previous_union_arm", func(t *testing.T) {
+		var conversation ResponsesResponseConversation
+		if err := Unmarshal([]byte(`{"id":"conv_1"}`), &conversation); err != nil {
+			t.Fatalf("unmarshal object conversation: %v", err)
+		}
+		if err := Unmarshal([]byte(`"conv_2"`), &conversation); err != nil {
+			t.Fatalf("unmarshal string conversation into reused receiver: %v", err)
+		}
+		if conversation.ResponsesResponseConversationStruct != nil ||
+			conversation.ResponsesResponseConversationStr == nil ||
+			*conversation.ResponsesResponseConversationStr != "conv_2" {
+			t.Fatalf("reused conversation retained stale object arm: %#v", conversation)
+		}
+
+		if err := Unmarshal([]byte(`{"id":"conv_3"}`), &conversation); err != nil {
+			t.Fatalf("unmarshal object conversation into reused receiver: %v", err)
+		}
+		if conversation.ResponsesResponseConversationStr != nil ||
+			conversation.ResponsesResponseConversationStruct == nil ||
+			conversation.ResponsesResponseConversationStruct.ID != "conv_3" {
+			t.Fatalf("reused conversation retained stale string arm: %#v", conversation)
+		}
+	})
+
+	t.Run("mcp_allowed_tools_accepts_array_and_filter", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesTool{}, `{"type":"mcp","server_label":"docs","server_url":"https://mcp.example.com","allowed_tools":["search","fetch"]}`)
+		assertRoundTrip(t, &ResponsesTool{}, `{"type":"mcp","server_label":"docs","server_url":"https://mcp.example.com","allowed_tools":{"read_only":true,"tool_names":["search"]}}`)
+	})
+
+	t.Run("reused_tool_error_clears_previous_union_arm", func(t *testing.T) {
+		var toolError ResponsesToolMessageError
+		if err := Unmarshal([]byte(`{"type":"http_error","code":502}`), &toolError); err != nil {
+			t.Fatalf("unmarshal structured error: %v", err)
+		}
+		if err := Unmarshal([]byte(`"legacy"`), &toolError); err != nil {
+			t.Fatalf("unmarshal string error into reused receiver: %v", err)
+		}
+		if toolError.ResponsesToolMessageErrorStruct != nil || toolError.ResponsesToolMessageErrorStr == nil || *toolError.ResponsesToolMessageErrorStr != "legacy" {
+			t.Fatalf("reused error retained stale union state: %#v", toolError)
+		}
+
+		if err := Unmarshal([]byte(`{"type":"mcp_protocol_error"}`), &toolError); err != nil {
+			t.Fatalf("unmarshal structured error into reused receiver: %v", err)
+		}
+		if toolError.ResponsesToolMessageErrorStr != nil || toolError.ResponsesToolMessageErrorStruct == nil {
+			t.Fatalf("reused error retained stale string arm: %#v", toolError)
+		}
+	})
+
+	t.Run("reused_allowed_tools_clears_previous_union_arm", func(t *testing.T) {
+		var allowed ResponsesToolMCPAllowedTools
+		if err := Unmarshal([]byte(`{"read_only":true}`), &allowed); err != nil {
+			t.Fatalf("unmarshal filter: %v", err)
+		}
+		if err := Unmarshal([]byte(`["search"]`), &allowed); err != nil {
+			t.Fatalf("unmarshal names into reused receiver: %v", err)
+		}
+		if allowed.Filter != nil || !reflect.DeepEqual(allowed.ToolNames, []string{"search"}) {
+			t.Fatalf("reused allowed_tools retained stale union state: %#v", allowed)
+		}
+
+		if err := Unmarshal([]byte(`{"tool_names":["fetch"]}`), &allowed); err != nil {
+			t.Fatalf("unmarshal filter into reused receiver: %v", err)
+		}
+		if allowed.ToolNames != nil || allowed.Filter == nil || !reflect.DeepEqual(allowed.Filter.ToolNames, []string{"fetch"}) {
+			t.Fatalf("reused allowed_tools retained stale names arm: %#v", allowed)
+		}
+	})
+
+	t.Run("file_search_in_and_nin_filters", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesTool{}, `{"type":"file_search","vector_store_ids":["vs_1"],"filters":{"type":"and","filters":[{"type":"in","key":"region","value":["us","eu"]},{"type":"nin","key":"year","value":[2023,2024]}]}}`)
+	})
+}
+
+func TestResponsesToolMessageErrorClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *ResponsesToolMessageError
+		want bool
+	}{
+		{name: "absent", err: nil, want: false},
+		{name: "empty legacy string", err: &ResponsesToolMessageError{ResponsesToolMessageErrorStr: Ptr("")}, want: false},
+		{name: "legacy string", err: &ResponsesToolMessageError{ResponsesToolMessageErrorStr: Ptr("failed")}, want: true},
+		{name: "empty structured error", err: &ResponsesToolMessageError{ResponsesToolMessageErrorStruct: &ResponsesToolMessageErrorStruct{}}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.IsError(); got != tt.want {
+				t.Fatalf("IsError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeepCopyResponsesMessageCopiesStructuredErrorPointers(t *testing.T) {
+	original := ResponsesMessage{ResponsesToolMessage: &ResponsesToolMessage{Error: &ResponsesToolMessageError{
+		ResponsesToolMessageErrorStruct: &ResponsesToolMessageErrorStruct{
+			Type: "http_error", Code: Ptr(502), Message: Ptr("upstream failed"), Content: json.RawMessage(`{"retryable":true}`),
+		},
+	}}}
+
+	copied := DeepCopyResponsesMessage(original)
+	originalError := original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+	copiedError := copied.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+	if copiedError == nil {
+		t.Fatal("deep copy dropped structured error")
+	}
+	if copiedError == originalError || copiedError.Code == originalError.Code || copiedError.Message == originalError.Message {
+		t.Fatal("deep copy aliases structured error fields")
+	}
+	if len(copiedError.Content) > 0 && &copiedError.Content[0] == &originalError.Content[0] {
+		t.Fatal("deep copy aliases structured error content")
+	}
+
+	*copiedError.Code = 503
+	*copiedError.Message = "changed"
+	copiedError.Content[2] = 'x'
+	if *originalError.Code != 502 || *originalError.Message != "upstream failed" || string(originalError.Content) != `{"retryable":true}` {
+		t.Fatalf("mutating copied error changed original: %#v", originalError)
+	}
+}
+
+// TestResponsesToolOpenAIFields pins the OpenAI tool fields async (function and
+// custom), output_schema (function) and tunnel_id (MCP) through a round trip,
+// including function tools nested in a namespace.
+func TestResponsesToolOpenAIFields(t *testing.T) {
+	for _, in := range []string{
+		`{"type":"function","name":"get_weather","async":true,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":true,"output_schema":{"type":"object","properties":{"temp":{"type":"number","exclusiveMinimum":-273}},"const":"x"}}`,
+		`{"type":"custom","name":"run_job","async":false,"format":{"type":"text"}}`,
+		`{"type":"mcp","server_label":"internal","tunnel_id":"tunnel_0123456789abcdef0123456789abcdef","require_approval":"never"}`,
+		`{"type":"namespace","name":"jobs","description":"Job tools","tools":[{"type":"function","name":"start","async":true,"parameters":{"type":"object","properties":{}},"strict":false,"output_schema":{"type":"string"}}]}`,
+	} {
+		var tool ResponsesTool
+		if err := Unmarshal([]byte(in), &tool); err != nil {
+			t.Fatalf("unmarshal %s: %v", in, err)
+		}
+		out, err := MarshalSorted(tool)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got, want any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+		if err := json.Unmarshal([]byte(in), &want); err != nil {
+			t.Fatalf("decode input: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round trip mismatch\n got: %s\nwant: %s", out, in)
+		}
+	}
+}
+
+// TestResponsesToolCallAsyncSurvives pins async on function_call and
+// custom_tool_call items. A replayed pending async call without it is rejected by
+// OpenAI with "No tool output found for function call".
+func TestResponsesToolCallAsyncSurvives(t *testing.T) {
+	for _, in := range []string{
+		`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Paris\"}","async":true,"status":"completed"}`,
+		`{"type":"custom_tool_call","call_id":"call_2","name":"run_job","input":"go","async":true}`,
+	} {
+		var msg ResponsesMessage
+		if err := Unmarshal([]byte(in), &msg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		out, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got, want any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+		if err := json.Unmarshal([]byte(in), &want); err != nil {
+			t.Fatalf("decode input: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round trip mismatch\n got: %s\nwant: %s", out, in)
+		}
+
+		copied := DeepCopyResponsesMessage(msg)
+		if copied.ResponsesToolMessage.Async == nil || !*copied.ResponsesToolMessage.Async {
+			t.Fatalf("deep copy lost async: %s", in)
+		}
+		if copied.ResponsesToolMessage.Async == msg.ResponsesToolMessage.Async {
+			t.Fatalf("deep copy aliases the async pointer: %s", in)
+		}
+	}
+}
+
+// The Responses API carries tool_usage at the top level; internally it rides on usage for pricing.
+func TestBifrostResponsesResponseToolUsageIsTopLevelOnTheWire(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","output":[],
+		"tool_usage":{"web_search":{"num_requests":2}},
+		"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`
+	var resp BifrostResponsesResponse
+	require.NoError(t, json.Unmarshal([]byte(body), &resp))
+	require.NotNil(t, resp.Usage.ToolUsage, "top-level tool_usage must reach usage for pricing")
+	assert.Equal(t, 2, resp.Usage.ToolUsage.WebSearch.NumRequests)
+	require.NotNil(t, resp.ToolUsage)
+	assert.Equal(t, 2, resp.ToolUsage.WebSearch.NumRequests)
+
+	// Marshal must not mutate the caller's response.
+	defer func() { assert.NotNil(t, resp.Usage.ToolUsage, "marshal cleared the caller's usage.tool_usage") }()
+
+	out, err := json.Marshal(resp)
+	require.NoError(t, err)
+	var wire map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(out, &wire))
+	assert.JSONEq(t, `{"web_search":{"num_requests":2}}`, string(wire["tool_usage"]))
+	assert.NotContains(t, string(wire["usage"]), "tool_usage", "usage must not carry tool_usage on the wire")
+
+	// Streamed response.completed nests the response; same shape inside it.
+	event := BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCompleted, Response: &resp}
+	out, err = json.Marshal(event)
+	require.NoError(t, err)
+	var streamed struct {
+		Response map[string]json.RawMessage `json:"response"`
+	}
+	require.NoError(t, json.Unmarshal(out, &streamed))
+	assert.JSONEq(t, `{"web_search":{"num_requests":2}}`, string(streamed.Response["tool_usage"]))
+	assert.NotContains(t, string(streamed.Response["usage"]), "tool_usage")
+
+	// Set only on usage (how providers fill it): still sent top-level only.
+	out, err = json.Marshal(BifrostResponsesResponse{Usage: &ResponsesResponseUsage{TotalTokens: 1, ToolUsage: &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 4}}}})
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(out, &wire))
+	assert.JSONEq(t, `{"web_search":{"num_requests":4}}`, string(wire["tool_usage"]))
+	assert.NotContains(t, string(wire["usage"]), "tool_usage")
+
+	// A response without tool usage emits no tool_usage key.
+	out, err = json.Marshal(BifrostResponsesResponse{Usage: &ResponsesResponseUsage{TotalTokens: 1}})
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "tool_usage")
+
+	// Round trip through the stream event parser too.
+	var parsed BifrostResponsesStreamResponse
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"response.completed","sequence_number":3,"response":`+body+`}`), &parsed))
+	assert.Equal(t, 2, parsed.Response.Usage.ToolUsage.WebSearch.NumRequests)
+}
+
+func TestDeepCopyResponsesMessagePreservesGuardContent(t *testing.T) {
+	messageType := ResponsesMessageTypeMessage
+	role := ResponsesInputMessageRoleUser
+	text := "What is the capital of France?"
+
+	original := ResponsesMessage{
+		Type: &messageType,
+		Role: &role,
+		Content: &ResponsesMessageContent{
+			ContentBlocks: []ResponsesMessageContentBlock{{
+				Type:         ResponsesInputMessageContentBlockTypeText,
+				Text:         &text,
+				GuardContent: &GuardContent{Qualifiers: []string{"query"}},
+			}},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	got := copied.Content.ContentBlocks[0].GuardContent
+	if got == nil {
+		t.Fatal("deep copy dropped the guard marker")
+	}
+	if got == original.Content.ContentBlocks[0].GuardContent {
+		t.Error("copy aliases the original guard marker struct")
+	}
+	if len(got.Qualifiers) != 1 || got.Qualifiers[0] != "query" {
+		t.Fatalf("qualifiers = %v, want [query]", got.Qualifiers)
+	}
+	got.Qualifiers[0] = "grounding_source"
+	if original.Content.ContentBlocks[0].GuardContent.Qualifiers[0] != "query" {
+		t.Error("copy shares the qualifiers backing array with the original")
+	}
 }

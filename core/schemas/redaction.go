@@ -162,7 +162,7 @@ func IsContentAttribute(key string) bool {
 func AllContentAttributeKeys() []string {
 	return []string{
 		AttrInputMessages, AttrInputText, AttrInputSpeech, AttrInputEmbedding,
-		AttrPrompt, AttrInstructions,
+		AttrPrompt, AttrInstructions, AttrSuffix,
 		AttrTools, AttrToolChoiceType, AttrToolChoiceName,
 		AttrRespTools, AttrRespToolChoiceType, AttrRespToolChoiceName,
 		AttrOutputMessages, AttrRespReasoningText,
@@ -230,6 +230,122 @@ func stripContentAttrs(attrs map[string]any) map[string]any {
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// StripTraceAttributes copies src without the named attributes, on spans and span
+// events. Names match exactly; an empty deny list returns src unchanged.
+func StripTraceAttributes(src *Trace, deny []string) *Trace {
+	if src == nil || len(deny) == 0 {
+		return src
+	}
+	denied := make(map[string]struct{}, len(deny))
+	for _, k := range deny {
+		if k != "" {
+			denied[k] = struct{}{}
+		}
+	}
+	if len(denied) == 0 {
+		return src
+	}
+	out := &Trace{
+		RequestID:      src.RequestID,
+		TraceID:        src.TraceID,
+		InternalID:     src.InternalID,
+		ParentID:       src.ParentID,
+		StartTime:      src.StartTime,
+		EndTime:        src.EndTime,
+		Attributes:     denyAttrs(src.Attributes, denied),
+		RequestHeaders: src.RequestHeaders,
+		PluginLogs:     src.PluginLogs,
+	}
+	if src.Spans != nil {
+		copies := make(map[*Span]*Span, len(src.Spans))
+		out.Spans = make([]*Span, len(src.Spans))
+		for i, sp := range src.Spans {
+			cp := StripSpanAttributes(sp, denied)
+			copies[sp] = cp
+			out.Spans[i] = cp
+		}
+		if cp, ok := copies[src.RootSpan]; ok {
+			out.RootSpan = cp
+		} else {
+			out.RootSpan = StripSpanAttributes(src.RootSpan, denied)
+		}
+	} else {
+		out.RootSpan = StripSpanAttributes(src.RootSpan, denied)
+	}
+	return out
+}
+
+// StripSpanAttributes copies src without the denied keys, carrying the typed LLM
+// and Enrichment payloads over untouched.
+func StripSpanAttributes(src *Span, denied map[string]struct{}) *Span {
+	if src == nil {
+		return nil
+	}
+	events := src.Events
+	if len(events) > 0 {
+		events = make([]SpanEvent, 0, len(src.Events))
+		for _, e := range src.Events {
+			events = append(events, SpanEvent{
+				Name:       e.Name,
+				Timestamp:  e.Timestamp,
+				Attributes: denyAttrs(e.Attributes, denied),
+			})
+		}
+	}
+	// Raw payloads sit on LLM but export under attribute names, so denying a name
+	// must clear the field too. Copy-on-write: the source is pooled.
+	llm := src.LLM
+	if llm != nil {
+		_, denyRequest := denied[AttrBifrostRawRequest]
+		_, denyResponse := denied[AttrBifrostRawResponse]
+		denyRequest = denyRequest && llm.RawRequest != ""
+		denyResponse = denyResponse && llm.RawResponse != ""
+		// Nothing to clear means no copy: raw export is opt-in, so a standing
+		// denylist entry would otherwise copy 408 bytes per span for nothing.
+		if denyRequest || denyResponse {
+			cp := *llm
+			if denyRequest {
+				cp.RawRequest = ""
+			}
+			if denyResponse {
+				cp.RawResponse = ""
+			}
+			llm = &cp
+		}
+	}
+	return &Span{
+		SpanID:     src.SpanID,
+		ParentID:   src.ParentID,
+		TraceID:    src.TraceID,
+		Name:       src.Name,
+		Kind:       src.Kind,
+		StartTime:  src.StartTime,
+		EndTime:    src.EndTime,
+		Status:     src.Status,
+		StatusMsg:  src.StatusMsg,
+		Attributes: denyAttrs(src.Attributes, denied),
+		LLM:        llm,
+		Enrichment: src.Enrichment,
+		Events:     events,
+	}
+}
+
+// denyAttrs copies attrs without the denied keys. Nil stays nil; an all-denied map
+// returns empty rather than nil, so the span still serializes an attribute set.
+func denyAttrs(attrs map[string]any, denied map[string]struct{}) map[string]any {
+	if attrs == nil {
+		return nil
+	}
+	out := make(map[string]any, len(attrs))
+	for k, v := range attrs {
+		if _, bad := denied[k]; bad {
+			continue
+		}
+		out[k] = v
 	}
 	return out
 }

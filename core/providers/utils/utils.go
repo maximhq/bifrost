@@ -538,7 +538,26 @@ func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
 // client.Do covers headers only, so the returned body is wrapped to time the
 // reads that drain it. Streamed responses consumed through NewIdleTimeoutReader
 // are unwrapped there — the idle reader does its own per-chunk timing.
+//
+// A stream attempt with a first-token deadline (AttemptAbort on the context)
+// runs on a child context that the abort cancels, so a missed deadline ends
+// both the header wait and the body read without cancelling the request.
 func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	if abort := AttemptAbortFromContext(req.Context()); abort != nil {
+		if abort.Fired() {
+			return nil, ErrStreamFirstTokenTimeout
+		}
+		attemptCtx, cancel := context.WithCancelCause(req.Context())
+		go func() {
+			select {
+			case <-abort.Done():
+				cancel(ErrStreamFirstTokenTimeout)
+			case <-abort.Stopped():
+			case <-attemptCtx.Done():
+			}
+		}()
+		req = req.WithContext(attemptCtx)
+	}
 	startTime := time.Now()
 	resp, err := client.Do(req)
 	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
@@ -2154,11 +2173,20 @@ func rootErrorMessage(raw interface{}) string {
 
 // HandleProviderAPIError processes error responses from provider APIs.
 // It attempts to unmarshal the error response and returns a BifrostError
-// with the appropriate status code and error information.
+// with the appropriate status code and error information, and the retry hint from the
+// response headers (see ApplyRetryAfter).
 // HTML detection only runs if JSON parsing fails to avoid expensive regex operations
 // on responses that are almost certainly valid JSON. errorResp must be a pointer to
 // the target struct for unmarshaling.
 func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
+	bifrostErr := handleProviderAPIError(resp, errorResp)
+	ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
+}
+
+// handleProviderAPIError builds the error from the response, leaving the retry hint to its
+// caller so every branch below picks it up.
+func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
 
 	// Decode body
@@ -3254,40 +3282,56 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 				logger.Debug("recovered panic in stream cancellation closeBodyStream: %v", rec)
 			}
 		}()
-		select {
-		case <-ctx.Done():
-			// Claim the close so only one owner (this goroutine, the idle-timeout
-			// timer, or ReleaseStreamingResponse) drives it. The claim orders the
-			// close against ReleaseStreamingResponse's drain; fasthttp itself is
-			// idempotent here (clientStreamBody.CloseWithError is guarded by a
-			// sync.Once), so a lost race is no longer destructive.
-			if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
-				return
-			}
-			// Closing here interrupts a read that is still in flight. That is safe
-			// only on a fasthttp carrying upstream commit fb3b29e ("wait for
-			// streaming reads before releasing pooled resources", #2353), where
-			// clientStreamBody interrupts the connection and then waits on its
-			// readLock before returning the *requestStream and the connection's
-			// *bufio.Reader to their pools.
-			//
-			// On fasthttp v1.71.0 through v1.73.0 this close pooled both objects
-			// underneath an active reader, so a later request acquired an aliased
-			// object and read another request's bytes. That is maximhq/bifrost#6143,
-			// and TestStreamCloseUnderActiveReaderIsSafe is the guard: it fails
-			// under -race on any fasthttp without that fix.
-			closeBodyStream(bodyStream, ctx.Err())
-		case <-done:
-			// The streaming goroutine reached its defer chain and ctx is also
-			// cancelled. Claim and close so ReleaseStreamingResponse does not drain
-			// a body nobody wants, and so a half-read connection is closed rather
-			// than returned to the idle pool.
-			if ctx.Err() != nil {
+		abort := AttemptAbortFromContext(ctx)
+		abortDone, abortStopped := abort.Done(), abort.Stopped()
+		for {
+			select {
+			case <-abortDone:
+				// The attempt missed its first-token deadline. The request itself is
+				// still live (a fallback follows), so close only this attempt's body.
 				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 					return
 				}
+				closeBodyStream(bodyStream, ErrStreamFirstTokenTimeout)
+			case <-abortStopped:
+				// The attempt produced output; keep watching ctx only.
+				abortDone, abortStopped = nil, nil
+				continue
+			case <-ctx.Done():
+				// Claim the close so only one owner (this goroutine, the idle-timeout
+				// timer, or ReleaseStreamingResponse) drives it. The claim orders the
+				// close against ReleaseStreamingResponse's drain; fasthttp itself is
+				// idempotent here (clientStreamBody.CloseWithError is guarded by a
+				// sync.Once), so a lost race is no longer destructive.
+				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
+					return
+				}
+				// Closing here interrupts a read that is still in flight. That is safe
+				// only on a fasthttp carrying upstream commit fb3b29e ("wait for
+				// streaming reads before releasing pooled resources", #2353), where
+				// clientStreamBody interrupts the connection and then waits on its
+				// readLock before returning the *requestStream and the connection's
+				// *bufio.Reader to their pools.
+				//
+				// On fasthttp v1.71.0 through v1.73.0 this close pooled both objects
+				// underneath an active reader, so a later request acquired an aliased
+				// object and read another request's bytes. That is maximhq/bifrost#6143,
+				// and TestStreamCloseUnderActiveReaderIsSafe is the guard: it fails
+				// under -race on any fasthttp without that fix.
 				closeBodyStream(bodyStream, ctx.Err())
+			case <-done:
+				// The streaming goroutine reached its defer chain and ctx is also
+				// cancelled. Claim and close so ReleaseStreamingResponse does not drain
+				// a body nobody wants, and so a half-read connection is closed rather
+				// than returned to the idle pool.
+				if ctx.Err() != nil {
+					if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
+						return
+					}
+					closeBodyStream(bodyStream, ctx.Err())
+				}
 			}
+			return
 		}
 	}()
 	return func() {
@@ -4375,14 +4419,8 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 		}
 	}
 
-	// End span with appropriate status
+	// Error attributes are stamped by PopulateLLMResponseAttributes above.
 	if err != nil {
-		if err.Error != nil {
-			tracer.SetAttribute(handle, "error", err.Error.Message)
-		}
-		if err.StatusCode != nil {
-			tracer.SetAttribute(handle, "status_code", *err.StatusCode)
-		}
 		tracer.EndSpan(handle, schemas.SpanStatusError, "streaming request failed")
 	} else {
 		tracer.EndSpan(handle, schemas.SpanStatusOk, "")

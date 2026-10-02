@@ -90,10 +90,16 @@ func TestIsContentAttribute(t *testing.T) {
 	assert.True(t, IsContentAttribute(AttrPrompt))
 	assert.True(t, IsContentAttribute(AttrInstructions))
 	assert.True(t, IsContentAttribute(AttrRespReasoningText))
+	// A text-completion suffix is prompt text the caller supplied.
+	assert.True(t, IsContentAttribute(AttrSuffix))
 
 	assert.False(t, IsContentAttribute(AttrRequestModel))
 	assert.False(t, IsContentAttribute(AttrProviderName))
 	assert.False(t, IsContentAttribute(TraceAttrSessionID))
+	// Stop sequences are a request parameter under the GenAI semantic conventions, like
+	// temperature, and stay exported when content is disabled.
+	assert.False(t, IsContentAttribute(AttrStopSequences))
+	assert.False(t, IsContentAttribute(AttrBifrostStopSequencesJoined))
 }
 
 // TestTraceApplyRedactionReplacementsRedactsContentAttributes verifies trace redaction honors attribute phase.
@@ -500,5 +506,116 @@ func TestFinalAttemptSpan(t *testing.T) {
 	}
 	if got := FinalAttemptSpan(nil); got != nil {
 		t.Errorf("nil trace returned %v", got)
+	}
+}
+
+// StripTraceAttributes drops only the named keys, leaves everything else intact,
+// and never mutates the source trace (connectors share a pooled snapshot).
+func TestStripTraceAttributes(t *testing.T) {
+	newTrace := func() *Trace {
+		root := &Span{SpanID: "root", Attributes: map[string]any{"keep": 1, AttrTools: "big"}}
+		child := &Span{
+			SpanID:     "child",
+			Attributes: map[string]any{AttrTools: "big", AttrRequestModel: "m"},
+			LLM:        &LLMSpanData{},
+			Enrichment: &SpanEnrichment{},
+			Events:     []SpanEvent{{Name: "e", Attributes: map[string]any{AttrTools: "big", "ok": true}}},
+		}
+		return &Trace{TraceID: "t1", Attributes: map[string]any{AttrTools: "big", "keep": 2},
+			Spans: []*Span{root, child}, RootSpan: root}
+	}
+
+	src := newTrace()
+	out := StripTraceAttributes(src, []string{AttrTools})
+
+	if _, ok := out.Attributes[AttrTools]; ok {
+		t.Error("trace-level denied attribute survived")
+	}
+	if out.Attributes["keep"] != 2 {
+		t.Error("trace-level unrelated attribute lost")
+	}
+	for _, sp := range out.Spans {
+		if _, ok := sp.Attributes[AttrTools]; ok {
+			t.Errorf("span %s kept the denied attribute", sp.SpanID)
+		}
+		for _, e := range sp.Events {
+			if _, ok := e.Attributes[AttrTools]; ok {
+				t.Errorf("span %s event kept the denied attribute", sp.SpanID)
+			}
+			if e.Attributes["ok"] != true {
+				t.Errorf("span %s event lost an unrelated attribute", sp.SpanID)
+			}
+		}
+	}
+	if out.Spans[1].Attributes[AttrRequestModel] != "m" {
+		t.Error("unrelated span attribute lost")
+	}
+	if out.Spans[1].LLM == nil || out.Spans[1].Enrichment == nil {
+		t.Error("typed LLM/Enrichment payload dropped")
+	}
+	// RootSpan must be the copy inside Spans, not a second one.
+	if out.RootSpan != out.Spans[0] {
+		t.Error("RootSpan identity not preserved")
+	}
+	// Connectors share the pooled snapshot, so the source must be untouched.
+	if _, ok := src.Spans[1].Attributes[AttrTools]; !ok {
+		t.Error("source trace was mutated")
+	}
+
+	if got := StripTraceAttributes(src, nil); got != src {
+		t.Error("nil deny list should return the source unchanged")
+	}
+	if got := StripTraceAttributes(src, []string{""}); got != src {
+		t.Error("empty-string-only deny list should return the source unchanged")
+	}
+	if got := StripTraceAttributes(nil, []string{AttrTools}); got != nil {
+		t.Error("nil trace should return nil")
+	}
+	// An unknown name is a silent no-op by design (no validation).
+	if out := StripTraceAttributes(src, []string{"does.not.exist"}); out.Spans[1].Attributes[AttrTools] != "big" {
+		t.Error("unknown denied name should leave attributes untouched")
+	}
+}
+
+// Denying a raw payload's attribute name must clear the field on LLM, not
+// silently do nothing.
+func TestStripTraceAttributesClearsRawPayloads(t *testing.T) {
+	newTrace := func() *Trace {
+		return &Trace{TraceID: "t1", Spans: []*Span{{
+			SpanID: "s1",
+			LLM:    &LLMSpanData{RawRequest: "REQ_BODY", RawResponse: "RESP_BODY", ResponseID: "keep"},
+		}}}
+	}
+	for _, tc := range []struct {
+		name             string
+		deny             []string
+		wantReq, wantRsp string
+	}{
+		{"neither denied", nil, "REQ_BODY", "RESP_BODY"},
+		{"request denied", []string{AttrBifrostRawRequest}, "", "RESP_BODY"},
+		{"response denied", []string{AttrBifrostRawResponse}, "REQ_BODY", ""},
+		{"both denied", []string{AttrBifrostRawRequest, AttrBifrostRawResponse}, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := newTrace()
+			out := StripTraceAttributes(src, tc.deny)
+			llm := out.Spans[0].LLM
+			if llm == nil {
+				t.Fatal("LLM payload dropped entirely")
+			}
+			if llm.RawRequest != tc.wantReq {
+				t.Errorf("RawRequest = %q, want %q", llm.RawRequest, tc.wantReq)
+			}
+			if llm.RawResponse != tc.wantRsp {
+				t.Errorf("RawResponse = %q, want %q", llm.RawResponse, tc.wantRsp)
+			}
+			if llm.ResponseID != "keep" {
+				t.Error("clearing a raw field disturbed the rest of the payload")
+			}
+			// Other connectors share this pooled source.
+			if src.Spans[0].LLM.RawRequest != "REQ_BODY" || src.Spans[0].LLM.RawResponse != "RESP_BODY" {
+				t.Error("source LLM payload was mutated")
+			}
+		})
 	}
 }

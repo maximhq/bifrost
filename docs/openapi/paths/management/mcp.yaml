@@ -1,8 +1,18 @@
 execute-tool:
   post:
     operationId: executeMCPTool
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Not RBAC-gated - authorized by the credential below |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Execute MCP tool
-    description: Executes an MCP tool and returns the result.
+    description: |
+      Executes an MCP tool and returns the result.
     tags:
       - MCP
     parameters:
@@ -74,6 +84,15 @@ execute-tool:
 clients:
   get:
     operationId: getMCPClients
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List MCP clients
     description: |
       Returns a paginated list of configured MCP clients with their tools and connection state.
@@ -172,6 +191,15 @@ clients:
 client:
   post:
     operationId: addMCPClient
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Add MCP client
     description: |
       Adds a new MCP client with the specified configuration.
@@ -226,6 +254,15 @@ client:
 client-by-id:
   put:
     operationId: editMCPClient
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Edit MCP client
     description: |
       Updates an existing MCP client's configuration. All fields are optional
@@ -269,8 +306,18 @@ client-by-id:
 
   delete:
     operationId: removeMCPClient
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Remove MCP client
-    description: Removes an MCP client from the configuration.
+    description: |
+      Removes an MCP client from the configuration.
     tags:
       - MCP
     parameters:
@@ -298,6 +345,15 @@ client-by-id:
 client-reconnect:
   post:
     operationId: reconnectMCPClient
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Reconnect MCP client
     description: |
       Reconnects an MCP client that is in an error or unstable state.
@@ -353,6 +409,12 @@ client-refresh-tools:
 
       The freshly discovered set is persisted and the hosted /mcp surface is
       re-synced automatically, exactly as for every other discovery path.
+      A refresh also re-reads the server's instructions, which costs one extra
+      handshake for a sticky http or sse client because tools/list cannot
+      carry that field. STDIO clients are skipped: Bifrost owns the
+      subprocess, so its instructions cannot change without a reconnect. This
+      is the only way to pick up instructions edited upstream without
+      restarting, since MCP defines no change notification for them.
       Rejected with 400 when the client is not in a state where discovery
       means anything: disabled (enable it first), needs_reauth (reauthorize
       it first), or still pending_verification (complete the one-time admin
@@ -397,6 +459,15 @@ client-refresh-tools:
 client-complete-oauth:
   post:
     operationId: completeMCPClientOAuth
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Complete MCP client OAuth flow
     description: |
       Completes an OAuth flow for an MCP client after the admin has authorized
@@ -468,6 +539,15 @@ client-complete-oauth:
 client-initiate-verification:
   post:
     operationId: initiateMCPClientVerification
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Initiate verification for a pending MCP client
     description: |
       Starts the one-time admin OAuth authorization for an MCP client sitting
@@ -512,6 +592,15 @@ client-initiate-verification:
 client-reauthorize:
   post:
     operationId: reauthorizeMCPClient
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Reauthorize an MCP client
     description: |
       Redoes the OAuth consent flow for an already-authorized OAuth-based MCP
@@ -668,6 +757,15 @@ client-reregister:
 client-verify-headers:
   post:
     operationId: verifyMCPClientHeaders
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Verify a pending per-user-headers MCP client
     description: |
       Completes the admin verification for an MCP client with auth_type
@@ -749,6 +847,15 @@ client-verify-headers:
 client-verify-exchange:
   post:
     operationId: verifyMCPClientExchange
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Verify a pending or repair a needs_reauth token_exchange MCP client
     description: |
       Completes admin verification for an MCP client with auth_type
@@ -836,6 +943,15 @@ sessions:
       `(identity, mcp_client)` binding, the credential is returned and the
       flow is suppressed to avoid duplicate entries.
     operationId: listMcpSessions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     security:
       - ManagementBearerAuth: []
@@ -871,6 +987,15 @@ session-by-id:
       Bifrost does **not** call the upstream provider's revoke endpoint —
       revocation is local. Per-user-headers credentials never call upstream.
     operationId: revokeMcpSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     parameters:
       - name: id
@@ -912,6 +1037,15 @@ session-reauth:
       help; the issue is the identity has lost access to the MCP, which the
       admin must fix.
     operationId: reauthMcpSession
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     parameters:
       - name: id
@@ -952,6 +1086,15 @@ per-user-headers-flow:
 
       Requires management API authentication via `Authorization: Bearer <API key>`.
     operationId: getPerUserHeadersFlow
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     parameters:
       - name: id
@@ -987,6 +1130,15 @@ per-user-headers-flow:
       Values for any key not in the live `per_user_header_keys` schema are
       dropped server-side so a stale UI can't persist deprecated keys.
     operationId: submitPerUserHeadersFlow
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     parameters:
       - name: id
@@ -1036,6 +1188,15 @@ per-user-headers-credential:
       point; this typed endpoint exists for callers that already know they're
       acting on a header credential row.
     operationId: revokePerUserHeadersCredential
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
     parameters:
       - name: id

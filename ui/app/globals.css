@@ -74,10 +74,12 @@
 	--color-chart-success: var(--chart-success);
 	--color-chart-error: var(--chart-error);
 	--color-chart-warning: var(--chart-warning);
+	--color-chart-info: var(--chart-info);
 	--color-chart-neutral: var(--chart-neutral);
 	--color-chart-success-ink: var(--chart-success-ink);
 	--color-chart-error-ink: var(--chart-error-ink);
 	--color-chart-warning-ink: var(--chart-warning-ink);
+	--color-chart-info-ink: var(--chart-info-ink);
 	--color-chart-seq-1: var(--chart-seq-1);
 	--color-chart-seq-2: var(--chart-seq-2);
 	--color-chart-seq-3: var(--chart-seq-3);
@@ -181,7 +183,7 @@
 	--secondary: oklch(0.967 0.001 286.375);
 	--secondary-foreground: oklch(0.21 0.006 285.885);
 	--muted: oklch(0.967 0.001 286.375);
-	--muted-foreground: oklch(0.552 0.016 285.938);
+	--muted-foreground: oklch(0.52 0.016 285.938);
 	--accent: oklch(0.967 0.001 286.375);
 	--accent-foreground: oklch(0.21 0.006 285.885);
 	--destructive: oklch(0.577 0.245 27.325);
@@ -191,10 +193,14 @@
 	/* Chart color system. Semantic: status only. Sequential: one hue, stepped
 	   lightness, for ordered series (seq = teal, ord = indigo percentiles).
 	   Categorical: six hues assigned by rank, then grey for "Other". Hues 0-70
-	   are reserved for status, so no category can look like an error. */
+	   are reserved for status, so no category can look like an error. Info is
+	   the in-progress status (a check or a recovery under way); it shares the
+	   blue family with cat-1 and cat-5, so keep it to badges and state marks,
+	   not series that sit beside categorical ones. */
 	--chart-success: oklch(0.63 0.11 182);
 	--chart-error: oklch(0.6 0.16 27);
 	--chart-warning: oklch(0.74 0.13 62);
+	--chart-info: oklch(0.64 0.1 240);
 	--chart-neutral: oklch(0.8 0.012 200);
 	/* Text-safe versions of the status hues: same hue, lightness set so 12px
 	   text clears WCAG 4.5:1 on the card and on a 10% tint of itself. Fills,
@@ -202,6 +208,7 @@
 	--chart-success-ink: oklch(0.45 0.1 182);
 	--chart-error-ink: oklch(0.48 0.16 27);
 	--chart-warning-ink: oklch(0.5 0.12 62);
+	--chart-info-ink: oklch(0.47 0.11 245);
 	--chart-seq-1: oklch(0.38 0.085 205);
 	--chart-seq-2: oklch(0.48 0.115 200);
 	--chart-seq-3: oklch(0.6 0.115 190);
@@ -257,10 +264,12 @@
 	--chart-success: oklch(0.72 0.115 182);
 	--chart-error: oklch(0.68 0.155 27);
 	--chart-warning: oklch(0.8 0.125 62);
+	--chart-info: oklch(0.72 0.1 240);
 	--chart-neutral: oklch(0.55 0.015 220);
 	--chart-success-ink: oklch(0.84 0.1 182);
 	--chart-error-ink: oklch(0.82 0.12 27);
 	--chart-warning-ink: oklch(0.86 0.11 62);
+	--chart-info-ink: oklch(0.84 0.08 240);
 	--chart-seq-1: oklch(0.9 0.05 184);
 	--chart-seq-2: oklch(0.8 0.085 186);
 	--chart-seq-3: oklch(0.68 0.11 190);
@@ -592,6 +601,22 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 [data-streamdown="code-block"],
 [data-streamdown="code-block-body"] {
 	@apply rounded-sm!;
+}
+
+/* Streamdown's table and code controls ship without a pointer cursor */
+[data-streamdown="table-wrapper"] button:not(:disabled),
+[data-streamdown="code-block-actions"] button:not(:disabled) {
+	@apply cursor-pointer;
+}
+
+/* Copy/download dropdown: streamdown paints it bg-background, which is translucent in dark
+   mode and the same shade as bg-accent in light mode, so use the popover surface instead */
+[data-streamdown="table-wrapper"] div.absolute.top-full {
+	@apply bg-popover text-popover-foreground;
+}
+
+[data-streamdown="table-wrapper"] div.absolute.top-full > button:hover {
+	@apply bg-accent text-accent-foreground;
 }
 
 /* Ensure toasts remain clickable above modal overlays (radix react-remove-scroll) */

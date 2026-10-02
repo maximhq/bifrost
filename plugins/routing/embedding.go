@@ -35,22 +35,27 @@ type semanticEmbeddingFailure struct {
 	cause  error
 }
 
+// Error returns the detailed semantic embedding failure.
 func (e *semanticEmbeddingFailure) Error() string {
 	return e.detail
 }
 
+// Unwrap returns the cause of the semantic embedding failure.
 func (e *semanticEmbeddingFailure) Unwrap() error {
 	return e.cause
 }
 
+// SemanticFailureReason exposes the bounded category used by semantic status.
 func (e *semanticEmbeddingFailure) SemanticFailureReason() complexity.SemanticFailureReason {
 	return e.reason
 }
 
+// newSemanticEmbeddingFailure retains the detailed cause and bounded failure category.
 func newSemanticEmbeddingFailure(reason complexity.SemanticFailureReason, detail string, cause error) error {
 	return &semanticEmbeddingFailure{reason: reason, detail: detail, cause: cause}
 }
 
+// embeddingProviderFailureReason maps provider status codes to semantic failure categories.
 func embeddingProviderFailureReason(bifrostErr *schemas.BifrostError) complexity.SemanticFailureReason {
 	if bifrostErr == nil || bifrostErr.StatusCode == nil {
 		return complexity.SemanticFailureProviderUnavailable
@@ -242,10 +247,9 @@ func requestEmbeddingTimeout(semantic *complexity.SemanticConfig) time.Duration 
 // triggering request's context. Warmup embeds arrive on plain background
 // contexts (never a *schemas.BifrostContext), so they are naturally excluded —
 // boot/warmup embedding cost is never stamped or attributed to any request.
-// Classification runs in PreRequestHook, once per top-level request before any
-// provider fallback attempts, so this call happens at most once; a later llm
-// fallback call (recordRoutingLLMUsage) appends alongside it rather than
-// replacing it, so both calls' cost and budget attribution survive.
+// Classification runs in PreRequestHook, once per top-level request before
+// provider fallback attempts, so a configured LLM or Jev fallback appends its
+// usage alongside this call rather than replacing it.
 func recordRoutingEmbedUsage(ctx context.Context, semantic *complexity.SemanticConfig, inputTokens int) {
 	bfCtx, ok := ctx.(*schemas.BifrostContext)
 	if !ok || semantic == nil {
@@ -293,12 +297,41 @@ func recordRoutingLLMUsage(ctx context.Context, llm *complexity.LLMConfig, input
 	})
 }
 
-// stampRoutingMetadata attaches routing-classification metadata to the response
-// when this request ran a semantic routing embed. Stamped on every such
-// response for visibility, independent of count_toward_budgets — the flag rides
-// in the struct because cost calculation (modelcatalog) cannot see governance
-// config. For streams, only the final chunk is stamped, matching where cost is
-// billed and mirroring the semantic cache's stamping.
+// recordRoutingDecisionUsage appends Jev's decision usage to the triggering
+// request. Jev classification is always included in request cost and budgets.
+func recordRoutingDecisionUsage(ctx context.Context, model string, usage *schemas.BifrostLLMUsage) {
+	bfCtx, ok := ctx.(*schemas.BifrostContext)
+	if !ok {
+		return
+	}
+	if model == "" {
+		model = jevComplexityModel
+	}
+	inputTokens, outputTokens := 0, 0
+	if usage != nil {
+		if usage.PromptTokens > 0 {
+			inputTokens = usage.PromptTokens
+		}
+		if usage.CompletionTokens > 0 {
+			outputTokens = usage.CompletionTokens
+		}
+	}
+	provider := string(schemas.Typesafe)
+	requestType := schemas.DecisionRequest
+	schemas.AppendRoutingCallOnContext(bfCtx, schemas.BifrostRoutingCall{
+		RequestType:        requestType,
+		ProviderUsed:       &provider,
+		ModelUsed:          &model,
+		InputTokens:        &inputTokens,
+		OutputTokens:       &outputTokens,
+		CountTowardBudgets: true,
+	})
+}
+
+// stampRoutingMetadata attaches internal classification usage to the response
+// for log details and cost calculation. It retains calls even when they do not
+// count toward budgets because the cost calculator cannot read governance config.
+// For streams, only the final chunk is stamped, where the cost is billed.
 func stampRoutingMetadata(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, requestType schemas.RequestType, isFinalChunk bool) {
 	if result == nil {
 		return
@@ -439,12 +472,10 @@ func (p *RoutingPlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic
 		timeout = configstore.DefaultComplexitySemanticTimeout
 	}
 
-	input := &schemas.EmbeddingInput{}
-	if len(texts) == 1 {
-		text := texts[0]
-		input.Text = &text
-	} else {
-		input.Texts = append([]string(nil), texts...)
+	input := make([]schemas.EmbeddingInputItem, len(texts))
+	for i := range texts {
+		text := texts[i]
+		input[i] = schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}
 	}
 	embeddingReq := &schemas.BifrostEmbeddingRequest{
 		Provider: semantic.Provider,

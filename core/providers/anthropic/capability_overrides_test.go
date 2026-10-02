@@ -495,3 +495,20 @@ func TestForcedToolChoice_DatasheetOutranksFallback(t *testing.T) {
 		assert.Nil(t, req.ToolChoice)
 	})
 }
+
+func TestBetweenToolsThinking_OverrideHit(t *testing.T) {
+	yes := true
+	setOverride(t, "claude-sonnet-5", schemas.ModelCapabilities{SupportsBetweenToolsThinking: &yes})
+	got := BetweenToolsThinking(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-5"), nil)
+	require.NotNil(t, got)
+	assert.Equal(t, "between_tools", got.Type)
+}
+
+func TestBetweenToolsThinking_OverrideAbsent_FallbackTakesOver(t *testing.T) {
+	providerUtils.SetCapabilityResolver(nil)
+	assert.True(t, DefaultSupportsBetweenToolsThinking("global.anthropic.claude-sonnet-5-5"))
+	assert.True(t, DefaultSupportsBetweenToolsThinking("claude-sonnet-5-5@20260901"))
+	assert.False(t, DefaultSupportsBetweenToolsThinking("claude-sonnet-5"))
+	assert.False(t, DefaultSupportsBetweenToolsThinking("claude-sonnet-4-5"))
+	assert.False(t, DefaultSupportsBetweenToolsThinking("claude-opus-5-5"))
+}

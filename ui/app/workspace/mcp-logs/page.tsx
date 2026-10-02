@@ -16,6 +16,7 @@ import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
+import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import NumberFlow from "@number-flow/react";
 import { useLocation } from "@tanstack/react-router";
@@ -315,10 +316,12 @@ export default function MCPLogsPage() {
 
 	const handlePollToggle = useCallback(
 		(enabled: boolean) => {
-			setUrlState({ polling: enabled });
-			if (enabled) refreshAllData();
+			const next = getLiveToggleState(enabled, urlState.period);
+			setUrlState(next);
+			// A period change alters the query args, which fetches on its own.
+			if (enabled && !next.period) refreshAllData();
 		},
-		[setUrlState, refreshAllData],
+		[setUrlState, refreshAllData, urlState.period],
 	);
 
 	const statCards = useMemo(

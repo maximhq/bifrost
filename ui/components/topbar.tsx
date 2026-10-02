@@ -190,6 +190,7 @@ export default function Topbar() {
 			<span ref={setMobileFilterSlot} className="flex shrink-0 items-center md:hidden" />
 			<NotificationCenter />
 			<ThemeToggle />
+			<WarpLauncher />
 
 			<DropdownMenu>
 				<DropdownMenuTrigger asChild>
@@ -267,10 +268,6 @@ export default function Topbar() {
 					)}
 				</DropdownMenuContent>
 			</DropdownMenu>
-
-			{/* Rightmost control. Same size-8 box as its neighbours so the row keeps
-			    its rhythm; it renders nothing outside an WarpProvider. */}
-			<WarpLauncher />
 		</header>
 	);
 }

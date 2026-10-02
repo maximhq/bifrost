@@ -276,6 +276,69 @@ test.describe('Routing Rules', () => {
       await routingRulesPage.cancelRule()
     })
 
+    test('should set, edit and clear the TTFT cutoff', async ({ routingRulesPage }) => {
+      const ruleData = createRoutingRuleData({
+        name: `TTFT Rule ${Date.now()}`,
+        enabled: false,
+        provider: 'openai',
+        fallbacks: [{ provider: 'anthropic' }],
+        ttftTimeoutMs: 1500,
+      })
+      createdRules.push(ruleData.name)
+
+      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.openEditSheet(ruleData.name)
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('1500')
+      await routingRulesPage.cancelRule()
+
+      await routingRulesPage.editRoutingRule(ruleData.name, { ttftTimeoutMs: 800 })
+      await routingRulesPage.openEditSheet(ruleData.name)
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('800')
+      await routingRulesPage.cancelRule()
+
+      // Clearing the input must clear the stored value, not keep the old one.
+      await routingRulesPage.editRoutingRule(ruleData.name, { ttftTimeoutMs: null })
+      await routingRulesPage.openEditSheet(ruleData.name)
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('')
+      await routingRulesPage.cancelRule()
+    })
+
+    test('should warn about a TTFT cutoff without fallbacks and reject out-of-range values', async ({ routingRulesPage }) => {
+      await routingRulesPage.createBtn.click()
+      await expect(routingRulesPage.sheet).toBeVisible()
+      await routingRulesPage.nameInput.fill(`TTFT Invalid ${Date.now()}`)
+
+      const warning = routingRulesPage.sheet.getByTestId('routing-rule-ttft-timeout-no-fallback-warning')
+      const error = routingRulesPage.sheet.getByTestId('routing-rule-ttft-timeout-error')
+
+      await routingRulesPage.fillTTFTTimeout(1500)
+      await expect(warning).toBeVisible()
+
+      await routingRulesPage.fillTTFTTimeout(0)
+      // An invalid value is not a cutoff, so it must not warn about one.
+      await expect(warning).toBeHidden()
+      await routingRulesPage.saveBtn.click()
+      await expect(error).toBeVisible()
+      await expect(routingRulesPage.sheet).toBeVisible()
+      // Screen readers must get the error from the input itself.
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute('aria-invalid', 'true')
+      const errorId = await error.getAttribute('id')
+      expect(errorId, 'the error needs an id for aria-describedby').toBeTruthy()
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute('aria-describedby', errorId!)
+
+      await routingRulesPage.fillTTFTTimeout(300001)
+      await routingRulesPage.saveBtn.click()
+      await expect(error).toBeVisible()
+      await expect(routingRulesPage.sheet).toBeVisible()
+
+      // Non-numeric text must be rejected, not silently read as "off".
+      await routingRulesPage.ttftTimeoutInput.fill('abc')
+      await routingRulesPage.saveBtn.click()
+      await expect(error).toBeVisible()
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('abc')
+      await expect(routingRulesPage.sheet).toBeVisible()
+    })
+
     test('should reorder rules by changing priority', async ({ routingRulesPage }) => {
       // Create two rules with unique priorities (avoid fixed 500/600 so parallel workers don't collide)
       const rule1 = createRoutingRuleData({ name: `Reorder Test Rule 1 ${Date.now()}` })

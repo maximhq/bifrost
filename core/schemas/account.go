@@ -513,6 +513,13 @@ func IsElevenlabsSoundModelFamily(ctx *BifrostContext, model string) bool {
 	return IsElevenlabsSoundModel(ResolveCanonicalModel(ctx, model))
 }
 
+// IsTypesafeModelFamily reports whether the current attempt resolves to a
+// TypeSafe System One model. It honors aliases by resolving the canonical
+// model name first. See IsAnthropicModelFamily for usage notes.
+func IsTypesafeModelFamily(ctx *BifrostContext, model string) bool {
+	return IsTypesafeModel(ResolveCanonicalModel(ctx, model))
+}
+
 // IsMistralModelFamily reports whether the current attempt resolves to the
 // Mistral model family. See IsAnthropicModelFamily for usage notes.
 func IsMistralModelFamily(ctx *BifrostContext, model string) bool {
@@ -586,12 +593,15 @@ func IsVeoModelFamily(ctx *BifrostContext, model string) bool {
 // ResolvedKeyAlias.ModelFamily reflects the family explicitly configured on
 // the alias (nil when the admin didn't set one) — not the substring-resolved
 // family used for routing.
+//
+// RequestedProvider/RequestedModel come from ctx via ApplyRequestRouting.
 func BuildRoutingInfo(ctx *BifrostContext, attemptProvider ModelProvider, attemptModel string, attemptKey Key) RoutingInfo {
 	info := RoutingInfo{
 		Provider: attemptProvider,
 		Model:    attemptModel,
 		Key:      attemptKey.Name,
 	}
+	info.ApplyRequestRouting(ctx)
 	if ra := GetResolvedAlias(ctx); ra != nil && ra.Config != nil {
 		rka := &ResolvedKeyAlias{
 			ModelID: ra.Config.ModelID,
@@ -607,6 +617,21 @@ func BuildRoutingInfo(ctx *BifrostContext, attemptProvider ModelProvider, attemp
 		info.ResolvedKeyAlias = rka
 	}
 	return info
+}
+
+// ApplyRequestRouting copies the provider/model the caller sent, before any
+// PreRequestHook rewrote them, from ctx onto ri. Unlike the per-attempt fields
+// these are the same on every attempt of a request, fallbacks included.
+func (ri *RoutingInfo) ApplyRequestRouting(ctx *BifrostContext) {
+	if ri == nil || ctx == nil {
+		return
+	}
+	if provider, ok := ctx.Value(BifrostContextKeyRequestedProvider).(ModelProvider); ok {
+		ri.RequestedProvider = provider
+	}
+	if model, ok := ctx.Value(BifrostContextKeyRequestedModel).(string); ok {
+		ri.RequestedModel = model
+	}
 }
 
 // ResolveConfig returns the AliasConfig for the given user-facing model name,
@@ -687,6 +712,12 @@ type AzureKeyConfig struct {
 
 // VertexKeyConfig represents the Vertex-specific configuration.
 // It contains Vertex-specific settings required for authentication and service access.
+//
+// Three OAuth modes are selected by which fields are set, in this precedence order:
+//  1. AWSWorkloadIdentity set: the workload's AWS identity (EKS IRSA / Pod Identity, instance
+//     profile, static AWS env keys) is federated into a GCP token via Workload Identity Federation.
+//  2. AuthCredentials set: the credentials JSON (service account, external_account, ...) is used as-is.
+//  3. Neither set: Application Default Credentials (GKE Workload Identity, GCE metadata, gcloud ADC).
 type VertexKeyConfig struct {
 	ProjectID       SecretVar `json:"project_id"`
 	ProjectNumber   SecretVar `json:"project_number"`
@@ -695,9 +726,55 @@ type VertexKeyConfig struct {
 	// ForceSingleRegion pins requests to the configured region and disables automatic promotion of
 	// multi-region-only models to a multi-region pool endpoint (e.g. for provisioned throughput).
 	ForceSingleRegion bool `json:"force_single_region,omitempty"`
+	// AWSWorkloadIdentity federates the workload's AWS identity into GCP; see VertexAWSWorkloadIdentityConfig.
+	AWSWorkloadIdentity *VertexAWSWorkloadIdentityConfig `json:"aws_workload_identity,omitempty"`
 }
 
-// NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string.
+// VertexAWSWorkloadIdentityConfig configures GCP Workload Identity Federation from an AWS identity.
+//
+// Bifrost resolves AWS credentials through the AWS SDK default chain (so EKS IRSA, EKS Pod Identity,
+// ECS task roles, EC2 instance profiles and AWS_* env vars all work), signs an STS GetCallerIdentity
+// request with them, and exchanges that signature at the GCP Security Token Service for a federated
+// token scoped to the Workload Identity Pool provider named by Audience. When ServiceAccountEmail is
+// set, the federated token is then exchanged for a service-account access token via IAM Credentials;
+// otherwise the federated principal must be granted Vertex AI access directly.
+type VertexAWSWorkloadIdentityConfig struct {
+	Audience             SecretVar  `json:"audience"`                         // //iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/X
+	ServiceAccountEmail  *SecretVar `json:"service_account_email,omitempty"`  // optional service account to impersonate
+	TokenLifetimeSeconds int        `json:"token_lifetime_seconds,omitempty"` // impersonated token lifetime, default 3600
+	AWSRegion            *SecretVar `json:"aws_region,omitempty"`             // overrides the SDK-resolved region for the STS signature
+	AWSRoleARN           *SecretVar `json:"aws_role_arn,omitempty"`           // optional STS AssumeRole hop before the GCP exchange
+}
+
+// IsSet reports whether the config carries a usable audience, which is the trigger for federation.
+func (c *VertexAWSWorkloadIdentityConfig) IsSet() bool {
+	return c != nil && c.Audience.IsSet()
+}
+
+// Redacted returns a copy safe to send to clients: identifiers stay readable unless they come from
+// a secret reference, while the role ARN is always masked like Bedrock's role_arn.
+func (c *VertexAWSWorkloadIdentityConfig) Redacted() *VertexAWSWorkloadIdentityConfig {
+	if c == nil {
+		return nil
+	}
+	out := &VertexAWSWorkloadIdentityConfig{
+		Audience:             *c.Audience.RedactedIfSecret(),
+		TokenLifetimeSeconds: c.TokenLifetimeSeconds,
+	}
+	if c.ServiceAccountEmail != nil {
+		out.ServiceAccountEmail = c.ServiceAccountEmail.RedactedIfSecret()
+	}
+	if c.AWSRegion != nil {
+		out.AWSRegion = c.AWSRegion.RedactedIfSecret()
+	}
+	if c.AWSRoleARN != nil {
+		out.AWSRoleARN = c.AWSRoleARN.Redacted()
+	}
+	return out
+}
+
+// NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string and leave
+// AWSWorkloadIdentity nil.
 
 // S3BucketConfig represents a single S3 bucket configuration for batch operations.
 type S3BucketConfig struct {

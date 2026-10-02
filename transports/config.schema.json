@@ -282,6 +282,11 @@
           "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true and the provider's raw API key in an Authorization (Bearer), x-api-key, or x-goog-api-key header.",
           "default": false
         },
+        "delete_expired_virtual_keys": {
+          "type": "boolean",
+          "description": "Delete expired virtual keys automatically. A daily cleanup job removes every key whose expiry has passed unless the key sets delete_after_expire to false; keys with delete_after_expire true are removed regardless.",
+          "default": false
+        },
         "vk_rotation_cooldown": {
           "type": [
             "string",
@@ -1111,6 +1116,10 @@
                 "format": "date-time",
                 "description": "Optional expiry timestamp (RFC3339). Once passed, requests using this virtual key are rejected. Omit for a key that never expires."
               },
+              "delete_after_expire": {
+                "type": "boolean",
+                "description": "Delete this virtual key automatically once expires_at has passed. A daily cleanup job removes it and posts a notification. Omit to follow client.delete_expired_virtual_keys; true or false override it for this key. Requires expires_at."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap all budget resets to calendar boundaries (day, week, month, year)",
@@ -1120,6 +1129,10 @@
                 "type": "boolean",
                 "description": "Grant this virtual key access to every provider, including ones added later. Coexists with provider_configs: a provider that also has a config row still has that config's model allow/blacklist, budgets, rate limits, and key selection applied; providers without a config get all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.",
                 "default": false
+              },
+              "disable_content_logging": {
+                "type": "boolean",
+                "description": "Per-key override of client.disable_content_logging for requests made with this virtual key. Omit to inherit the client setting. true keeps request and response content out of the log store and out of OpenTelemetry export for this key's traffic; other observability connectors follow their own disable_content_logging until they adopt the trace mark. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. false forces content into the log store even when the client setting is true; observability connectors keep following their own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
               },
               "team_id": {
                 "type": "string",
@@ -1189,6 +1202,11 @@
               "id",
               "name"
             ],
+            "dependentRequired": {
+              "delete_after_expire": [
+                "expires_at"
+              ]
+            },
             "additionalProperties": false,
             "allOf": [
               {
@@ -2318,6 +2336,18 @@
                     "description": "How long an idle physical connection is kept before being closed (Go duration string, default 5m). Without this the idle cap alone controls pool size, so bursts above max_idle_conns close and reopen connections repeatedly. Note the logs store and config store open separate pools, so a pod's connection ceiling is the sum of their max_open_conns.",
                     "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$",
                     "default": "5m"
+                  },
+                  "statement_timeout": {
+                    "type": "string",
+                    "description": "Server-side statement_timeout set on every runtime pool connection (Go duration string, default 120s). Bounds a runaway query so it cannot hold a pooled connection and its locks indefinitely. \"0\" or a negative value leaves the server default. Migrations and background index builds are never bound by it.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
+                  },
+                  "idle_in_transaction_session_timeout": {
+                    "type": "string",
+                    "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
                   }
                 },
                 "required": [
@@ -2852,6 +2882,18 @@
                     "description": "How long an idle physical connection is kept before being closed (Go duration string, default 5m). Without this the idle cap alone controls pool size, so bursts above max_idle_conns close and reopen connections repeatedly. Note the logs store and config store open separate pools, so a pod's connection ceiling is the sum of their max_open_conns.",
                     "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$",
                     "default": "5m"
+                  },
+                  "statement_timeout": {
+                    "type": "string",
+                    "description": "Server-side statement_timeout set on every runtime pool connection (Go duration string, default 120s). Bounds a runaway query so it cannot hold a pooled connection and its locks indefinitely. \"0\" or a negative value leaves the server default. Migrations and background index builds are never bound by it.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
+                  },
+                  "idle_in_transaction_session_timeout": {
+                    "type": "string",
+                    "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
                   }
                 },
                 "required": [
@@ -3643,6 +3685,11 @@
                         "type": "string"
                       },
                       "description": "Custom labels to add to Prometheus metrics"
+                    },
+                    "metrics_enabled": {
+                      "type": "boolean",
+                      "description": "Serve the /metrics scrape endpoint. Defaults to true when omitted.",
+                      "default": true
                     },
                     "overhead_breakdown_enabled": {
                       "type": "boolean",
@@ -4756,6 +4803,29 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "complexity_jev_tier_criteria": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Replaces this tier's shipped definition. Omit to use the default."
+        },
+        "signals": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "string", "maxLength": 300 },
+          "description": "Replaces this tier's shipped signals. Omit to use the default."
+        },
+        "examples": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "string", "maxLength": 300 },
+          "description": "Replaces this tier's shipped examples. Omit to use the default."
+        }
+      },
+      "additionalProperties": false
+    },
     "otel_endpoint": {
       "type": "string",
       "anyOf": [
@@ -4873,6 +4943,12 @@
           "type": "boolean",
           "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
           "default": false
+        },
+        "excluded_attributes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
+          "default": []
         },
         "export_raw_payloads": {
           "type": "boolean",
@@ -5091,6 +5167,12 @@
           "description": "Probability weight for this target (must be > 0). All weights in a rule must sum to 1",
           "exclusiveMinimum": 0,
           "maximum": 1
+        },
+        "ttft_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000,
+          "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt that produces no first token in time is cut off and the next fallback runs. The last attempt is never cut off, so the setting only takes effect when fallbacks exist. Omit to disable."
         }
       },
       "required": [
@@ -5442,7 +5524,7 @@
     },
     "complexity_analyzer_config": {
       "type": "object",
-      "description": "Runtime configuration for semantic complexity_tier CEL routing",
+      "description": "Runtime configuration for complexity_tier CEL routing with Semantic or Typesafe Jev classification",
       "properties": {
         "tier_boundaries": {
           "$ref": "#/$defs/complexity_tier_boundaries"
@@ -5450,8 +5532,20 @@
         "keywords": {
           "$ref": "#/$defs/complexity_analyzer_keywords"
         },
+        "classifier": {
+          "type": "string",
+          "enum": [
+            "semantic",
+            "jev"
+          ],
+          "default": "semantic",
+          "description": "Primary complexity classifier. Defaults to semantic."
+        },
         "semantic": {
           "$ref": "#/$defs/complexity_semantic_config"
+        },
+        "jev": {
+          "$ref": "#/$defs/complexity_jev_config"
         },
         "llm": {
           "$ref": "#/$defs/complexity_llm_config"
@@ -5480,7 +5574,17 @@
             },
             "required": [
               "session"
-            ]
+            ],
+            "not": {
+              "required": [
+                "classifier"
+              ],
+              "properties": {
+                "classifier": {
+                  "const": "jev"
+                }
+              }
+            }
           },
           "then": {
             "required": [
@@ -5518,11 +5622,11 @@
     },
     "complexity_session_config": {
       "type": "object",
-      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. The configured primary classifier supplies tiers; overlapping requests are best-effort.",
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default: false."
+          "description": "Enable monotonic session tier retention; default false."
         }
       },
       "required": [
@@ -5586,9 +5690,10 @@
           "type": "string",
           "enum": [
             "none",
-            "llm"
+            "llm",
+            "jev"
           ],
-          "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (the default) records the request as 'skipped'; 'llm' asks the chat model configured in the analyzer's llm block, which is required when this is set."
+          "description": "What answers when semantic classification produces no tier: none (default), the configured llm classifier, or Typesafe Jev."
         }
       },
       "required": [
@@ -6682,13 +6787,57 @@
                   "type": "boolean",
                   "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
                   "default": false
+                },
+                "aws_workload_identity": {
+                  "type": "object",
+                  "description": "GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity, ECS task role, EC2 instance profile, AWS_* env vars). Bifrost signs an STS GetCallerIdentity request with the AWS SDK default chain and exchanges it at GCP STS, so no service-account key or static AWS key is needed. Takes precedence over auth_credentials; the two must not be combined.",
+                  "properties": {
+                    "audience": {
+                      "type": "string",
+                      "description": "Workload Identity Pool provider resource name, e.g. //iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID (can use env. prefix)"
+                    },
+                    "service_account_email": {
+                      "type": "string",
+                      "description": "Service account to impersonate after federation. Omit to use the federated principal directly (can use env. prefix)"
+                    },
+                    "token_lifetime_seconds": {
+                      "type": "integer",
+                      "minimum": 600,
+                      "maximum": 43200,
+                      "description": "Lifetime of the impersonated service-account token in seconds. Only used with service_account_email. Default 3600. Lifetimes above 3600 require the target service account to be allowed by the organization policy constraint constraints/iam.allowServiceAccountCredentialLifetimeExtension; otherwise token generation fails."
+                    },
+                    "aws_region": {
+                      "type": "string",
+                      "description": "AWS region used to sign the STS GetCallerIdentity request. Defaults to AWS_REGION / AWS_DEFAULT_REGION, then instance metadata (can use env. prefix)"
+                    },
+                    "aws_role_arn": {
+                      "type": "string",
+                      "description": "Optional IAM role to assume with the workload's credentials before the GCP exchange (can use env. prefix)"
+                    }
+                  },
+                  "required": [
+                    "audience"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
                 "project_id",
                 "region"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "if": {
+                "required": [
+                  "aws_workload_identity"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "auth_credentials": {
+                    "maxLength": 0
+                  }
+                }
+              }
             }
           },
           "required": [
@@ -7459,6 +7608,12 @@
             }
           ]
         },
+        "max_instructions_length": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Per-client override for the forwarded instruction byte cap. When set, overrides the global mcp.tool_manager_config.max_instructions_per_client for this MCP server only; the aggregate is still bounded by max_instructions_total. Omit or set to 0 to use the global default."
+        },
         "allowed_extra_headers": {
           "type": "array",
           "items": {
@@ -7695,6 +7850,18 @@
           "type": "boolean",
           "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
           "default": false
+        },
+        "max_instructions_per_client": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte bound on a single MCP server's forwarded instructions. Longer text is truncated on a rune boundary with a notice. 0 uses the built-in default of 4096.",
+          "default": 0
+        },
+        "max_instructions_total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.",
+          "default": 0
         }
       }
     },
@@ -10458,6 +10625,11 @@
           "minimum": 0,
           "description": "Number of days to retain audit logs (0 means no retention limit)"
         },
+        "omit_ip_addresses": {
+          "type": "boolean",
+          "description": "Stop recording client IP addresses in audit logs while keeping every other field. When true, new events are stored without request_ip or initiator host, and IPs from rows written before the setting was enabled are hidden from the API, filter data, search, exports and object storage archives. Existing database rows are not rewritten. Use this where employee privacy rules or works council agreements forbid tracking IPs. Default: false",
+          "default": false
+        },
         "archive_interval": {
           "type": "string",
           "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))*$",
@@ -11187,6 +11359,9 @@
             "list_models": {
               "type": "boolean"
             },
+            "model_retrieve": {
+              "type": "boolean"
+            },
             "text_completion": {
               "type": "boolean"
             },
@@ -11631,6 +11806,44 @@
         ],
         "additionalProperties": false
       }
+    },
+    "complexity_jev_config": {
+      "type": "object",
+      "description": "Typesafe Jev complexity-classifier request settings. Uses the configured Typesafe provider credentials.",
+      "properties": {
+        "previous_message_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 1,
+          "description": "Number of preceding user messages sent with the current request. Assistant messages are excluded."
+        },
+        "timeout": {
+          "description": "Maximum Jev classification latency (duration string or milliseconds as a number; default 1500ms).",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h)$"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ],
+          "default": "1500ms"
+        },
+        "criteria": {
+          "type": "object",
+          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+          "properties": {
+            "SIMPLE": { "$ref": "#/$defs/complexity_jev_tier_criteria" },
+            "MEDIUM": { "$ref": "#/$defs/complexity_jev_tier_criteria" },
+            "COMPLEX": { "$ref": "#/$defs/complexity_jev_tier_criteria" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   }
 }
