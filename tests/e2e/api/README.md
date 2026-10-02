@@ -217,6 +217,27 @@ expected result. Keep this list in sync when adding to it:
   authentication" in the unauthenticated pass.
 - `Clear Cache by Cache ID / by Key (Coverage Probe)` may answer 405 — the routes
   are not implemented yet.
+- `Add Provider` and `Update Proxy Config` may answer 403 with "requires an
+  authenticated admin session" in the unauthenticated pass only: a provider
+  base URL or the global proxy URL chooses where Bifrost dials out, so the
+  server refuses to store it without a genuine admin session. Each request's
+  own test asserts the 403 there and the 2xx in the authenticated pass; the
+  dependent `Get / Update / Delete Provider` requests skip when the create was
+  refused.
+- `Add MCP Client`, `Create MCP Client (vMCP setup)` and
+  `Add MCP Client (unresolvable host)` may answer 403 in the unauthenticated
+  pass only: the e2e MCP server is on loopback (`http://localhost:3001/`) and an
+  unresolvable name cannot be classified, and neither may be registered without
+  an admin session. `Reconnect / Update / Delete MCP Client` and the Virtual MCP
+  requests that need the setup client skip when its registration was refused.
+  `Add MCP Client (unsupported connection_type)` answers 400 in both passes, and
+  `Add MCP Client (unresolvable host)` answers 500 ("failed to connect") in the
+  authenticated pass, where the registration is allowed but cannot connect.
+- `Test Webhook Endpoint` may answer 403 in the unauthenticated pass only: the
+  endpoint is created with `allow_private_network: true`, and a test delivery
+  to such an endpoint needs an admin session. Authenticated it answers 200 with
+  the delivery outcome (`delivered: false`, since nothing listens on the
+  receiver port).
 
 Resource names are stamped with `Date.now()` so the collection can run twice in
 one invocation (the runner replays it with dashboard auth enabled).

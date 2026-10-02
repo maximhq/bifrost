@@ -52,7 +52,7 @@ function expectChain() {
 
 // Minimal Newman-alike sandbox. pm.test swallows assertion failures the way the
 // real runner does (a failed assertion is reported, it does not abort the script).
-function sandbox({ responseBody = "", variables = {} } = {}) {
+function sandbox({ responseBody = "", responseCode = 200, variables = {} } = {}) {
   const vars = { ...variables };
   const state = { skipped: false, tests: [] };
   const pm = {
@@ -61,9 +61,13 @@ function sandbox({ responseBody = "", variables = {} } = {}) {
       set: (key, value) => {
         vars[key] = value;
       },
+      unset: (key) => {
+        delete vars[key];
+      },
     },
     variables: { get: (key) => (key in vars ? vars[key] : undefined) },
     response: {
+      code: responseCode,
       text: () => responseBody,
       json: () => JSON.parse(responseBody),
     },
@@ -207,6 +211,141 @@ test("webhook capture still records the id on success", () => {
     responseBody: JSON.stringify({ endpoint: { id: "wh-1" }, secret: "s3cret" }),
   });
   assert.strictEqual(ctx.vars.webhook_id, "wh-1");
+});
+
+// ── Providers / Add Provider and its dependents ───────────────────────────────
+// The create sets a base URL, which the server only accepts from an admin
+// session: the unauthenticated pass gets a 403 and the dependents must skip.
+const addProviderTest = scriptFor("Providers / Add Provider", "test");
+
+test("provider capture records provider_created only on a 2xx", () => {
+  const refused = run(addProviderTest, {
+    responseCode: 403,
+    responseBody: JSON.stringify({ error: { message: "requires an authenticated admin session" } }),
+  });
+  assert.ok(!refused.vars.provider_created, "provider_created must stay unset on a 403");
+  const created = run(addProviderTest, {
+    responseCode: 200,
+    responseBody: JSON.stringify({ name: "custom-123" }),
+    variables: { admin_auth_header: "Bearer x" },
+  });
+  assert.strictEqual(created.vars.provider_created, "custom-123");
+});
+
+test("provider capture clears a stale provider_created before judging the response", () => {
+  const ctx = run(addProviderTest, {
+    responseCode: 403,
+    responseBody: "{}",
+    variables: { provider_created: "custom-123" },
+  });
+  assert.ok(!ctx.vars.provider_created, "a value from an earlier run must not survive a refusal");
+});
+
+for (const name of ["Get Provider (After Create)", "Update Provider", "Delete Provider"]) {
+  const prerequest = scriptFor(`Providers / ${name}`, "prerequest");
+  test(`${name} skips when the create was refused`, () => {
+    assert.strictEqual(run(prerequest, { variables: { provider_created: "" } }).state.skipped, true);
+    assert.strictEqual(run(prerequest, {}).state.skipped, true);
+  });
+  test(`${name} runs when the create succeeded`, () => {
+    assert.strictEqual(run(prerequest, { variables: { provider_created: "custom-123" } }).state.skipped, false);
+  });
+}
+
+// ── Proxy / Update Proxy Config and Get Proxy Config ──────────────────────────
+const updateProxyPrerequest = scriptFor("Proxy / Update Proxy Config", "prerequest");
+
+test("unauthenticated proxy update attempts a loopback URL with a port stamped per run and records it", () => {
+  const ctx = run(updateProxyPrerequest, {});
+  const body = JSON.parse(ctx.pm.request.body.raw);
+  assert.match(body.url, /^http:\/\/127\.0\.0\.1:2\d{4}$/);
+  assert.notStrictEqual(body.url, "http://127.0.0.1:38080", "must differ from the fixed authenticated URL");
+  assert.strictEqual(ctx.vars.proxy_attempted_url, body.url);
+  assert.strictEqual(body.enabled, true);
+});
+
+test("authenticated proxy update sends the fixed URL the seeded-value check expects", () => {
+  const ctx = run(updateProxyPrerequest, { variables: { admin_auth_header: "Bearer x" } });
+  const body = JSON.parse(ctx.pm.request.body.raw);
+  assert.strictEqual(body.url, "http://127.0.0.1:38080");
+  assert.strictEqual(ctx.vars.proxy_attempted_url, body.url);
+});
+
+test("Get Proxy Config survives a non-JSON body without a script error", () => {
+  const getProxyTest = scriptFor("Proxy / Get Proxy Config", "test");
+  const ctx = run(getProxyTest, {
+    responseBody: SPA_FALLBACK,
+    variables: { proxy_attempted_url: "http://127.0.0.1:20001" },
+  });
+  assert.ok(ctx.state.tests.length > 0, "the script must reach its named assertions");
+});
+
+// ── MCP Clients / Add MCP Client and its dependents ───────────────────────────
+const addMCPClientTest = scriptFor("MCP Clients / Add MCP Client", "test");
+
+test("MCP client capture records mcp_client_registered only on a 2xx", () => {
+  const refused = run(addMCPClientTest, {
+    responseCode: 403,
+    responseBody: JSON.stringify({ error: { message: "loopback, private-network, or link-local" } }),
+    variables: { mcp_client_id: "test_mcp_123", mcp_client_registered: "stale" },
+  });
+  assert.ok(!refused.vars.mcp_client_registered, "must stay unset on a 403 (and clear a stale value)");
+  const connected = run(addMCPClientTest, {
+    responseCode: 200,
+    responseBody: JSON.stringify({ message: "MCP client connected successfully", status: "success" }),
+    variables: { mcp_client_id: "test_mcp_123", admin_auth_header: "Bearer x" },
+  });
+  assert.strictEqual(connected.vars.mcp_client_registered, "test_mcp_123");
+});
+
+for (const name of ["Reconnect MCP Client", "Update MCP Client", "Delete MCP Client"]) {
+  const prerequest = scriptFor(`MCP Clients / ${name}`, "prerequest");
+  test(`${name} skips when the registration was refused and runs when it succeeded`, () => {
+    assert.strictEqual(run(prerequest, {}).state.skipped, true);
+    assert.strictEqual(run(prerequest, { variables: { mcp_client_registered: "test_mcp_123" } }).state.skipped, false);
+  });
+}
+
+// ── Virtual MCPs folder prerequest ────────────────────────────────────────────
+// Folder-level scripts are not reachable through scriptFor (it walks requests).
+function folderScript(name, listen) {
+  const f = collection.item.find((i) => i.name === name);
+  assert.ok(f, `folder not found: ${name}`);
+  const event = (f.event || []).find((e) => e.listen === listen);
+  assert.ok(event, `${name} has no folder-level ${listen} script`);
+  return event.script.exec.join("\n");
+}
+
+test("Virtual MCPs skips only the requests that need the setup client", () => {
+  const src = folderScript("Virtual MCPs", "prerequest");
+  const runNamed = (requestName, variables) => {
+    const ctx = sandbox({ variables });
+    ctx.pm.info = { requestName };
+    // eslint-disable-next-line no-new-func
+    new Function("pm", src)(ctx.pm);
+    return ctx.state.skipped;
+  };
+  assert.strictEqual(runNamed("Create MCP Client (vMCP setup)", {}), false, "the setup request itself always runs");
+  assert.strictEqual(runNamed("Get Virtual MCP Invalid Id (Coverage Probe)", {}), false, "independent probes run unauthenticated");
+  assert.strictEqual(runNamed("Create Virtual MCP", {}), true, "a dependent skips when the setup client was refused");
+  assert.strictEqual(runNamed("Delete MCP Client (vMCP cleanup)", {}), true);
+  assert.strictEqual(runNamed("Create Virtual MCP", { vmcp_client_registered: "vmcp_client_1" }), false, "dependents run once the client exists");
+});
+
+test("vMCP setup capture records vmcp_client_registered only on a 2xx", () => {
+  const setupTest = scriptFor("Virtual MCPs / Create MCP Client (vMCP setup)", "test");
+  const refused = run(setupTest, {
+    responseCode: 403,
+    responseBody: SPA_FALLBACK,
+    variables: { vmcp_client_id: "vmcp_client_1", vmcp_client_registered: "stale" },
+  });
+  assert.ok(!refused.vars.vmcp_client_registered, "must stay unset on a refusal, even with a non-JSON body");
+  const connected = run(setupTest, {
+    responseCode: 200,
+    responseBody: JSON.stringify({ message: "MCP client connected successfully" }),
+    variables: { vmcp_client_id: "vmcp_client_1", admin_auth_header: "Bearer x" },
+  });
+  assert.strictEqual(connected.vars.vmcp_client_registered, "vmcp_client_1");
 });
 
 // ── Governance / Virtual key budget override ──────────────────────────────────
@@ -404,6 +543,106 @@ test("plugin requests are allowed a 403 only in the unauthenticated pass", () =>
     }),
     false,
     "with admin auth configured the 403 is a real failure",
+  );
+});
+
+test("dial-target writes are allowed a 403 only in the unauthenticated pass", () => {
+  const refusal = JSON.stringify({
+    error: { message: "Setting a provider's base URL or allow_private_network requires an authenticated admin session; dashboard auth is currently disabled or unconfigured." },
+  });
+  for (const name of ["Add Provider", "Update Proxy Config"]) {
+    assert.strictEqual(runGate({ requestName: name, code: 403, body: refusal }), true, name);
+    assert.strictEqual(
+      runGate({ requestName: name, code: 403, body: refusal, variables: { admin_auth_header: "Bearer x" } }),
+      false,
+      `${name}: with admin auth configured the 403 is a real failure`,
+    );
+    assert.strictEqual(
+      runGate({ requestName: name, code: 403, body: JSON.stringify({ error: { message: "forbidden" } }) }),
+      false,
+      `${name}: a 403 without the admin-session wording must still fail`,
+    );
+    assert.strictEqual(
+      runGate({ requestName: name, code: 401, body: refusal }),
+      false,
+      `${name}: only the 403 refusal is expected`,
+    );
+  }
+  assert.strictEqual(
+    runGate({ requestName: "Update Provider", code: 403, body: refusal }),
+    false,
+    "the allowance is per named request, not a blanket 403 rule",
+  );
+});
+
+test("MCP client registrations are allowed a 403 only in the unauthenticated pass", () => {
+  const loopback = JSON.stringify({
+    error: { message: "unauthenticated callers cannot register MCP clients that connect to loopback, private-network, or link-local addresses; set an admin password to allow this" },
+  });
+  const unresolvable = JSON.stringify({
+    error: { message: 'could not resolve MCP target host "mcp.e2e-unresolvable.invalid"; unauthenticated callers can only register MCP clients whose target resolves to a public address' },
+  });
+  for (const [name, body] of [
+    ["Add MCP Client", loopback],
+    ["Create MCP Client (vMCP setup)", loopback],
+    ["Add MCP Client (unresolvable host)", unresolvable],
+  ]) {
+    assert.strictEqual(runGate({ requestName: name, code: 403, body }), true, name);
+    assert.strictEqual(
+      runGate({ requestName: name, code: 403, body, variables: { admin_auth_header: "Bearer x" } }),
+      false,
+      `${name}: with admin auth configured the 403 is a real failure`,
+    );
+  }
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client", code: 403, body: unresolvable }),
+    false,
+    "the loopback request must carry the loopback wording, not any 403",
+  );
+});
+
+test("MCP registration input errors are allowed exactly as the server reports them", () => {
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client (unsupported connection_type)", code: 400, body: "{}" }),
+    true,
+  );
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client (unsupported connection_type)", code: 403, body: "{}" }),
+    false,
+    "only the 400 validation answer is expected",
+  );
+  const connectFailure = JSON.stringify({ error: { message: "Failed to connect MCP client: context deadline exceeded" } });
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client (unresolvable host)", code: 500, body: connectFailure, variables: { admin_auth_header: "Bearer x" } }),
+    true,
+    "an admin may register the target; the connect failure is the expected outcome",
+  );
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client (unresolvable host)", code: 500, body: connectFailure }),
+    false,
+    "unauthenticated the registration must be refused, never attempted",
+  );
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client", code: 500, body: connectFailure, variables: { admin_auth_header: "Bearer x" } }),
+    false,
+    "the 500 allowance is only for the unresolvable-host request",
+  );
+});
+
+test("the webhook test delivery is allowed a 403 only in the unauthenticated pass", () => {
+  const refusal = JSON.stringify({
+    error: { message: "unauthenticated callers cannot test webhook endpoints that allow private-network delivery; set an admin password to allow this" },
+  });
+  assert.strictEqual(runGate({ requestName: "Test Webhook Endpoint", code: 403, body: refusal }), true);
+  assert.strictEqual(
+    runGate({ requestName: "Test Webhook Endpoint", code: 403, body: refusal, variables: { admin_auth_header: "Bearer x" } }),
+    false,
+    "with admin auth configured the 403 is a real failure",
+  );
+  assert.strictEqual(
+    runGate({ requestName: "Test Webhook Endpoint", code: 502, body: "{}" }),
+    false,
+    "without the probe suffix a receiver error is no longer tolerated",
   );
 });
 
