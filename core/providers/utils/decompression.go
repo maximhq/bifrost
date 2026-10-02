@@ -150,9 +150,26 @@ func ReleaseBrotliReader(br *brotli.Reader) {
 
 // ---- zstd ----
 
+// zstdDecoderMaxMemory bounds the memory a single zstd decoder will
+// pre-allocate for its window buffer, based on the frame header's declared
+// Window_Descriptor - BEFORE any decompressed output exists. Without this,
+// klauspost/compress defaults maxWindowSize to 512 MiB: a ~9-byte frame that
+// just declares a 512 MiB window forces a ~512 MiB allocation per request,
+// and RequestDecompressionMiddleware runs before routing and auth, so this
+// is reachable pre-auth on every route. The existing ClientConfig.
+// MaxRequestBodySizeMB cap doesn't help here - it bounds decompressed output
+// via io.LimitedReader, which only applies after this allocation already
+// happened. Setting WithDecoderMaxMemory also clamps the decoder's effective
+// window cap to the same value (klauspost/compress rejects any frame whose
+// declared window exceeds it, at header-parse time, before allocating) - a
+// fixed ceiling independent of the runtime-configurable body-size limit,
+// generous enough for legitimate payloads while bounding a single hostile
+// request's worst case.
+const zstdDecoderMaxMemory = 100 * 1024 * 1024 // 100 MiB
+
 var zstdDecoderPool = sync.Pool{
 	New: func() any {
-		dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+		dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(zstdDecoderMaxMemory))
 		if err != nil {
 			// NewReader(nil) failing is unexpected; return nil so Acquire
 			// falls through to a fresh allocation with the real reader.
@@ -164,7 +181,9 @@ var zstdDecoderPool = sync.Pool{
 
 // AcquireZstdDecoder gets a zstd.Decoder from the pool and resets it to read
 // from r, or creates a new one if the pool is empty or reset fails.
-// Decoders are created with concurrency=1 to minimise goroutine overhead.
+// Decoders are created with concurrency=1 to minimise goroutine overhead, and
+// a bounded max memory (see zstdDecoderMaxMemory) so a hostile frame's
+// declared window size cannot force an outsized pre-allocation.
 func AcquireZstdDecoder(r io.Reader) (*zstd.Decoder, error) {
 	if v := zstdDecoderPool.Get(); v != nil {
 		if dec, ok := v.(*zstd.Decoder); ok && dec != nil {
@@ -176,7 +195,7 @@ func AcquireZstdDecoder(r io.Reader) (*zstd.Decoder, error) {
 			_ = dec.Reset(nil)
 		}
 	}
-	return zstd.NewReader(r, zstd.WithDecoderConcurrency(1))
+	return zstd.NewReader(r, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(zstdDecoderMaxMemory))
 }
 
 // ReleaseZstdDecoder returns a zstd.Decoder to the pool.
