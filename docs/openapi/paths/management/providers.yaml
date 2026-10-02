@@ -300,7 +300,11 @@ provider-keys:
       Setting any field that chooses the host Bifrost sends this key's credentials to
       requires a genuinely authenticated admin session - it is refused with 403 if dashboard
       authentication is disabled or unconfigured, even though other management endpoints
-      remain reachable in that state.
+      remain reachable in that state. ollama_key_config.url, sgl_key_config.url and
+      vllm_key_config.url also follow the provider base_url destination rule: private and
+      loopback hosts are accepted, link-local and unspecified addresses are refused with 400.
+      Key-level and per-alias regions must be vendor region identifiers (lowercase letters,
+      digits and hyphens, e.g. us-east-1); any other value is refused with 400.
       Guarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,
       azure_key_config.endpoint, databricks_key_config.workspace_url,
       github_copilot_key_config.github_domain,
@@ -423,7 +427,11 @@ provider-key-by-id:
       key's credentials to requires a genuinely authenticated admin session - it is refused
       with 403 if dashboard authentication is disabled or unconfigured, even though other
       management endpoints remain reachable in that state. Sending the stored values back
-      unchanged is allowed.
+      unchanged is allowed. ollama_key_config.url, sgl_key_config.url and
+      vllm_key_config.url also follow the provider base_url destination rule: private and
+      loopback hosts are accepted, link-local and unspecified addresses are refused with 400.
+      Key-level and per-alias regions must be vendor region identifiers (lowercase letters,
+      digits and hyphens, e.g. us-east-1); any other value is refused with 400.
       Guarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,
       azure_key_config.endpoint, databricks_key_config.workspace_url,
       github_copilot_key_config.github_domain,

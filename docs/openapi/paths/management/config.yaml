@@ -157,6 +157,10 @@ proxy-config:
       disabled or unconfigured, even though other management endpoints remain reachable in
       that state. Saving other fields with the stored url, disabling the proxy, or turning
       skip_tls_verify off is allowed.
+      The url follows the same destination rule as a provider base_url: it must be an http
+      or https URL whose host resolves to a routable address. Private and loopback hosts are
+      accepted (a self-hosted egress proxy is the normal setup); link-local (for example the
+      cloud metadata endpoint) and unspecified addresses are refused with 400.
     tags:
       - Configuration
     requestBody:

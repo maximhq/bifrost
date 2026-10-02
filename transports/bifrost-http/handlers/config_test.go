@@ -444,3 +444,90 @@ func TestCheckURLAccessibility_NonOKLogsHostOnly(t *testing.T) {
 	assert.NotContains(t, joined, "querysecret", "query string must not be logged")
 	assert.NotContains(t, joined, "user:", "userinfo must not be logged")
 }
+
+// TestUpdateProxyConfig_RejectsLinkLocalURL pins that the global proxy URL is held to the
+// same destination rule as a provider base URL. Every proxied request carries its provider
+// credentials to this host, so an address that can never be a legitimate egress proxy
+// (link-local such as the cloud metadata endpoint, or unspecified) is refused even for a
+// genuinely authenticated admin. Private and loopback hosts stay allowed: a self-hosted
+// proxy on the local network is the normal setup.
+func TestUpdateProxyConfig_RejectsLinkLocalURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+	cases := []struct {
+		name       string
+		url        string
+		wantStatus int
+	}{
+		{name: "link-local metadata endpoint", url: "http://169.254.169.254:80", wantStatus: fasthttp.StatusBadRequest},
+		{name: "unspecified address", url: "http://0.0.0.0:3128", wantStatus: fasthttp.StatusBadRequest},
+		{name: "private network proxy", url: "http://10.0.0.5:3128", wantStatus: fasthttp.StatusOK},
+		{name: "loopback proxy", url: "http://127.0.0.1:3128", wantStatus: fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+			ctx := newTestRequestCtx(`{"enabled":true,"type":"http","url":"` + tc.url + `","timeout":0}`)
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+
+			h.updateProxyConfig(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+			stored, err := store.GetProxyConfig(context.Background())
+			if tc.wantStatus == fasthttp.StatusOK {
+				require.NoError(t, err)
+				assert.Equal(t, tc.url, stored.URL)
+				return
+			}
+			if err != nil {
+				require.ErrorIs(t, err, configstore.ErrNotFound)
+				return
+			}
+			if stored != nil {
+				assert.Empty(t, stored.URL, "a rejected proxy URL must not be persisted")
+			}
+		})
+	}
+}
+
+// TestUpdateProxyConfig_UnchangedURLDoesNotNeedDNS: the destination check resolves the
+// proxy hostname, so it must run only when the destination is new (URL changed, or the
+// proxy goes from disabled to enabled). An edit that keeps the stored URL and changes an
+// unrelated field must not fail because DNS is unavailable at that moment.
+func TestUpdateProxyConfig_UnchangedURLDoesNotNeedDNS(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const storedURL = "http://proxy.invalid:3128" // .invalid never resolves (RFC 2606)
+	cases := []struct {
+		name          string
+		storedEnabled bool
+		body          string
+		wantStatus    int
+		wantTimeout   int
+	}{
+		{name: "same url, timeout edit", storedEnabled: true, body: `{"enabled":true,"type":"http","url":"` + storedURL + `","timeout":30}`, wantStatus: fasthttp.StatusOK, wantTimeout: 30},
+		{name: "changed url still validated", storedEnabled: true, body: `{"enabled":true,"type":"http","url":"http://other.invalid:3128","timeout":30}`, wantStatus: fasthttp.StatusBadRequest, wantTimeout: 10},
+		{name: "disabled to enabled still validated", storedEnabled: false, body: `{"enabled":true,"type":"http","url":"` + storedURL + `","timeout":30}`, wantStatus: fasthttp.StatusBadRequest, wantTimeout: 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			require.NoError(t, store.UpdateProxyConfig(context.Background(), &configtables.GlobalProxyConfig{
+				Enabled: tc.storedEnabled, Type: "http", URL: storedURL, Timeout: 10,
+			}))
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			h.updateProxyConfig(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+			stored, err := store.GetProxyConfig(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, storedURL, stored.URL)
+			assert.Equal(t, tc.wantTimeout, stored.Timeout)
+		})
+	}
+}

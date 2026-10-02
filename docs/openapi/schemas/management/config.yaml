@@ -234,6 +234,9 @@ ProxyConfig:
       enum: [http, socks5, tcp]
     url:
       type: string
+      description: >-
+        Proxy URL (http or https). Private and loopback hosts are accepted; link-local and
+        unspecified addresses are rejected.
     username:
       type: string
     password:
