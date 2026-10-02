@@ -7241,6 +7241,88 @@
                       ]
                     }
                   }
+                },
+                {
+                  "name": "elevenlabs/eleven_turbo_v2_5 stability only (elevenlabs partial voice_settings)",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "pm.test('elevenlabs/eleven_turbo_v2_5 stability alone does not send speed 0 and the other voice settings as zero overrides', function () {",
+                          "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                          "  pm.expect(pm.response.headers.get('Content-Type') || '', 'not audio: ' + pm.response.text()).to.include('audio/');",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\"model\":\"elevenlabs/eleven_turbo_v2_5\",\"input\":\"Hello, world.\",\"voice\":\"21m00Tcm4TlvDq8ikWAM\",\"response_format\":\"mp3\",\"stability\":0.4}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/audio/speech",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "audio",
+                        "speech"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "elevenlabs/eleven_turbo_v2_5 speed only (elevenlabs partial voice_settings)",
+                  "event": [
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "pm.test('elevenlabs/eleven_turbo_v2_5 speed alone does not zero stability and similarity_boost', function () {",
+                          "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                          "  pm.expect(pm.response.headers.get('Content-Type') || '', 'not audio: ' + pm.response.text()).to.include('audio/');",
+                          "});"
+                        ]
+                      }
+                    }
+                  ],
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\"model\":\"elevenlabs/eleven_turbo_v2_5\",\"input\":\"Hello, world.\",\"voice\":\"21m00Tcm4TlvDq8ikWAM\",\"response_format\":\"mp3\",\"speed\":1.1}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/v1/audio/speech",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "v1",
+                        "audio",
+                        "speech"
+                      ]
+                    }
+                  }
                 }
               ]
             },
