@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -305,4 +306,141 @@ func TestUpdateProxyConfig_InterceptionGuardWhenAuthBypassed(t *testing.T) {
 			}
 		})
 	}
+}
+
+
+// newDatasheetServer serves an empty JSON datasheet on loopback.
+func newDatasheetServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestCheckURLAccessibility_RejectsFileURLs: file:// datasheet and catalog
+// URLs are an operator feature of config.json (air-gapped deployments) and are
+// refused when they arrive over the HTTP API, whatever the path points at.
+func TestCheckURLAccessibility_RejectsFileURLs(t *testing.T) {
+	for _, raw := range []string{"file:///etc/hostname", "file://./pricing.json", "file:pricing.json", "FILE:///etc/hostname"} {
+		err := checkURLAccessibility(raw)
+		require.Error(t, err, raw)
+		assert.Contains(t, err.Error(), "config.json", raw)
+	}
+}
+
+// TestCheckURLAccessibility_RefusesRedirectToLinkLocal: the entry host is a
+// reachable loopback server whose 302 points at the cloud metadata address.
+// The hop must be refused, and the caller-facing error must not name the
+// target or carry the transport detail.
+func TestCheckURLAccessibility_RefusesRedirectToLinkLocal(t *testing.T) {
+	SetLogger(&mockLogger{})
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	err := checkURLAccessibility(redirect.URL)
+	require.Error(t, err)
+	assert.Equal(t, "url is not reachable", err.Error())
+}
+
+// TestCheckURLAccessibility_DoesNotReflectTransportErrors: a non-HTTP service
+// greets with a banner that net/http folds into its parse error. That detail
+// is for the debug log, never for the response body.
+func TestCheckURLAccessibility_DoesNotReflectTransportErrors(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Write([]byte("SSH-2.0-OpenSSH_9.6 Ubuntu-3ubuntu0.1\r\n"))
+			conn.Close()
+		}
+	}()
+
+	err = checkURLAccessibility("http://" + ln.Addr().String() + "/")
+	require.Error(t, err)
+	assert.Equal(t, "url is not reachable", err.Error())
+	assert.NotContains(t, strings.ToLower(err.Error()), "openssh")
+
+	// A refused port reads the same as a banner: no open/closed oracle.
+	ln.Close()
+	err = checkURLAccessibility("http://" + ln.Addr().String() + "/")
+	require.Error(t, err)
+	assert.Equal(t, "url is not reachable", err.Error())
+}
+
+// TestUpdateConfig_RejectsFileURLsOverAPI pins the API-side rule for all three
+// catalog URLs: PUT /api/config answers 400 and persists nothing.
+func TestUpdateConfig_RejectsFileURLsOverAPI(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	for _, field := range []string{"pricing_url", "model_parameters_url", "mcp_library_url"} {
+		t.Run(field, func(t *testing.T) {
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"` + field + `":"file:///etc/hostname"}}`)
+			h.updateConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), "config.json")
+		})
+	}
+	persisted, err := store.GetFrameworkConfig(bgCtx())
+	require.NoError(t, err)
+	if persisted != nil {
+		for _, got := range []*string{persisted.PricingURL, persisted.ModelParametersURL, persisted.MCPLibraryURL} {
+			if got != nil {
+				assert.NotContains(t, *got, "file://")
+			}
+		}
+	}
+}
+
+// debugCaptureLogger records Debug lines so a test can assert what a check
+// writes to the log, not only what it returns.
+type debugCaptureLogger struct {
+	mockLogger
+	debug []string
+}
+
+func (l *debugCaptureLogger) Debug(format string, args ...any) {
+	l.debug = append(l.debug, fmt.Sprintf(format, args...))
+}
+
+// TestCheckURLAccessibility_NonOKLogsHostOnly: a non-200 answer is logged for
+// diagnosis, but like the transport-error branch above it the line names only
+// the host. The configured URL can carry userinfo or a query-string secret and
+// neither may reach the log.
+func TestCheckURLAccessibility_NonOKLogsHostOnly(t *testing.T) {
+	prevDial := checkURLAccessibilityDialContext
+	checkURLAccessibilityDialContext = (&net.Dialer{}).DialContext
+	t.Cleanup(func() { checkURLAccessibilityDialContext = prevDial })
+	log := &debugCaptureLogger{}
+	SetLogger(log)
+	t.Cleanup(func() { SetLogger(&mockLogger{}) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	raw := strings.Replace(srv.URL, "http://", "http://user:s3cretpass@", 1) + "/pricing.json?token=querysecret"
+
+	err := checkURLAccessibility(raw)
+	require.Error(t, err)
+	assert.Equal(t, "url is not reachable", err.Error())
+
+	joined := strings.Join(log.debug, "\n")
+	require.Contains(t, joined, "returned HTTP 503", "the non-200 outcome is still logged")
+	assert.NotContains(t, joined, "s3cretpass", "userinfo must not be logged")
+	assert.NotContains(t, joined, "querysecret", "query string must not be logged")
+	assert.NotContains(t, joined, "user:", "userinfo must not be logged")
 }

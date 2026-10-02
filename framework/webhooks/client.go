@@ -25,11 +25,13 @@ const maxErrorBodyBytes = 4 * 1024
 // HTTP client per security policy: the strict client re-resolves and
 // re-validates every IP at dial time (rebinding-safe), while the private
 // client — used only for endpoints registered with allow_private_network —
-// skips only the public-IP requirement. Both refuse redirects and require
-// TLS >= 1.2. The clients carry no timeout state at all — every phase (DNS,
-// dial, TLS, body) is bounded by the per-attempt context, which carries the
-// endpoint's own attempt timeout — so endpoints sharing a policy can share
-// connection pools safely.
+// applies network.PrivateNetworkDialContext's policy instead: loopback and
+// private receivers are dialable, link-local (including its IPv6 transition
+// forms), the cloud metadata endpoints, and unspecified addresses never are.
+// Both refuse redirects and require TLS >= 1.2. The clients carry no timeout
+// state at all — every phase (DNS, dial, TLS, body) is bounded by the
+// per-attempt context, which carries the endpoint's own attempt timeout — so
+// endpoints sharing a policy can share connection pools safely.
 type deliveryClient struct {
 	strict  *http.Client
 	private *http.Client
@@ -50,39 +52,7 @@ func newDeliveryClient() *deliveryClient {
 	return &deliveryClient{
 		// A zero dial timeout defers entirely to the per-attempt context.
 		strict:  build(network.SSRFSafeDialContext(0)),
-		private: build(newPrivateDialContext()),
-	}
-}
-
-// newPrivateDialContext returns the dialer for allow_private_network
-// endpoints. Loopback, RFC1918, and public receivers are the point of the
-// flag, but unspecified and link-local (cloud metadata) addresses stay
-// blocked at dial time — the same gate the provider clients apply — so a
-// DNS record that flips to 169.254.169.254 after registration still cannot
-// be reached. Dial time is bounded by the caller's context.
-func newPrivateDialContext() func(ctx context.Context, netw, addr string) (net.Conn, error) {
-	dialer := &net.Dialer{}
-	return func(ctx context.Context, netw, addr string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, err
-		}
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-		if err != nil {
-			return nil, err
-		}
-		if len(ips) == 0 {
-			return nil, fmt.Errorf("no addresses found for %s", host)
-		}
-		for _, ip := range ips {
-			if ip.IsUnspecified() {
-				return nil, fmt.Errorf("connection to unspecified IP %s is not allowed", ip)
-			}
-			if network.IsLinkLocal(ip) {
-				return nil, fmt.Errorf("connection to link-local IP %s is not allowed", ip)
-			}
-		}
-		return dialer.DialContext(ctx, netw, net.JoinHostPort(ips[0].String(), port))
+		private: build(network.PrivateNetworkDialContext(0)),
 	}
 }
 
