@@ -3,16 +3,19 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/internal/memtest"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/text/cases"
@@ -711,32 +714,10 @@ func TestCustomProviderDoesNotSendDoneMarkerEndsParkedStream(t *testing.T) {
 	}
 }
 
-// Test that transientServerStatusCodes are properly defined.
-// These are upstream-side failures unrelated to the credential — the same key is retried.
-func TestTransientServerStatusCodes(t *testing.T) {
-	// 529 is Anthropic's overloaded_error: capacity-wide, not credential-bound, so the
-	// same key is retried with backoff rather than rotated away.
-	expected := []int{500, 502, 503, 504, 529}
-	for _, code := range expected {
-		if !transientServerStatusCodes[code] {
-			t.Errorf("status code %d should be in transientServerStatusCodes", code)
-		}
-	}
-
-	// Codes that must NOT be in transientServerStatusCodes: per-key codes (rotated, not
-	// retried-same-key), success codes, and request-bound 4xx (terminal).
-	notTransient := []int{200, 201, 400, 401, 402, 403, 404, 422, 429}
-	for _, code := range notTransient {
-		if transientServerStatusCodes[code] {
-			t.Errorf("status code %d should not be in transientServerStatusCodes", code)
-		}
-	}
-}
-
 // TestExecuteRequestWithRetries_529RetriesSameKeyWithoutRotation pins the behavior behind the
-// map entry above. TestTransientServerStatusCodes only proves 529 is *classified* as transient;
-// this proves executeRequestWithRetries acts on that classification — retry on the same key,
-// with no rotation — which is the part that would actually regress.
+// transient classification. TestClassifyFailure_StatusOnly only proves 529 is *classified* as
+// transient; this proves executeRequestWithRetries acts on that classification (retry on the
+// same key, with no rotation), which is the part that would actually regress.
 //
 // 529 is Anthropic's overloaded_error: "the API experiences high traffic across all users"
 // (platform.claude.com/docs/en/api/errors). It says nothing about this credential, so rotating
@@ -786,28 +767,6 @@ func TestExecuteRequestWithRetries_529RetriesSameKeyWithoutRotation(t *testing.T
 		if id != keyA.ID {
 			t.Errorf("attempt %d used %s, expected the same key %s throughout (sequence: %v); "+
 				"529 is capacity-wide and must not rotate credentials", i+1, id, keyA.ID, seenKeyIDs)
-		}
-	}
-}
-
-// Test that perKeyFailureStatusCodes are properly defined.
-// These are credential/account-bound failures — rotate to the next key instead of retrying
-// the same one.
-func TestPerKeyFailureStatusCodes(t *testing.T) {
-	expected := []int{401, 402, 403, 429}
-	for _, code := range expected {
-		if !perKeyFailureStatusCodes[code] {
-			t.Errorf("status code %d should be in perKeyFailureStatusCodes", code)
-		}
-	}
-
-	// Request-bound 4xx, success codes, and transient-server 5xx must not trigger rotation.
-	// 529 included: an overloaded provider is not this key's fault, so burning the other
-	// keys on it would just multiply the failures.
-	notPerKey := []int{200, 201, 400, 404, 422, 500, 502, 503, 504, 529}
-	for _, code := range notPerKey {
-		if perKeyFailureStatusCodes[code] {
-			t.Errorf("status code %d should not be in perKeyFailureStatusCodes", code)
 		}
 	}
 }
@@ -1214,12 +1173,13 @@ func (m *mockKVStore) Delete(key string) (bool, error) {
 	return false, nil
 }
 
-// Test selectKeyFromProviderForModelWithPool with session stickiness
+// Test selectKeyFromProviderForModelWithPool with session stickiness: nothing is bound until a
+// request is served, and a bound key then comes back alone with rotation off.
 func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	kvStore := newMockKVStore()
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
-	// Use 2 keys so we hit the keySelector path (single key returns early)
+	// Use 2 keys so the pool can rotate (single key returns early)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
 		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
 		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
@@ -1245,40 +1205,44 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-123")
 
-	// First call: cache miss, keySelector runs, key stored; returns single-element pool (canRotate=false)
+	// First request: nothing bound, so the whole pool comes back with rotation allowed and the
+	// pool builder neither selects nor writes.
 	keys1, canRotate1, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
 		t.Fatalf("first selectKeyFromProviderForModelWithPool: %v", err)
 	}
-	if canRotate1 {
-		t.Error("first call: canRotate should be false for session-sticky request")
+	if !canRotate1 || len(keys1) != 2 {
+		t.Fatalf("first call: got %d keys canRotate=%v, want the full pool with rotation", len(keys1), canRotate1)
 	}
-	if len(keys1) != 1 || keys1[0].ID != "key-a" {
-		t.Errorf("first call: expected [key-a], got %v", keys1)
+	if keySelectorCalls != 0 {
+		t.Errorf("first call: the pool builder should not select, got %d keySelector calls", keySelectorCalls)
 	}
-	if keySelectorCalls != 1 {
-		t.Errorf("first call: expected 1 keySelector call, got %d", keySelectorCalls)
+	kvKey := SessionStateKey(bfCtx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4")
+	if _, err := kvStore.Get(kvKey); err == nil {
+		t.Error("session bound before anything served it")
 	}
 
-	// Verify kvstore was written
-	kvKey := buildSessionKey(schemas.OpenAI, "sess-123", "gpt-4")
+	// The request is served by key-a, which binds the session to it.
+	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
 	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
-		t.Errorf("kvstore after first call: expected key-a, got %v (err=%v)", raw, err)
+		t.Errorf("kvstore after the request served: expected key-a, got %v (err=%v)", raw, err)
 	}
 
-	// Second call: cache hit, same key returned, keySelector NOT called
+	// Second request: the bound key comes back alone, rotation off, selector not consulted.
 	keys2, canRotate2, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
 		t.Fatalf("second selectKeyFromProviderForModelWithPool: %v", err)
 	}
 	if canRotate2 {
-		t.Error("second call: canRotate should be false for session-sticky request")
+		t.Error("second call: canRotate should be false for a session-bound key")
 	}
 	if len(keys2) != 1 || keys2[0].ID != "key-a" {
-		t.Errorf("second call: expected [key-a] (sticky), got %v", keys2)
+		t.Errorf("second call: expected [key-a] (bound), got %v", keys2)
 	}
-	if keySelectorCalls != 1 {
-		t.Errorf("second call: keySelector should not run (cache hit), got %d calls", keySelectorCalls)
+	if keySelectorCalls != 0 {
+		t.Errorf("second call: keySelector should not run, got %d calls", keySelectorCalls)
 	}
 }
 
@@ -1328,13 +1292,16 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 		t.Errorf("expected 0 keySelector calls from pool building (no session id), got %d", keySelectorCalls)
 	}
 	// KVStore should not have a sticky entry for an empty session id
-	if _, err := kvStore.Get(buildSessionKey(schemas.OpenAI, "", "gpt-4")); err == nil {
-		t.Error("kvstore should not have a sticky entry for an empty session id")
+	kvStore.mu.RLock()
+	entries := len(kvStore.data)
+	kvStore.mu.RUnlock()
+	if entries != 0 {
+		t.Errorf("kvstore should not have a sticky entry for an empty session id, got %d entries", entries)
 	}
 }
 
-// TestSelectKeyFromProviderForModel_SessionStickinessNoRotation verifies that when a session ID
-// is present, rate-limit retries reuse the sticky key rather than rotating to another key.
+// TestSelectKeyFromProviderForModel_SessionStickinessNoRotation verifies that once a session
+// is bound to a key, rate-limit retries reuse that key rather than rotating to another.
 func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T) {
 	kvStore := newMockKVStore()
 	account := NewMockAccount()
@@ -1362,6 +1329,11 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-sticky")
 	bfCtx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+
+	// An earlier request served by key-a bound the session to it.
+	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
 
 	config := createTestConfig(3, 0, 0)
 	logger := NewDefaultLogger(schemas.LogLevelError)
@@ -3261,6 +3233,125 @@ func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
 	})
 }
 
+// modelRewritingPlugin rewrites the model in PreRequestHook the way a routing rule does, and
+// records what its PreLLMHook then reads for the caller's original route.
+type modelRewritingPlugin struct {
+	routedModel string
+
+	mu              sync.Mutex
+	sawProvider     schemas.ModelProvider
+	sawModel        string
+	sawRoutedModel  string
+	preLLMHookCalls int
+}
+
+func (p *modelRewritingPlugin) GetName() string { return "model-rewriting" }
+func (p *modelRewritingPlugin) Cleanup() error  { return nil }
+func (p *modelRewritingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	// The requested route is reserved, so a plugin cannot overwrite what the caller sent.
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "forged-by-plugin")
+	req.SetModel(p.routedModel)
+	return nil
+}
+func (p *modelRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.preLLMHookCalls++
+	p.sawProvider, _ = ctx.Value(schemas.BifrostContextKeyRequestedProvider).(schemas.ModelProvider)
+	p.sawModel, _ = ctx.Value(schemas.BifrostContextKeyRequestedModel).(string)
+	_, p.sawRoutedModel, _ = req.GetRequestFields()
+	return req, nil, nil
+}
+func (p *modelRewritingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestRequestedRouteSurvivesPreRequestRewrite pins that the provider/model the caller sent stay
+// readable after a PreRequestHook rewrites the model: on the context for a later plugin's
+// PreLLMHook, and on RoutingInfo next to the routed model, for JSON and streaming responses.
+func TestRequestedRouteSurvivesPreRequestRewrite(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			server, _ := openAICompatFallbackServer(t)
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+				{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+			})
+			plugin := &modelRewritingPlugin{routedModel: "gpt-4o"}
+			client, initErr := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewNoOpLogger(),
+				LLMPlugins: []schemas.LLMPlugin{plugin},
+			})
+			if initErr != nil {
+				t.Fatalf("Init failed: %v", initErr)
+			}
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			defer ctx.Cancel()
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+				},
+			}
+
+			var got schemas.RoutingInfo
+			if !stream {
+				resp, bifrostErr := client.ChatCompletionRequest(ctx, req)
+				if bifrostErr != nil {
+					t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+				}
+				got = resp.ExtraFields.RoutingInfo
+			} else {
+				ch, bifrostErr := client.ChatCompletionStreamRequest(ctx, req)
+				if bifrostErr != nil {
+					t.Fatalf("stream failed: %s", bifrostErr.Error.Message)
+				}
+				for chunk := range ch {
+					if chunk.BifrostError != nil && chunk.BifrostError.Error != nil {
+						t.Fatalf("stream emitted an error chunk: %s", chunk.BifrostError.Error.Message)
+					}
+					if chunk.BifrostChatResponse != nil {
+						got = chunk.BifrostChatResponse.ExtraFields.RoutingInfo
+					}
+				}
+				// The transport writes stream response headers from this snapshot before the
+				// first chunk, so it must carry the requested route too.
+				snapshot, ok := ctx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo)
+				if !ok {
+					t.Fatal("no RoutingInfo snapshot on the context after the stream")
+				}
+				if snapshot.RequestedProvider != schemas.OpenAI || snapshot.RequestedModel != "gpt-4o-mini" {
+					t.Errorf("snapshot requested route = (%q, %q), want (openai, gpt-4o-mini)", snapshot.RequestedProvider, snapshot.RequestedModel)
+				}
+			}
+
+			plugin.mu.Lock()
+			defer plugin.mu.Unlock()
+			if plugin.preLLMHookCalls == 0 {
+				t.Fatal("PreLLMHook never ran")
+			}
+			if plugin.sawProvider != schemas.OpenAI || plugin.sawModel != "gpt-4o-mini" {
+				t.Errorf("PreLLMHook read requested route (%q, %q), want (openai, gpt-4o-mini)", plugin.sawProvider, plugin.sawModel)
+			}
+			if plugin.sawRoutedModel != "gpt-4o" {
+				t.Errorf("PreLLMHook request model = %q, want the rewritten gpt-4o", plugin.sawRoutedModel)
+			}
+			if got.Model != "gpt-4o" {
+				t.Errorf("RoutingInfo.Model = %q, want the rewritten gpt-4o", got.Model)
+			}
+			if got.RequestedProvider != schemas.OpenAI || got.RequestedModel != "gpt-4o-mini" {
+				t.Errorf("RoutingInfo requested route = (%q, %q), want (openai, gpt-4o-mini)", got.RequestedProvider, got.RequestedModel)
+			}
+		})
+	}
+}
+
 // TestClearAnthropicPassthroughForNonNativeProvider verifies that Anthropic raw-body
 // passthrough flags are cleared only when an Anthropic-integration request resolves to a
 // provider/model pair that doesn't speak the Anthropic Messages API natively (e.g. Bedrock).
@@ -3796,5 +3887,664 @@ func TestPrepareFallbackRequestRetargetsEveryFallbackCapableType(t *testing.T) {
 	}
 	if cases == 0 {
 		t.Fatal("no fallback-capable sub-request types found on BifrostRequest; the reflection walk is broken")
+	}
+}
+
+// TestShutdown_RetentionNoGoroutineLeak is the core-side retention assertion.
+//
+// Bifrost runs a worker pool per provider, and a production profile showed 5120 of those
+// goroutines on a single pod. Each holds channel references and, while serving, the
+// request-scoped state that flows through them. A Shutdown that returns while workers are
+// still parked leaks the whole pool plus everything it can still reach, and nothing in the
+// suite asserted otherwise: the existing tests all `defer client.Shutdown()` and never
+// check it did anything.
+//
+// This is the same class as the client-disconnect watcher leak that pinned roughly 2.0 GB
+// of a 2.66 GB heap while GC ran perfectly, because every byte of it was reachable.
+func TestShutdown_RetentionNoGoroutineLeak(t *testing.T) {
+	memtest.AssertNoGoroutineLeak(t, func() {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.ModelProvider("custom-openai-shutdown"), 1, 1, "http://127.0.0.1:1")
+		account.SetKeysForProvider(schemas.ModelProvider("custom-openai-shutdown"), []schemas.Key{
+			{
+				ID:     "test-key-shutdown",
+				Value:  *schemas.NewSecretVar("sk-test-shutdown"),
+				Models: schemas.WhiteList{"*"},
+				Weight: 100,
+			},
+		})
+		account.SetCustomProviderConfig(schemas.ModelProvider("custom-openai-shutdown"), &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+		})
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		client.Shutdown()
+	})
+}
+
+// TestShutdown_RetentionClientReleased complements TestShutdown_RetentionNoGoroutineLeak.
+//
+// A goroutine count returning to baseline proves nothing is still running; it does not
+// prove nothing still holds a reference. A package-level registry, a pool entry or a
+// closure captured somewhere can keep the whole client (and its provider queues) alive
+// with zero goroutines running. That is precisely the shape that made a production heap
+// unreclaimable: not busy, just reachable.
+//
+// The weak pointer asserts unreachability directly rather than inferring it from a number.
+func TestShutdown_RetentionClientReleased(t *testing.T) {
+	memtest.AssertReleased(t, "the Bifrost client after Shutdown", func() *Bifrost {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.ModelProvider("custom-openai-release"), 1, 1, "http://127.0.0.1:1")
+		account.SetKeysForProvider(schemas.ModelProvider("custom-openai-release"), []schemas.Key{
+			{
+				ID:     "test-key-release",
+				Value:  *schemas.NewSecretVar("sk-test-release"),
+				Models: schemas.WhiteList{"*"},
+				Weight: 100,
+			},
+		})
+		account.SetCustomProviderConfig(schemas.ModelProvider("custom-openai-release"), &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+		})
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		client.Shutdown()
+		return client
+	})
+}
+
+// patternOf reads properties.p.pattern from a tool schema without a JSON round trip.
+func patternOf(t *testing.T, params *schemas.ToolFunctionParameters) string {
+	t.Helper()
+	v, ok := params.Properties.Get("p")
+	if !ok {
+		t.Fatal("property p missing")
+	}
+	pm, ok := v.(*schemas.OrderedMap)
+	if !ok {
+		t.Fatalf("property p is %T, want *OrderedMap", v)
+	}
+	pat, _ := pm.Get("pattern")
+	s, _ := pat.(string)
+	return s
+}
+
+func lookaroundToolParams() *schemas.ToolFunctionParameters {
+	prop := schemas.NewOrderedMap()
+	prop.Set("type", "string")
+	prop.Set("pattern", `^(?!\.\.?$)[^\0]{1,200}$`)
+	props := schemas.NewOrderedMap()
+	props.Set("p", prop)
+	return &schemas.ToolFunctionParameters{Type: "object", Properties: props}
+}
+
+// Only Moonshot and DeepSeek models get their tool-schema patterns rewritten.
+// Every other model, on every provider, must reach the wire byte-identical, and
+// the no-op path must hand back the caller's request itself so nothing is copied.
+func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	cases := []struct {
+		model     string
+		rewritten bool
+	}{
+		{"gpt-4o-mini", false},
+		{"claude-haiku-4-5", false},
+		{"global.anthropic.claude-sonnet-5", false},
+		{"gemini-3.6-flash", false},
+		{"mistral-large-latest", false},
+		{"kimina-prover", false}, // contains "kimi" but is not a Moonshot model
+		{"global.moonshotai.kimi-k3", true},
+		{"kimi-k3", true},
+		{"moonshotai/kimi-k2-instruct", true},
+		{"deepseek-chat", true},
+		{"deepseek-v4.1-flash", true},
+		{"us.deepseek.r1-v1:0", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Model: tc.model,
+				Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("probe"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: lookaroundToolParams()},
+				}}},
+			}
+			out := normalizeResponsesToolSchemas(ctx, req)
+			got := patternOf(t, out.Params.Tools[0].ResponsesToolFunction.Parameters)
+			if !tc.rewritten {
+				if out != req {
+					t.Fatal("a model outside the relaxed set must get its own request back, not a copy")
+				}
+				if !strings.Contains(got, `\0`) || !strings.Contains(got, `(?!`) {
+					t.Fatalf("pattern was rewritten for a model outside the relaxed set: %q", got)
+				}
+				return
+			}
+			if strings.Contains(got, `\0`) || strings.Contains(got, `(?!`) || !strings.Contains(got, `\x00`) {
+				t.Fatalf("pattern not fully rewritten for a relaxed-set model: %q", got)
+			}
+			if orig := patternOf(t, req.Params.Tools[0].ResponsesToolFunction.Parameters); !strings.Contains(orig, `\0`) {
+				t.Fatalf("caller's request was mutated in place: %q", orig)
+			}
+		})
+	}
+}
+
+// TestSetFallbackPinnedAPIKeyID_SurvivesBlockedWrites covers the streaming race, where a prior attempt's async post-hooks hold blockRestrictedWrites.
+func TestSetFallbackPinnedAPIKeyID_SurvivesBlockedWrites(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.BlockRestrictedWrites()
+	defer ctx.UnblockRestrictedWrites()
+
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "dropped")
+	if pin, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); pin != "" {
+		t.Fatalf("SetValue on a reserved key should have been dropped, got %q", pin)
+	}
+
+	ctx.SetFallbackPinnedAPIKeyID("fallback-key")
+	if pin, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); pin != "fallback-key" {
+		t.Fatalf("fallback pin did not land: got %q", pin)
+	}
+}
+
+// TestClearCtxForFallback_ClearsPreviousFallbackPin keeps one fallback's pinned key from leaking into the next attempt.
+func TestClearCtxForFallback_ClearsPreviousFallbackPin(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetFallbackPinnedAPIKeyID("fallback-1-key")
+
+	clearCtxForFallback(ctx)
+
+	if pin, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); ok && pin != "" {
+		t.Fatalf("fallback pin survived clearCtxForFallback: %q", pin)
+	}
+}
+
+// TestStreamFallbackUsesPinnedKey proves the pin, not the weighted selector, picks which credential goes upstream (the unpinned key carries all the weight).
+func TestStreamFallbackUsesPinnedKey(t *testing.T) {
+	primary := httptest.NewServer(sseHandler(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	defer primary.Close()
+
+	var gotAPIKey atomic.Value
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAPIKey.Store(r.Header.Get("x-api-key"))
+		anthropicMessagesHandler()(w, r)
+	}))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "unpinned-key", Value: *schemas.NewSecretVar("sk-unpinned"), Models: schemas.WhiteList{"*"}, Weight: 100},
+		{ID: "pinned-key", Value: *schemas.NewSecretVar("sk-pinned"), Models: schemas.WhiteList{"*"}, Weight: 0},
+	})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Fallbacks: []schemas.Fallback{{
+			Provider: schemas.Anthropic,
+			Model:    "claude-3-5-haiku-20241022",
+			KeyID:    "pinned-key",
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("pinned fallback stream failed: %s", bifrostErr.Error.Message)
+	}
+	if _, errs := drainChatStream(stream); len(errs) > 0 {
+		t.Fatalf("pinned fallback stream emitted error chunks: %v", errs)
+	}
+
+	if got, _ := gotAPIKey.Load().(string); got != "sk-pinned" {
+		t.Fatalf("fallback used api key %q, want %q", got, "sk-pinned")
+	}
+}
+
+// TestFallbackWithUnknownPinnedKeyIsSkipped covers a pin that names no key in the provider's pool: the attempt is skipped, not load-balanced.
+func TestFallbackWithUnknownPinnedKeyIsSkipped(t *testing.T) {
+	primary := httptest.NewServer(sseHandler(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	defer primary.Close()
+
+	var hits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		anthropicMessagesHandler()(w, r)
+	}))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "anthropic-key", Value: *schemas.NewSecretVar("sk-anthropic"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022", KeyID: "not-in-this-pool"},
+			{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022"},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("chain did not recover after the mis-pinned fallback: %s", bifrostErr.Error.Message)
+	}
+	if _, errs := drainChatStream(stream); len(errs) > 0 {
+		t.Fatalf("stream emitted error chunks: %v", errs)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("fallback server hits = %d, want 1 (the mis-pinned attempt must not reach upstream)", got)
+	}
+}
+
+// TestFallbackUsesPinnedKey is the non-streaming twin of TestStreamFallbackUsesPinnedKey; the two orchestrator loops are independent copies.
+func TestFallbackUsesPinnedKey(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
+	}))
+	defer primary.Close()
+
+	var gotAPIKey atomic.Value
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAPIKey.Store(r.Header.Get("x-api-key"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-5-haiku-20241022",`+
+			`"content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn",`+
+			`"usage":{"input_tokens":10,"output_tokens":2}}`)
+	}))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "unpinned-key", Value: *schemas.NewSecretVar("sk-unpinned"), Models: schemas.WhiteList{"*"}, Weight: 100},
+		{ID: "pinned-key", Value: *schemas.NewSecretVar("sk-pinned"), Models: schemas.WhiteList{"*"}, Weight: 0},
+	})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Fallbacks: []schemas.Fallback{{
+			Provider: schemas.Anthropic,
+			Model:    "claude-3-5-haiku-20241022",
+			KeyID:    "pinned-key",
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("pinned fallback failed: %s", bifrostErr.Error.Message)
+	}
+
+	if got, _ := gotAPIKey.Load().(string); got != "sk-pinned" {
+		t.Fatalf("fallback used api key %q, want %q", got, "sk-pinned")
+	}
+}
+
+// openAICompatFallbackServer answers chat completions in OpenAI shape, JSON or SSE, and records the
+// bearer token of every request so a test can tell which provider key served each attempt.
+func openAICompatFallbackServer(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var seen []string
+	stream := sseHandler(`{"id":"chatcmpl-fb","object":"chat.completion.chunk","created":1,"model":"fb-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-fb","object":"chat.completion.chunk","created":1,"model":"fb-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		seen = append(seen, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		mu.Unlock()
+		if strings.Contains(string(body), `"stream":true`) {
+			stream(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-fb","object":"chat.completion","created":1,"model":"fb-model",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), seen...)
+	}
+}
+
+// failingAnthropicPrimary always answers 429 so every request moves on to its fallbacks.
+func failingAnthropicPrimary(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// addFallbackProvider registers a standard OpenAI provider or a custom OpenAI-compatible one at
+// baseURL, with an unpinned key that normal selection always picks and a zero-weight pinned key
+// that only a pin can reach.
+func addFallbackProvider(account *MockAccount, provider schemas.ModelProvider, custom bool, baseURL string) {
+	account.AddProviderWithBaseURL(provider, 1, 1, baseURL)
+	account.configs[provider].NetworkConfig.MaxRetries = 0
+	if custom {
+		account.SetCustomProviderConfig(provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI})
+	}
+	account.SetKeysForProvider(provider, []schemas.Key{
+		{ID: "unpinned-key", Value: *schemas.NewSecretVar("sk-unpinned"), Models: schemas.WhiteList{"*"}, Weight: 100},
+		{ID: "pinned-key", Value: *schemas.NewSecretVar("sk-pinned"), Models: schemas.WhiteList{"*"}, Weight: 0},
+	})
+}
+
+// runFallbackChat sends one chat request, JSON or streaming, and fails the test if it does not
+// succeed end to end.
+func runFallbackChat(t *testing.T, client *Bifrost, stream bool, primary schemas.ModelProvider, fallbacks []schemas.Fallback) {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	req := &schemas.BifrostChatRequest{
+		Provider: primary,
+		Model:    "claude-3-5-haiku-20241022",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Fallbacks: fallbacks,
+	}
+	if !stream {
+		if _, bifrostErr := client.ChatCompletionRequest(ctx, req); bifrostErr != nil {
+			t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+		}
+		return
+	}
+	ch, bifrostErr := client.ChatCompletionStreamRequest(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("stream failed: %s", bifrostErr.Error.Message)
+	}
+	if _, errs := drainChatStream(ch); len(errs) > 0 {
+		t.Fatalf("stream emitted error chunks: %v", errs)
+	}
+}
+
+// TestFallbackKeyPinMatrix covers a routing fallback's key pin on both orchestrator loops, for a
+// standard provider and a custom OpenAI-compatible one: a pin reaches its key, an unpinned
+// fallback keeps normal selection, and a pin to a key the provider does not have skips only that
+// attempt.
+func TestFallbackKeyPinMatrix(t *testing.T) {
+	providers := []struct {
+		name     string
+		provider schemas.ModelProvider
+		custom   bool
+	}{
+		{name: "standard", provider: schemas.OpenAI},
+		{name: "custom", provider: schemas.ModelProvider("custom-fallback-pin"), custom: true},
+	}
+	scenarios := []struct {
+		name      string
+		fallbacks func(p schemas.ModelProvider) []schemas.Fallback
+		wantKeys  []string // bearer tokens the fallback upstream must see, in order
+	}{
+		{
+			name: "pinned",
+			fallbacks: func(p schemas.ModelProvider) []schemas.Fallback {
+				return []schemas.Fallback{{Provider: p, Model: "fb-model", KeyID: "pinned-key"}}
+			},
+			wantKeys: []string{"sk-pinned"},
+		},
+		{
+			name: "unpinned",
+			fallbacks: func(p schemas.ModelProvider) []schemas.Fallback {
+				return []schemas.Fallback{{Provider: p, Model: "fb-model"}}
+			},
+			wantKeys: []string{"sk-unpinned"},
+		},
+		{
+			name: "pin to a missing key is skipped, next fallback serves",
+			fallbacks: func(p schemas.ModelProvider) []schemas.Fallback {
+				return []schemas.Fallback{{Provider: p, Model: "fb-model", KeyID: "not-in-this-pool"}, {Provider: p, Model: "fb-model"}}
+			},
+			wantKeys: []string{"sk-unpinned"},
+		},
+		{
+			name: "pin does not leak into the next fallback",
+			fallbacks: func(p schemas.ModelProvider) []schemas.Fallback {
+				// The first attempt's model is refused by both keys, so it fails before upstream and
+				// the second, unpinned attempt must not inherit the first attempt's pin.
+				return []schemas.Fallback{{Provider: p, Model: "blocked-model", KeyID: "pinned-key"}, {Provider: p, Model: "fb-model"}}
+			},
+			wantKeys: []string{"sk-unpinned"},
+		},
+	}
+	for _, prov := range providers {
+		for _, sc := range scenarios {
+			for _, stream := range []bool{false, true} {
+				name := fmt.Sprintf("%s/%s/stream=%t", prov.name, sc.name, stream)
+				t.Run(name, func(t *testing.T) {
+					primary := failingAnthropicPrimary(t)
+					fallback, seen := openAICompatFallbackServer(t)
+
+					account := NewMockAccount()
+					account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, primary.URL)
+					account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+					account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+						{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+					})
+					addFallbackProvider(account, prov.provider, prov.custom, fallback.URL)
+					keys := account.keys[prov.provider]
+					for i := range keys {
+						keys[i].BlacklistedModels = schemas.BlackList{"blocked-model"}
+					}
+					client := newStreamTestClient(t, account)
+
+					runFallbackChat(t, client, stream, schemas.Anthropic, sc.fallbacks(prov.provider))
+					if got := seen(); !reflect.DeepEqual(got, sc.wantKeys) {
+						t.Fatalf("fallback upstream saw keys %v, want %v", got, sc.wantKeys)
+					}
+				})
+			}
+		}
+	}
+}
+
+// allowedKeysAccount mirrors the transport account: it offers only the keys a virtual key allows,
+// read from the per-attempt governance context value.
+type allowedKeysAccount struct {
+	*MockAccount
+}
+
+func (a *allowedKeysAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	keys, err := a.MockAccount.GetKeysForProvider(ctx, provider)
+	if err != nil {
+		return nil, err
+	}
+	allowed, ok := ctx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys).([]string)
+	if !ok {
+		return keys, nil
+	}
+	filtered := make([]schemas.Key, 0, len(keys))
+	for _, key := range keys {
+		if slices.Contains(allowed, key.ID) {
+			filtered = append(filtered, key)
+		}
+	}
+	return filtered, nil
+}
+
+// allowedKeysPlugin stands in for governance, which publishes a virtual key's allowed keys in
+// PreLLMHook on every attempt, after core has cleared the previous attempt's value.
+type allowedKeysPlugin struct {
+	allowed map[schemas.ModelProvider][]string
+}
+
+func (p *allowedKeysPlugin) GetName() string { return "allowed-keys" }
+func (p *allowedKeysPlugin) Cleanup() error  { return nil }
+func (p *allowedKeysPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *allowedKeysPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	provider, _, _ := req.GetRequestFields()
+	if ids, ok := p.allowed[provider]; ok {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, ids)
+	}
+	return req, nil, nil
+}
+func (p *allowedKeysPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestFallbackPinOutsideAllowedKeysIsRefused pins that a routing fallback's key pin cannot reach a
+// key the virtual key does not allow: the pinned attempt is skipped without touching upstream and
+// the next fallback serves on an allowed key, for standard and custom providers on both loops.
+func TestFallbackPinOutsideAllowedKeysIsRefused(t *testing.T) {
+	providers := []struct {
+		name     string
+		provider schemas.ModelProvider
+		custom   bool
+	}{
+		{name: "standard", provider: schemas.OpenAI},
+		{name: "custom", provider: schemas.ModelProvider("custom-fallback-allowed"), custom: true},
+	}
+	for _, prov := range providers {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", prov.name, stream), func(t *testing.T) {
+				primary := failingAnthropicPrimary(t)
+				fallback, seen := openAICompatFallbackServer(t)
+
+				mock := NewMockAccount()
+				mock.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, primary.URL)
+				mock.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+				mock.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+					{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+				})
+				addFallbackProvider(mock, prov.provider, prov.custom, fallback.URL)
+
+				client, err := Init(context.Background(), schemas.BifrostConfig{
+					Account:    &allowedKeysAccount{MockAccount: mock},
+					Logger:     NewDefaultLogger(schemas.LogLevelError),
+					LLMPlugins: []schemas.LLMPlugin{&allowedKeysPlugin{allowed: map[schemas.ModelProvider][]string{prov.provider: {"unpinned-key"}}}},
+				})
+				if err != nil {
+					t.Fatalf("failed to initialize bifrost: %v", err)
+				}
+				t.Cleanup(client.Shutdown)
+
+				runFallbackChat(t, client, stream, schemas.Anthropic, []schemas.Fallback{
+					{Provider: prov.provider, Model: "fb-model", KeyID: "pinned-key"},
+					{Provider: prov.provider, Model: "fb-model"},
+				})
+				if got := seen(); !reflect.DeepEqual(got, []string{"sk-unpinned"}) {
+					t.Fatalf("fallback upstream saw keys %v, want only the allowed key [sk-unpinned]", got)
+				}
+			})
+		}
+	}
+}
+
+// TestSDKFidelityDecisionRequestNullStateReachesProvider pins #7599 at the core
+// entrypoint: a decision request whose state is null (an SDK-valid EntryType)
+// must be dispatched to the provider as {"state": null} instead of being
+// rejected before dispatch.
+func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		if r.URL.Path != "/v1/systemone" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.25}},"usage":{"input_tokens":3,"output_tokens":0}}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Typesafe, 1, 1, server.URL)
+	account.SetKeysForProvider(schemas.Typesafe, []schemas.Key{{
+		ID:     "test-key-typesafe",
+		Value:  *schemas.NewSecretVar("sk-test-typesafe"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 100,
+	}})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	client, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	resp, bifrostErr := client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
+		Provider: schemas.Typesafe,
+		Model:    "jev-1.13.0",
+		State:    nil,
+		Questions: map[string]schemas.DecisionQuestion{
+			"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("null state must reach the provider, got error: %v", bifrostErr)
+	}
+	if resp == nil || resp.Answers["q"].Value != 0.25 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 || !strings.Contains(bodies[0], `"state":null`) {
+		t.Errorf("provider must receive state null, got bodies %v", bodies)
 	}
 }

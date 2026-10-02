@@ -19,8 +19,7 @@ const mcpLibrarySettingsSchema = z.object({
 		.string()
 		.trim()
 		.refine(
-			(value) =>
-				value === "" || value.startsWith("http://") || value.startsWith("https://") || value.startsWith("file://"),
+			(value) => value === "" || value.startsWith("http://") || value.startsWith("https://") || value.startsWith("file://"),
 			"URL must start with http://, https://, or file://",
 		),
 	// 0 disables background syncing entirely. Force Sync Now still works.
@@ -122,8 +121,8 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 							<div className="space-y-0.5">
 								<Label htmlFor="mcp-library-url">Library Sync URL</Label>
 								<p className="text-muted-foreground text-sm">
-									URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. Use a{" "}
-									<code>file://</code> URL to load the catalog from local disk in air-gapped deployments.
+									URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. Use a <code>file://</code> URL to load
+									the catalog from local disk in air-gapped deployments.
 								</p>
 							</div>
 							<Input
@@ -141,8 +140,8 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 							<div className="space-y-0.5">
 								<Label htmlFor="mcp-library-sync-interval">Sync Interval (hours)</Label>
 								<p className="text-muted-foreground text-sm">
-									How often to sync the MCP server catalog from the source URL. Set to 0 to disable background syncing;
-									Force Sync Now still works.
+									How often to sync the MCP server catalog from the source URL. Set to 0 to disable background syncing; Force Sync Now still
+									works.
 								</p>
 							</div>
 							<Input

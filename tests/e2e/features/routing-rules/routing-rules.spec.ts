@@ -10,6 +10,7 @@ test.describe('Routing Rules', () => {
   })
 
   test.afterEach(async ({ routingRulesPage }) => {
+    await routingRulesPage.cancelRule()
     // Clean up any rules created during tests
     for (const ruleName of [...createdRules]) {
       try {
@@ -213,6 +214,129 @@ test.describe('Routing Rules', () => {
 
       const exists = await routingRulesPage.ruleExists(ruleData.name)
       expect(exists).toBe(true)
+    })
+
+    test('should create rule with a fallback', async ({ routingRulesPage }) => {
+      const ruleData = createRoutingRuleData({
+        name: `Fallback Rule ${Date.now()}`,
+        enabled: false,
+        provider: 'openai',
+        fallbacks: [{ provider: 'anthropic' }],
+      })
+      createdRules.push(ruleData.name)
+
+      await routingRulesPage.createRoutingRule(ruleData)
+
+      expect(await routingRulesPage.ruleExists(ruleData.name)).toBe(true)
+
+      // The fallback must survive the round-trip through the API's legacy string form.
+      await routingRulesPage.openEditSheet(ruleData.name)
+      expect(await routingRulesPage.getFallbackProvider(0)).toMatch(/anthropic/i)
+      await routingRulesPage.cancelRule()
+    })
+
+    test('should pin and clear a provider key on a fallback', async ({ routingRulesPage }) => {
+      const ruleData = createRoutingRuleData({
+        name: `Pinned Fallback Rule ${Date.now()}`,
+        enabled: false,
+        provider: 'openai',
+      })
+      createdRules.push(ruleData.name)
+
+      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.openEditSheet(ruleData.name)
+
+      const index = await routingRulesPage.addFallbackProvider('openai')
+      const pinned = await routingRulesPage.pinFallbackKey(index)
+      // The key select only renders once the chosen provider has keys configured.
+      test.skip(!pinned, 'no provider keys configured in this environment')
+
+      const selectedKey = await routingRulesPage.getPinnedFallbackKey(index)
+      expect(selectedKey).toBeTruthy()
+      expect(selectedKey).not.toMatch(/Select key/i)
+
+      await routingRulesPage.saveBtn.click()
+      // The rule already exists, so waiting for its row alone can pass while the sheet is
+      // still closing, and the reopen below would then act on the sheet that is on its way out.
+      await expect(routingRulesPage.sheet).not.toBeVisible()
+      await routingRulesPage.waitForRuleToAppear(ruleData.name)
+
+      // Reopening must preselect the same key rather than falling back to the placeholder.
+      await routingRulesPage.openEditSheet(ruleData.name)
+      expect(await routingRulesPage.getPinnedFallbackKey(index)).toBe(selectedKey)
+
+      // Clearing returns the fallback to load-balanced key selection.
+      await routingRulesPage.clearFallbackKey(index)
+      expect(await routingRulesPage.getPinnedFallbackKey(index)).toMatch(/Select key/i)
+      await routingRulesPage.saveBtn.click()
+      await expect(routingRulesPage.sheet).not.toBeVisible()
+      await routingRulesPage.openEditSheet(ruleData.name)
+      expect(await routingRulesPage.getPinnedFallbackKey(index)).toMatch(/Select key/i)
+      expect(await routingRulesPage.getFallbackProvider(index)).toMatch(/openai/i)
+      await routingRulesPage.cancelRule()
+    })
+
+    test('should set, edit and clear the TTFT cutoff', async ({ routingRulesPage }) => {
+      const ruleData = createRoutingRuleData({
+        name: `TTFT Rule ${Date.now()}`,
+        enabled: false,
+        provider: 'openai',
+        fallbacks: [{ provider: 'anthropic' }],
+        ttftTimeoutMs: 1500,
+      })
+      createdRules.push(ruleData.name)
+
+      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.openEditSheet(ruleData.name)
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('1500')
+      await routingRulesPage.cancelRule()
+
+      await routingRulesPage.editRoutingRule(ruleData.name, { ttftTimeoutMs: 800 })
+      await routingRulesPage.openEditSheet(ruleData.name)
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('800')
+      await routingRulesPage.cancelRule()
+
+      // Clearing the input must clear the stored value, not keep the old one.
+      await routingRulesPage.editRoutingRule(ruleData.name, { ttftTimeoutMs: null })
+      await routingRulesPage.openEditSheet(ruleData.name)
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('')
+      await routingRulesPage.cancelRule()
+    })
+
+    test('should warn about a TTFT cutoff without fallbacks and reject out-of-range values', async ({ routingRulesPage }) => {
+      await routingRulesPage.createBtn.click()
+      await expect(routingRulesPage.sheet).toBeVisible()
+      await routingRulesPage.nameInput.fill(`TTFT Invalid ${Date.now()}`)
+
+      const warning = routingRulesPage.sheet.getByTestId('routing-rule-ttft-timeout-no-fallback-warning')
+      const error = routingRulesPage.sheet.getByTestId('routing-rule-ttft-timeout-error')
+
+      await routingRulesPage.fillTTFTTimeout(1500)
+      await expect(warning).toBeVisible()
+
+      await routingRulesPage.fillTTFTTimeout(0)
+      // An invalid value is not a cutoff, so it must not warn about one.
+      await expect(warning).toBeHidden()
+      await routingRulesPage.saveBtn.click()
+      await expect(error).toBeVisible()
+      await expect(routingRulesPage.sheet).toBeVisible()
+      // Screen readers must get the error from the input itself.
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute('aria-invalid', 'true')
+      const errorId = await error.getAttribute('id')
+      expect(errorId, 'the error needs an id for aria-describedby').toBeTruthy()
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute('aria-describedby', errorId!)
+
+      await routingRulesPage.fillTTFTTimeout(300001)
+      await routingRulesPage.saveBtn.click()
+      await expect(error).toBeVisible()
+      await expect(routingRulesPage.sheet).toBeVisible()
+
+      // Non-numeric text must be rejected, not silently read as "off".
+      await routingRulesPage.ttftTimeoutInput.fill('abc')
+      await routingRulesPage.saveBtn.click()
+      await expect(error).toBeVisible()
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('abc')
+      await expect(routingRulesPage.sheet).toBeVisible()
     })
 
     test('should reorder rules by changing priority', async ({ routingRulesPage }) => {

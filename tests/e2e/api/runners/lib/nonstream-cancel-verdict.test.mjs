@@ -28,6 +28,22 @@ test("fails when the row is stuck in processing", () => {
   assert.match(v.detail, /status=processing/);
 });
 
+// The stranded-caller regression (maximhq/bifrost#7308): the worker claimed
+// delivery but its send select kept a ctx.Done() arm, discarded the value on a
+// coin flip, and the committed caller parked forever in tryRequest's inner
+// receive. The handler goroutine never runs terminal hooks, so from the wire
+// the signature is identical: an aborted request whose row exists but never
+// leaves `processing`. This case pins that the verdict keeps failing on it.
+test("fails on the stranded committed caller shape (#7308)", () => {
+  const v = evaluateNonStreamCancel({
+    row: { status: "processing" },
+    racedToCompletion: false,
+    aborted: true,
+  });
+  assert.strictEqual(v.verdict, "FAIL");
+  assert.match(v.detail, /never reached a terminal status/);
+});
+
 for (const status of ["cancelled", "error", "success"]) {
   test(`passes on terminal status ${status}`, () => {
     const v = evaluateNonStreamCancel({ row: { status }, aborted: true });

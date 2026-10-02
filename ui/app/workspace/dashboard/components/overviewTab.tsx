@@ -1,3 +1,4 @@
+import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type {
 	CostHistogramResponse,
@@ -231,7 +232,7 @@ function OverviewTabImpl({
 											<TooltipTrigger asChild>
 												<span tabIndex={0} data-testid="cost-legend-trigger" className="flex items-center gap-1">
 													<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-													<span className="text-muted-foreground max-w-[100px] truncate">{costModels[0]}</span>
+													<StartTruncatedLabel className="text-muted-foreground max-w-[160px]">{costModels[0]}</StartTruncatedLabel>
 												</span>
 											</TooltipTrigger>
 											<TooltipContent>{costModels[0]}</TooltipContent>
@@ -267,7 +268,7 @@ function OverviewTabImpl({
 									<TooltipTrigger asChild>
 										<span tabIndex={0} data-testid="cost-legend-single-trigger" className="flex items-center gap-1">
 											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-											<span className="text-muted-foreground max-w-[100px] truncate">{costModel}</span>
+											<StartTruncatedLabel className="text-muted-foreground max-w-[160px]">{costModel}</StartTruncatedLabel>
 										</span>
 									</TooltipTrigger>
 									<TooltipContent>{costModel}</TooltipContent>
@@ -377,7 +378,7 @@ function OverviewTabImpl({
 											<TooltipTrigger asChild>
 												<span tabIndex={0} data-testid="usage-legend-trigger" className="flex items-center gap-1">
 													<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-													<span className="text-muted-foreground max-w-[100px] truncate">{usageModels[0]}</span>
+													<StartTruncatedLabel className="text-muted-foreground max-w-[160px]">{usageModels[0]}</StartTruncatedLabel>
 												</span>
 											</TooltipTrigger>
 											<TooltipContent>{usageModels[0]}</TooltipContent>

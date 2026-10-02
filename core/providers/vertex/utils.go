@@ -3,6 +3,7 @@ package vertex
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
@@ -86,6 +87,34 @@ func resolveVertexForceSingleRegion(ctx *schemas.BifrostContext, key schemas.Key
 // partner-model multi-region pool endpoint host instead of the single-region host.
 func isVertexMultiRegionEndpoint(region string) bool {
 	return region == "us" || region == "eu"
+}
+
+var vertexRegionRe = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// parseVertexResourceName matches a full resource name against shape ("" marks a caller-supplied segment) and returns its escaped segments.
+func parseVertexResourceName(name, field string, shape ...string) ([]string, *schemas.BifrostError) {
+	parts := strings.Split(name, "/")
+	if len(parts) != len(shape) {
+		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("invalid %s: unexpected resource name", field))
+	}
+	for i, want := range shape {
+		if want != "" {
+			if parts[i] != want {
+				return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("invalid %s: unexpected resource name", field))
+			}
+			continue
+		}
+		// The region also selects the API host, so it gets a stricter charset.
+		if i > 0 && shape[i-1] == "locations" && !vertexRegionRe.MatchString(parts[i]) {
+			return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("invalid %s: unexpected region", field))
+		}
+		escaped, bifrostErr := providerUtils.EscapeResourceID(parts[i], field)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		parts[i] = escaped
+	}
+	return parts, nil
 }
 
 // getVertexAPIHost returns the Vertex API host used for prediction requests.

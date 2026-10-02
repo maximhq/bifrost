@@ -6,6 +6,7 @@ package telemetry
 import (
 	"log"
 	"math"
+	"slices"
 	"strings"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -60,6 +61,14 @@ func collectPrometheusKeyValues(ctx *fasthttp.RequestCtx) map[string]string {
 	})
 
 	return labelValues
+}
+
+// spliceLabelValues returns promLabelValues with extras inserted between the default
+// labels (the first nDefault values) and the custom labels that follow them, matching
+// metric definitions that declare default labels, then extras, then custom labels.
+// The input slice is never mutated.
+func spliceLabelValues(promLabelValues []string, nDefault int, extras ...string) []string {
+	return slices.Insert(slices.Clone(promLabelValues), nDefault, extras...)
 }
 
 // safeObserve safely records a value in a Prometheus histogram.

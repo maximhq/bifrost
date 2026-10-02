@@ -44,6 +44,30 @@ func (s testHandlerStore) ShouldAllowDirectKeys() bool                      { re
 func (s testHandlerStore) GetMCPExternalServerURL() string                  { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                  { return "" }
 
+func TestExtractRealtimeTokenFromAuth(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		auth *authHeaders
+		want string
+	}{
+		"authorization bearer": {auth: &authHeaders{authorization: "Bearer ek_auth"}, want: "ek_auth"},
+		"virtual key header":   {auth: &authHeaders{virtualKey: "ek_vk"}, want: "ek_vk"},
+		"api key header":       {auth: &authHeaders{apiKey: "ek_api"}, want: "ek_api"},
+		"google api key":       {auth: &authHeaders{googAPIKey: "ek_google"}, want: "ek_google"},
+		"authorization wins":   {auth: &authHeaders{authorization: "Bearer ek_auth", virtualKey: "ek_vk"}, want: "ek_auth"},
+		"nil":                  {auth: nil, want: ""},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := extractRealtimeTokenFromAuth(test.auth); got != test.want {
+				t.Fatalf("extractRealtimeTokenFromAuth() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestResolveRealtimeSDPTarget_BaseRouteRequiresProviderPrefix(t *testing.T) {
 	var ctx fasthttp.RequestCtx
 	cfg := &lib.Config{}
@@ -370,12 +394,21 @@ func TestCacheRealtimeEphemeralKeyMappingPreservesVirtualKeyAcrossKVReplication(
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	cacheRealtimeEphemeralKeyMapping(source, body, "key_123", "sk-bf-test")
+	resp := &schemas.BifrostPassthroughResponse{Body: body}
+	if bifrostErr := replaceAndCacheRealtimeEphemeralToken(source, resp, "key_123", "sk-bf-test"); bifrostErr != nil {
+		t.Fatalf("replaceAndCacheRealtimeEphemeralToken() error = %v", bifrostErr)
+	}
 	if delegate.err != nil {
 		t.Fatalf("replicating mapping error = %v", delegate.err)
 	}
 
-	mapping, ok := lookupRealtimeEphemeralKeyMapping(destination, "ek_test_replicated")
+	var rewritten struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(resp.Body, &rewritten); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	mapping, ok := lookupRealtimeEphemeralKeyMapping(destination, rewritten.Value)
 	if !ok {
 		t.Fatal("expected replicated mapping")
 	}
@@ -384,6 +417,9 @@ func TestCacheRealtimeEphemeralKeyMappingPreservesVirtualKeyAcrossKVReplication(
 	}
 	if mapping.VirtualKey != "sk-bf-test" {
 		t.Fatalf("mapping.VirtualKey = %q, want %q", mapping.VirtualKey, "sk-bf-test")
+	}
+	if mapping.ProviderToken != "ek_test_replicated" {
+		t.Fatalf("mapping.ProviderToken = %q, want %q", mapping.ProviderToken, "ek_test_replicated")
 	}
 }
 
@@ -473,21 +509,18 @@ func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenStaysAnonymous(t *testi
 		handlerStore: testHandlerStore{kv: store},
 	}
 
-	var ctx fasthttp.RequestCtx
-	ctx.Request.Header.Set("Authorization", "Bearer ek_test_unmapped")
-
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bifrostCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "selected")
 	bifrostCtx.SetValue(schemas.BifrostContextKeySelectedKeyName, "selected-name")
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, "mapped-id")
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyName, "mapped-name")
 
-	authKey, selectedKey, err := handler.resolveRealtimeWebRTCKeys(&ctx, bifrostCtx, schemas.OpenAI, "gpt-realtime")
+	authKey, selectedKey, err := handler.resolveRealtimeWebRTCKeys(bifrostCtx, schemas.OpenAI, "gpt-realtime", "ek_bf_test_unmapped", realtimeEphemeralKeyMapping{}, false)
 	if err != nil {
 		t.Fatalf("resolveRealtimeWebRTCKeys() error = %v", err)
 	}
-	if got := authKey.Value.GetValue(); got != "ek_test_unmapped" {
-		t.Fatalf("auth key value = %q, want %q", got, "ek_test_unmapped")
+	if got := authKey.Value.GetValue(); got != "ek_bf_test_unmapped" {
+		t.Fatalf("auth key value = %q, want %q", got, "ek_bf_test_unmapped")
 	}
 	if selectedKey != nil {
 		t.Fatalf("selectedKey = %#v, want nil", selectedKey)

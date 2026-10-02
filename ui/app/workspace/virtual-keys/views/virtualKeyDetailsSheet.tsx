@@ -1,7 +1,7 @@
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
 import { BudgetOverrideManagerDialog, type BudgetOverrideSection } from "@/components/budgetOverrideManagerDialog";
 import { CopyableId } from "@/components/copyableId";
-import { ModelAccessBadges } from "@/components/modelAccess";
+import { isWildcardList, ModelAccessBadges } from "@/components/modelAccess";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
@@ -13,6 +13,7 @@ import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { fiscalQuarterNote, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
+import { useGetCoreConfigQuery } from "@/lib/store";
 import { useRemoveVirtualKeyBudgetOverrideMutation, useSetVirtualKeyBudgetOverrideMutation } from "@/lib/store/apis/governanceApi";
 import { BudgetOverrideRequest, VirtualKey, VirtualKeyProviderConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
@@ -53,7 +54,11 @@ function UsageLine({ current, max, format }: { current: number; max: number; for
 					{pct}%
 				</span>
 			</div>
-			<Progress value={Math.min(pct, 100)} className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", usageBarClass(pct, exhausted))} />
+			<Progress
+				aria-label="Usage"
+				value={Math.min(pct, 100)}
+				className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", usageBarClass(pct, exhausted))}
+			/>
 		</div>
 	);
 }
@@ -75,6 +80,8 @@ export default function VirtualKeyDetailSheet({
 }: VirtualKeyDetailSheetProps) {
 	const { assignedUsers, isManagedByProfile, managingProfile, displayBudgets, displayRateLimit } = useVirtualKeyUsage(virtualKey);
 	const canUpdateVirtualKeys = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
+	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const deletesAfterExpire = virtualKey.delete_after_expire ?? coreConfig?.client_config?.delete_expired_virtual_keys ?? false;
 	const [setBudgetOverride] = useSetVirtualKeyBudgetOverrideMutation();
 	const [removeBudgetOverride] = useRemoveVirtualKeyBudgetOverrideMutation();
 	const saveBudgetOverride = async (budgetId: string, data: BudgetOverrideRequest) => {
@@ -192,6 +199,25 @@ export default function VirtualKeyDetailSheet({
 											addSuffix: true,
 										})}
 										<span className="text-muted-foreground ml-1 text-xs">({new Date(virtualKey.expires_at).toLocaleString()})</span>
+										{deletesAfterExpire && (
+											<span className="text-muted-foreground ml-1 text-xs" data-testid="vk-details-delete-after-expire">
+												· deleted automatically after expiry
+											</span>
+										)}
+									</div>
+								</div>
+							)}
+
+							{typeof virtualKey.disable_content_logging === "boolean" && (
+								<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
+									<span className="text-muted-foreground text-sm">Content logging</span>
+									<div className="col-span-2">
+										<Badge
+											variant={virtualKey.disable_content_logging ? "secondary" : "default"}
+											data-testid="vk-details-content-logging-badge"
+										>
+											{virtualKey.disable_content_logging ? "Off for this key" : "On for this key"}
+										</Badge>
 									</div>
 								</div>
 							)}
@@ -235,11 +261,28 @@ export default function VirtualKeyDetailSheet({
 
 							{/* Provider Configurations */}
 							<div className="space-y-4">
-								<h3 className="font-semibold">Provider Configurations</h3>
+								<div className="flex items-center gap-2">
+									<h3 className="font-semibold">Provider Configurations</h3>
+									{virtualKey.allow_all_providers && (
+										<Badge variant="success" className="text-xs">
+											All providers
+										</Badge>
+									)}
+								</div>
+
+								{/* A key that allows every provider grants ones it holds no entry for, including ones added
+								later, so the entries below are overrides rather than the whole of what it may reach. */}
+								{virtualKey.allow_all_providers && (
+									<p className="text-muted-foreground text-sm">
+										Every provider is allowed, including ones added later. Entries below indicate specific provider level configuration.
+									</p>
+								)}
 
 								<div className="space-y-3">
 									{!virtualKey.provider_configs || virtualKey.provider_configs.length === 0 ? (
-										<span className="text-muted-foreground text-sm">No providers configured (deny-by-default)</span>
+										<span className="text-muted-foreground text-sm">
+											{virtualKey.allow_all_providers ? "No provider overrides" : "No providers configured (deny-by-default)"}
+										</span>
 									) : (
 										<div className="space-y-4">
 											{virtualKey.provider_configs.map((config, index) => (
@@ -279,7 +322,11 @@ export default function VirtualKeyDetailSheet({
 														<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
 															<span className="text-muted-foreground pt-0.5 text-sm font-medium">Blocked Models</span>
 															<div className="col-span-2">
-																<ModelAccessBadges value={config.blacklisted_models} mode="block" />
+																<ModelAccessBadges
+																	value={config.blacklisted_models}
+																	mode="block"
+																	allowsAllModels={isWildcardList(config.allowed_models)}
+																/>
 															</div>
 														</div>
 

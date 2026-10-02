@@ -10,8 +10,17 @@ roles:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RBAC:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List roles
-    description: Returns all roles visible to the caller, scoped by data access control.
+    description: |
+      Returns all roles visible to the caller, scoped by data access control.
     tags:
       - RBAC
     security:
@@ -36,6 +45,14 @@ roles:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RBAC:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create role
     description: |
       Creates a custom role with the specified data access control scope.
@@ -73,6 +90,14 @@ roles-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RBAC:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get role by ID
     tags:
       - RBAC
@@ -106,6 +131,14 @@ roles-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RBAC:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update role
     description: |
       Partial update. Omitted fields preserve the current value.
@@ -150,6 +183,14 @@ roles-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RBAC:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete role
     description: |
       Deletes a custom role. Built-in system roles cannot be deleted and return 403.
@@ -196,6 +237,14 @@ roles-permissions:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RBAC:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List permissions assigned to a role
     tags:
       - RBAC
@@ -229,6 +278,14 @@ roles-permissions:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RBAC:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Replace the permission set on a role
     description: |
       Replaces the permission set assigned to the role.
@@ -274,8 +331,17 @@ resources:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List RBAC resources
-    description: Returns the set of resource names that permissions can target.
+    description: |
+      Returns the set of resource names that permissions can target.
     tags:
       - RBAC
     security:
@@ -301,8 +367,17 @@ operations:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List RBAC operations
-    description: Returns the set of operation names that permissions can grant.
+    description: |
+      Returns the set of operation names that permissions can grant.
     tags:
       - RBAC
     security:
@@ -328,8 +403,17 @@ permissions:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List all RBAC permissions
-    description: Returns every (resource, operation) pair that can be granted to a role.
+    description: |
+      Returns every (resource, operation) pair that can be granted to a role.
     tags:
       - RBAC
     security:

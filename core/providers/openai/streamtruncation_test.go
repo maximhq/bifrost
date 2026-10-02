@@ -152,6 +152,66 @@ func chatChunk(content string, finishReason *string) string {
 		`"choices":[{"index":0,"delta":` + delta + `,"finish_reason":` + finish + `}]}` + "\n\n"
 }
 
+// ModelScope-style OpenAI-compatible upstreams put a full `message` object next
+// to `delta` in every streaming chunk. BifrostResponseChoice embeds both the
+// stream and non-stream choice shapes, so a plain unmarshal allocated
+// ChatNonStreamResponseChoice from that key and Bifrost re-emitted the message
+// object - with its empty reasoning noise - on every SSE event, violating the
+// choice struct's own "only one non-nil at a time" invariant and making
+// reasoning-aware clients insert a thinking block per chunk. Streaming chunks
+// must carry only delta. See https://github.com/maximhq/bifrost/issues/7294 and
+// https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events
+// (chat.completion.chunk choices carry `delta`, not `message`).
+func TestChatStreamDropsUpstreamMessageObject(t *testing.T) {
+	modelScopeChunk := func(deltaJSON string, finish string) string {
+		return `data: {"id":"chatcmpl-ms","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+			`"choices":[{"index":0,` +
+			`"message":{"role":"assistant","content":"","reasoning":"","reasoning_content":"","reasoning_details":[{"index":0,"type":"reasoning.text","text":""}]},` +
+			`"delta":` + deltaJSON + `,"finish_reason":` + finish + `}]}` + "\n\n"
+	}
+	body := modelScopeChunk(`{"role":"assistant","content":"","reasoning_content":"We"}`, "null") +
+		modelScopeChunk(`{"content":"Hello","reasoning_content":""}`, "null") +
+		modelScopeChunk(`{"content":"","reasoning_content":""}`, `"stop"`) +
+		"data: [DONE]\n\n"
+
+	server := completeSSEServer(t, body)
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected forwarded chunks")
+	}
+	sawContent := false
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
+		}
+		if chunk.BifrostChatResponse == nil {
+			continue
+		}
+		for _, choice := range chunk.BifrostChatResponse.Choices {
+			if choice.ChatNonStreamResponseChoice != nil {
+				t.Errorf("chunk %d leaked the upstream message object into a streaming choice: %+v", i, choice.ChatNonStreamResponseChoice)
+			}
+			if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
+				delta := choice.ChatStreamResponseChoice.Delta
+				if delta.Content != nil && *delta.Content == "Hello" {
+					sawContent = true
+				}
+			}
+		}
+	}
+	if !sawContent {
+		t.Error("the content delta itself must still be forwarded")
+	}
+}
+
 // Pre-first-byte death: nothing has reached the client yet, so the error must be
 // the very first chunk. That is what lets CheckFirstStreamChunkForError convert it
 // into a synchronous error and give the transport a real non-2xx status.

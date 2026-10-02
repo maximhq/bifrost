@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -588,6 +589,87 @@ func TestGovernanceStore_MultiBudget_CalendarAligned(t *testing.T) {
 	// Both under limit — should pass
 	_, err = checkGrantBudgets(store, emptyCtx(), vk, schemas.OpenAI, "", nil)
 	assert.NoError(t, err)
+}
+
+func TestGovernanceStore_TeamCalendarAlignmentSurvivesColdLoad(t *testing.T) {
+	logger := NewMockLogger()
+	now := time.Now().UTC()
+	lastReset := configstoreTables.GetCalendarPeriodStart("1w", now, configstoreTables.QuarterStartNotApplicable)
+	createdAt := now.Add(-time.Minute)
+	teamID := "team-calendar-aligned"
+	weeklyBudget := configstoreTables.TableBudget{
+		ID:            "team-weekly-calendar-aligned",
+		TeamID:        &teamID,
+		MaxLimit:      100,
+		CurrentUsage:  42,
+		ResetDuration: "1w",
+		LastReset:     lastReset,
+		CreatedAt:     createdAt,
+	}
+	dailyBudget := configstoreTables.TableBudget{
+		ID:                "team-daily-calendar-aligned",
+		TeamID:            &teamID,
+		MaxLimit:          25,
+		ResetDuration:     "1d",
+		LastReset:         configstoreTables.GetCalendarPeriodStart("1d", now, configstoreTables.QuarterStartNotApplicable),
+		CreatedAt:         createdAt,
+		IsCalendarAligned: true,
+	}
+	rateLimit := buildRateLimit("team-calendar-aligned-rate-limit", 100, 100)
+	staleRateLimit := *rateLimit
+	staleRateLimit.TokenCurrentUsage = 1
+	staleRateLimit.RequestCurrentUsage = 1
+	staleRateLimit.TokenLastReset = rateLimit.TokenLastReset.Add(-24 * time.Hour)
+	staleRateLimit.RequestLastReset = rateLimit.RequestLastReset.Add(-24 * time.Hour)
+	staleDailyReset := dailyBudget.LastReset.Add(-24 * time.Hour)
+	staleDailyBudget := dailyBudget
+	staleDailyBudget.CurrentUsage = 1
+	staleDailyBudget.LastReset = staleDailyReset
+	team := configstoreTables.TableTeam{
+		ID:              teamID,
+		Name:            "Calendar aligned team",
+		CalendarAligned: true,
+		Budgets:         []configstoreTables.TableBudget{staleDailyBudget},
+		RateLimitID:     &rateLimit.ID,
+		RateLimit:       &staleRateLimit,
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Teams:      []configstoreTables.TableTeam{team},
+		Budgets:    []configstoreTables.TableBudget{dailyBudget, weeklyBudget},
+		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	for _, budget := range []configstoreTables.TableBudget{dailyBudget, weeklyBudget} {
+		loadedBudget := store.LoadBudget(context.Background(), budget.ID)
+		require.NotNil(t, loadedBudget)
+		assert.True(t, loadedBudget.IsCalendarAligned)
+	}
+
+	loadedDailyBudget := store.LoadBudget(context.Background(), dailyBudget.ID)
+	require.NotNil(t, loadedDailyBudget)
+	assert.Equal(t, dailyBudget.CurrentUsage, loadedDailyBudget.CurrentUsage)
+	assert.Equal(t, dailyBudget.LastReset, loadedDailyBudget.LastReset)
+
+	loadedWeeklyBudget := store.LoadBudget(context.Background(), weeklyBudget.ID)
+	assert.Equal(t, 42.0, loadedWeeklyBudget.CurrentUsage)
+	assert.Equal(t, lastReset, loadedWeeklyBudget.LastReset)
+	assert.Empty(t, store.ResetExpiredBudgetsInMemory(context.Background(), false, weeklyBudget.ID),
+		"cold-loaded calendar budget must not reset on its creation-time rolling window")
+
+	collectedBudgets := store.CollectTeamBudgets(context.Background(), teamID)
+	require.Len(t, collectedBudgets, 2)
+	collectedIDs := []string{collectedBudgets[0].ID, collectedBudgets[1].ID}
+	assert.ElementsMatch(t, []string{dailyBudget.ID, weeklyBudget.ID}, collectedIDs)
+
+	loadedRateLimit := store.LoadRateLimit(context.Background(), rateLimit.ID)
+	require.NotNil(t, loadedRateLimit)
+	assert.True(t, loadedRateLimit.IsCalendarAligned)
+	assert.Equal(t, rateLimit.TokenCurrentUsage, loadedRateLimit.TokenCurrentUsage)
+	assert.Equal(t, rateLimit.RequestCurrentUsage, loadedRateLimit.RequestCurrentUsage)
+	assert.Equal(t, rateLimit.TokenLastReset, loadedRateLimit.TokenLastReset)
+	assert.Equal(t, rateLimit.RequestLastReset, loadedRateLimit.RequestLastReset)
 }
 
 // TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete tests CreateVirtualKeyInMemory and DeleteVirtualKeyInMemory
@@ -2031,4 +2113,50 @@ func TestModelConfigScopesForIgnoresExtraScopedIDsResolvers(t *testing.T) {
 		assert.NotEqual(t, "batch_only", s.name, "a resolver-supplied scope must not reach request-time enforcement here")
 		assert.NotEqual(t, "with_kind", s.name, "a resolver-supplied scope must not reach request-time enforcement here")
 	}
+}
+
+// With no guard registered - every OSS build - nothing is governed and nothing is refused, whatever
+// is asked about.
+func TestLegacyLimitsGovernedByAnswersNothingWhenUnregistered(t *testing.T) {
+	governedBy, err := LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "team-1")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy)
+}
+
+// A registered guard is asked about the entity in hand, and its answer - a name, nothing, or a
+// failure - is what callers act on.
+func TestLegacyLimitsGovernedByUsesTheRegisteredGuard(t *testing.T) {
+	t.Cleanup(func() { RegisterLegacyLimitGuard(nil) })
+
+	var askedKind, askedID string
+	RegisterLegacyLimitGuard(func(_ context.Context, holderKind, holderID string) (string, error) {
+		askedKind, askedID = holderKind, holderID
+		if holderID == "customer-governed" {
+			return "platform-access", nil
+		}
+		if holderID == "customer-unknowable" {
+			return "", errors.New("database unavailable")
+		}
+		return "", nil
+	})
+
+	governedBy, err := LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderCustomer, "customer-governed")
+	require.NoError(t, err)
+	assert.Equal(t, "platform-access", governedBy)
+	assert.Equal(t, LegacyLimitHolderCustomer, askedKind)
+	assert.Equal(t, "customer-governed", askedID)
+
+	governedBy, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "team-free")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy, "an entity nothing governs keeps its own budgets")
+
+	_, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderCustomer, "customer-unknowable")
+	require.Error(t, err, "an unanswerable question is an error, not a silent yes")
+
+	// An empty id is nobody: the guard is not asked, so a caller with no owner in hand writes as usual.
+	askedID = ""
+	governedBy, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy)
+	assert.Empty(t, askedID, "the guard must not be asked about an entity with no id")
 }

@@ -577,6 +577,54 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "high",
 		},
 		{
+			name:     "maps none to low for gpt-6-astra",
+			model:    "gpt-6-astra",
+			effort:   "none",
+			expected: "low",
+		},
+		{
+			name:     "preserves none for gpt-6-sol",
+			model:    "gpt-6-sol",
+			effort:   "none",
+			expected: "none",
+		},
+		{
+			name:     "preserves none for gpt-6-luna",
+			model:    "gpt-6-luna",
+			effort:   "none",
+			expected: "none",
+		},
+		{
+			name:     "maps none to minimal for gpt-5",
+			model:    "gpt-5",
+			effort:   "none",
+			expected: "minimal",
+		},
+		{
+			name:     "maps none to low for gpt-5-pro",
+			model:    "gpt-5-pro",
+			effort:   "none",
+			expected: "low",
+		},
+		{
+			name:     "maps none to low for o3",
+			model:    "o3",
+			effort:   "none",
+			expected: "low",
+		},
+		{
+			name:     "preserves none for gpt-5.1",
+			model:    "gpt-5.1",
+			effort:   "none",
+			expected: "none",
+		},
+		{
+			name:     "preserves none for gpt-5.6",
+			model:    "gpt-5.6",
+			effort:   "none",
+			expected: "none",
+		},
+		{
 			// DeepSeek V4 is routed via a custom OpenAI-compatible provider, so the
 			// OpenAI-only reasoning-stripping doesn't apply and "max" passes through.
 			name:     "preserves max for deepseek-v4-pro",
@@ -2247,6 +2295,108 @@ func TestToOpenAIResponsesRequest_PreservesNamespaceAndWebSearchFields(t *testin
 	}
 }
 
+func TestToOpenAIResponsesRequest_WebSearchContentTypesProviderGating(t *testing.T) {
+	tests := []struct {
+		name         string
+		provider     schemas.ModelProvider
+		baseProvider schemas.ModelProvider
+		unsupported  *bool
+		want         []string
+	}{
+		{
+			name:     "openai preserves search content types",
+			provider: schemas.OpenAI,
+			want:     []string{"text", "image"},
+		},
+		{
+			name:        "openai datasheet can strip search content types",
+			provider:    schemas.OpenAI,
+			unsupported: schemas.Ptr(true),
+		},
+		{
+			name:     "bedrock runtime fallback strips search content types",
+			provider: schemas.Bedrock,
+		},
+		{
+			name:     "bedrock mantle fallback strips search content types",
+			provider: schemas.BedrockMantle,
+		},
+		{
+			name:        "bedrock mantle datasheet can preserve search content types",
+			provider:    schemas.BedrockMantle,
+			unsupported: schemas.Ptr(false),
+			want:        []string{"text", "image"},
+		},
+		{
+			name:         "custom mantle provider uses base provider fallback",
+			provider:     schemas.ModelProvider("my-mantle"),
+			baseProvider: schemas.BedrockMantle,
+		},
+		{
+			name:         "custom mantle provider reads base provider datasheet",
+			provider:     schemas.ModelProvider("my-mantle"),
+			baseProvider: schemas.BedrockMantle,
+			unsupported:  schemas.Ptr(false),
+			want:         []string{"text", "image"},
+		},
+		{
+			name:     "unlisted provider preserves search content types",
+			provider: schemas.ModelProvider("openai-compatible"),
+			want:     []string{"text", "image"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.unsupported != nil {
+				capabilityProvider := tc.provider
+				if tc.baseProvider != "" {
+					capabilityProvider = tc.baseProvider
+				}
+				schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+					if provider != capabilityProvider || model != "openai.gpt-5.6-luna" {
+						return nil
+					}
+					return &schemas.ModelCapabilities{UnsupportedFields: map[string]bool{
+						schemas.FieldSearchContentTypes: *tc.unsupported,
+					}}
+				})
+				t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+			}
+
+			searchContentTypes := []string{"text", "image"}
+			request := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "openai.gpt-5.6-luna",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+					Type: schemas.ResponsesToolTypeWebSearch,
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+						SearchContentTypes: searchContentTypes,
+					},
+				}}},
+			}
+
+			var ctx *schemas.BifrostContext
+			if tc.baseProvider != "" {
+				ctx = schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+					schemas.BifrostContextKeyBaseProviderType, tc.baseProvider)
+			}
+
+			result := ToOpenAIResponsesRequest(ctx, request)
+			require.NotNil(t, result)
+			require.Len(t, result.Tools, 1)
+			require.NotNil(t, result.Tools[0].ResponsesToolWebSearch)
+			require.Equal(t, tc.want, result.Tools[0].ResponsesToolWebSearch.SearchContentTypes)
+			require.Equal(t, searchContentTypes, request.Params.Tools[0].ResponsesToolWebSearch.SearchContentTypes,
+				"conversion must not mutate the caller's tool")
+		})
+	}
+}
+
 // =============================================================================
 // Helper Functions
 // =============================================================================
@@ -2403,6 +2553,116 @@ func TestToOpenAIResponsesRequest_StripsThoughtSignatureFromCallID(t *testing.T)
 	}
 	if *req.Input[1].ResponsesToolMessage.CallID != embeddedID {
 		t.Error("original function_call_output call_id was mutated")
+	}
+}
+
+// TestToOpenAIResponsesRequest_DropsForeignFunctionCallItemID verifies that a
+// replayed function_call item whose id does not begin with "fc" (e.g. Gemini
+// streaming reuses the "<id>_ts_<sig>" call id as the item id) has its id dropped
+// on the wire while call_id is left untouched, so the function_call_output still
+// pairs with its call and the caller's history is not mutated.
+func TestToOpenAIResponsesRequest_DropsForeignFunctionCallItemID(t *testing.T) {
+	longSig := strings.Repeat("A", 100)
+	cases := []struct {
+		name       string
+		itemID     *string
+		callID     string
+		wantID     *string // nil means the id key must be absent on the wire
+		wantCallID string
+	}{
+		{name: "gemini _ts_ item id dropped, call_id kept", itemID: schemas.Ptr("call_abc_ts_QUJD"), callID: "call_abc_ts_QUJD", wantID: nil, wantCallID: "call_abc_ts_QUJD"},
+		{name: "plain call_ item id dropped", itemID: schemas.Ptr("call_abc"), callID: "call_abc", wantID: nil, wantCallID: "call_abc"},
+		{name: "fc_ item id preserved", itemID: schemas.Ptr("fc_abc"), callID: "call_abc", wantID: schemas.Ptr("fc_abc"), wantCallID: "call_abc"},
+		{name: "nil item id stays absent", itemID: nil, callID: "call_abc", wantID: nil, wantCallID: "call_abc"},
+		{name: "long _ts_ id: item id dropped and call_id stripped", itemID: schemas.Ptr("call_abc_ts_" + longSig), callID: "call_abc_ts_" + longSig, wantID: nil, wantCallID: "call_abc"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var origID *string
+			if tc.itemID != nil {
+				origID = schemas.Ptr(*tc.itemID)
+			}
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o",
+				Input: []schemas.ResponsesMessage{
+					{
+						Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather?")},
+					},
+					{
+						ID:   origID,
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr(tc.callID),
+							Name:      schemas.Ptr("get_weather"),
+							Arguments: schemas.Ptr(`{"city":"SF"}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr(tc.callID),
+							Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("22C")},
+						},
+					},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			converted := ToOpenAIResponsesRequest(ctx, req)
+			if converted == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+			wire, err := sonic.Marshal(converted)
+			if err != nil {
+				t.Fatalf("marshal wire request: %v", err)
+			}
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			if err := sonic.Unmarshal(wire, &payload); err != nil {
+				t.Fatalf("unmarshal wire request: %v", err)
+			}
+			if len(payload.Input) != 3 {
+				t.Fatalf("wire input length: got %d, want 3", len(payload.Input))
+			}
+
+			functionCall := payload.Input[1]
+			rawID, hasID := functionCall["id"]
+			if tc.wantID == nil {
+				if hasID {
+					t.Errorf("function_call id must be absent on the wire, got %s", rawID)
+				}
+			} else {
+				var gotID string
+				if err := sonic.Unmarshal(rawID, &gotID); err != nil || gotID != *tc.wantID {
+					t.Errorf("function_call id: got %q, want %q (err=%v)", gotID, *tc.wantID, err)
+				}
+			}
+			var gotCallID string
+			if err := sonic.Unmarshal(functionCall["call_id"], &gotCallID); err != nil || gotCallID != tc.wantCallID {
+				t.Errorf("function_call call_id: got %q, want %q (err=%v)", gotCallID, tc.wantCallID, err)
+			}
+			var gotOutputCallID string
+			if err := sonic.Unmarshal(payload.Input[2]["call_id"], &gotOutputCallID); err != nil || gotOutputCallID != gotCallID {
+				t.Errorf("function_call_output call_id %q must match function_call call_id %q (err=%v)", gotOutputCallID, gotCallID, err)
+			}
+
+			// The caller's history is shared with plugins and the fallback chain.
+			switch {
+			case tc.itemID == nil && req.Input[1].ID != nil:
+				t.Error("original function_call id was set")
+			case tc.itemID != nil && (req.Input[1].ID == nil || *req.Input[1].ID != *tc.itemID):
+				t.Error("original function_call id was mutated")
+			}
+			if *req.Input[1].ResponsesToolMessage.CallID != tc.callID {
+				t.Error("original function_call call_id was mutated")
+			}
+		})
 	}
 }
 
@@ -2794,36 +3054,60 @@ func TestBifrostResponsesRetrieveRequest_IsStreamingRequested(t *testing.T) {
 	}
 }
 
-// TestTopPGateReadsDatasheet covers the datasheet side of the top_p strip.
-// top_p is the field the schema deliberately leaves untyped because its verdict
-// can be conditional, so both unsupported_fields and
-// conditionally_unsupported_fields have to drive it.
-func TestTopPGateReadsDatasheet(t *testing.T) {
+// TestSamplingParamGateReadsDatasheet covers the datasheet side of the sampling
+// strip. Their verdict can be conditional on reasoning effort, so both
+// unsupported_fields and conditionally_unsupported_fields have to drive it.
+func TestSamplingParamGateReadsDatasheet(t *testing.T) {
 	t.Run("name_fallback_strips_for_reasoning_model", func(t *testing.T) {
 		caps := schemas.ResolveModelCaps(schemas.OpenAI, "o3")
-		require.True(t, topPUnsupported(caps, "o3", "high"))
-		require.False(t, topPUnsupported(caps, "gpt-4o", ""))
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTopP, "o3", "high"))
+		require.False(t, samplingParamUnsupported(caps, schemas.FieldTopP, "gpt-4o", ""))
 	})
 
 	t.Run("name_fallback_keeps_gpt5x_while_effort_none", func(t *testing.T) {
 		caps := schemas.ResolveModelCaps(schemas.OpenAI, "gpt-5.4")
-		require.False(t, topPUnsupported(caps, "gpt-5.4", ""))
-		require.True(t, topPUnsupported(caps, "gpt-5.4", "high"))
-		require.True(t, topPUnsupported(caps, "gpt-5.4-pro", ""), "-pro always reasons")
+		require.False(t, samplingParamUnsupported(caps, schemas.FieldTopP, "gpt-5.4", ""))
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTopP, "gpt-5.4", "high"))
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTopP, "gpt-5.4-pro", ""), "-pro always reasons")
+	})
+
+	t.Run("omitted_effort_reasons_from_gpt55", func(t *testing.T) {
+		for _, model := range []string{"gpt-5.5", "gpt-5.6-sol"} {
+			caps := schemas.ResolveModelCaps(schemas.OpenAI, model)
+			require.True(t, samplingParamUnsupported(caps, schemas.FieldTemperature, model, ""), "%s defaults to medium", model)
+			require.False(t, samplingParamUnsupported(caps, schemas.FieldTemperature, model, "none"), model)
+		}
+	})
+
+	t.Run("codex_follows_its_version_default", func(t *testing.T) {
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, "gpt-5.3-codex")
+		require.False(t, samplingParamUnsupported(caps, schemas.FieldTemperature, "gpt-5.3-codex", ""), "gpt-5.3-codex defaults to none")
+		require.True(t, samplingParamUnsupported(caps, schemas.FieldTemperature, "gpt-5.3-codex", "low"))
+	})
+
+	t.Run("gpt6_rejects_whatever_the_effort", func(t *testing.T) {
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, "gpt-6-astra")
+		for _, field := range []string{schemas.FieldTopP, schemas.FieldTemperature, schemas.FieldTopLogprobs, schemas.FieldLogprobs} {
+			require.True(t, samplingParamUnsupported(caps, field, "gpt-6-astra", ""), field)
+			require.True(t, samplingParamUnsupported(caps, field, "gpt-6-astra", "low"), field)
+		}
 	})
 
 	t.Run("conditional_label_drives_both_directions", func(t *testing.T) {
 		const model = "some-conditional-reasoner"
 		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
 			ConditionallyUnsupportedFields: map[string]string{
-				schemas.FieldTopP: schemas.ConditionWhenEffortNone,
+				schemas.FieldTopP:        schemas.ConditionWhenEffortNone,
+				schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
 			},
 		})
 
 		caps := schemas.ResolveModelCaps(schemas.OpenAI, model)
-		require.False(t, topPUnsupported(caps, model, ""), "allowed while reasoning is off")
-		require.False(t, topPUnsupported(caps, model, "none"))
-		require.True(t, topPUnsupported(caps, model, "low"), "rejected once reasoning is on")
+		for _, field := range []string{schemas.FieldTopP, schemas.FieldTemperature} {
+			require.False(t, samplingParamUnsupported(caps, field, model, ""), "allowed while reasoning is off")
+			require.False(t, samplingParamUnsupported(caps, field, model, "none"))
+			require.True(t, samplingParamUnsupported(caps, field, model, "low"), "rejected once reasoning is on")
+		}
 	})
 
 	t.Run("outright_entry_beats_name_fallback", func(t *testing.T) {
@@ -2831,8 +3115,90 @@ func TestTopPGateReadsDatasheet(t *testing.T) {
 		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
 			UnsupportedFields: map[string]bool{schemas.FieldTopP: false},
 		})
-		require.False(t, topPUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, model), model, "high"),
+		require.False(t, samplingParamUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, model), schemas.FieldTopP, model, "high"),
 			"an explicit false must beat the reasoning-model name check")
+	})
+}
+
+// TestToOpenAIResponsesRequest_AlwaysReasoningModels pins the request shaping for
+// models that cannot turn reasoning off: "none" maps to the lowest level the model
+// accepts, and sampling fields OpenAI rejects are dropped without mutating the
+// caller's params.
+func TestToOpenAIResponsesRequest_AlwaysReasoningModels(t *testing.T) {
+	convert := func(provider schemas.ModelProvider, model string, params *schemas.ResponsesParameters) *OpenAIResponsesRequest {
+		return ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: params,
+		})
+	}
+
+	t.Run("budget_zero_maps_to_lowest_level", func(t *testing.T) {
+		req := convert(schemas.OpenAI, "gpt-6-astra", &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(0)},
+		})
+		require.Equal(t, "low", *req.Reasoning.Effort)
+	})
+
+	t.Run("datasheet_disable_flag_beats_name_fallback", func(t *testing.T) {
+		installCapabilityRecord(t, "gpt-6-astra", &schemas.ModelCapabilities{SupportsReasoningDisable: new(true)})
+		req := convert(schemas.OpenAI, "gpt-6-astra", &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")},
+		})
+		require.Equal(t, "none", *req.Reasoning.Effort)
+	})
+
+	t.Run("datasheet_ladder_sets_lowest_level", func(t *testing.T) {
+		installCapabilityRecord(t, "gpt-5.1", &schemas.ModelCapabilities{
+			SupportsReasoningDisable: new(false),
+			ReasoningEffortLevels:    []string{"medium", "high"},
+		})
+		req := convert(schemas.OpenAI, "gpt-5.1", &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")},
+		})
+		require.Equal(t, "medium", *req.Reasoning.Effort)
+	})
+
+	t.Run("strips_sampling_fields_for_gpt6", func(t *testing.T) {
+		include := []string{"message.output_text.logprobs", "reasoning.encrypted_content"}
+		params := &schemas.ResponsesParameters{
+			Temperature: schemas.Ptr(0.2),
+			TopP:        schemas.Ptr(0.9),
+			TopLogProbs: schemas.Ptr(3),
+			Include:     include,
+		}
+		for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure} {
+			req := convert(provider, "gpt-6-astra", params)
+			require.Nil(t, req.Temperature, provider)
+			require.Nil(t, req.TopP, provider)
+			require.Nil(t, req.TopLogProbs, provider)
+			require.Equal(t, []string{"reasoning.encrypted_content"}, req.Include, provider)
+		}
+		require.Equal(t, []string{"message.output_text.logprobs", "reasoning.encrypted_content"}, params.Include,
+			"caller's include must not be mutated")
+	})
+
+	t.Run("keeps_sampling_fields_while_effort_none", func(t *testing.T) {
+		req := convert(schemas.OpenAI, "gpt-5.6", &schemas.ResponsesParameters{
+			Temperature: schemas.Ptr(0.2),
+			Reasoning:   &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")},
+		})
+		require.NotNil(t, req.Temperature)
+
+		req = convert(schemas.OpenAI, "gpt-5.4", &schemas.ResponsesParameters{Temperature: schemas.Ptr(0.2)})
+		require.NotNil(t, req.Temperature, "gpt-5.4 defaults to none")
+
+		req = convert(schemas.OpenAI, "gpt-5.5", &schemas.ResponsesParameters{Temperature: schemas.Ptr(0.2)})
+		require.Nil(t, req.Temperature, "gpt-5.5 defaults to medium")
+	})
+
+	t.Run("third_party_gpt_oss_keeps_temperature", func(t *testing.T) {
+		req := convert(schemas.Groq, "openai/gpt-oss-120b", &schemas.ResponsesParameters{Temperature: schemas.Ptr(0.2)})
+		require.NotNil(t, req.Temperature)
 	})
 }
 
@@ -3231,4 +3597,123 @@ func TestToOpenAIResponsesRequest_MantleGPTOSSReplaysAssistantTextAsInput(t *tes
 				"the caller's input must not be mutated")
 		})
 	}
+}
+
+// Web search action sources are sanitized for OpenAI: provider-specific fields
+// (title, encrypted_content, page_age) are stripped, while the OpenAI-native
+// fields survive. That includes the name of specialized API sources
+// ({"type":"api","name":"oai-weather"}), which carry no URL and must not gain a
+// fabricated empty one.
+func TestToOpenAIResponsesRequest_StripsWebSearchSourceProviderFields(t *testing.T) {
+	history := `{
+		"id": "ws_1",
+		"type": "web_search_call",
+		"status": "completed",
+		"action": {
+			"type": "search",
+			"queries": ["weather in paris"],
+			"sources": [
+				{"type": "url", "url": "https://example.com", "title": "Example"},
+				{"type": "api", "name": "oai-weather"}
+			]
+		}
+	}`
+	var webSearchCall schemas.ResponsesMessage
+	require.NoError(t, schemas.Unmarshal([]byte(history), &webSearchCall))
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Model: "gpt-4o",
+		Input: []schemas.ResponsesMessage{webSearchCall},
+	}
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
+	require.NotNil(t, result)
+
+	body, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	var wire struct {
+		Input []struct {
+			Action struct {
+				Sources []map[string]any `json:"sources"`
+			} `json:"action"`
+		} `json:"input"`
+	}
+	require.NoError(t, json.Unmarshal(body, &wire))
+	require.Len(t, wire.Input, 1, "body: %s", body)
+	require.Len(t, wire.Input[0].Action.Sources, 2, "body: %s", body)
+
+	urlSource, apiSource := wire.Input[0].Action.Sources[0], wire.Input[0].Action.Sources[1]
+
+	require.NotContains(t, urlSource, "title", "provider-specific title must be stripped: %s", body)
+	require.Equal(t, "https://example.com", urlSource["url"], "url source keeps its url: %s", body)
+
+	require.Equal(t, "api", apiSource["type"], "api source keeps its type: %s", body)
+	require.Equal(t, "oai-weather", apiSource["name"], "api source keeps its name: %s", body)
+	require.NotContains(t, apiSource, "url", "api source must not gain a fabricated empty url: %s", body)
+
+	// The caller's input must not be mutated by the strip.
+	require.NotNil(t, bifrostReq.Input[0].ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Sources[0].Title,
+		"the caller's input must not be mutated")
+}
+
+// TestToOpenAIResponsesRequest_ForwardsComputerTool locks in issue #7425: the
+// bare `computer` tool (GPT-6 Astra / GPT-5.6 computer use) must pass the
+// OpenAI tool whitelist unchanged, not be dropped or rewritten to
+// computer_use_preview.
+func TestToOpenAIResponsesRequest_ForwardsComputerTool(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-6-astra",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("Click Settings."),
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeComputer}},
+		},
+	}
+
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(result.Tools))
+	}
+	if result.Tools[0].Type != schemas.ResponsesToolTypeComputer {
+		t.Fatalf("expected tool type %q, got %q", schemas.ResponsesToolTypeComputer, result.Tools[0].Type)
+	}
+	if result.Tools[0].ResponsesToolComputerUsePreview != nil {
+		t.Fatal("expected no computer_use_preview fields on the bare computer tool")
+	}
+}
+
+// TestToOpenAIResponsesRequest_EffortOnlySystemItemSkipped: the Anthropic per-message
+// effort override (role:"system", content:[], output_config.effort) has no OpenAI
+// equivalent. Once Bifrost carries it on the neutral request, the OpenAI-shaped egress
+// (and every provider delegating to it) must drop the item instead of forwarding an
+// empty-content system message with an unknown output_config key.
+func TestToOpenAIResponsesRequest_EffortOnlySystemItemSkipped(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"Say hello."},
+		{"type":"message","role":"system","content":[],"output_config":{"effort":"low"}}
+	]`), &input))
+
+	result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5",
+		Input:    input,
+	})
+	require.NotNil(t, result)
+
+	raw, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1,
+		"effort-only system item reached the OpenAI wire: %s", raw)
+	require.NotContains(t, string(raw), "output_config",
+		"per-message output_config leaked onto the OpenAI wire: %s", raw)
 }

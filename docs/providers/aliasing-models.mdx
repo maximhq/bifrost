@@ -140,7 +140,9 @@ Every response includes a `routing_info` block in `extra_fields` describing the 
       "resolved_key_alias": {
         "model_id": "gpt-4o-2024-11-20",
         "model_name": "gpt-4o"
-      }
+      },
+      "requested_provider": "openai",
+      "requested_model": "best-model"
     }
   }
 }
@@ -149,16 +151,19 @@ Every response includes a `routing_info` block in `extra_fields` describing the 
 | Field | Description |
 |-------|-------------|
 | `routing_info.provider` | Provider that handled the request |
-| `routing_info.model` | Model name the caller sent (the LHS of the alias map when an alias matched) |
+| `routing_info.model` | Model name this attempt was routed to, after any routing rule rewrite (the LHS of the alias map when an alias matched) |
 | `routing_info.key` | Human-friendly name of the key used |
 | `routing_info.resolved_key_alias` | Present only when an alias matched. Carries the wire `model_id`, the canonical `model_name` (if set), and the resolved `model_family` (if set). |
 | `routing_info.is_fallback` | `true` when the request was served by a fallback attempt rather than the primary |
 | `routing_info.primary_provider` / `routing_info.primary_model` | Populated on fallback attempts with the primary attempt's provider/model |
+| `routing_info.requested_provider` / `routing_info.requested_model` | What the caller sent, before routing rules, load balancing or session routing rewrote it. `requested_provider` is omitted when the caller sent a bare model. |
+
+Each field is also sent as a response header, so SDK routes whose body has no `extra_fields` can read it: `x-bifrost-routing-info-provider`, `x-bifrost-routing-info-model`, `x-bifrost-routing-info-requested-model`, and so on.
 
 When no alias matches, `resolved_key_alias` is omitted and `model` carries the wire identifier directly.
 
 <Note>
-`extra_fields.provider`, `extra_fields.original_model_requested`, and `extra_fields.resolved_model_used` are deprecated but still populated for backward compatibility. New consumers should read from `routing_info`.
+`extra_fields.provider`, `extra_fields.original_model_requested`, and `extra_fields.resolved_model_used` are deprecated but still populated for backward compatibility. New consumers should read from `routing_info`. Despite its name, `original_model_requested` is the model after routing rules ran; the model the caller sent is `routing_info.requested_model`.
 </Note>
 
 ---
@@ -398,9 +403,10 @@ ml-team → model="best-model"
     "key": "high-tier-key",
     "resolved_key_alias": {
       "model_id": "gpt-5"
-    }
+    },
+    "requested_model": "best-model"
   }
 }
 ```
 
-`routing_info.model` is what the client sent (after any routing rule rewrites). `routing_info.resolved_key_alias.model_id` is the final identifier that reached the provider API - after both routing and key-level alias resolution. When no key-level alias matches, `resolved_key_alias` is omitted and the wire model equals `routing_info.model`.
+`routing_info.model` is the model after any routing rule rewrites, and `routing_info.requested_model` is what the client sent before them. `routing_info.resolved_key_alias.model_id` is the final identifier that reached the provider API - after both routing and key-level alias resolution. When no key-level alias matches, `resolved_key_alias` is omitted and the wire model equals `routing_info.model`.

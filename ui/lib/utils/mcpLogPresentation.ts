@@ -28,9 +28,20 @@ export function getMCPLogPresentation(log: MCPToolLogEntry) {
 				? "Tool activity was captured, but its execution outcome is not known."
 				: "Recorded tool execution outcome.";
 	const rawDuration = log.metadata?.inspection_duration_ms;
-	const duration = rawDuration == null || rawDuration === "" ? undefined : Number(rawDuration);
+	const duration = rawDuration == null || (typeof rawDuration === "string" && rawDuration.trim() === "") ? undefined : Number(rawDuration);
 	const inspectionDuration = duration != null && Number.isFinite(duration) && duration >= 0 ? duration : undefined;
-	return { policy, approved, label, description, inspectionDuration };
+	const rawObserved = log.metadata?.observed_latency_ms;
+	const observed = rawObserved == null || (typeof rawObserved === "string" && rawObserved.trim() === "") ? undefined : Number(rawObserved);
+	const observedDuration =
+		!policy && log.source === "native" && observed != null && Number.isFinite(observed) && observed >= 0 && observed <= 86400000
+			? observed
+			: undefined;
+	const durationLabel = policy
+		? "Policy check"
+		: log.latency == null && observedDuration != null
+			? "Observed round trip"
+			: "Execution time";
+	return { policy, approved, label, description, inspectionDuration, observedDuration, durationLabel };
 }
 
 export type MCPLogPillTone = "success" | "error" | "processing" | "approved" | "neutral";
@@ -53,8 +64,15 @@ export function getMCPLogTimeline(log: MCPToolLogEntry, presentation: ReturnType
 	// Derived from the duration actually displayed: a policy entry carries its
 	// inspection time and usually no latency, so reading log.latency here would
 	// leave its far boundary unset and render the timestamp as N/A.
-	const durationMs = presentation.policy ? presentation.inspectionDuration : log.latency;
-	const startTimestamp = log.source === "native" ? (durationMs == null ? null : addMilliseconds(timestamp, -durationMs)) : timestamp;
+	const durationMs = presentation.policy ? presentation.inspectionDuration : (log.latency ?? presentation.observedDuration);
+	const observedOnly = !presentation.policy && log.latency == null && presentation.observedDuration != null;
+	const startTimestamp = observedOnly
+		? null
+		: log.source === "native"
+			? durationMs == null
+				? null
+				: addMilliseconds(timestamp, -durationMs)
+			: timestamp;
 	const endTimestamp = log.source === "native" ? timestamp : durationMs == null ? null : addMilliseconds(timestamp, durationMs);
 	return { durationMs, startTimestamp, endTimestamp };
 }

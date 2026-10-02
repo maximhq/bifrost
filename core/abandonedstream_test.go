@@ -312,6 +312,134 @@ func TestRequestWorkerDeliversWhenCallerClaimsLate(t *testing.T) {
 	}
 }
 
+// runClaimedDeliveriesWithDeadCaller drives the real requestWorker into the third
+// handoff interleaving (#7308): the worker claims delivery FIRST and the caller's
+// context is already done when the delivery select runs. tryRequest models this
+// caller exactly: its ctx.Done branch loses the abandon CAS and then commits to an
+// inner receive with no ctx escape (core/bifrost.go tryRequest ctx.Done branch), so
+// the worker's claimed send must be unconditional. A ctx.Done arm in that select is
+// a uniform coin flip against the always-ready cap-1 send: n iterations expose a
+// discarded value, and the caller it strands, with probability 1 - 2^-n.
+func runClaimedDeliveriesWithDeadCaller(t *testing.T, n int, fail bool) {
+	t.Helper()
+
+	counter := &terminalHookCounter{}
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, n)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID:     "claimed-key",
+		Value:  *schemas.NewSecretVar("sk-test"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 100,
+	}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: []schemas.LLMPlugin{counter},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	cfg, err := account.GetConfigForProvider(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+	cfg.NetworkConfig.MaxRetries = 0
+
+	upstream := &abandonedUpstreamProvider{
+		Provider: openai.NewOpenAIProvider(cfg, NewNoOpLogger()),
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		fail:     fail,
+	}
+	pq := &ProviderQueue{queue: make(chan *ChannelMessage, n), done: make(chan struct{})}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go client.requestWorker(upstream, cfg, pq, &wg)
+
+	for i := 0; i < n; i++ {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		ctx.SetValue(schemas.BifrostContextKeyTracer, client.getTracer())
+		msg := client.getChannelMessage(schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: new("hi")},
+				}},
+			},
+		})
+		msg.Context = ctx
+		pq.queue <- msg
+
+		select {
+		case <-upstream.started: // the upstream call is in flight; the worker cannot have claimed yet
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: worker never reached the provider", i)
+		}
+		cancel()                      // the caller's context ends...
+		upstream.release <- struct{}{} // ...and the upstream completes at that same instant
+
+		// The caller has NOT abandoned: this models tryRequest losing the CAS race.
+		// Wait until the worker's claim lands so every iteration deterministically
+		// enters the claimed-send window with a dead context.
+		deadline := time.Now().Add(5 * time.Second)
+		for msg.handoff.Load() == handoffOpen {
+			if time.Now().After(deadline) {
+				t.Fatalf("iteration %d: worker never claimed delivery", i)
+			}
+			time.Sleep(50 * time.Microsecond)
+		}
+		if msg.abandonDelivery() {
+			t.Fatalf("iteration %d: caller abandoned a message the worker had claimed", i)
+		}
+
+		// Commit to the receive exactly as tryRequest does after a failed abandon:
+		// an inner select over Response/Err with no ctx arm. The timeout stands in
+		// for the goroutine that production leaks permanently.
+		select {
+		case got := <-msg.Response:
+			if fail {
+				t.Fatalf("iteration %d: got a result from a failing upstream: %+v", i, got)
+			}
+			client.releaseChannelMessage(msg)
+		case e := <-msg.Err:
+			if !fail {
+				t.Fatalf("iteration %d: got an error from a succeeding upstream: %+v", i, e.Error)
+			}
+			client.releaseChannelMessage(msg)
+		case <-time.After(3 * time.Second):
+			t.Fatalf("iteration %d: worker claimed delivery, then discarded the value; "+
+				"the committed caller would block forever (#7308)", i)
+		}
+	}
+	pq.signalClosing()
+	wg.Wait()
+	if got := counter.results.Load() + counter.errors.Load(); got != 0 {
+		t.Fatalf("worker ran terminal hooks %d times for claimed deliveries; the caller owns those", got)
+	}
+}
+
+// TestRequestWorkerDeliversClaimedResultAfterCallerCtxEnds pins #7308 on the result
+// path (core/bifrost.go requestWorker claimed result send): once the worker claims,
+// the caller is committed and the send must be unconditional even though ctx.Done()
+// is also ready.
+func TestRequestWorkerDeliversClaimedResultAfterCallerCtxEnds(t *testing.T) {
+	runClaimedDeliveriesWithDeadCaller(t, 24, false)
+}
+
+// TestRequestWorkerDeliversClaimedErrorAfterCallerCtxEnds is the same contract on
+// the error path, the common production shape once the transport cancels the
+// context on a client socket close and the provider returns its terminal error in
+// that same window.
+func TestRequestWorkerDeliversClaimedErrorAfterCallerCtxEnds(t *testing.T) {
+	runClaimedDeliveriesWithDeadCaller(t, 24, true)
+}
+
 // TestChannelMessageHandoffIsExclusive pins the claim/abandon state machine: exactly
 // one side wins, and a fresh message from the pool starts open again.
 func TestChannelMessageHandoffIsExclusive(t *testing.T) {

@@ -16,6 +16,12 @@ import (
 // of token reached the wire.
 const errNotAccessibleByIntegration = "resource not accessible by integration"
 
+// errPermissionsNotGranted is GitHub's 422 for an installation token request that asks for
+// a permission the installation does not hold. For Copilot that is copilot_requests: write,
+// and it means the App's Copilot Requests permission was never set, or was added after the
+// App was installed and an organization owner has not yet approved the new permission.
+const errPermissionsNotGranted = "permissions requested are not granted"
+
 // copilotErrorBody is the OpenAI-shaped envelope Copilot returns for inference errors.
 // Some auth failures come back as a bare GitHub {"message": "..."} instead, so both
 // shapes are read.
@@ -36,10 +42,14 @@ type copilotErrorBody struct {
 // moves paid traffic somewhere the operator did not choose, so 401 and 403 block
 // fallbacks. Rate limits and server errors are left alone.
 func parseCopilotError(resp *fasthttp.Response) *schemas.BifrostError {
-	var bifrostErr schemas.BifrostError
+	var errorResp schemas.BifrostError
 
-	// Let the generic handler set status and base fields first.
-	_ = providerUtils.HandleProviderAPIError(resp, &bifrostErr)
+	// Let the generic handler set status, the raw response and the retry hint first. Only
+	// what Copilot itself sent feeds the message, since the handler's wording for an empty
+	// or non-JSON body is not upstream detail.
+	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr.EventID = errorResp.EventID
+	bifrostErr.Error = errorResp.Error
 
 	if bifrostErr.Error == nil {
 		bifrostErr.Error = &schemas.ErrorField{}
@@ -86,7 +96,7 @@ func parseCopilotError(resp *fasthttp.Response) *schemas.BifrostError {
 		}
 	}
 
-	return &bifrostErr
+	return bifrostErr
 }
 
 // upstreamDetail keeps the operator-facing message readable when Copilot returns an empty

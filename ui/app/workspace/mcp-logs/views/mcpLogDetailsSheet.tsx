@@ -211,7 +211,7 @@ export function MCPLogDetailSheet({
 	const pluginLogCount = getPluginLogCount(displayLog.plugin_logs);
 	const presentation = getMCPLogPresentation(displayLog);
 	const { durationMs, startTimestamp, endTimestamp } = getMCPLogTimeline(displayLog, presentation);
-	const durationLabel = presentation.policy ? "Inspection time" : "Execution time";
+	const durationLabel = presentation.durationLabel;
 	const endLabel = presentation.policy ? "Policy Check Timestamp" : displayLog.source === "native" ? "Observed Timestamp" : "End Timestamp";
 	const pillTone = getMCPLogPillTone(displayLog, presentation);
 	const requestId = displayLog.request_id || displayLog.id;

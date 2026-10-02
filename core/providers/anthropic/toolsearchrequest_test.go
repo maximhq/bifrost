@@ -112,7 +112,8 @@ func TestConvertBifrostToolsToAnthropicToolSearchCatalog(t *testing.T) {
 		responsesToolFromJSON(t, `{"type":"function","name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}},"defer_loading":true}`),
 	}
 
-	got, mcpServers := convertBifrostToolsToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), tools, schemas.Anthropic)
+	got, mcpServers, err := convertBifrostToolsToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), tools, schemas.Anthropic)
+	require.NoError(t, err)
 	require.Empty(t, mcpServers)
 	require.Len(t, got, 2)
 

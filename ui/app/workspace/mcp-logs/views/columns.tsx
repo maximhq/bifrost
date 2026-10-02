@@ -139,8 +139,8 @@ export const createMCPColumns = (
 		),
 		size: 120,
 		cell: ({ row }) => {
-			const latency = row.original.latency;
 			const presentation = getMCPLogPresentation(row.original);
+			const latency = presentation.policy ? presentation.inspectionDuration : (row.original.latency ?? presentation.observedDuration);
 			return (
 				<div className="pl-4 text-sm" title={presentation.description}>
 					<span className="font-mono">
@@ -150,9 +150,7 @@ export const createMCPColumns = (
 								? `${presentation.inspectionDuration}ms`
 								: "Not recorded"}
 					</span>
-					<span className="text-muted-foreground block text-xs">
-						{latency != null ? "Execution" : presentation.policy ? "Policy check" : "Execution time"}
-					</span>
+					<span className="text-muted-foreground block text-xs">{presentation.durationLabel}</span>
 				</div>
 			);
 		},

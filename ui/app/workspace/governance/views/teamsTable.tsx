@@ -1,4 +1,6 @@
 import PageTitle from "@/components/pageTitle";
+import { DisabledReason, DisabledReasonMenuItem } from "@/components/ui/disabledReason";
+import { actionDisabledReason } from "@/lib/utils/governance";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
@@ -68,9 +70,9 @@ function TeamActionsMenu({
 					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">
-					<DropdownMenuItem
+					<DisabledReasonMenuItem
+						reason={actionDisabledReason(hasUpdateAccess, "edit", "teams")}
 						className="cursor-pointer"
-						disabled={!hasUpdateAccess}
 						data-testid={`team-edit-btn-${team.name}`}
 						onSelect={(e) => {
 							e.preventDefault();
@@ -80,17 +82,17 @@ function TeamActionsMenu({
 					>
 						<Edit className="h-4 w-4" />
 						Edit
-					</DropdownMenuItem>
+					</DisabledReasonMenuItem>
 					<DropdownMenuItem asChild className="cursor-pointer" data-testid={`team-view-logs-btn-${team.name}`}>
 						<Link to="/workspace/logs" search={{ team_ids: [team.id] }} onClick={() => setIsOpen(false)}>
 							<ScrollText className="h-4 w-4" />
 							View logs
 						</Link>
 					</DropdownMenuItem>
-					<DropdownMenuItem
+					<DisabledReasonMenuItem
+						reason={actionDisabledReason(hasDeleteAccess, "delete", "teams")}
 						variant="destructive"
 						className="cursor-pointer"
-						disabled={!hasDeleteAccess}
 						data-testid={`team-delete-btn-${team.name}`}
 						onSelect={(e) => {
 							e.preventDefault();
@@ -100,7 +102,7 @@ function TeamActionsMenu({
 					>
 						<Trash2 className="h-4 w-4" />
 						Delete
-					</DropdownMenuItem>
+					</DisabledReasonMenuItem>
 				</DropdownMenuContent>
 			</DropdownMenu>
 			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
@@ -242,10 +244,12 @@ export default function TeamsTable({
 									data-testid="teams-search-input"
 								/>
 							</div>
-							<Button className="ml-auto" data-testid="create-team-btn" onClick={handleAddTeam} disabled={!hasCreateAccess}>
-								<Plus className="h-4 w-4" />
-								Add Team
-							</Button>
+							<DisabledReason reason={actionDisabledReason(hasCreateAccess, "create", "teams")} className="ml-auto">
+								<Button className="ml-auto" data-testid="create-team-btn" onClick={handleAddTeam} disabled={!hasCreateAccess}>
+									<Plus className="h-4 w-4" />
+									Add Team
+								</Button>
+							</DisabledReason>
 						</div>
 
 						<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="teams-table">
@@ -333,6 +337,7 @@ export default function TeamsTable({
 																						<span className="text-muted-foreground text-xs">{formatResetDuration(b.reset_duration)}</span>
 																					</div>
 																					<Progress
+																						aria-label="Budget usage"
 																						value={budgetPercentage}
 																						className={cn(
 																							"bg-muted/70 dark:bg-muted/30 h-1.5",
@@ -373,6 +378,7 @@ export default function TeamsTable({
 																					</span>
 																				</div>
 																				<Progress
+																					aria-label="Token usage"
 																					value={tokenPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",
@@ -407,6 +413,7 @@ export default function TeamsTable({
 																					</span>
 																				</div>
 																				<Progress
+																					aria-label="Request usage"
 																					value={requestPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",

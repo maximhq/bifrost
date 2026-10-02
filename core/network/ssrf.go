@@ -28,6 +28,17 @@ var cgnat = netip.MustParsePrefix("100.64.0.0/10")
 // systems, so nothing is lost by refusing the range outright.
 var teredo = netip.MustParsePrefix("2001:0000::/32")
 
+// metadataEndpoints are cloud instance-metadata service addresses that sit
+// outside the link-local range, so the link-local block alone does not cover
+// them. 169.254.169.254 (AWS, GCP, Azure, Oracle, DigitalOcean) is already
+// refused as link-local. These two fall inside ranges the private-network
+// policy otherwise permits: Alibaba Cloud ECS serves metadata from CGNAT
+// space, and the AWS IMDS IPv6 endpoint is a unique-local address.
+var metadataEndpoints = []netip.Addr{
+	netip.MustParseAddr("100.100.100.200"), // Alibaba Cloud ECS
+	netip.MustParseAddr("fd00:ec2::254"),   // AWS IMDS over IPv6
+}
+
 // IsPublicIP reports whether ip is safe to dial from server-side code that
 // fetches user-controlled URLs: not loopback, private, CGNAT, link-local,
 // unique-local, site-local, multicast, broadcast, or unspecified. IPv6 forms
@@ -301,11 +312,83 @@ func isValidHostnameLiteral(s string) bool {
 	return true
 }
 
+// checkPrivateNetworkPolicy applies the PrivateNetworkDialContext destination
+// policy to one address: unspecified, link-local, and cloud metadata
+// endpoints are refused; everything else, loopback and private ranges
+// included, is permitted. IPv6 forms that embed an IPv4 address (IPv4-mapped,
+// 6to4, NAT64) are judged by the embedded IPv4 as well, as IsPublicIP does,
+// so a blocked endpoint cannot be reached through a transition
+// representation.
+func checkPrivateNetworkPolicy(ip net.IP, host string) error {
+	if ip.IsUnspecified() {
+		return fmt.Errorf("blocked connection to unspecified address %s (host %s)", ip, host)
+	}
+	if IsLinkLocal(ip) {
+		return fmt.Errorf("blocked connection to link-local address %s (host %s)", ip, host)
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return fmt.Errorf("blocked connection to unparseable address %s (host %s)", ip, host)
+	}
+	addr = addr.Unmap()
+	if embedded, ok := embeddedIPv4(addr); ok {
+		addr = embedded
+		if addr.IsLinkLocalUnicast() {
+			return fmt.Errorf("blocked connection to link-local address %s (host %s)", ip, host)
+		}
+	}
+	for _, ep := range metadataEndpoints {
+		if addr == ep {
+			return fmt.Errorf("blocked connection to cloud metadata endpoint %s (host %s)", ip, host)
+		}
+	}
+	return nil
+}
+
+// ResolvePrivateNetworkTarget resolves host and applies the
+// PrivateNetworkDialContext destination policy to every address it resolves
+// to, returning the validated addresses for the caller to dial. It is the
+// resolve step of that dialer, kept separate so it can be tested on its own.
+// An IP literal resolves to itself without a DNS query.
+func ResolvePrivateNetworkTarget(ctx context.Context, host string) ([]net.IP, error) {
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("DNS lookup failed for %s: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("DNS lookup for %s returned no addresses", host)
+	}
+	for _, ip := range ips {
+		if err := checkPrivateNetworkPolicy(ip, host); err != nil {
+			return nil, err
+		}
+	}
+	return ips, nil
+}
+
+// CheckPrivateNetworkLiteral applies the PrivateNetworkDialContext destination
+// policy to host without any DNS lookup: an IP literal (with or without IPv6
+// brackets) is checked, and a hostname is accepted as-is. It exists for the
+// case where the connection is handed to an intermediary, such as an HTTP
+// proxy, that resolves names on its own side: resolving locally there would
+// make the request depend on DNS the host may not have (a proxy-only
+// deployment), and would still not bind what the proxy connects to. So the
+// caller enforces what it can verify without DNS, and name resolution for the
+// proxied path is left to the proxy, which is operator configuration.
+func CheckPrivateNetworkLiteral(host string) error {
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return nil
+	}
+	return checkPrivateNetworkPolicy(ip, host)
+}
+
 // PrivateNetworkDialContext returns a DialContext that, unlike
 // SSRFSafeDialContext, permits loopback, RFC1918/unique-local, and CGNAT
 // destinations. It still blocks link-local addresses (including the
-// 169.254.169.254 cloud metadata endpoint) and unspecified addresses, which
-// have no legitimate destination under any deployment topology. Same
+// 169.254.169.254 cloud metadata endpoint), the cloud metadata endpoints that
+// live outside link-local (see metadataEndpoints), and unspecified addresses,
+// which have no legitimate destination under any deployment topology. Same
 // DNS-rebinding protection as SSRFSafeDialContext: resolves once and dials
 // the validated IP directly.
 //
@@ -322,20 +405,9 @@ func PrivateNetworkDialContext(dialTimeout time.Duration) func(ctx context.Conte
 		if err != nil {
 			return nil, fmt.Errorf("invalid dial address %q: %w", addr, err)
 		}
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		ips, err := ResolvePrivateNetworkTarget(ctx, host)
 		if err != nil {
-			return nil, fmt.Errorf("DNS lookup failed for %s: %w", host, err)
-		}
-		if len(ips) == 0 {
-			return nil, fmt.Errorf("DNS lookup for %s returned no addresses", host)
-		}
-		for _, ip := range ips {
-			if ip.IsUnspecified() {
-				return nil, fmt.Errorf("blocked connection to unspecified address %s (host %s)", ip, host)
-			}
-			if IsLinkLocal(ip) {
-				return nil, fmt.Errorf("blocked connection to link-local address %s (host %s)", ip, host)
-			}
+			return nil, err
 		}
 		// Every address resolved above passed the policy, so trying them in
 		// turn is no weaker than dialing just the first: nothing outside this

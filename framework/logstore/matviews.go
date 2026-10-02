@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/postgresconn"
 	"gorm.io/gorm"
 )
 
@@ -399,6 +401,7 @@ var filterMatViewKeyPairColumns = map[[2]string]string{
 	{"project_id", "project_name"}:             "mv_filter_projects",
 }
 
+// filterMatViewDDL returns the CREATE MATERIALIZED VIEW statement for one filter view.
 func filterMatViewDDL(v filterMatViewDef) string {
 	if v.bodyOverride != "" {
 		return fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s AS %s", v.name, v.bodyOverride)
@@ -550,6 +553,17 @@ func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	}
 	defer conn.Close()
 
+	// Creating or repairing a view over logs runs far past the runtime pool's
+	// statement_timeout; lift it on this connection only and restore it before
+	// the connection returns to the pool.
+	restoreTimeout, err := postgresconn.DisableStatementTimeout(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("matview creation: %w", err)
+	}
+	defer func() {
+		_ = postgresconn.RestoreStatementTimeoutOrDiscard(ctx, conn, restoreTimeout, matViewUnlockTimeout)
+	}()
+
 	var acquired bool
 	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
 		return fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
@@ -597,6 +611,8 @@ func dropLegacyMatViews(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+// repairMatViewShapes drops every managed view whose columns no longer match
+// matviewRequiredColumns so the create step rebuilds it in the current shape.
 func repairMatViewShapes(ctx context.Context, conn *sql.Conn) error {
 	for view, columns := range matviewRequiredColumns {
 		needsRebuild, err := matViewNeedsRebuild(ctx, conn, view, columns)
@@ -669,6 +685,9 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 	return false, nil
 }
 
+// ensureMatViewUniqueIndexes builds the unique index each view needs for
+// REFRESH MATERIALIZED VIEW CONCURRENTLY, then the scope indexes behind the
+// DAC-scoped filter queries.
 func ensureMatViewUniqueIndexes(ctx context.Context, conn *sql.Conn) error {
 	_, _ = conn.ExecContext(ctx, "SET maintenance_work_mem = '512MB'")
 	_, _ = conn.ExecContext(ctx, "SET max_parallel_maintenance_workers = 4")
@@ -868,6 +887,18 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 		conn.Close()
 	}()
 
+	// REFRESH ... CONCURRENTLY over logs outlives the runtime pool's
+	// statement_timeout; the pass is bounded by ctx (the refresh timeout)
+	// instead. Restored before the deferred close returns the connection; a
+	// failed restore discards the connection instead.
+	restoreTimeout, err := postgresconn.DisableStatementTimeout(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("matview refresh: %w", err)
+	}
+	defer func() {
+		_ = postgresconn.RestoreStatementTimeoutOrDiscard(ctx, conn, restoreTimeout, matViewUnlockTimeout)
+	}()
+
 	// Activity check happens before the advisory lock so write-quiet replicas
 	// don't even contend for it. Capture the counter BEFORE refreshing — any
 	// writes that land during refresh will bump it again and trigger the next
@@ -916,14 +947,23 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 		}
 	}()
 
+	// A failed REFRESH leaves the existing view intact (CONCURRENTLY builds into a
+	// temp table and diffs at commit), so readers keep working against slightly
+	// staler data. One view failing for its own reason must not starve the others,
+	// so the pass continues; it stops only once the deadline has passed, since every
+	// later statement would fail the same way. markRefreshed is skipped on any
+	// failure so the next tick sees a changed activity counter and retries.
+	var refreshErrs []error
 	for _, view := range matViewRefreshOrder() {
 		if _, err := conn.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+view); err != nil {
-			// A cancelled REFRESH leaves the existing view intact (CONCURRENTLY builds
-			// into a temp table and diffs at commit), so readers keep working against
-			// slightly staler data. markRefreshed is intentionally skipped so the next
-			// tick sees a changed activity counter and retries.
-			return fmt.Errorf("failed to refresh %s: %w", view, err)
+			refreshErrs = append(refreshErrs, fmt.Errorf("failed to refresh %s: %w", view, err))
+			if ctx.Err() != nil {
+				break
+			}
 		}
+	}
+	if len(refreshErrs) > 0 {
+		return errors.Join(refreshErrs...)
 	}
 	refreshGate.markRefreshed(activityAtStart, activityOK)
 	return nil
@@ -983,6 +1023,13 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 // canUseMatViewFilters returns true if the given filters can be served from
 // mv_logs_hourly. Per-row filters (content search, request ID, parent request ID,
 // session ID, metadata, numeric ranges) require the raw logs table.
+//
+// GroupSessions needs no test of its own: grouping only collapses rows when
+// SessionGroupingActive() holds, which requires RootsOnly, and RootsOnly is
+// already rejected below. Testing it as well would push group_sessions=true with
+// roots_only=false onto the raw COUNT path, where grouping does nothing and the
+// matview's answer is the same. TestSessionGroupingActiveImpliesRootsOnly pins
+// the implication this relies on.
 func canUseMatViewFilters(f SearchFilters) bool {
 	return f.ContentSearch == "" &&
 		f.RequestID == "" &&
@@ -1001,12 +1048,15 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		f.MinCost == nil && f.MaxCost == nil &&
 		!f.MissingCostOnly &&
 		len(f.CacheHitTypes) == 0 &&
+		len(f.ErrorTypes) == 0 && len(f.ErrorCodes) == 0 && len(f.StatusCodes) == 0 &&
 		len(f.UserAgents) == 0 &&
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
 		len(f.CustomerIDs) == 0
 }
 
+// canUseMatViewStatusFilter reports whether every requested status is terminal,
+// the only statuses the matviews aggregate.
 func canUseMatViewStatusFilter(statuses []string) bool {
 	for _, status := range statuses {
 		if !isTerminalLogStatus(status) {
@@ -1016,6 +1066,7 @@ func canUseMatViewStatusFilter(statuses []string) bool {
 	return true
 }
 
+// isTerminalLogStatus reports whether status is one of terminalLogStatuses.
 func isTerminalLogStatus(status string) bool {
 	for _, terminalStatus := range terminalLogStatuses {
 		if status == terminalStatus {
@@ -1312,6 +1363,7 @@ type matViewStatsAgg struct {
 	CacheDebugCount   int64   `gorm:"column:cache_debug_count"`
 }
 
+// add accumulates b into a, summing every counter and total.
 func (a *matViewStatsAgg) add(b matViewStatsAgg) {
 	a.Count += b.Count
 	a.SuccessCount += b.SuccessCount
@@ -1700,6 +1752,7 @@ func (s *RDBLogStore) getModelHistogramFromMatView(ctx context.Context, filters 
 	}
 	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
+	q = q.Where("model IS NOT NULL AND model != ''")
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		model,
@@ -2442,8 +2495,8 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 			mrt.Trend = ModelRankingTrend{
 				HasPreviousPeriod: true,
 				RequestsTrend:     trendPct(float64(r.Total), float64(prev.Total)),
-				TokensTrend:       trendPct(float64(r.TotalTokens), float64(prev.TotalTokens)),
-				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
+				TokensTrend:       metricTrend(float64(prev.TotalTokens), float64(r.TotalTokens)),
+				CostTrend:         metricTrend(prev.TotalCost, r.TotalCost),
 				LatencyTrend:      trendPct(r.AvgLatency, prev.AvgLatency),
 				ThroughputTrend:   trendPct(entry.Throughput, tokensPerSecond(prev.TPCompletionTokens, prev.TPLatencyMs)),
 			}
@@ -2539,8 +2592,8 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 			urt.Trend = UserRankingTrend{
 				HasPreviousPeriod: true,
 				RequestsTrend:     trendPct(float64(r.Total), float64(prev.Total)),
-				TokensTrend:       trendPct(float64(r.TotalTokens), float64(prev.TotalTokens)),
-				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
+				TokensTrend:       metricTrend(float64(prev.TotalTokens), float64(r.TotalTokens)),
+				CostTrend:         metricTrend(prev.TotalCost, r.TotalCost),
 			}
 		}
 		rankings = append(rankings, urt)
@@ -2581,28 +2634,11 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 		return nil, err
 	}
 
-	// Resolve names from the logs table
-	nameMap := make(map[string]string)
-	if nameCol != "" && len(results) > 0 {
-		ids := make([]string, len(results))
-		for i, r := range results {
-			ids[i] = r.ID
-		}
-		var nameRows []struct {
-			ID   string `gorm:"column:id"`
-			Name string `gorm:"column:name"`
-		}
-		if err := s.scopedLogsDB(ctx).Model(&Log{}).
-			Select(fmt.Sprintf("DISTINCT ON (%s) %s AS id, %s AS name", idCol, idCol, nameCol)).
-			Where(fmt.Sprintf("%s IN ?", idCol), ids).
-			Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", nameCol, nameCol)).
-			Order(fmt.Sprintf("%s, timestamp DESC", idCol)).
-			Find(&nameRows).Error; err == nil {
-			for _, nr := range nameRows {
-				nameMap[nr.ID] = nr.Name
-			}
-		}
+	ids := make([]string, len(results))
+	for i, r := range results {
+		ids[i] = r.ID
 	}
+	nameMap := s.resolveRankingNames(ctx, idCol, nameCol, ids)
 
 	// Previous period
 	var prevResults []row
@@ -2658,13 +2694,109 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 			drt.Trend = DimensionRankingTrend{
 				HasPreviousPeriod: true,
 				RequestsTrend:     trendPct(float64(r.Total), float64(prev.Total)),
-				TokensTrend:       trendPct(float64(r.TotalTkns), float64(prev.TotalTkns)),
-				CostTrend:         trendPct(r.TotalCost, prev.TotalCost),
+				TokensTrend:       metricTrend(float64(prev.TotalTkns), float64(r.TotalTkns)),
+				CostTrend:         metricTrend(prev.TotalCost, r.TotalCost),
 			}
 		}
 		rankings = append(rankings, drt)
 	}
 	return &DimensionRankingResult{Rankings: rankings, Dimension: dimension}, nil
+}
+
+// resolveRankingNames maps each ranked id to its display name, without the
+// DISTINCT ON over the whole logs history the lookup used to run.
+//
+//   - When the id column is the name (app, user_agent, alias), there is nothing
+//     to look up: the name is the id.
+//   - Otherwise the dimension's mv_filter_* view is read first. It holds the
+//     DISTINCT (id, name) pairs of the last filterDataMatViewWindow, so an id
+//     with exactly one name there has that name as its latest name (the newest
+//     row of any id seen in the window lies inside the window).
+//   - Ids the view cannot answer (not in it, renamed inside the window, or no
+//     view for the dimension) fall back to the latest name in logs across all
+//     history, as dev resolved it: one newest-first walk per id of the
+//     (id, timestamp) composite, stopping at the first named row.
+//
+// Lookup errors leave names empty, as before; the rankings themselves stand.
+// The HTTP handler then replaces the name of every entity that still exists
+// with its current config name, so these are the names deleted entities keep.
+func (s *RDBLogStore) resolveRankingNames(ctx context.Context, idCol, nameCol string, ids []string) map[string]string {
+	nameMap := make(map[string]string, len(ids))
+	if nameCol == "" || len(ids) == 0 {
+		return nameMap
+	}
+	if nameCol == idCol {
+		for _, id := range ids {
+			nameMap[id] = id
+		}
+		return nameMap
+	}
+
+	remaining := ids
+	if view, ok := filterMatViewKeyPairColumns[[2]string{idCol, nameCol}]; ok && s.canUseFilterMatView(ctx) {
+		var viewRows []struct {
+			ID        string `gorm:"column:id"`
+			Name      string `gorm:"column:name"`
+			NameCount int64  `gorm:"column:name_count"`
+		}
+		// In export mode ids holds every current-period id, which can exceed the
+		// 65,535-parameter limit as an "IN ?" list, so it binds as one argument.
+		viewDB := s.scopedLogsDB(ctx)
+		if err := viewDB.Table(view).
+			Select("id, MIN(name) AS name, COUNT(DISTINCT name) AS name_count").
+			Where(queryscope.InStrings(viewDB, "id", ids)).
+			Where("name IS NOT NULL AND name != ''").
+			Group("id").
+			Find(&viewRows).Error; err == nil {
+			for _, vr := range viewRows {
+				if vr.NameCount == 1 {
+					nameMap[vr.ID] = vr.Name
+				}
+			}
+			remaining = remaining[:0:0]
+			for _, id := range ids {
+				if _, ok := nameMap[id]; !ok {
+					remaining = append(remaining, id)
+				}
+			}
+		}
+	}
+	if len(remaining) == 0 {
+		return nameMap
+	}
+
+	var nameRows []struct {
+		ID   string `gorm:"column:id"`
+		Name string `gorm:"column:name"`
+	}
+	// Latest name across all history, as dev resolved it, for only the ids the
+	// filter view could not name. Each id reads its newest named row through the
+	// (id, timestamp) composite and stops there (LATERAL ... LIMIT 1); a
+	// DISTINCT ON over the whole id list would read and sort every row each id
+	// ever logged. The inner query keeps the caller's log visibility scope.
+	nameDB := s.scopedLogsDB(ctx)
+	latest := nameDB.Model(&Log{}).
+		Select(fmt.Sprintf("%s AS name", nameCol)).
+		Where(fmt.Sprintf("%s = ids.id", idCol)).
+		Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", nameCol, nameCol)).
+		// The id is fixed by the equality above, so ordering by it changes
+		// nothing, but it matches the composite exactly: without it the planner
+		// can walk the timestamp index instead, which reads the whole table
+		// newest-first for an id that is rare or has no named row.
+		Order(fmt.Sprintf("%s DESC, timestamp DESC", idCol)).
+		Limit(1)
+	// This path is Postgres-only, where InSet binds the id list as one text[].
+	_, idArray := queryscope.InSet(nameDB, remaining)
+	q := s.db.WithContext(ctx).
+		Table("unnest(?::text[]) AS ids(id)", idArray).
+		Joins("CROSS JOIN LATERAL (?) AS latest", latest).
+		Select("ids.id AS id, latest.name AS name")
+	if err := q.Find(&nameRows).Error; err == nil {
+		for _, nr := range nameRows {
+			nameMap[nr.ID] = nr.Name
+		}
+	}
+	return nameMap
 }
 
 // ---------------------------------------------------------------------------
@@ -2821,6 +2953,8 @@ func (s *RDBLogStore) getDistinctRoutingEnginesFromMatView(ctx context.Context, 
 	return result, nil
 }
 
+// getDistinctToolCallNamesFromMatView returns distinct tool call names from
+// mv_filter_tool_call_names, splitting the comma-separated values.
 func (s *RDBLogStore) getDistinctToolCallNamesFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
 	var rawValues []string
 	q := s.scopedLogsDB(ctx).Table("mv_filter_tool_call_names").

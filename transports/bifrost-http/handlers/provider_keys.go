@@ -15,6 +15,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -143,6 +144,11 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := validateVertexKeyAuth(baseProvider, key); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	if err := key.Models.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid models: %v", err))
 		return
@@ -207,12 +213,6 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	var updateKey schemas.Key
-	if err := sonic.Unmarshal(ctx.PostBody(), &updateKey); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
-		return
-	}
-
 	providerConfig, err := h.inMemoryStore.GetProviderConfigRaw(provider)
 	if err != nil {
 		if errors.Is(err, lib.ErrNotFound) {
@@ -238,6 +238,11 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	updateKey, err := decodeKeyUpdate(ctx.PostBody(), *oldRawKey)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
 	updateKey.ID = keyID
 	mergedKey, err := h.mergeUpdatedKey(*oldRawKey, updateKey)
 	if err != nil {
@@ -270,6 +275,11 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 	}
 
 	if err := validateProviderKeyURL(baseProvider, mergedKey); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := validateVertexKeyAuth(baseProvider, mergedKey); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
@@ -442,6 +452,45 @@ func (h *ProviderHandler) refreshProviderKeyModels(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, refreshedKey)
 }
 
+// decodeKeyUpdate decodes a key update body with patch semantics: a field the
+// body leaves out keeps its stored value, while a field sent as "", 0, [] or
+// null is applied as given. Decoding into a bare schemas.Key cannot tell the
+// two apart, so an update naming only models used to empty the key's value
+// and zero its weight.
+func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
+	var updateKey schemas.Key
+	if err := sonic.Unmarshal(body, &updateKey); err != nil {
+		return schemas.Key{}, err
+	}
+	for field, keep := range map[string]func(){
+		"value":                     func() { updateKey.Value = oldRawKey.Value },
+		"models":                    func() { updateKey.Models = oldRawKey.Models },
+		"blacklisted_models":        func() { updateKey.BlacklistedModels = oldRawKey.BlacklistedModels },
+		"weight":                    func() { updateKey.Weight = oldRawKey.Weight },
+		"aliases":                   func() { updateKey.Aliases = oldRawKey.Aliases },
+		"azure_key_config":          func() { updateKey.AzureKeyConfig = oldRawKey.AzureKeyConfig },
+		"vertex_key_config":         func() { updateKey.VertexKeyConfig = oldRawKey.VertexKeyConfig },
+		"bedrock_key_config":        func() { updateKey.BedrockKeyConfig = oldRawKey.BedrockKeyConfig },
+		"bedrock_mantle_key_config": func() { updateKey.BedrockMantleKeyConfig = oldRawKey.BedrockMantleKeyConfig },
+		"vllm_key_config":           func() { updateKey.VLLMKeyConfig = oldRawKey.VLLMKeyConfig },
+		"replicate_key_config":      func() { updateKey.ReplicateKeyConfig = oldRawKey.ReplicateKeyConfig },
+		"ollama_key_config":         func() { updateKey.OllamaKeyConfig = oldRawKey.OllamaKeyConfig },
+		"sgl_key_config":            func() { updateKey.SGLKeyConfig = oldRawKey.SGLKeyConfig },
+		"databricks_key_config":     func() { updateKey.DatabricksKeyConfig = oldRawKey.DatabricksKeyConfig },
+		"github_copilot_key_config": func() { updateKey.GithubCopilotKeyConfig = oldRawKey.GithubCopilotKeyConfig },
+		"enabled":                   func() { updateKey.Enabled = oldRawKey.Enabled },
+		"use_for_batch_api":         func() { updateKey.UseForBatchAPI = oldRawKey.UseForBatchAPI },
+		"use_anthropic_endpoints":   func() { updateKey.UseAnthropicEndpoints = oldRawKey.UseAnthropicEndpoints },
+		"use_openai_endpoints":      func() { updateKey.UseOpenAIEndpoints = oldRawKey.UseOpenAIEndpoints },
+		"description":               func() { updateKey.Description = oldRawKey.Description },
+	} {
+		if !gjson.GetBytes(body, field).Exists() {
+			keep()
+		}
+	}
+	return updateKey, nil
+}
+
 // mergeUpdatedKey merges an updated key with the old raw version, preserving
 // stored values for masked placeholders. A placeholder without a stored
 // counterpart is rejected so it can never reach persistence.
@@ -505,6 +554,16 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			{&mergedKey.VertexKeyConfig.AuthCredentials, authCredentials, "vertex_key_config.auth_credentials"},
 		} {
 			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
+		}
+		// aws_workload_identity.aws_role_arn is the only masked field in the federation block.
+		if wif := mergedKey.VertexKeyConfig.AWSWorkloadIdentity; wif != nil && wif.AWSRoleARN != nil {
+			var storedRoleARN *schemas.SecretVar
+			if oldRawKey.VertexKeyConfig != nil && oldRawKey.VertexKeyConfig.AWSWorkloadIdentity != nil {
+				storedRoleARN = oldRawKey.VertexKeyConfig.AWSWorkloadIdentity.AWSRoleARN
+			}
+			if err := preserve(wif.AWSRoleARN, storedRoleARN, "vertex_key_config.aws_workload_identity.aws_role_arn"); err != nil {
 				return schemas.Key{}, err
 			}
 		}
@@ -857,6 +916,31 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		if hasClientID != hasClientSecret {
 			return fmt.Errorf("databricks_key_config.client_id and databricks_key_config.client_secret must be set together")
 		}
+	}
+	return nil
+}
+
+// validateVertexKeyAuth rejects Vertex keys that configure two identities at once: an
+// aws_workload_identity block (AWS → GCP federation) together with a non-empty auth_credentials
+// JSON. The core would silently prefer federation, and config.schema.json already refuses the
+// combination for config.json, so the API applies the same rule instead of guessing.
+func validateVertexKeyAuth(provider schemas.ModelProvider, key schemas.Key) error {
+	if provider != schemas.Vertex || key.VertexKeyConfig == nil || key.VertexKeyConfig.AWSWorkloadIdentity == nil {
+		return nil
+	}
+	cfg := key.VertexKeyConfig
+	wif := cfg.AWSWorkloadIdentity
+	// The block mirrors transports/config.schema.json: audience is required whenever the block is
+	// present (an empty block is a broken federation config, not "no federation"), and a supplied
+	// lifetime must sit within the IAM-accepted range.
+	if !wif.Audience.IsSet() {
+		return fmt.Errorf("vertex_key_config.aws_workload_identity.audience is required: set the workload identity pool provider resource name, or remove the aws_workload_identity block")
+	}
+	if l := wif.TokenLifetimeSeconds; l != 0 && (l < 600 || l > 43200) {
+		return fmt.Errorf("vertex_key_config.aws_workload_identity.token_lifetime_seconds must be between 600 and 43200, got %d", l)
+	}
+	if cfg.AuthCredentials.IsSet() {
+		return fmt.Errorf("vertex_key_config.auth_credentials must be empty when vertex_key_config.aws_workload_identity is configured: a key authenticates with either a credentials JSON or AWS workload identity federation, not both")
 	}
 	return nil
 }

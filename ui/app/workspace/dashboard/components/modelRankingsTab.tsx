@@ -1,3 +1,4 @@
+import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -59,9 +60,9 @@ function UsageShareTooltip({ active, payload, models, modelLabels }: any) {
 						<div key={model || `__unnamed_${idx}`} className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
-								<span className={`max-w-[140px] truncate text-zinc-600 dark:text-zinc-400${isUnnamed ? " italic" : ""}`}>
+								<StartTruncatedLabel className={`max-w-[220px] text-zinc-600 dark:text-zinc-400${isUnnamed ? " italic" : ""}`}>
 									{displayModelLabel(model, modelLabels)}
-								</span>
+								</StartTruncatedLabel>
 							</span>
 							<span className="font-medium">{val.toLocaleString()}</span>
 						</div>
@@ -171,7 +172,7 @@ function TopModelsChart({
 			<div style={{ height: 200, marginBottom: 6 }}>
 				{chartData.length > 0 ? (
 					<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
-						<ResponsiveContainer width="100%" height="100%">
+						<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 							<BarChart data={chartData} margin={{ top: 6, right: 4, left: 4, bottom: 0 }} barCategoryGap={1}>
 								<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
 								<XAxis
@@ -224,7 +225,7 @@ function TopModelsChart({
 							<div key={m.model} className="flex items-center gap-2 text-sm">
 								<span className="text-muted-foreground w-4 text-right text-xs">{m.model === OTHER_SERIES_KEY ? "" : `${idx + 1}.`}</span>
 								<span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: m.color }} />
-								<span className="min-w-0 flex-1 truncate font-medium">{displayModelLabel(m.model, modelLabels)}</span>
+								<StartTruncatedLabel className="flex-1 font-medium">{displayModelLabel(m.model, modelLabels)}</StartTruncatedLabel>
 								<span className="shrink-0 text-right text-xs tabular-nums">
 									<span className="font-medium">{formatNumber(m.total)}</span>
 									<span className="text-muted-foreground ml-1">{m.pct.toFixed(1)}%</span>

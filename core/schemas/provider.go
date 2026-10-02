@@ -35,6 +35,8 @@ const (
 const (
 	ErrProviderRequestTimedOut      = "request timed out (default is 300 seconds). You can increase it by setting the default_request_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
 	ErrRequestCancelled             = "request cancelled by caller"
+	ErrStreamFirstTokenTimeout      = "TTFT timeout: stream produced no first token before the deadline"
+	FirstTokenTimeoutErrorCode      = "ttft_timeout"
 	ErrRequestBodyConversion        = "failed to convert bifrost request to the expected provider request body"
 	ErrProviderRequestMarshal       = "failed to marshal request body to JSON"
 	ErrProviderCreateRequest        = "failed to create HTTP request to provider API"
@@ -335,6 +337,7 @@ func (pc *ProxyConfig) Redacted() *ProxyConfig {
 // A non-nil value only allows fields set to true; omitted or false fields are disallowed.
 type AllowedRequests struct {
 	ListModels            bool `json:"list_models"`
+	ModelRetrieve         bool `json:"model_retrieve"`
 	TextCompletion        bool `json:"text_completion"`
 	TextCompletionStream  bool `json:"text_completion_stream"`
 	ChatCompletion        bool `json:"chat_completion"`
@@ -349,6 +352,7 @@ type AllowedRequests struct {
 	Compaction            bool `json:"compaction"`
 	Embedding             bool `json:"embedding"`
 	Rerank                bool `json:"rerank"`
+	Decision              bool `json:"decisions"`
 	OCR                   bool `json:"ocr"`
 	Speech                bool `json:"speech"`
 	SpeechStream          bool `json:"speech_stream"`
@@ -406,6 +410,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 	switch operation {
 	case ListModelsRequest:
 		return ar.ListModels
+	case ModelRetrieveRequest:
+		return ar.ModelRetrieve
 	case TextCompletionRequest:
 		return ar.TextCompletion
 	case TextCompletionStreamRequest:
@@ -434,6 +440,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Embedding
 	case RerankRequest:
 		return ar.Rerank
+	case DecisionRequest:
+		return ar.Decision
 	case OCRRequest:
 		return ar.OCR
 	case SpeechRequest:
@@ -683,6 +691,8 @@ type Provider interface {
 	GetProviderKey() ModelProvider
 	// ListModels performs a list models request
 	ListModels(ctx *BifrostContext, keys []Key, request *BifrostListModelsRequest) (*BifrostListModelsResponse, *BifrostError)
+	// ModelRetrieve retrieves a single model's metadata (OpenAI-only; other providers return unsupported)
+	ModelRetrieve(ctx *BifrostContext, key Key, request *BifrostModelRetrieveRequest) (*BifrostModelRetrieveResponse, *BifrostError)
 	// TextCompletion performs a text completion request
 	TextCompletion(ctx *BifrostContext, key Key, request *BifrostTextCompletionRequest) (*BifrostTextCompletionResponse, *BifrostError)
 	// TextCompletionStream performs a text completion stream request.
@@ -706,6 +716,8 @@ type Provider interface {
 	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
 	// Rerank performs a rerank request to reorder documents by relevance to a query
 	Rerank(ctx *BifrostContext, key Key, request *BifrostRerankRequest) (*BifrostRerankResponse, *BifrostError)
+	// Decision performs an decision request against an annotated function-tool definition (Typesafe-only; other providers return unsupported)
+	Decision(ctx *BifrostContext, key Key, request *BifrostDecisionRequest) (*BifrostDecisionResponse, *BifrostError)
 	// OCR performs an optical character recognition request on a document
 	OCR(ctx *BifrostContext, key Key, request *BifrostOCRRequest) (*BifrostOCRResponse, *BifrostError)
 	// Speech performs a text to speech request

@@ -133,7 +133,11 @@ export function ClassifierStatusBadge({
 				</button>
 			</PopoverTrigger>
 
-			<PopoverContent align="end" className="w-80 space-y-2.5 p-3 text-xs leading-relaxed z-0" data-testid="complexity-router-semantic-status">
+			<PopoverContent
+				align="end"
+				className="z-0 w-80 space-y-2.5 p-3 text-xs leading-relaxed"
+				data-testid="complexity-router-semantic-status"
+			>
 				<p className="text-muted-foreground">{summary}</p>
 
 				{status?.serving_previous && state === "warming" && (

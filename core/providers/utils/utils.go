@@ -538,7 +538,26 @@ func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
 // client.Do covers headers only, so the returned body is wrapped to time the
 // reads that drain it. Streamed responses consumed through NewIdleTimeoutReader
 // are unwrapped there — the idle reader does its own per-chunk timing.
+//
+// A stream attempt with a first-token deadline (AttemptAbort on the context)
+// runs on a child context that the abort cancels, so a missed deadline ends
+// both the header wait and the body read without cancelling the request.
 func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	if abort := AttemptAbortFromContext(req.Context()); abort != nil {
+		if abort.Fired() {
+			return nil, ErrStreamFirstTokenTimeout
+		}
+		attemptCtx, cancel := context.WithCancelCause(req.Context())
+		go func() {
+			select {
+			case <-abort.Done():
+				cancel(ErrStreamFirstTokenTimeout)
+			case <-abort.Stopped():
+			case <-attemptCtx.Done():
+			}
+		}()
+		req = req.WithContext(attemptCtx)
+	}
 	startTime := time.Now()
 	resp, err := client.Do(req)
 	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
@@ -1187,6 +1206,39 @@ func setPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider 
 			}
 		}
 	}
+}
+
+// StripCallerAuthForInsecureURL removes a forwarded caller Authorization header from
+// passthrough safe headers when the resolved upstream URL is neither HTTPS nor a
+// loopback address (RFC 6750 section 5.3; loopback is exempt per the RFC 8252
+// section 8.3 rationale - the bytes never leave the machine). The transport vets
+// which providers may receive caller auth, but the provider BaseURL is resolved in
+// core, so this is the last place that sees the final scheme. Stripping fails
+// closed: key selection was skipped for caller-auth requests, so an insecure
+// upstream sees an unauthenticated request instead of a cleartext token.
+func StripCallerAuthForInsecureURL(requestURL string, safeHeaders map[string]string) {
+	if len(safeHeaders) == 0 {
+		return
+	}
+	u, err := url.Parse(requestURL)
+	if err == nil && (strings.EqualFold(u.Scheme, "https") || isLoopbackHost(u.Hostname())) {
+		return
+	}
+	for k := range safeHeaders {
+		if strings.EqualFold(k, "authorization") {
+			delete(safeHeaders, k)
+		}
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // GetPathFromContext gets the path from the context, if it exists, otherwise returns the default path.
@@ -2105,13 +2157,36 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 	}
 }
 
+// rootErrorMessage returns a root-level "message" string from a parsed provider error
+// body, or "" when the body carries none. AWS uses this shape for every Bedrock error
+// (the exception name travels separately, in "__type" or the X-Amzn-Errortype header),
+// while providers whose errors nest the message under "error" simply have no root-level
+// "message" for this to find.
+func rootErrorMessage(raw interface{}) string {
+	body, ok := raw.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	message, _ := body["message"].(string)
+	return strings.TrimSpace(message)
+}
+
 // HandleProviderAPIError processes error responses from provider APIs.
 // It attempts to unmarshal the error response and returns a BifrostError
-// with the appropriate status code and error information.
+// with the appropriate status code and error information, and the retry hint from the
+// response headers (see ApplyRetryAfter).
 // HTML detection only runs if JSON parsing fails to avoid expensive regex operations
 // on responses that are almost certainly valid JSON. errorResp must be a pointer to
 // the target struct for unmarshaling.
 func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
+	bifrostErr := handleProviderAPIError(resp, errorResp)
+	ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
+}
+
+// handleProviderAPIError builds the error from the response, leaving the retry hint to its
+// caller so every branch below picks it up.
+func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
 
 	// Decode body
@@ -2180,11 +2255,17 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 
 	// Try JSON parsing first
 	if err := sonic.Unmarshal(decodedBody, errorResp); err == nil {
-		// JSON parsing succeeded, return success
+		// JSON parsing succeeded, return success. The message is seeded from a
+		// root-level "message" so a body the caller's own error shape cannot
+		// describe still reports a reason: AWS answers every Bedrock surface
+		// (bedrock-runtime and Mantle) with a flat {"message":"..."}, which
+		// neither the Anthropic error envelope nor the OpenAI one matches, and
+		// those surfaces are served by the shared Anthropic/OpenAI handlers.
+		// Callers overwrite this as soon as their own parse finds a message.
 		return &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     &statusCode,
-			Error:          &schemas.ErrorField{},
+			Error:          &schemas.ErrorField{Message: rootErrorMessage(rawErrorResponse)},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RawResponse: rawErrorResponse,
 			},
@@ -3201,40 +3282,56 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 				logger.Debug("recovered panic in stream cancellation closeBodyStream: %v", rec)
 			}
 		}()
-		select {
-		case <-ctx.Done():
-			// Claim the close so only one owner (this goroutine, the idle-timeout
-			// timer, or ReleaseStreamingResponse) drives it. The claim orders the
-			// close against ReleaseStreamingResponse's drain; fasthttp itself is
-			// idempotent here (clientStreamBody.CloseWithError is guarded by a
-			// sync.Once), so a lost race is no longer destructive.
-			if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
-				return
-			}
-			// Closing here interrupts a read that is still in flight. That is safe
-			// only on a fasthttp carrying upstream commit fb3b29e ("wait for
-			// streaming reads before releasing pooled resources", #2353), where
-			// clientStreamBody interrupts the connection and then waits on its
-			// readLock before returning the *requestStream and the connection's
-			// *bufio.Reader to their pools.
-			//
-			// On fasthttp v1.71.0 through v1.73.0 this close pooled both objects
-			// underneath an active reader, so a later request acquired an aliased
-			// object and read another request's bytes. That is maximhq/bifrost#6143,
-			// and TestStreamCloseUnderActiveReaderIsSafe is the guard: it fails
-			// under -race on any fasthttp without that fix.
-			closeBodyStream(bodyStream, ctx.Err())
-		case <-done:
-			// The streaming goroutine reached its defer chain and ctx is also
-			// cancelled. Claim and close so ReleaseStreamingResponse does not drain
-			// a body nobody wants, and so a half-read connection is closed rather
-			// than returned to the idle pool.
-			if ctx.Err() != nil {
+		abort := AttemptAbortFromContext(ctx)
+		abortDone, abortStopped := abort.Done(), abort.Stopped()
+		for {
+			select {
+			case <-abortDone:
+				// The attempt missed its first-token deadline. The request itself is
+				// still live (a fallback follows), so close only this attempt's body.
 				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 					return
 				}
+				closeBodyStream(bodyStream, ErrStreamFirstTokenTimeout)
+			case <-abortStopped:
+				// The attempt produced output; keep watching ctx only.
+				abortDone, abortStopped = nil, nil
+				continue
+			case <-ctx.Done():
+				// Claim the close so only one owner (this goroutine, the idle-timeout
+				// timer, or ReleaseStreamingResponse) drives it. The claim orders the
+				// close against ReleaseStreamingResponse's drain; fasthttp itself is
+				// idempotent here (clientStreamBody.CloseWithError is guarded by a
+				// sync.Once), so a lost race is no longer destructive.
+				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
+					return
+				}
+				// Closing here interrupts a read that is still in flight. That is safe
+				// only on a fasthttp carrying upstream commit fb3b29e ("wait for
+				// streaming reads before releasing pooled resources", #2353), where
+				// clientStreamBody interrupts the connection and then waits on its
+				// readLock before returning the *requestStream and the connection's
+				// *bufio.Reader to their pools.
+				//
+				// On fasthttp v1.71.0 through v1.73.0 this close pooled both objects
+				// underneath an active reader, so a later request acquired an aliased
+				// object and read another request's bytes. That is maximhq/bifrost#6143,
+				// and TestStreamCloseUnderActiveReaderIsSafe is the guard: it fails
+				// under -race on any fasthttp without that fix.
 				closeBodyStream(bodyStream, ctx.Err())
+			case <-done:
+				// The streaming goroutine reached its defer chain and ctx is also
+				// cancelled. Claim and close so ReleaseStreamingResponse does not drain
+				// a body nobody wants, and so a half-read connection is closed rather
+				// than returned to the idle pool.
+				if ctx.Err() != nil {
+					if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
+						return
+					}
+					closeBodyStream(bodyStream, ctx.Err())
+				}
 			}
+			return
 		}
 	}()
 	return func() {
@@ -4322,14 +4419,8 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 		}
 	}
 
-	// End span with appropriate status
+	// Error attributes are stamped by PopulateLLMResponseAttributes above.
 	if err != nil {
-		if err.Error != nil {
-			tracer.SetAttribute(handle, "error", err.Error.Message)
-		}
-		if err.StatusCode != nil {
-			tracer.SetAttribute(handle, "status_code", *err.StatusCode)
-		}
 		tracer.EndSpan(handle, schemas.SpanStatusError, "streaming request failed")
 	} else {
 		tracer.EndSpan(handle, schemas.SpanStatusOk, "")
@@ -4360,4 +4451,424 @@ func ModelMatchesDenylist(denylist []string, candidates ...string) bool {
 		}
 	}
 	return false
+}
+
+// jsonSchemaPatternKey is the JSON Schema keyword whose value is a regex.
+const jsonSchemaPatternKey = "pattern"
+
+// NormalizeRegexNULEscape rewrites the `\0` NUL escape to `\x00`.
+//
+// The two denote the same character in every engine that accepts both, but some
+// model backends reject the `\0` spelling when they validate tool schemas, and
+// they fail the whole request rather than reporting a bad pattern. They also fail
+// differently: DeepSeek answers 400 `"^[^\0]*$" is not a "regex"`, while
+// moonshotai.kimi-k3 on Bedrock answers 200 with an empty event stream and says
+// nothing at all. This is those validators' behaviour, not a regex-engine rule:
+// Go's own regexp accepts `\0` as a one-digit octal escape, and OpenAI, Anthropic
+// and Gemini accept it unchanged. `\x00` is accepted by every backend tested, so
+// the rewrite is lossless; which models receive it is decided by the caller (see
+// toolSchemaPatternRewriter in core), not here.
+//
+// Only a `\0` that is not the start of a legacy octal escape is rewritten, so
+// `\012` is left alone, and escape pairs are consumed two at a time so the `0` in
+// `\\0` (a literal backslash then a zero) is never mistaken for a NUL.
+func NormalizeRegexNULEscape(pattern string) string {
+	if !strings.Contains(pattern, `\0`) {
+		return pattern
+	}
+	var b strings.Builder
+	b.Grow(len(pattern) + 8)
+	for i := 0; i < len(pattern); {
+		if pattern[i] != '\\' || i+1 >= len(pattern) {
+			b.WriteByte(pattern[i])
+			i++
+			continue
+		}
+		// Only 0-7 are octal digits: `\012` is a legacy octal escape and stays,
+		// but `\08` is a NUL escape followed by a literal 8 and must be rewritten.
+		if pattern[i+1] == '0' && (i+2 >= len(pattern) || pattern[i+2] < '0' || pattern[i+2] > '7') {
+			b.WriteString(`\x00`)
+		} else {
+			b.WriteByte(pattern[i])
+			b.WriteByte(pattern[i+1])
+		}
+		i += 2
+	}
+	return b.String()
+}
+
+// normalizeSchemaValue normalizes any nested JSON Schema value. It returns the
+// input untouched, and reports false, when nothing changed -- the common case,
+// which must not allocate.
+func normalizeSchemaValue(value any, rewrite PatternRewriter) (any, bool) {
+	switch typed := value.(type) {
+	case *schemas.OrderedMap:
+		return normalizeSchemaMap(typed, rewrite)
+	case map[string]any:
+		// Nested schemas built in code arrive as plain maps (BuildDecisionSchema
+		// stores each question's schema this way inside an OrderedMap), so they
+		// need the same pattern handling. Copy-on-write like the other cases: the
+		// map is duplicated only when a value changes.
+		var updated map[string]any
+		for key, nested := range typed {
+			normalized, changed := nested, false
+			if key == jsonSchemaPatternKey {
+				if pattern, ok := nested.(string); ok {
+					if rewritten := rewrite(pattern); rewritten != pattern {
+						normalized, changed = rewritten, true
+					}
+				}
+			}
+			if !changed {
+				normalized, changed = normalizeSchemaValue(nested, rewrite)
+			}
+			if !changed {
+				continue
+			}
+			if updated == nil {
+				updated = make(map[string]any, len(typed))
+				for k, v := range typed {
+					updated[k] = v
+				}
+			}
+			updated[key] = normalized
+		}
+		if updated == nil {
+			return typed, false
+		}
+		return updated, true
+	case []any:
+		var updated []any
+		for i := range typed {
+			normalized, changed := normalizeSchemaValue(typed[i], rewrite)
+			if !changed {
+				continue
+			}
+			if updated == nil {
+				updated = make([]any, len(typed))
+				copy(updated, typed)
+			}
+			updated[i] = normalized
+		}
+		if updated == nil {
+			return typed, false
+		}
+		return updated, true
+	}
+	return value, false
+}
+
+// normalizeSchemaMap walks one schema object. OrderedMap.Clone is shallow, so a
+// clone is taken only when this level actually changes and untouched subtrees stay
+// shared with the caller's schema. Set replaces a value without disturbing key
+// order, which the prompt cache depends on.
+func normalizeSchemaMap(schema *schemas.OrderedMap, rewrite PatternRewriter) (*schemas.OrderedMap, bool) {
+	if schema == nil || schema.Len() == 0 {
+		return schema, false
+	}
+	var updated *schemas.OrderedMap
+	for _, key := range schema.Keys() {
+		value, _ := schema.Get(key)
+
+		normalized, changed := value, false
+		if key == jsonSchemaPatternKey {
+			if pattern, ok := value.(string); ok {
+				if rewritten := rewrite(pattern); rewritten != pattern {
+					normalized, changed = rewritten, true
+				}
+			}
+		}
+		if !changed {
+			normalized, changed = normalizeSchemaValue(value, rewrite)
+		}
+		if !changed {
+			continue
+		}
+		if updated == nil {
+			updated = schema.Clone()
+		}
+		updated.Set(key, normalized)
+	}
+	if updated == nil {
+		return schema, false
+	}
+	return updated, true
+}
+
+// RewriteToolSchemaPatterns applies rewrite to every regex `pattern` in the tool
+// parameter schema, copy-on-write: a schema with nothing to rewrite is returned
+// as-is and allocates nothing.
+func RewriteToolSchemaPatterns(params *schemas.ToolFunctionParameters, rewrite PatternRewriter) (*schemas.ToolFunctionParameters, bool) {
+	if params == nil {
+		return params, false
+	}
+
+	// Struct assignment carries the unexported keyOrder and explicitEmptyObject
+	// fields across, so a rewritten schema still serializes in the client's key
+	// order and an explicit `{}` stays `{}`.
+	updated := *params
+	changed := false
+
+	if params.Pattern != nil {
+		if rewritten := rewrite(*params.Pattern); rewritten != *params.Pattern {
+			updated.Pattern = &rewritten
+			changed = true
+		}
+	}
+
+	for _, field := range []struct {
+		value  *schemas.OrderedMap
+		assign func(*schemas.OrderedMap)
+	}{
+		{params.Properties, func(m *schemas.OrderedMap) { updated.Properties = m }},
+		{params.Items, func(m *schemas.OrderedMap) { updated.Items = m }},
+		{params.Defs, func(m *schemas.OrderedMap) { updated.Defs = m }},
+		{params.Definitions, func(m *schemas.OrderedMap) { updated.Definitions = m }},
+	} {
+		if normalized, fieldChanged := normalizeSchemaMap(field.value, rewrite); fieldChanged {
+			field.assign(normalized)
+			changed = true
+		}
+	}
+
+	// additionalProperties is a schema in its own right, not just a boolean, so a
+	// pattern under it must be rewritten too. The struct is copied only when its
+	// map changes; the boolean variant is carried through untouched.
+	if additional := params.AdditionalProperties; additional != nil && additional.AdditionalPropertiesMap != nil {
+		if normalized, fieldChanged := normalizeSchemaMap(additional.AdditionalPropertiesMap, rewrite); fieldChanged {
+			additionalCopy := *additional
+			additionalCopy.AdditionalPropertiesMap = normalized
+			updated.AdditionalProperties = &additionalCopy
+			changed = true
+		}
+	}
+
+	for _, composition := range []struct {
+		value  []schemas.OrderedMap
+		assign func([]schemas.OrderedMap)
+	}{
+		{params.AnyOf, func(s []schemas.OrderedMap) { updated.AnyOf = s }},
+		{params.OneOf, func(s []schemas.OrderedMap) { updated.OneOf = s }},
+		{params.AllOf, func(s []schemas.OrderedMap) { updated.AllOf = s }},
+	} {
+		var rewritten []schemas.OrderedMap
+		for i := range composition.value {
+			normalized, elementChanged := normalizeSchemaMap(&composition.value[i], rewrite)
+			if !elementChanged {
+				continue
+			}
+			if rewritten == nil {
+				rewritten = make([]schemas.OrderedMap, len(composition.value))
+				copy(rewritten, composition.value)
+			}
+			rewritten[i] = *normalized
+		}
+		if rewritten != nil {
+			composition.assign(rewritten)
+			changed = true
+		}
+	}
+
+	if !changed {
+		return params, false
+	}
+	return &updated, true
+}
+
+// RewriteResponsesToolSchemas applies rewrite to the regex patterns in every
+// Responses tool's parameter schema, copy-on-write. Tools with nothing to rewrite
+// are shared with the caller's slice rather than copied, and ResponsesToolFunction
+// is embedded by pointer, so a rewritten one is replaced rather than written
+// through.
+func RewriteResponsesToolSchemas(tools []schemas.ResponsesTool, rewrite PatternRewriter) ([]schemas.ResponsesTool, bool) {
+	var updated []schemas.ResponsesTool
+	for i := range tools {
+		if tools[i].ResponsesToolFunction == nil || tools[i].ResponsesToolFunction.Parameters == nil {
+			continue
+		}
+		normalized, changed := RewriteToolSchemaPatterns(tools[i].ResponsesToolFunction.Parameters, rewrite)
+		if !changed {
+			continue
+		}
+		if updated == nil {
+			updated = make([]schemas.ResponsesTool, len(tools))
+			copy(updated, tools)
+		}
+		function := *tools[i].ResponsesToolFunction
+		function.Parameters = normalized
+		updated[i].ResponsesToolFunction = &function
+	}
+	if updated == nil {
+		return tools, false
+	}
+	return updated, true
+}
+
+// PatternRewriter rewrites one regex `pattern` value. It must return its input
+// unchanged when it has nothing to do, so callers can detect a no-op by equality
+// and keep the original schema bytes.
+type PatternRewriter func(pattern string) string
+
+// ComposePatternRewriters applies rewriters left to right.
+func ComposePatternRewriters(rewriters ...PatternRewriter) PatternRewriter {
+	return func(pattern string) string {
+		for _, rewrite := range rewriters {
+			pattern = rewrite(pattern)
+		}
+		return pattern
+	}
+}
+
+// StripRegexLookaround removes every zero-width lookaround assertion, `(?=...)`,
+// `(?!...)`, `(?<=...)` and `(?<!...)`, from a regex pattern.
+//
+// This is a lossy relaxation and is deliberately not applied to every provider.
+// Some model backends reject lookaround outright: moonshotai.kimi-k3 on Bedrock
+// answers a tool whose schema uses `(?!` with HTTP 200 and an empty event
+// stream, and Claude Code's ArtifactData tool ships four such patterns, so every
+// Claude Code request to kimi-k3 died. OpenAI and Anthropic accept lookaround,
+// and for them the assertion is real guidance, so the rewrite is gated to models
+// outside those families (see regexLookaroundSupported in core).
+//
+// Removing a zero-width assertion can only widen what the pattern matches, never
+// narrow it, so the result is always a valid relaxation of the original: the
+// character-class and length constraints survive and only the exclusion the
+// lookaround expressed is lost. Non-capturing `(?:...)` and named `(?<name>...)`
+// groups are not lookaround and are left alone. An unbalanced pattern is
+// returned unchanged rather than truncated.
+func StripRegexLookaround(pattern string) string {
+	if !strings.Contains(pattern, "(?") {
+		return pattern
+	}
+	var b strings.Builder
+	b.Grow(len(pattern))
+	changed := false
+	for i := 0; i < len(pattern); {
+		c := pattern[i]
+		switch {
+		case c == '\\' && i+1 < len(pattern):
+			b.WriteByte(c)
+			b.WriteByte(pattern[i+1])
+			i += 2
+		case c == '[':
+			end := regexClassEnd(pattern, i)
+			b.WriteString(pattern[i:end])
+			i = end
+		case c == '(' && isRegexLookaroundStart(pattern, i):
+			end := regexGroupEnd(pattern, i)
+			if end < 0 {
+				return pattern
+			}
+			changed = true
+			// A quantifier attached to the removed assertion would otherwise land on
+			// the previous atom, or lead the pattern and fail to parse, so it goes too.
+			i = regexQuantifierEnd(pattern, end)
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	if !changed {
+		return pattern
+	}
+	return b.String()
+}
+
+// regexQuantifierEnd returns the index just past a quantifier starting at
+// pattern[start] (`*`, `+`, `?`, or a well-formed `{n}`, `{n,}`, `{n,m}`), plus an
+// optional lazy `?`. Anything else, including a malformed brace, is left in place
+// and start is returned unchanged.
+func regexQuantifierEnd(pattern string, start int) int {
+	if start >= len(pattern) {
+		return start
+	}
+	i := start
+	switch pattern[i] {
+	case '*', '+', '?':
+		i++
+	case '{':
+		j := i + 1
+		digits := func() bool {
+			n := j
+			for j < len(pattern) && pattern[j] >= '0' && pattern[j] <= '9' {
+				j++
+			}
+			return j > n
+		}
+		if !digits() {
+			return start
+		}
+		if j < len(pattern) && pattern[j] == ',' {
+			j++
+			digits()
+		}
+		if j >= len(pattern) || pattern[j] != '}' {
+			return start
+		}
+		i = j + 1
+	default:
+		return start
+	}
+	if i < len(pattern) && pattern[i] == '?' {
+		i++
+	}
+	return i
+}
+
+// isRegexLookaroundStart reports whether pattern[i:] opens a lookaround group.
+func isRegexLookaroundStart(pattern string, i int) bool {
+	rest := pattern[i:]
+	return strings.HasPrefix(rest, "(?=") || strings.HasPrefix(rest, "(?!") ||
+		strings.HasPrefix(rest, "(?<=") || strings.HasPrefix(rest, "(?<!")
+}
+
+// regexClassEnd returns the index just past the character class opening at
+// pattern[start]. A `]` in first position (after an optional `^`) is a literal,
+// and escapes are skipped, so a `(` inside the class is never read as a group.
+func regexClassEnd(pattern string, start int) int {
+	j := start + 1
+	if j < len(pattern) && pattern[j] == '^' {
+		j++
+	}
+	if j < len(pattern) && pattern[j] == ']' {
+		j++
+	}
+	for j < len(pattern) {
+		switch pattern[j] {
+		case '\\':
+			j += 2
+		case ']':
+			return j + 1
+		default:
+			j++
+		}
+	}
+	return len(pattern)
+}
+
+// regexGroupEnd returns the index just past the `)` that closes the group opening
+// at pattern[start], honouring escapes, character classes and nesting. It returns
+// -1 when the group never closes.
+func regexGroupEnd(pattern string, start int) int {
+	depth := 0
+	for j := start; j < len(pattern); {
+		switch pattern[j] {
+		case '\\':
+			j += 2
+		case '[':
+			j = regexClassEnd(pattern, j)
+		case '(':
+			depth++
+			j++
+		case ')':
+			depth--
+			j++
+			if depth == 0 {
+				return j
+			}
+		default:
+			j++
+		}
+	}
+	return -1
 }

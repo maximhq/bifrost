@@ -15,6 +15,12 @@ interface ModelAccessBadgesProps {
 	 * projects carry that as a separate all_models_allowed flag.
 	 */
 	allModels?: boolean;
+	/**
+	 * For a block list, whether the allow side beside it permits every model. An empty block list
+	 * blocks nothing only when it does: against a restricted allow list, every model outside that
+	 * list is already denied, so "no models blocked" would read as "everything is available".
+	 */
+	allowsAllModels?: boolean;
 	/** Rendered when the list is empty; defaults to the mode's standard badge. */
 	empty?: ReactNode;
 	/** Badge variant for individual entries; defaults per mode. */
@@ -27,7 +33,16 @@ interface ModelAccessBadgesProps {
  * Read-only rendering of an allow or block side: the "All Models" badge, one
  * badge per entry (patterns in monospace with an icon), or an empty-state badge.
  */
-export function ModelAccessBadges({ value, mode, allModels, empty, entryVariant, entryClassName, className }: ModelAccessBadgesProps) {
+export function ModelAccessBadges({
+	value,
+	mode,
+	allModels,
+	allowsAllModels,
+	empty,
+	entryVariant,
+	entryClassName,
+	className,
+}: ModelAccessBadgesProps) {
 	const entries = (value ?? []).filter((e) => e !== "*");
 	const isAll = allModels || isWildcardList(value);
 
@@ -51,7 +66,7 @@ export function ModelAccessBadges({ value, mode, allModels, empty, entryVariant,
 			</Badge>
 		) : (
 			<Badge variant="secondary" className={cn("text-xs", className)}>
-				No models blocked
+				{allowsAllModels === false ? "All models except those allowed" : "No models blocked"}
 			</Badge>
 		);
 	}

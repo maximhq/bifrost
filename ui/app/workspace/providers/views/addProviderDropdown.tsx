@@ -1,16 +1,17 @@
 import { Button } from "@/components/ui/button";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuSeparator,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdownMenu";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { ProviderLabels } from "@/lib/constants/logs";
+import { ProviderSelector, type ProviderSelectorOption } from "@/components/ui/providerSelector";
 import { PlusIcon, Settings2Icon } from "lucide-react";
+import { useMemo } from "react";
 
 export type ProviderOption = { name: string };
+
+// Picked by the row that opens the custom-provider sheet, rather than adding a known one.
+const CUSTOM_PROVIDER_VALUE = "__custom_provider__";
+
+// Module level so the identity is stable across renders; the list never varies.
+const CUSTOM_PROVIDER_OPTION: ProviderSelectorOption[] = [
+	{ value: CUSTOM_PROVIDER_VALUE, label: "Custom provider...", icon: <Settings2Icon className="h-4 w-4" /> },
+];
 
 interface AddProviderDropdownProps {
 	/** Provider names that are already in the sidebar (configured or added) */
@@ -32,42 +33,36 @@ export function AddProviderDropdown({
 	disabled = false,
 	variant = "default",
 }: AddProviderDropdownProps) {
-	const availableKnown = knownProviders.filter((p) => !existingInSidebar.has(p.name));
-	const hasKnown = availableKnown.length > 0;
+	const values = useMemo(() => knownProviders.map((p) => p.name), [knownProviders]);
+	const excludeValues = useMemo(() => Array.from(existingInSidebar), [existingInSidebar]);
 
 	return (
-		<DropdownMenu>
-			<DropdownMenuTrigger asChild>
+		<ProviderSelector
+			mode="add"
+			source="values"
+			values={values}
+			excludeValues={excludeValues}
+			footerOptions={CUSTOM_PROVIDER_OPTION}
+			disabled={disabled}
+			searchPlaceholder="Search providers..."
+			emptyMessage="No providers left to add"
+			contentClassName="custom-scrollbar max-h-[min(70vh,24rem)]"
+			contentTestId="add-provider-dropdown"
+			optionTestId={(value) => (value === CUSTOM_PROVIDER_VALUE ? "add-provider-option-custom" : `add-provider-option-${value}`)}
+			onSelect={(value) => (value === CUSTOM_PROVIDER_VALUE ? onAddCustomProvider() : onSelectKnownProvider(value))}
+			trigger={
 				<Button
-					variant="outline"
 					size={variant === "empty" ? "default" : "sm"}
 					data-testid="add-provider-btn"
 					className={variant === "empty" ? "" : "w-full justify-start"}
-					aria-label="Add new provider"
+					aria-label="Add Provider"
 					disabled={disabled}
+					variant={"outline"}
 				>
 					<PlusIcon className="h-4 w-4" />
-					{variant === "empty" ? <span>Add provider</span> : <div className="text-xs">Add New Provider</div>}
+					{variant === "empty" ? <span>Add New Provider</span> : <div className="text-xs">Add New Provider</div>}
 				</Button>
-			</DropdownMenuTrigger>
-			<DropdownMenuContent
-				align="start"
-				className="custom-scrollbar max-h-[min(70vh,24rem)] min-w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto"
-				data-testid="add-provider-dropdown"
-			>
-				{availableKnown.map((p) => (
-					<DropdownMenuItem key={p.name} data-testid={`add-provider-option-${p.name}`} onSelect={() => onSelectKnownProvider(p.name)}>
-						<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
-						<span>{ProviderLabels[p.name as keyof typeof ProviderLabels] ?? p.name}</span>
-					</DropdownMenuItem>
-				))}
-				{hasKnown && <DropdownMenuSeparator />}
-				{/* Add New Provider > Custom provider... — used by E2E (add-provider-option-custom) */}
-				<DropdownMenuItem data-testid="add-provider-option-custom" onSelect={onAddCustomProvider}>
-					<Settings2Icon className="h-4 w-4" />
-					<span>Custom provider...</span>
-				</DropdownMenuItem>
-			</DropdownMenuContent>
-		</DropdownMenu>
+			}
+		/>
 	);
 }

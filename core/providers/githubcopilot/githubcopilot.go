@@ -243,6 +243,11 @@ func (p *githubCopilotProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, p.GetProviderKey())
 }
 
+// Decision is not supported by the githubCopilot provider.
+func (p *githubCopilotProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, p.GetProviderKey())
+}
+
 // OCR is not supported by GitHub Copilot.
 func (p *githubCopilotProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, p.GetProviderKey())
@@ -386,6 +391,11 @@ func (p *githubCopilotProvider) FileContent(_ *schemas.BifrostContext, _ []schem
 // CountTokens is not supported by GitHub Copilot.
 func (p *githubCopilotProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, p.GetProviderKey())
+}
+
+// ModelRetrieve is not supported by GitHub Copilot.
+func (p *githubCopilotProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, p.GetProviderKey())
 }
 
 // Compaction is not supported by GitHub Copilot.

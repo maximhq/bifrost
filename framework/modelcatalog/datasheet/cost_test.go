@@ -255,6 +255,19 @@ func makeRerankResponse(provider schemas.ModelProvider, model string, usage *sch
 	}
 }
 
+// makeDecisionResponse builds a minimal BifrostResponse for a decision request.
+func makeDecisionResponse(provider schemas.ModelProvider, model string, usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		DecisionResponse: &schemas.BifrostDecisionResponse{
+			Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.DecisionRequest,
+				RoutingInfo: routingInfoFor(provider, model),
+			},
+		},
+	}
+}
+
 // makeImageResponse builds a minimal BifrostResponse for an image generation request.
 func makeImageResponse(provider schemas.ModelProvider, model string, usage *schemas.ImageUsage) *schemas.BifrostResponse {
 	return &schemas.BifrostResponse{
@@ -296,6 +309,10 @@ func computeEmbeddingCostTotal(pricing *configstoreTables.TableModelPricing, usa
 
 func computeRerankCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
 	return bcTotal(computeRerankCost(pricing, usage, tier))
+}
+
+func computeDecisionCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
+	return bcTotal(computeDecisionCost(pricing, usage, tier))
 }
 
 func computeSpeechCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTextInputChars int, tier serviceTier) float64 {
@@ -762,7 +779,7 @@ func TestComputeTextCost_InferenceGeoUS_AppliesMultiplier(t *testing.T) {
 	p := chatPricing(0.00001, 0.00005)
 	p.CacheReadInputTokenCost = bifrost.Ptr(0.000001)
 	p.CacheCreationInputTokenCost = bifrost.Ptr(0.0000125)
-	p.SearchContextCostPerQuery = bifrost.Ptr(0.01)
+	p.WebSearchCostPerRequest = bifrost.Ptr(0.01)
 	p.InferenceGeoUSMultiplier = bifrost.Ptr(1.1)
 
 	usage := &schemas.BifrostLLMUsage{
@@ -772,9 +789,7 @@ func TestComputeTextCost_InferenceGeoUS_AppliesMultiplier(t *testing.T) {
 			CachedReadTokens:  200,
 			CachedWriteTokens: 300,
 		},
-		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-			NumSearchQueries: bifrost.Ptr(2),
-		},
+		ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 2}},
 	}
 
 	tokenCost := 500*0.00001 + 200*0.000001 + 300*0.0000125 + 100*0.00005
@@ -1176,7 +1191,56 @@ func TestComputeTextCost_272kTierWithCacheRead(t *testing.T) {
 
 func TestComputeTextCost_SearchQueryCost(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.SearchContextCostPerQuery = bifrost.Ptr(0.01) // $0.01 per search query
+	p.WebSearchCostPerRequest = bifrost.Ptr(0.01) // $0.01 per web search request
+
+	numQueries := 3
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
+		ToolUsage:        &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
+	}
+
+	cost := computeTextCostTotal(&p, usage, serviceTier{})
+
+	// 1000*0.000003 + 500*0.000015 + 3*0.01 = 0.003 + 0.0075 + 0.03 = 0.0405
+	assert.InDelta(t, 0.0405, cost, 1e-12)
+}
+
+func TestComputeTextCost_LegacySearchContextRateNotPriced(t *testing.T) {
+	p := chatPricing(0.000003, 0.000015)
+	p.SearchContextCostPerQuery = bifrost.Ptr(0.01)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
+		ToolUsage:        &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 3}},
+	}
+
+	// Only web_search_cost_per_request prices web search; the legacy rate is folded in at unmarshal.
+	assert.InDelta(t, 0.0105, computeTextCostTotal(&p, usage, serviceTier{}), 1e-12)
+}
+
+func TestEntryUnmarshal_WebSearchCostPerRequestFallsBackToSearchContext(t *testing.T) {
+	var legacy Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"search_context_cost_per_query":{"search_context_size_low":0.01,"search_context_size_medium":0.01,"search_context_size_high":0.01}}`), &legacy))
+	require.NotNil(t, legacy.WebSearchCostPerRequest)
+	assert.InDelta(t, 0.01, *legacy.WebSearchCostPerRequest, 1e-12)
+
+	var explicit Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"web_search_cost_per_request":0.02,"search_context_cost_per_query":{"search_context_size_medium":0.01}}`), &explicit))
+	require.NotNil(t, explicit.WebSearchCostPerRequest)
+	assert.InDelta(t, 0.02, *explicit.WebSearchCostPerRequest, 1e-12)
+
+	var none Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"input_cost_per_token":0.001}`), &none))
+	assert.Nil(t, none.WebSearchCostPerRequest)
+}
+
+func TestComputeTextCost_DeprecatedNumSearchQueriesNotPriced(t *testing.T) {
+	p := chatPricing(0.000003, 0.000015)
+	p.WebSearchCostPerRequest = bifrost.Ptr(0.01)
 
 	numQueries := 3
 	usage := &schemas.BifrostLLMUsage{
@@ -1190,8 +1254,8 @@ func TestComputeTextCost_SearchQueryCost(t *testing.T) {
 
 	cost := computeTextCostTotal(&p, usage, serviceTier{})
 
-	// 1000*0.000003 + 500*0.000015 + 3*0.01 = 0.003 + 0.0075 + 0.03 = 0.0405
-	assert.InDelta(t, 0.0405, cost, 1e-12)
+	// Only tokens: 0.003 + 0.0075; search is billed from ToolUsage alone.
+	assert.InDelta(t, 0.0105, cost, 1e-12)
 }
 
 func TestComputeTextCost_NoCacheRateFallsBackToBaseInputRate(t *testing.T) {
@@ -1291,15 +1355,13 @@ func TestComputeRerankCost_TotalAbove200kButInputBelow200kUsesBaseRate(t *testin
 
 func TestComputeRerankCost_WithSearchCost(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:         bifrost.Ptr(0.0),
-		OutputCostPerToken:        bifrost.Ptr(0.0),
-		SearchContextCostPerQuery: bifrost.Ptr(0.001),
+		InputCostPerToken:       bifrost.Ptr(0.0),
+		OutputCostPerToken:      bifrost.Ptr(0.0),
+		WebSearchCostPerRequest: bifrost.Ptr(0.001),
 	}
 	numQueries := 5
 	usage := &schemas.BifrostLLMUsage{
-		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-			NumSearchQueries: &numQueries,
-		},
+		ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
 	}
 	cost := computeRerankCostTotal(&p, usage, serviceTier{})
 	assert.InDelta(t, 0.005, cost, 1e-12)
@@ -1310,17 +1372,15 @@ func TestComputeRerankCost_WithSearchCost(t *testing.T) {
 // folding it into a bare OutputCost total.
 func TestComputeRerankCost_BreakdownDetails(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:         bifrost.Ptr(0.001),
-		OutputCostPerToken:        bifrost.Ptr(0.002),
-		SearchContextCostPerQuery: bifrost.Ptr(0.001),
+		InputCostPerToken:       bifrost.Ptr(0.001),
+		OutputCostPerToken:      bifrost.Ptr(0.002),
+		WebSearchCostPerRequest: bifrost.Ptr(0.001),
 	}
 	numQueries := 3
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     10,
 		CompletionTokens: 5,
-		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-			NumSearchQueries: &numQueries,
-		},
+		ToolUsage:        &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
 	}
 	cost := computeRerankCost(&p, usage, serviceTier{})
 	require.NotNil(t, cost)
@@ -3388,6 +3448,7 @@ func TestResponsesUsageToBifrostUsage_WithTokenDetails(t *testing.T) {
 			ReasoningTokens:  100,
 			NumSearchQueries: &numQueries,
 		},
+		ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
 	}
 	result := responsesUsageToBifrostUsage(u)
 
@@ -3402,6 +3463,7 @@ func TestResponsesUsageToBifrostUsage_WithTokenDetails(t *testing.T) {
 	assert.Equal(t, 100, result.CompletionTokensDetails.ReasoningTokens)
 	require.NotNil(t, result.CompletionTokensDetails.NumSearchQueries)
 	assert.Equal(t, 2, *result.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 2, result.ToolUsage.WebSearch.NumRequests)
 }
 
 // =========================================================================
@@ -5366,6 +5428,63 @@ func TestCalculateCost_RerankPerQuery(t *testing.T) {
 		resp := makeRerankResponse(schemas.Cohere, "rerank-v3.5", nil)
 		assert.InDelta(t, 0.002, s.CalculateCost(resp, nil), 1e-12)
 	})
+}
+
+// =========================================================================
+// computeDecisionCost — unit tests
+// =========================================================================
+
+func TestComputeDecisionCost_InputOnlyBilling(t *testing.T) {
+	// Typesafe's jev pricing shape: input tokens billed, output tokens free.
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.000000042),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     50000,
+		CompletionTokens: 40,
+		TotalTokens:      50040,
+	}
+	cost := computeDecisionCostTotal(&p, usage, serviceTier{})
+	assert.InDelta(t, 50000*0.000000042, cost, 1e-12)
+}
+
+func TestComputeDecisionCost_OutputRateHonored(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.000001),
+		OutputCostPerToken: bifrost.Ptr(0.000002),
+	}
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
+	}
+	cost := computeDecisionCostTotal(&p, usage, serviceTier{})
+	assert.InDelta(t, 1000*0.000001+500*0.000002, cost, 1e-12)
+}
+
+func TestComputeDecisionCost_NilUsage(t *testing.T) {
+	p := configstoreTables.TableModelPricing{InputCostPerToken: new(0.000000042)}
+	assert.Equal(t, 0.0, computeDecisionCostTotal(&p, nil, serviceTier{}))
+}
+
+func TestCalculateCost_DecisionTokenBilling(t *testing.T) {
+	// Pins the dispatch arm: an unhandled request type silently falls into
+	// CalculateCost's default nil branch and every decision would cost zero.
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("jev-1.13.0", "typesafe", "decisions"): {
+			Model: "jev-1.13.0", Provider: "typesafe", Mode: "decisions",
+			InputCostPerToken:  bifrost.Ptr(0.000000042),
+			OutputCostPerToken: bifrost.Ptr(0.0),
+		},
+	})
+
+	resp := makeDecisionResponse(schemas.Typesafe, "jev-1.13.0", &schemas.BifrostLLMUsage{
+		PromptTokens: 50000,
+		TotalTokens:  50000,
+	})
+
+	assert.InDelta(t, 50000*0.000000042, s.CalculateCost(resp, nil), 1e-12)
 }
 
 func TestCalculateCost_RerankPerTokenStillWorks(t *testing.T) {

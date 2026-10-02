@@ -105,6 +105,10 @@ const (
 	FinishReasonMalformedResponse FinishReason = "MALFORMED_RESPONSE"
 )
 
+// googleRetryInfoType is the @type of the error detail Google APIs use to say how long to
+// wait before retrying.
+const googleRetryInfoType = "type.googleapis.com/google.rpc.RetryInfo"
+
 type GeminiGenerationRequest struct {
 	Model             string                   `json:"model,omitempty"`    // Model field for explicit model specification
 	Contents          []Content                `json:"contents,omitempty"` // For chat completion requests
@@ -1401,17 +1405,21 @@ type PrebuiltVoiceConfig struct {
 	VoiceName string `json:"voice_name,omitempty"`
 }
 
-// UnmarshalJSON implements custom JSON unmarshaling for PrebuiltVoiceConfig.
-// This handles the voice_name field which comes as snake_case from the Gemini SDK.
+// UnmarshalJSON accepts both protobuf JSON spellings, preferring camelCase when
+// both are present.
 func (p *PrebuiltVoiceConfig) UnmarshalJSON(data []byte) error {
 	type Alias struct {
-		VoiceName string `json:"voice_name,omitempty"`
+		VoiceNameCamel string `json:"voiceName,omitempty"`
+		VoiceNameSnake string `json:"voice_name,omitempty"`
 	}
 	var aux Alias
 	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	p.VoiceName = aux.VoiceName
+	p.VoiceName = aux.VoiceNameCamel
+	if !hasJSONKey(data, "voiceName") {
+		p.VoiceName = aux.VoiceNameSnake
+	}
 	return nil
 }
 
@@ -1430,17 +1438,21 @@ type VoiceConfig struct {
 	PrebuiltVoiceConfig *PrebuiltVoiceConfig `json:"prebuilt_voice_config,omitempty"`
 }
 
-// UnmarshalJSON implements custom JSON unmarshaling for VoiceConfig.
-// This handles the prebuilt_voice_config field which comes as snake_case from the Gemini SDK.
+// UnmarshalJSON accepts both protobuf JSON spellings, preferring camelCase when
+// both are present.
 func (v *VoiceConfig) UnmarshalJSON(data []byte) error {
 	type Alias struct {
-		PrebuiltVoiceConfig *PrebuiltVoiceConfig `json:"prebuilt_voice_config,omitempty"`
+		PrebuiltVoiceConfigCamel *PrebuiltVoiceConfig `json:"prebuiltVoiceConfig,omitempty"`
+		PrebuiltVoiceConfigSnake *PrebuiltVoiceConfig `json:"prebuilt_voice_config,omitempty"`
 	}
 	var aux Alias
 	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	v.PrebuiltVoiceConfig = aux.PrebuiltVoiceConfig
+	v.PrebuiltVoiceConfig = aux.PrebuiltVoiceConfigCamel
+	if !hasJSONKey(data, "prebuiltVoiceConfig") {
+		v.PrebuiltVoiceConfig = aux.PrebuiltVoiceConfigSnake
+	}
 	return nil
 }
 
@@ -1477,6 +1489,37 @@ type SpeechConfig struct {
 	// Optional. Language code (ISO 639, e.g., en-US) for speech synthesis.
 	// Only available for Live API.
 	LanguageCode string `json:"languageCode,omitempty"`
+}
+
+// UnmarshalJSON accepts both lowerCamelCase protobuf JSON and the snake_case
+// spelling emitted by Google SDKs. Camel case wins when both are supplied.
+func (s *SpeechConfig) UnmarshalJSON(data []byte) error {
+	type Alias struct {
+		VoiceConfigCamel             *VoiceConfig             `json:"voiceConfig,omitempty"`
+		VoiceConfigSnake             *VoiceConfig             `json:"voice_config,omitempty"`
+		MultiSpeakerVoiceConfigCamel *MultiSpeakerVoiceConfig `json:"multiSpeakerVoiceConfig,omitempty"`
+		MultiSpeakerVoiceConfigSnake *MultiSpeakerVoiceConfig `json:"multi_speaker_voice_config,omitempty"`
+		LanguageCodeCamel            string                   `json:"languageCode,omitempty"`
+		LanguageCodeSnake            string                   `json:"language_code,omitempty"`
+	}
+
+	var aux Alias
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	s.VoiceConfig = aux.VoiceConfigCamel
+	if !hasJSONKey(data, "voiceConfig") {
+		s.VoiceConfig = aux.VoiceConfigSnake
+	}
+	s.MultiSpeakerVoiceConfig = aux.MultiSpeakerVoiceConfigCamel
+	if !hasJSONKey(data, "multiSpeakerVoiceConfig") {
+		s.MultiSpeakerVoiceConfig = aux.MultiSpeakerVoiceConfigSnake
+	}
+	s.LanguageCode = aux.LanguageCodeCamel
+	if !hasJSONKey(data, "languageCode") {
+		s.LanguageCode = aux.LanguageCodeSnake
+	}
+	return nil
 }
 
 // GenerationConfigThinkingConfig represents configuration for thinking features.
@@ -1532,6 +1575,7 @@ func (tc *GenerationConfigThinkingConfig) UnmarshalJSON(data []byte) error {
 }
 
 type GeminiBatchEmbeddingRequest struct {
+	Model       string                   `json:"-"` // populated from URL path by Bifrost; not part of wire format
 	Requests    []GeminiEmbeddingRequest `json:"requests,omitempty"`
 	ExtraParams map[string]interface{}   `json:"-"` // Optional: Extra parameters
 }
@@ -1544,6 +1588,8 @@ func (r *GeminiBatchEmbeddingRequest) GetExtraParams() map[string]interface{} {
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
 	Content              *Content               `json:"content,omitempty"`
+	DocumentOCR          *bool                  `json:"documentOcr,omitempty"`
+	AudioTrackExtraction *bool                  `json:"audioTrackExtraction,omitempty"`
 	TaskType             *string                `json:"taskType,omitempty"`
 	Title                *string                `json:"title,omitempty"`
 	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
@@ -2078,8 +2124,10 @@ type FunctionResponse struct {
 
 // GeminiEmbeddingResponse represents a Google GenAI embedding response.
 type GeminiEmbeddingResponse struct {
-	Embeddings []GeminiEmbedding     `json:"embeddings"`
-	Metadata   *EmbedContentMetadata `json:"metadata,omitempty"`
+	Embedding     *GeminiEmbedding                      `json:"embedding,omitempty"`
+	Embeddings    []GeminiEmbedding                     `json:"embeddings,omitempty"`
+	Metadata      *EmbedContentMetadata                 `json:"metadata,omitempty"`
+	UsageMetadata *GenerateContentResponseUsageMetadata `json:"usageMetadata,omitempty"` // Vertex :embedContent reports token usage here
 }
 
 // GeminiEmbedContentResponse is the wire format for a single :embedContent response.
@@ -2615,6 +2663,7 @@ type GeminiGenerationErrorStruct struct {
 
 type GeminiGenerationErrorDetails struct {
 	Type            string `json:"@type"`
+	RetryDelay      string `json:"retryDelay,omitempty"` // google.rpc.RetryInfo only, as a protobuf duration such as "39s"
 	FieldViolations []struct {
 		Description string `json:"description"`
 	} `json:"fieldViolations"`

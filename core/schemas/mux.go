@@ -198,6 +198,7 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 					Type:         ResponsesMessageContentBlockType(block.Type),
 					Text:         block.Text,
 					CacheControl: block.CacheControl,
+					GuardContent: block.GuardContent,
 				}
 
 				// Map image
@@ -585,8 +586,12 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		if messageType == ResponsesMessageTypeFunctionCallOutput {
 			// Don't set content for function_call_output - it will be set in ResponsesToolMessage.Output
 		} else {
-			responseBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
-			for i, block := range cm.Content.ContentBlocks {
+			responseBlocks := make([]ResponsesMessageContentBlock, 0, len(cm.Content.ContentBlocks))
+			for _, block := range cm.Content.ContentBlocks {
+				// Responses blocks have no cachePoint equivalent; a standalone marker would serialize as an empty-type block.
+				if block.Type == "" && block.CachePoint != nil {
+					continue
+				}
 				blockType := ResponsesMessageContentBlockType(block.Type)
 
 				switch block.Type {
@@ -604,33 +609,35 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 					blockType = ResponsesInputMessageContentBlockTypeAudio
 				}
 
-				responseBlocks[i] = ResponsesMessageContentBlock{
-					Type: blockType,
-					Text: block.Text,
-				}
+				responseBlocks = append(responseBlocks, ResponsesMessageContentBlock{
+					Type:         blockType,
+					Text:         block.Text,
+					GuardContent: block.GuardContent,
+				})
+				rb := &responseBlocks[len(responseBlocks)-1]
 
 				// Convert specific block types
 				if block.ImageURLStruct != nil {
-					responseBlocks[i].ResponsesInputMessageContentBlockImage = &ResponsesInputMessageContentBlockImage{
+					rb.ResponsesInputMessageContentBlockImage = &ResponsesInputMessageContentBlockImage{
 						ImageURL: &block.ImageURLStruct.URL,
 						Detail:   block.ImageURLStruct.Detail,
 					}
 				}
 				if block.File != nil {
-					responseBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
+					rb.ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
 						FileData: block.File.FileData,
 						FileURL:  block.File.FileURL,
 						Filename: block.File.Filename,
 						FileType: block.File.FileType,
 					}
-					responseBlocks[i].FileID = block.File.FileID
+					rb.FileID = block.File.FileID
 				}
 				if block.InputAudio != nil {
 					format := ""
 					if block.InputAudio.Format != nil {
 						format = *block.InputAudio.Format
 					}
-					responseBlocks[i].Audio = &ResponsesInputMessageContentBlockAudio{
+					rb.Audio = &ResponsesInputMessageContentBlockAudio{
 						Data:   block.InputAudio.Data,
 						Format: format,
 					}
@@ -674,6 +681,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 						Type:         ResponsesMessageContentBlockType(block.Type),
 						Text:         block.Text,
 						CacheControl: block.CacheControl,
+						GuardContent: block.GuardContent,
 					}
 
 					// Map image
@@ -854,7 +862,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					// result collapse to the chat surface's single bool. Mirrors
 					// the same pair the Anthropic Responses converter treats as
 					// is_error (providers/anthropic/responses.go).
-					if (rm.ResponsesToolMessage.Error != nil && *rm.ResponsesToolMessage.Error != "") ||
+					if rm.ResponsesToolMessage.Error.IsError() ||
 						(rm.Status != nil && *rm.Status == "incomplete") {
 						cm.ChatToolMessage.IsError = Ptr(true)
 					}
@@ -931,8 +939,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					}
 
 					chatBlocks[i] = ChatContentBlock{
-						Type: chatBlockType,
-						Text: block.Text,
+						Type:         chatBlockType,
+						Text:         block.Text,
+						GuardContent: block.GuardContent,
 					}
 
 					// Convert specific block types
@@ -1051,6 +1060,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
 		}
 	}
+	usage.ToolUsage = cu.ToolUsage.DeepCopy()
 
 	return usage
 }
@@ -1090,8 +1100,90 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
 		}
 	}
+	usage.ToolUsage = ru.ToolUsage.DeepCopy()
 
 	return usage
+}
+
+// NormalizedUsage folds whichever family's usage a settled response carries into
+// the canonical BifrostLLMUsage shape, so the logging plugin and the tracer read
+// token counts from one place and cannot disagree.
+//
+// Streaming requests do not reach here: they settle through the accumulator and
+// carry usage on the accumulated result instead.
+//
+// The returned value may alias the response's own usage; callers that retain it
+// past the request should DeepCopy.
+func (r *BifrostResponse) NormalizedUsage() *BifrostLLMUsage {
+	if r == nil {
+		return nil
+	}
+	switch {
+	case r.TextCompletionResponse != nil && r.TextCompletionResponse.Usage != nil:
+		return r.TextCompletionResponse.Usage
+	case r.ChatResponse != nil && r.ChatResponse.Usage != nil:
+		return r.ChatResponse.Usage
+	case r.ResponsesResponse != nil && r.ResponsesResponse.Usage != nil:
+		return r.ResponsesResponse.Usage.ToBifrostLLMUsage()
+	case r.CompactionResponse != nil && r.CompactionResponse.Usage != nil:
+		return r.CompactionResponse.Usage.ToBifrostLLMUsage()
+	case r.EmbeddingResponse != nil && r.EmbeddingResponse.Usage != nil:
+		return r.EmbeddingResponse.Usage
+	case r.RerankResponse != nil && r.RerankResponse.Usage != nil:
+		return r.RerankResponse.Usage
+	case r.DecisionResponse != nil && r.DecisionResponse.Usage != nil:
+		return r.DecisionResponse.Usage
+	case r.TranscriptionResponse != nil && r.TranscriptionResponse.Usage != nil:
+		u := r.TranscriptionResponse.Usage
+		out := &BifrostLLMUsage{}
+		if u.InputTokens != nil {
+			out.PromptTokens = *u.InputTokens
+		}
+		if u.OutputTokens != nil {
+			out.CompletionTokens = *u.OutputTokens
+		}
+		if u.TotalTokens != nil {
+			out.TotalTokens = *u.TotalTokens
+		}
+		// Derive on zero as well as nil: some providers report total_tokens: 0
+		// alongside real counts. Matches the speech branch below.
+		if out.TotalTokens == 0 {
+			out.TotalTokens = out.PromptTokens + out.CompletionTokens
+		}
+		if d := u.InputTokenDetails; d != nil {
+			out.PromptTokensDetails = &ChatPromptTokensDetails{
+				TextTokens:  d.TextTokens,
+				AudioTokens: d.AudioTokens,
+			}
+		}
+		return out
+	case r.SpeechResponse != nil && r.SpeechResponse.Usage != nil:
+		u := r.SpeechResponse.Usage
+		out := &BifrostLLMUsage{
+			PromptTokens:     u.InputTokens,
+			CompletionTokens: u.OutputTokens,
+			TotalTokens:      u.TotalTokens,
+		}
+		if out.TotalTokens == 0 {
+			out.TotalTokens = out.PromptTokens + out.CompletionTokens
+		}
+		return out
+	case r.ImageGenerationResponse != nil && r.ImageGenerationResponse.Usage != nil:
+		u := r.ImageGenerationResponse.Usage
+		out := &BifrostLLMUsage{
+			PromptTokens:     u.InputTokens,
+			CompletionTokens: u.OutputTokens,
+		}
+		if u.TotalTokens > 0 {
+			out.TotalTokens = u.TotalTokens
+		} else {
+			out.TotalTokens = out.PromptTokens + out.CompletionTokens
+		}
+		return out
+	case r.PassthroughResponse != nil && r.PassthroughResponse.PassthroughUsage != nil:
+		return r.PassthroughResponse.PassthroughUsage.LLMUsage
+	}
+	return nil
 }
 
 // =============================================================================
@@ -1163,10 +1255,11 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 		}
 
 		// Handle Reasoning from reasoning_effort
-		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil) {
+		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil || cr.Params.Reasoning.Type != nil) {
 			brr.Params.Reasoning = &ResponsesParametersReasoning{
 				Effort:    cr.Params.Reasoning.Effort,
 				MaxTokens: cr.Params.Reasoning.MaxTokens,
+				Type:      cr.Params.Reasoning.Type,
 			}
 		}
 
@@ -1262,6 +1355,7 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 			bcr.Params.Reasoning = &ChatReasoning{
 				Effort:    brr.Params.Reasoning.Effort,
 				MaxTokens: brr.Params.Reasoning.MaxTokens,
+				Type:      brr.Params.Reasoning.Type,
 			}
 		}
 
@@ -1366,6 +1460,22 @@ func responsesStatusFromChatFinishReason(finishReason string) (status string, in
 	default:
 		return "", nil, false
 	}
+}
+
+// ResponsesStatusFromFinishReason maps a Bifrost finish reason to the Responses-API
+// status and incomplete_details. mapped is false for reasons with no Responses
+// equivalent, which should leave Status unset.
+func ResponsesStatusFromFinishReason(finishReason string) (status string, incompleteDetails *ResponsesResponseIncompleteDetails, mapped bool) {
+	return responsesStatusFromChatFinishReason(finishReason)
+}
+
+// MarkTruncatedOutputItem sets status "incomplete" on the last output item -- the one
+// being generated when the turn was cut short -- matching OpenAI's truncated-turn shape.
+func MarkTruncatedOutputItem(output []ResponsesMessage) {
+	if len(output) == 0 {
+		return
+	}
+	output[len(output)-1].Status = Ptr(ResponsesResponseStatusIncomplete)
 }
 
 func responsesStopReasonFromChatFinishReason(finishReason *string) *string {

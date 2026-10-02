@@ -97,8 +97,7 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 }
 
 // RoutingCallCost calculates the cost of one routing-classification call — a
-// semantic classification embed, or an llm classification completion when the
-// call carries OutputTokens. Exported (unlike the cache equivalent) so
+// semantic embed, LLM completion, or Jev decision. Exported so
 // telemetry can price each call independently and unconditionally, while
 // CalculateCost folds a call's cost into the request's cost only when that
 // call's CountTowardBudgets is set. If scopes is nil, an empty LookupScopes is
@@ -122,21 +121,20 @@ func (s *Store) RoutingCallCost(call schemas.BifrostRoutingCall, scopes *LookupS
 	// The classification call may use a different configured provider key, so
 	// do not let the parent request's key-specific override price this call.
 	lookupScopes.SelectedKeyID = ""
-	// Caller scopes carry the main request's provider; the classification ran
-	// against ProviderUsed, so provider-scoped overrides must key on it.
-	// The embedding can use a different provider from the main request, so its
-	// provider-scoped overrides must be resolved against the embedding provider.
+	// The classifier may use a different provider from the main request, so
+	// provider-scoped overrides must be resolved against ProviderUsed.
 	lookupScopes.Provider = *call.ProviderUsed
-	// A present OutputTokens marks the call as a chat completion (the llm
-	// classifier); an embedding call never carries one. The two price on
-	// different rate tables, so the request type must follow the call shape.
-	requestType := schemas.EmbeddingRequest
-	if call.OutputTokens != nil {
-		requestType = schemas.ChatCompletionRequest
+	// Older metadata infers chat versus embedding from token shape. New calls
+	// set RequestType explicitly when the provider uses another pricing mode.
+	requestType := call.RequestType
+	if requestType == "" {
+		requestType = schemas.EmbeddingRequest
+		if call.OutputTokens != nil {
+			requestType = schemas.ChatCompletionRequest
+		}
 	}
-	// Mirrors computeCacheEmbeddingCost: a single model identifier maps to
-	// RoutingInfo.Model — no alias resolution context exists for the internal
-	// classification call.
+	// Internal classification calls have no alias-resolution context, so
+	// RoutingInfo.Model is the model identifier used for pricing.
 	pricing := s.resolvePricing(schemas.RoutingInfo{
 		Provider: schemas.ModelProvider(*call.ProviderUsed),
 		Model:    *call.ModelUsed,
@@ -145,14 +143,21 @@ func (s *Store) RoutingCallCost(call schemas.BifrostRoutingCall, scopes *LookupS
 		return 0
 	}
 	usage := &schemas.BifrostLLMUsage{PromptTokens: *call.InputTokens}
+	if call.OutputTokens != nil {
+		usage.CompletionTokens = *call.OutputTokens
+	}
 	// The compute helpers return a per-category breakdown; a routing call is an
 	// internal sidecar with no category of its own, so only the total is kept.
 	var breakdown *schemas.BifrostCost
-	if requestType == schemas.EmbeddingRequest {
+	switch requestType {
+	case schemas.EmbeddingRequest:
 		breakdown = computeEmbeddingCost(pricing, usage, serviceTier{})
-	} else {
-		usage.CompletionTokens = *call.OutputTokens
+	case schemas.ChatCompletionRequest:
 		breakdown = computeTextCost(pricing, usage, serviceTier{})
+	case schemas.DecisionRequest:
+		breakdown = computeDecisionCost(pricing, usage, serviceTier{})
+	default:
+		return 0
 	}
 	var cost float64
 	if breakdown != nil {
@@ -375,6 +380,7 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 	}
 }
 
+// cloneFloat64Pointer returns an independent copy of value.
 func cloneFloat64Pointer(value *float64) *float64 {
 	if value == nil {
 		return nil
@@ -629,6 +635,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeEmbeddingCost(pricing, input.usage, input.tier)
 	case schemas.RerankRequest:
 		cost = computeRerankCost(pricing, input.usage, input.tier)
+	case schemas.DecisionRequest:
+		cost = computeDecisionCost(pricing, input.usage, input.tier)
 	case schemas.SpeechRequest:
 		cost = computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
 	case schemas.TranscriptionRequest:
@@ -725,6 +733,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	case result.RerankResponse != nil:
 		input.usage = result.RerankResponse.Usage
 
+	case result.DecisionResponse != nil && result.DecisionResponse.Usage != nil:
+		input.usage = result.DecisionResponse.Usage
+
 	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
 		input.usage = speechUsageToBifrostUsage(result.SpeechResponse.Usage)
 		input.audioTextInputChars = result.SpeechResponse.Usage.InputChars
@@ -809,6 +820,7 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	return input
 }
 
+// responsesUsageToBifrostUsage normalizes Responses API usage for shared pricing.
 func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.BifrostLLMUsage {
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     u.InputTokens,
@@ -837,9 +849,11 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 			usage.CompletionTokensDetails.NumSearchQueries = u.OutputTokensDetails.NumSearchQueries
 		}
 	}
+	usage.ToolUsage = u.ToolUsage
 	return usage
 }
 
+// speechUsageToBifrostUsage normalizes speech token usage for shared pricing.
 func speechUsageToBifrostUsage(u *schemas.SpeechUsage) *schemas.BifrostLLMUsage {
 	return &schemas.BifrostLLMUsage{
 		PromptTokens:     u.InputTokens,
@@ -848,6 +862,7 @@ func speechUsageToBifrostUsage(u *schemas.SpeechUsage) *schemas.BifrostLLMUsage 
 	}
 }
 
+// extractTranscriptionUsage normalizes transcription tokens and duration for pricing.
 func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostLLMUsage, *float64, *schemas.TranscriptionUsageInputTokenDetails) {
 	usage := &schemas.BifrostLLMUsage{}
 	if u.InputTokens != nil {
@@ -989,8 +1004,8 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 
 	// Search query cost (billed on the output side)
 	searchCost := 0.0
-	if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
-		searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
+	if pricing.WebSearchCostPerRequest != nil && usage.ToolUsage != nil && usage.ToolUsage.WebSearch != nil {
+		searchCost = float64(usage.ToolUsage.WebSearch.NumRequests) * *pricing.WebSearchCostPerRequest
 	}
 
 	// Data residency (Anthropic inference_geo:"us") scales all token/cache costs
@@ -1200,8 +1215,8 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
 		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
 
-		if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
-			searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
+		if pricing.WebSearchCostPerRequest != nil && usage.ToolUsage != nil && usage.ToolUsage.WebSearch != nil {
+			searchCost = float64(usage.ToolUsage.WebSearch.NumRequests) * *pricing.WebSearchCostPerRequest
 		}
 	}
 
@@ -1220,6 +1235,20 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 		outputDetails = &schemas.OutputCostDetails{TextCost: outputCost, SearchQueriesCost: searchCost}
 	}
 	return newInputOutputCostWithDetails(inputTokensCost, outputTokensCost, inputDetails, outputDetails)
+}
+
+// computeDecisionCost prices a decision request on token usage. Typesafe bills
+// input tokens only, so the output rate is normally zero, but both sides are
+// honored from the datasheet so a provider that later charges output stays
+// correct without a code change.
+func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
+	if usage == nil {
+		return nil
+	}
+	tierTokens := usage.PromptTokens
+	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
+	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
+	return newInputOutputCost(inputCost, outputCost)
 }
 
 // newInputOutputCost builds a BifrostCost from separate input and output costs,
@@ -1900,6 +1929,7 @@ func tieredAudioTokenOutputRate(pricing *configstoreTables.TableModelPricing, to
 	return tieredOutputRate(pricing, totalTokens, tier)
 }
 
+// tieredCacheReadInputTokenRate returns the configured cache-read rate for the request tier.
 func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
 	// Fast mode (Anthropic) is a flat rate across the full context window.
 	if tier.isFast && pricing.CacheReadInputTokenCostFast != nil {
@@ -1979,6 +2009,7 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 	return tieredInputRate(pricing, totalTokens, tier)
 }
 
+// tieredCacheCreationInputAbove1hrTokenRate returns the configured long-lived cache-write rate.
 func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
 	// Fast mode (Anthropic) is a flat rate across the full context window.
 	if tier.isFast && pricing.CacheCreationInputTokenCostAbove1hrFast != nil {
@@ -1993,6 +2024,7 @@ func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableM
 	return tieredCacheCreationInputTokenRate(pricing, totalTokens, tier)
 }
 
+// inputTierTokens returns prompt tokens used to select a pricing tier.
 func inputTierTokens(usage *schemas.BifrostLLMUsage) int {
 	if usage == nil {
 		return 0
@@ -2000,6 +2032,7 @@ func inputTierTokens(usage *schemas.BifrostLLMUsage) int {
 	return usage.PromptTokens
 }
 
+// imageInputTierTokens derives input tokens used to select an image pricing tier.
 func imageInputTierTokens(usage *schemas.ImageUsage) int {
 	if usage == nil {
 		return 0
@@ -2021,6 +2054,7 @@ func imageInputTierTokens(usage *schemas.ImageUsage) int {
 	return 0
 }
 
+// imageOutputTokens returns the reported text and image output tokens.
 func imageOutputTokens(usage *schemas.ImageUsage) int {
 	if usage == nil {
 		return 0

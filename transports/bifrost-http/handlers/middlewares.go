@@ -442,12 +442,14 @@ func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHT
 					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 					ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 					ctx.SetBodyString(err.Error())
+					_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 					return
 				}
 				if resp != nil {
 					// Short-circuit with response — drain plugin logs before returning
 					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 					applyHTTPResponseToCtx(ctx, resp)
+					_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 					return
 				}
 				// If we got here, the plugin may have modified req in-place
@@ -458,6 +460,7 @@ func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHT
 			// or path has already been failed with 409; running the rest of the chain would
 			// serve a response the transport just rejected.
 			if !applyHTTPRequestToCtx(ctx, req) {
+				_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 				return
 			}
 			// Adding user values so later middlewares, hooks and handlers observe anything
@@ -506,12 +509,14 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 					ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 					ctx.SetBodyString(err.Error())
+					_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 					return
 				}
 				if resp != nil {
 					// Short-circuit with response — drain plugin logs before returning
 					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 					applyHTTPResponseToCtx(ctx, resp)
+					_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 					return
 				}
 				// If we got here, the plugin may have modified req in-place
@@ -522,6 +527,7 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// or path has already been failed with 409; running the handler anyway would
 			// serve a response the transport just rejected.
 			if !applyHTTPRequestToCtx(ctx, req) {
+				_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 				return
 			}
 			// Adding user values
@@ -529,6 +535,15 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				ctx.SetUserValue(key, value)
 			}
 			next(ctx)
+
+			deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
+			if !deferred && len(plugins) > 0 {
+				_ = runTransportPostHooks(ctx, plugins, bifrostCtx, true)
+			}
+			// This is the last synchronous point before fasthttp serializes the response.
+			// Streaming handlers may already have attached a body reader, but no response
+			// headers are written to the connection until the middleware chain returns.
+			_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 
 			// For streaming responses, store a callback to run post-hooks after the stream ends.
 			// The streaming handler calls this BEFORE reader.Done() so that errors can
@@ -538,7 +553,7 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// IMPORTANT: The callback must NOT access ctx — fasthttp recycles RequestCtx
 			// after the response body stream completes. All needed data is eagerly captured
 			// here (while ctx is still valid) and passed through the closure.
-			if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
+			if deferred {
 				// Verify the completer slot exists before allocating pooled snapshots.
 				// The streaming handler pre-allocates this *atomic.Value; if absent,
 				// skip work to avoid leaking pooled HTTPRequest/HTTPResponse objects.
@@ -587,8 +602,95 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				return
 			}
 
-			_ = runTransportPostHooks(ctx, plugins, bifrostCtx, true)
 		}
+	}
+}
+
+// runTransportResponseHeadersHooks runs the pre-commit response-header
+// hooks in reverse plugin order and applies their mutations to the live fasthttp
+// response. The RequestCtx is only used synchronously while it is still owned by
+// the handler goroutine.
+func runTransportResponseHeadersHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTransportPlugin, bifrostCtx *schemas.BifrostContext, req *schemas.HTTPRequest) error {
+	if len(plugins) == 0 {
+		return nil
+	}
+
+	resp := schemas.AcquireHTTPResponseMetadata()
+	defer schemas.ReleaseHTTPResponseMetadata(resp)
+	// original is the pre-hook snapshot; only entries the hooks changed are written back.
+	original := schemas.AcquireHTTPResponseMetadata()
+	defer schemas.ReleaseHTTPResponseMetadata(original)
+	resp.StatusCode = ctx.Response.StatusCode()
+	for key, value := range ctx.Response.Header.All() {
+		resp.Headers[string(key)] = string(value)
+		original.Headers[string(key)] = string(value)
+	}
+
+	var hookErr error
+	for i := len(plugins) - 1; i >= 0; i-- {
+		plugin := plugins[i]
+		pluginName := plugin.GetName()
+		pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+		st, sh := startTransportPluginSpan(ctx, pluginName, "transportresponseheadershook")
+		err := plugin.HTTPTransportResponseHeadersHook(pluginCtx, req, resp)
+		endTransportPluginSpan(st, sh, err)
+		pluginCtx.ReleasePluginScope()
+		if err != nil {
+			logger.Warn("error in HTTPTransportResponseHeadersHook for plugin %s: %s", pluginName, err.Error())
+			hookErr = fmt.Errorf("transport response-headers hook plugin %s: %w", pluginName, err)
+			break
+		}
+	}
+
+	applyHTTPResponseMetadataToCtx(ctx, original, resp)
+	appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
+	return hookErr
+}
+
+// applyHTTPResponseMetadataToCtx applies only the additions, replacements, and
+// deletions made relative to original, so untouched repeated headers (Link,
+// Set-Cookie) keep every value. Framing headers stay transport-controlled.
+func applyHTTPResponseMetadataToCtx(ctx *fasthttp.RequestCtx, original, resp *schemas.HTTPResponseMetadata) {
+	if resp == nil {
+		return
+	}
+
+	for key := range original.Headers {
+		if isTransportControlledResponseHeader(key) {
+			continue
+		}
+		if !responseMetadataHasHeader(resp, key) {
+			ctx.Response.Header.Del(key)
+		}
+	}
+	for key, value := range resp.Headers {
+		if isTransportControlledResponseHeader(key) {
+			continue
+		}
+		if responseMetadataHasHeader(original, key) && original.Header(key) == value {
+			continue
+		}
+		// Del first: Set only replaces the first value of a repeated header.
+		ctx.Response.Header.Del(key)
+		ctx.Response.Header.Set(key, value)
+	}
+}
+
+func responseMetadataHasHeader(resp *schemas.HTTPResponseMetadata, key string) bool {
+	for candidate := range resp.Headers {
+		if strings.EqualFold(candidate, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTransportControlledResponseHeader(key string) bool {
+	switch strings.ToLower(key) {
+	case "content-length", "transfer-encoding", "connection":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -894,40 +996,36 @@ func isRealtimeTransportEndpoint(path string) bool {
 }
 
 func hasVirtualKeyCredential(ctx *fasthttp.RequestCtx) bool {
+	return virtualKeyFromHeaders(ctx) != ""
+}
+
+// virtualKeyFromHeaders is the virtual key the request presents in a header, or
+// "" when it presents none.
+func virtualKeyFromHeaders(ctx *fasthttp.RequestCtx) string {
 	// x-bf-vk mirrors the canonical VK parser (lib.ConvertToBifrostContext): any
 	// non-empty value is accepted, no sk-bf- prefix required — the header itself
 	// is the signal, not the value shape.
 	if vkHeader := strings.TrimSpace(string(ctx.Request.Header.Peek(string(schemas.BifrostContextKeyVirtualKey)))); vkHeader != "" {
-		return true
+		return vkHeader
 	}
 
 	authHeader := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization")))
 	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
 		token := strings.TrimSpace(authHeader[7:])
 		if token != "" && strings.HasPrefix(strings.ToLower(token), governance.VirtualKeyPrefix) {
-			return true
+			return token
 		}
 	}
 
-	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key"))); apiKey != "" {
-		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
-			return true
+	for _, header := range []string{"x-api-key", "x-goog-api-key", "api-key"} {
+		if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek(header))); apiKey != "" {
+			if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
+				return apiKey
+			}
 		}
 	}
 
-	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key"))); apiKey != "" {
-		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
-			return true
-		}
-	}
-
-	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("api-key"))); apiKey != "" {
-		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
-			return true
-		}
-	}
-
-	return false
+	return ""
 }
 
 // AuthMiddleware is a middleware that handles authentication for the API.
@@ -1043,32 +1141,64 @@ func (m *AuthMiddleware) UpdateTempTokenAuthEnabled(enabled bool) {
 	m.tempTokensEnabled.Store(enabled)
 }
 
+// 401 codes for the temp-token fallback. Only sent to a caller that presented a
+// token, so other routes leak nothing about this instance's config.
+const (
+	TempTokenAuthDisabledCode = "temp_token_auth_disabled"
+	TempTokenRejectedCode     = "temp_token_rejected"
+)
+
 // tryTempTokenOrUnauthorized is the last-resort auth path: a request that
 // failed every conventional credential check (no Authorization header, no
 // valid cookie) is given one more chance to present an X-Bifrost-Temp-Token
 // header that authorizes the specific (method, path) being requested. On
 // success the validated scope and resource_id are attached to ctx for
 // handler-side defense-in-depth checks, and the next handler runs. On
-// failure (no header, expired, route-mismatch, etc.) a 401 is written.
+// failure (no header, expired, route-mismatch, etc.) a 401 is written, carrying
+// one of the codes above when a token was presented.
 //
 // Temp-token validation is intentionally *not* attempted when an
 // Authorization header or session cookie is present — those paths have
 // their own success/failure semantics and silently rescuing a bad password
 // with a temp token would be surprising.
 func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, next fasthttp.RequestHandler) {
-	if m.tempTokensService != nil && m.tempTokensEnabled.Load() {
-		token := string(ctx.Request.Header.Peek("X-Bifrost-Temp-Token"))
-		if token != "" {
-			validated, err := m.tempTokensService.Validate(ctx, token, string(ctx.Method()), string(ctx.Path()))
-			if err == nil && validated != nil {
-				ctx.SetUserValue(schemas.BifrostContextKeyTempTokenScope, validated.Scope)
-				ctx.SetUserValue(schemas.BifrostContextKeyTempTokenResourceID, validated.ResourceID)
-				next(ctx)
-				return
-			}
-		}
+	token := ""
+	if m.tempTokensService != nil {
+		token = string(ctx.Request.Header.Peek("X-Bifrost-Temp-Token"))
 	}
-	SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+	if token == "" {
+		SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+		return
+	}
+	if !m.tempTokensEnabled.Load() {
+		sendUnauthorizedWithCode(ctx, TempTokenAuthDisabledCode, "temp token auth is disabled on this instance")
+		return
+	}
+	// Scope authorization must use the same raw path as router dispatch.
+	// A normalized path can name an allowed flow while the router selects
+	// a protected management handler through an encoded path parameter.
+	validated, err := m.tempTokensService.Validate(ctx, token, string(ctx.Method()), string(ctx.Request.URI().PathOriginal()))
+	if err == nil && validated != nil {
+		ctx.SetUserValue(schemas.BifrostContextKeyTempTokenScope, validated.Scope)
+		ctx.SetUserValue(schemas.BifrostContextKeyTempTokenResourceID, validated.ResourceID)
+		next(ctx)
+		return
+	}
+	// Expired, unknown and out-of-scope are one answer to the caller.
+	sendUnauthorizedWithCode(ctx, TempTokenRejectedCode, "Unauthorized")
+}
+
+// sendUnauthorizedWithCode writes a 401 carrying a machine-readable code.
+func sendUnauthorizedWithCode(ctx *fasthttp.RequestCtx, code, message string) {
+	status := fasthttp.StatusUnauthorized
+	SendBifrostError(ctx, &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     &status,
+		Error: &schemas.ErrorField{
+			Code:    &code,
+			Message: message,
+		},
+	})
 }
 
 // InferenceMiddleware is for inference requests (including MCP routes). It always
@@ -1187,8 +1317,18 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				next(ctx)
 				return
 			}
-			// Match the whitelist against the path only
-			url := string(ctx.Path())
+			// Match the whitelist against the RAW request path (PathOriginal), not the
+			// decoded/normalized ctx.Path(). fasthttp/router dispatches routes by matching
+			// PathOriginal() directly against registered patterns (it never decodes %2F or
+			// collapses ".." before route selection - see router.Handler), so an encoded
+			// traversal like "/api/providers/..%2Fskills%2Fserve%2Fx" is ONE opaque segment
+			// to the router (matching the protected "/api/providers/{provider}" route) but
+			// decodes+normalizes to "/api/skills/serve/x" via ctx.Path() - a whitelisted
+			// prefix. Matching on ctx.Path() here let that request sail through unauthenticated
+			// while the router dispatched it to a protected, parameterized admin handler.
+			// Using the same raw string the router uses keeps this decision congruent with
+			// router dispatch for every route, not just the specific one in a given PoC.
+			url := string(ctx.Request.URI().PathOriginal())
 			// We skip authorization for the login route
 			if shouldSkip(authConfig, url) {
 				next(ctx)
@@ -1417,6 +1557,20 @@ func (m *TracingMiddleware) SetTracer(tracer *tracing.Tracer) {
 }
 
 // Middleware returns the middleware function that creates distributed traces for requests and forwards completed traces
+// Anything outside the semconv set maps to _OTHER so a junk method cannot inflate cardinality.
+var knownHTTPMethods = map[string]struct{}{
+	"CONNECT": {}, "DELETE": {}, "GET": {}, "HEAD": {}, "OPTIONS": {},
+	"PATCH": {}, "POST": {}, "PUT": {}, "TRACE": {},
+}
+
+// Returns the semconv method, plus the original when it is not a known one.
+func normalizeHTTPMethod(method string) (string, string) {
+	if _, ok := knownHTTPMethods[method]; ok {
+		return method, ""
+	}
+	return "_OTHER", method
+}
+
 func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
@@ -1508,7 +1662,7 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				tracer.ForceCleanupStreamAccumulator(traceID)
 			})
 			// Create root span for the HTTP request
-			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)
+			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.URI().Path()), schemas.SpanKindHTTPRequest)
 			if rootSpan != nil {
 				for name, value := range dimensions {
 					// "path" and "method" stay reserved for the standard http.* attributes.
@@ -1516,9 +1670,27 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 						tracer.SetAttribute(rootSpan, name, value)
 					}
 				}
-				tracer.SetAttribute(rootSpan, "http.method", string(ctx.Method()))
-				tracer.SetAttribute(rootSpan, "http.url", string(ctx.RequestURI()))
-				tracer.SetAttribute(rootSpan, "http.user_agent", string(ctx.Request.Header.UserAgent()))
+				rawMethod := string(ctx.Method())
+				userAgent := string(ctx.Request.Header.UserAgent())
+				path := string(ctx.URI().Path())
+				// The query string is dropped, not redacted: it can carry session
+				// credentials and nothing downstream needs it.
+				scheme := "http"
+				if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+					scheme = "https"
+				}
+				method, originalMethod := normalizeHTTPMethod(rawMethod)
+				tracer.SetAttribute(rootSpan, "http.request.method", method)
+				if originalMethod != "" {
+					tracer.SetAttribute(rootSpan, "http.request.method_original", originalMethod)
+				}
+				tracer.SetAttribute(rootSpan, "url.scheme", scheme)
+				tracer.SetAttribute(rootSpan, "url.path", path)
+				tracer.SetAttribute(rootSpan, "user_agent.original", userAgent)
+				// Deprecated equivalents, kept so existing dashboards keep working.
+				tracer.SetAttribute(rootSpan, "http.method", rawMethod)
+				tracer.SetAttribute(rootSpan, "http.url", path)
+				tracer.SetAttribute(rootSpan, "http.user_agent", userAgent)
 				// Set root span ID in context for child span creation
 				if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
 					ctx.SetUserValue(schemas.BifrostContextKeySpanID, spanID)
@@ -1543,7 +1715,12 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
 				// Record response status on the root span
 				if rootSpan != nil {
+					tracer.SetAttribute(rootSpan, schemas.AttrHTTPResponseStatusCode, ctx.Response.StatusCode())
 					tracer.SetAttribute(rootSpan, "http.status_code", ctx.Response.StatusCode())
+					// The router resolves the route template only once it dispatches.
+					if route, ok := ctx.UserValue(string(schemas.BifrostContextKeyHTTPRoute)).(string); ok && route != "" {
+						tracer.SetAttribute(rootSpan, "http.route", route)
+					}
 					// For deferred (streaming) requests, the trace completer ends the root
 					// span after the stream fully drains, so its latency reflects the whole
 					// streamed response. Ending it here (at handler return) would close the

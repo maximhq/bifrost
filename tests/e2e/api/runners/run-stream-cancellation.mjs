@@ -38,7 +38,12 @@ const nonStreamAbortMs = Number(args["nonstream-abort-ms"] || 300);
 // finished result to the caller through a select between a send into a cap-1 channel
 // and ctx.Done(); with the caller gone both are ready and Go picks at random, so a
 // single trial let a 50% race pass about half the time (#6972). Six trials miss such
-// a race with probability 2^-6 per provider.
+// a race with probability 2^-6 per provider. The same trials also guard #7308 (a
+// claimed delivery discarded on that coin flip, stranding the committed caller and
+// leaving the row in `processing` forever); that window additionally needs the
+// worker to win the claim race, so its per-trial catch rate is lower - a clean run
+// here is necessary but not sufficient, and the deterministic pin lives in
+// core/abandonedstream_test.go.
 const parsedNonStreamTrials = Number(args["nonstream-trials"] || 6);
 if (!Number.isSafeInteger(parsedNonStreamTrials) || parsedNonStreamTrials < 1) {
   // A bare `--nonstream-trials` parses as "true" and Number("true") is NaN, which
@@ -574,7 +579,35 @@ if (skipCostCheck) {
           r.costCheck = "SKIP";
           continue;
         }
-        const row = await pollLogRow(db, r.requestId);
+        let row = await pollLogRow(db, r.requestId);
+        // Raced to completion: a success row WITH terminal usage means the upstream
+        // stream finished before the abort was observed - Gemini-family usage only
+        // arrives in the terminal chunk, so the provider generated and billed the
+        // full response and success is the honest log for that attempt (seen live
+        // on vertex/gemini-2.5-flash 2026-09-18: 325 completion tokens, whole tail
+        // in one burst, no SSE write left to fail). Retry the abort; a real
+        // disconnect-handling regression logs success on every attempt. A success
+        // row WITHOUT usage stays an immediate FAIL - that would be a mislabel,
+        // not a lost race.
+        let racedRetries = 0;
+        while (
+          row &&
+          row.status === "success" &&
+          Number(row.total_tokens) > 0 &&
+          racedRetries < 2
+        ) {
+          racedRetries++;
+          const rerun = await runCase({
+            provider: r.provider,
+            name: r.name,
+            path: r.path,
+            body: r.body,
+          });
+          if (!(rerun.ok && rerun.aborted && rerun.requestId)) break;
+          r.requestId = rerun.requestId;
+          row = await pollLogRow(db, rerun.requestId);
+        }
+        if (racedRetries > 0) r.racedToCompletionRetries = racedRetries;
         if (!row) {
           r.costCheck = "FAIL";
           r.costDetail = `no log row for ${r.requestId}`;

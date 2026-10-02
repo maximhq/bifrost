@@ -18,6 +18,27 @@ func testResponsesAccumulator(tb testing.TB) *Accumulator {
 	return acc
 }
 
+func TestDeepCopyResponsesMessageCopiesStructuredErrorPointers(t *testing.T) {
+	original := schemas.ResponsesMessage{ResponsesToolMessage: &schemas.ResponsesToolMessage{Error: &schemas.ResponsesToolMessageError{
+		ResponsesToolMessageErrorStruct: &schemas.ResponsesToolMessageErrorStruct{
+			Type: "http_error", Code: schemas.Ptr(502), Message: schemas.Ptr("upstream failed"),
+		},
+	}}}
+
+	copied := deepCopyResponsesMessage(original)
+	originalError := original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+	copiedError := copied.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+	require.NotNil(t, copiedError)
+	require.NotSame(t, originalError, copiedError)
+	require.NotSame(t, originalError.Code, copiedError.Code)
+	require.NotSame(t, originalError.Message, copiedError.Message)
+
+	*copiedError.Code = 503
+	*copiedError.Message = "changed"
+	require.Equal(t, 502, *originalError.Code)
+	require.Equal(t, "upstream failed", *originalError.Message)
+}
+
 func TestAccumulatedResponsesStreamPreservesServiceTierBeforeUsageOnlyChunk(t *testing.T) {
 	acc := testResponsesAccumulator(t)
 	requestID := "responses-service-tier"
@@ -152,6 +173,25 @@ func TestDeepCopyResponsesStreamResponseCopiesToolCaller(t *testing.T) {
 	if copied.Item.ResponsesToolMessage.Caller.ToolID == original.Item.ResponsesToolMessage.Caller.ToolID {
 		t.Fatal("caller tool id pointer was aliased")
 	}
+}
+
+func TestDeepCopyResponsesStreamResponseCopiesAsync(t *testing.T) {
+	original := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+		Item: &schemas.ResponsesMessage{
+			ID:   schemas.Ptr("fc_1"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"),
+				Async:  new(true),
+			},
+		},
+	}
+
+	copied := deepCopyResponsesStreamResponse(original)
+	require.NotNil(t, copied.Item.ResponsesToolMessage.Async)
+	require.True(t, *copied.Item.ResponsesToolMessage.Async)
+	require.NotSame(t, original.Item.ResponsesToolMessage.Async, copied.Item.ResponsesToolMessage.Async)
 }
 
 // TestBuildResponsesMessageAccumulatesReasoningSummary verifies reasoning
@@ -534,4 +574,51 @@ func TestBuildResponsesMessageItemDoneKeepsStreamedText(t *testing.T) {
 	require.Len(t, msgs[0].Content.ContentBlocks, 1)
 	require.NotNil(t, msgs[0].Content.ContentBlocks[0].Text)
 	require.Equal(t, "hello world", *msgs[0].Content.ContentBlocks[0].Text)
+}
+
+// Only output_item.done carries a custom_tool_call's `input`, so the accumulator
+// must take that item wholesale.
+func TestBuildResponsesMessagePreservesCustomToolCallInput(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	const input = `{"cmd":"whoami","max_output_tokens":1000}`
+
+	shell := schemas.ResponsesMessage{
+		ID:   schemas.Ptr("ctc_1"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Name:   schemas.Ptr("exec_command"),
+		},
+	}
+	complete := shell
+	complete.ResponsesToolMessage = &schemas.ResponsesToolMessage{
+		CallID:                  schemas.Ptr("call_1"),
+		Name:                    schemas.Ptr("exec_command"),
+		ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: input},
+	}
+
+	chunks := []*ResponsesStreamChunk{
+		{ChunkIndex: 0, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &shell}},
+		{ChunkIndex: 1, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeCustomToolCallInputDelta,
+			ItemID: schemas.Ptr("ctc_1"), Delta: schemas.Ptr(`{"cmd":"who`)}},
+		{ChunkIndex: 2, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeCustomToolCallInputDone,
+			ItemID: schemas.Ptr("ctc_1"), Input: schemas.Ptr(input)}},
+		{ChunkIndex: 3, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: &complete}},
+	}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 message, got %d: %+v", len(msgs), msgs)
+	}
+	tm := msgs[0].ResponsesToolMessage
+	if tm == nil || tm.ResponsesCustomToolCall == nil {
+		t.Fatalf("custom tool call lost: %+v", msgs[0])
+	}
+	if tm.ResponsesCustomToolCall.Input != input {
+		t.Fatalf("input = %q, want %q", tm.ResponsesCustomToolCall.Input, input)
+	}
 }

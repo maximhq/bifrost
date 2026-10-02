@@ -550,7 +550,8 @@ func TestListModels_MarksDeprecatedModelsWithoutFiltering(t *testing.T) {
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
-	ctx.Request.SetRequestURI("/api/models?provider=openai&limit=10")
+	// Searched, because an unsearched listing drops deprecated models outright.
+	ctx.Request.SetRequestURI("/api/models?provider=openai&query=model&limit=10")
 
 	h.listModels(ctx)
 
@@ -564,7 +565,7 @@ func TestListModels_MarksDeprecatedModelsWithoutFiltering(t *testing.T) {
 	}
 
 	if resp.Total != 3 {
-		t.Fatalf("expected total=3 (deprecated models are not filtered), got %d", resp.Total)
+		t.Fatalf("expected total=3 (a search does not filter deprecated models), got %d", resp.Total)
 	}
 	var deprecated *ModelResponse
 	for i := range resp.Models {
@@ -1436,6 +1437,63 @@ func accessForProviderPermits(permits ...schemas.ProviderPermit) schemas.Access 
 	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
 }
 
+// accessAllowingAllProviders builds the access a caller permitted every provider carries, the way
+// the governance store builds it: the providers its configs do not name are materialised onto the
+// permit, so the permit carries its whole grant and every consumer reads one list.
+func accessAllowingAllProviders(configured []string, permits ...schemas.ProviderPermit) schemas.Access {
+	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-test", "Test VK", true, false,
+		governanceplugin.AppendAllProviderPermits(permits, configured), nil,
+		grant.WithAllowAllProviders(true))
+	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+}
+
+// A caller permitted every provider is listed every provider, including ones it holds no provider
+// permit for. Narrowing to the permits it happens to hold would make the listing refuse what the
+// request path admits.
+func TestListModels_VKFilterListsProviderAllowedOnlyByAllowAll(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI:    {Keys: []schemas.Key{{ID: "key-a"}}},
+				schemas.Anthropic: {Keys: []schemas.Key{{ID: "key-b"}}},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI:    {"gpt-4o"},
+				schemas.Anthropic: {"claude-haiku-4-5"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:       100,
+		HasVKFilter: true,
+		Access: accessAllowingAllProviders(
+			[]string{string(schemas.OpenAI), string(schemas.Anthropic)},
+			schemas.ProviderPermit{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
+		),
+	}
+	if !query.Access.IsProviderAllowed(string(schemas.Anthropic)) {
+		t.Fatal("control failed: allow-all must permit a provider it holds no permit for")
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := map[string]bool{}
+	for _, m := range models {
+		names[m.Name] = true
+	}
+	if total != 2 || !names["gpt-4o"] || !names["claude-haiku-4-5"] {
+		t.Fatalf("expected both providers listed, got total=%d models=%#v", total, models)
+	}
+}
+
 // A blacklisted model is not listed. The listing answers the same question a request does, so a
 // model the caller would be refused is not advertised to them as available.
 func TestListModels_VKFilterHidesBlacklistedModel(t *testing.T) {
@@ -1953,4 +2011,127 @@ func TestListModels_KeyBlacklistIsCaseInsensitive(t *testing.T) {
 			t.Fatalf("gpt-3.5-turbo should be blocked by blacklist, got %v", resp.Models)
 		}
 	}
+}
+
+func TestListModels_UnsearchedListingOmitsDeprecatedModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"old-a", "old-b", "current-a", "current-b"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
+		"old-b": {"provider":"openai","mode":"chat","base_model":"old-b","is_deprecated":true},
+		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"},
+		"current-b": {"provider":"openai","mode":"chat","base_model":"current-b"}
+	}`))
+
+	resp := listModelsForTest(t, h, "/api/models?provider=openai&limit=10")
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2 (deprecated models dropped), got %d", resp.Total)
+	}
+	for _, model := range resp.Models {
+		if model.IsDeprecated {
+			t.Fatalf("unsearched listing should hold no deprecated models, got %#v", resp.Models)
+		}
+	}
+}
+
+func TestListModels_SearchIncludesDeprecatedModelsBelowLiveOnes(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	// The deprecated models sort first by name, so an unordered listing would lead with them.
+	models := []string{"gpt-old-a", "gpt-old-b", "gpt-zed"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"gpt-old-a": {"provider":"openai","mode":"chat","base_model":"gpt-old-a","is_deprecated":true},
+		"gpt-old-b": {"provider":"openai","mode":"chat","base_model":"gpt-old-b","is_deprecated":true},
+		"gpt-zed": {"provider":"openai","mode":"chat","base_model":"gpt-zed"}
+	}`))
+
+	resp := listModelsForTest(t, h, "/api/models?provider=openai&query=gpt&limit=10")
+
+	if resp.Total != 3 {
+		t.Fatalf("expected total=3 (a search keeps deprecated models), got %d", resp.Total)
+	}
+	if len(resp.Models) != 3 {
+		t.Fatalf("expected 3 models, got %#v", resp.Models)
+	}
+	if resp.Models[0].Name != "gpt-zed" {
+		t.Fatalf("expected the live model first, got %#v", resp.Models)
+	}
+	if !resp.Models[1].IsDeprecated || !resp.Models[2].IsDeprecated {
+		t.Fatalf("expected the deprecated models to sink to the end, got %#v", resp.Models)
+	}
+}
+
+func TestListModels_IncludeDeprecatedOptsOutOfHiding(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"old-a", "current-a"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
+		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"}
+	}`))
+
+	resp := listModelsForTest(t, h, "/api/models?provider=openai&limit=10&include_deprecated=true")
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2 with include_deprecated=true, got %d", resp.Total)
+	}
+	if resp.Models[0].Name != "current-a" || !resp.Models[1].IsDeprecated {
+		t.Fatalf("expected the deprecated model kept but sunk, got %#v", resp.Models)
+	}
+}
+
+func TestListModelDetails_KeepsDeprecatedModelsWhenUnsearched(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"old-a", "current-a"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
+		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"}
+	}`))
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models/details?provider=openai&limit=10")
+
+	h.listModelDetails(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelDetailsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// The model catalog is an inventory, not a picker: it lists what exists, deprecated included.
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2, got %d", resp.Total)
+	}
+}
+
+func listModelsForTest(t *testing.T, h *ProviderHandler, uri string) ListModelsResponse {
+	t.Helper()
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI(uri)
+
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	return resp
 }

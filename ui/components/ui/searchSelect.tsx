@@ -1,4 +1,4 @@
-import { Command as CommandPrimitive } from "cmdk";
+import { Command as CommandPrimitive, defaultFilter } from "cmdk";
 import { Loader2, Plus, SearchIcon } from "lucide-react";
 import * as React from "react";
 
@@ -43,6 +43,8 @@ interface SearchSelectSyncProps<T extends SearchSelectOption = SearchSelectOptio
 	isLoading?: never;
 	isError?: never;
 	errorMessage?: never;
+	loadMoreErrorMessage?: never;
+	onRetry?: never;
 }
 
 interface SearchSelectAsyncProps<T extends SearchSelectOption = SearchSelectOption> extends SearchSelectBaseProps<T> {
@@ -52,9 +54,21 @@ interface SearchSelectAsyncProps<T extends SearchSelectOption = SearchSelectOpti
 	isLoading?: boolean;
 	isError?: boolean;
 	errorMessage?: string;
+	/** Shown under the options when a later page failed, so the rows already loaded stay visible. */
+	loadMoreErrorMessage?: string;
+	/** Retries the failed request from the error row. */
+	onRetry?: () => void;
 }
 
 type SearchSelectProps<T extends SearchSelectOption = SearchSelectOption> = SearchSelectSyncProps<T> | SearchSelectAsyncProps<T>;
+
+function RetryButton({ onRetry }: { onRetry: () => void }) {
+	return (
+		<button type="button" className="text-foreground ml-2 underline underline-offset-2" onClick={onRetry} data-testid="search-select-retry">
+			Retry
+		</button>
+	);
+}
 
 function DefaultEntryView({ option }: { option: SearchSelectOption }) {
 	return (
@@ -66,6 +80,11 @@ function DefaultEntryView({ option }: { option: SearchSelectOption }) {
 			<Plus className="ml-auto h-3.5 w-3.5" />
 		</>
 	);
+}
+
+// Item values are ids, so sync filtering has to score the label and description.
+function filterByText(_value: string, search: string, keywords?: string[]) {
+	return (keywords ?? []).reduce((best, keyword) => Math.max(best, defaultFilter(keyword, search)), 0);
 }
 
 function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: SearchSelectProps<T>) {
@@ -95,6 +114,8 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 	const isLoading = isAsync ? (props.isLoading ?? false) : false;
 	const isError = isAsync ? (props.isError ?? false) : false;
 	const errorMessage = isAsync ? (props.errorMessage ?? "Failed to load.") : "";
+	const loadMoreErrorMessage = isAsync ? props.loadMoreErrorMessage : undefined;
+	const onRetry = isAsync ? props.onRetry : undefined;
 
 	const [internalOpen, setInternalOpen] = React.useState(false);
 	const [search, setSearch] = React.useState("");
@@ -179,7 +200,7 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 				noPortal={noPortal}
 				onOpenAutoFocus={(e) => e.preventDefault()}
 			>
-				<CommandPrimitive filter={isAsync ? () => 1 : undefined}>
+				<CommandPrimitive filter={isAsync ? () => 1 : filterByText}>
 					<div data-slot="search-select-input" className="flex items-center gap-2 border-b px-3">
 						{isSearching ? (
 							<Loader2 className="size-4 shrink-0 animate-spin opacity-50" />
@@ -212,14 +233,19 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 								))}
 							</div>
 						) : isError ? (
-							<div className="text-destructive py-6 text-center text-sm">{errorMessage}</div>
+							<div className="text-destructive py-6 text-center text-sm">
+								{errorMessage}
+								{onRetry && <RetryButton onRetry={onRetry} />}
+							</div>
 						) : (
 							<>
 								<CommandPrimitive.Empty className="text-muted-foreground py-6 text-center text-sm">{emptyMessage}</CommandPrimitive.Empty>
 								{options.map((option) => (
 									<CommandPrimitive.Item
 										key={option.value}
-										value={option.label}
+										// Keyed by value: cmdk treats equal item values as one row, so options sharing a label would highlight together.
+										value={option.value}
+										keywords={option.description ? [option.label, option.description] : [option.label]}
 										disabled={option.disabled}
 										onSelect={() => onValueSelect(option)}
 										className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50"
@@ -230,6 +256,12 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 								{isLoadingMore && (
 									<div className="flex justify-center py-2">
 										<Loader2 className="size-4 animate-spin opacity-50" />
+									</div>
+								)}
+								{!isLoadingMore && loadMoreErrorMessage && (
+									<div className="text-destructive py-2 text-center text-sm" data-testid="search-select-load-more-error">
+										{loadMoreErrorMessage}
+										{onRetry && <RetryButton onRetry={onRetry} />}
 									</div>
 								)}
 							</>

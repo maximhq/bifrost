@@ -234,7 +234,7 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) |
 | `bifrost_overhead_component_microseconds` | Histogram | That same overhead broken down by internal component via the `overhead_component` label. Opt-in, and populated only when tracing is active — see [Overhead Breakdown](#overhead-breakdown) |
 | `bifrost_success_requests_total` | Counter | Successful provider requests |
-| `bifrost_error_requests_total` | Counter | Failed requests, by raw `status_code` and normalized `error_type` — see [Error Types](#error-types) |
+| `bifrost_error_requests_total` | Counter | Failed requests, by effective `status_code` and normalized `error_type` — see [Error Types](#error-types) |
 | `bifrost_input_tokens_total` | Counter | Total input tokens processed |
 | `bifrost_output_tokens_total` | Counter | Total output tokens generated |
 | `bifrost_cost_total` | Counter | Total cost in USD |
@@ -242,15 +242,21 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token (streaming) |
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency (streaming) |
 | `bifrost_active_requests` | Gauge | LLM requests currently in-flight (labeled by `method` only) |
-| `bifrost_provider_key_up` | Gauge | Per-key health. `1` after a successful attempt, `0` after a failed attempt. Labels: `provider`, `key_id`, `key_name`. |
-| `bifrost_key_rotation_events_total` | Counter | Key rotations triggered by per-key failures — rate-limit (429), auth (401/403), or billing (402) — see below <sup>v1.5.0-prerelease4+</sup> |
+| `bifrost_provider_key_up` | Gauge | Per-key health. `1` after a successful attempt, `0` after a failed attempt, except a failure that says nothing about the key's health (`model_access`, `model_gone`, `region_blocked`), which leaves it unchanged. Labels: `provider`, `key_id`, `key_name`. |
+| `bifrost_key_rotation_events_total` | Counter | Key rotations triggered by per-key failures (rate limit, rejected credential, exhausted quota, model this key cannot reach, retired model, region block), see below <sup>v1.5.0-prerelease4+</sup> |
 | `bifrost_request_retries` | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). |
 | `bifrost_routing_embedding_requests_total` | Counter | Embedding calls made by semantic complexity routing. Labels: `provider`, `model` (the embedding provider/model, not the request's), `phase` (`request` classification vs `warmup` exemplar embedding). |
 | `bifrost_routing_embedding_cost_total` | Counter | Cost in USD of semantic routing embeddings (same labels as above). Recorded regardless of whether embedding usage counts toward budgets. |
+| `bifrost_routing_llm_requests_total` | Counter | Chat completions made by the semantic router's LLM fallback. Labels: `provider`, `model`. |
+| `bifrost_routing_llm_cost_total` | Counter | Cost in USD of those LLM fallback completions (same labels as above). Recorded regardless of whether usage counts toward budgets. |
 
 ### Error Types
 
-`bifrost_error_requests_total` carries two error dimensions. `status_code` is the raw fact. `error_type` is the normalized interpretation: a closed, low-cardinality vocabulary that answers **whose fault was it**, which is what alarms actually need.
+`bifrost_error_requests_total` carries two error dimensions. `status_code` is the status the failure resolves to — the caller's status over HTTP, including the 500s Bifrost raises internally, but not for an error delivered inside an already-committed stream, where the caller saw a 200 and the error arrived in the event body. `error_type` is the normalized interpretation: a closed, low-cardinality vocabulary that answers **whose fault was it**, which is what alarms actually need.
+
+<Note>
+Before Bifrost 2.2.2, a failure Bifrost raised itself — a request-conversion error, or an empty or unparseable provider response — carried no status of its own and was labelled `status_code="unknown"`, even though the caller received a 500. 5xx dashboards and alerts under-counted these. They are now labelled `status_code="500"`; repoint anything keyed on `status_code="unknown"`, which is no longer emitted on this path.
+</Note>
 
 Values are prefixed by fault domain, so a success-rate alarm that should ignore caller mistakes is one clause rather than a list of reasons that grows over time:
 
@@ -388,34 +394,63 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `model` - Model identifier
 - `alias` - Alias resolved to this model (empty if none)
 - `method` - Request type (chat, completion, embedding, etc.)
+- `app` - Calling client classified from the User-Agent (`Claude Code`, `Cursor`, `Codex CLI`, `Cline`, `Windsurf`, ..., `API`, or `Other`); empty when no User-Agent was sent
 - `virtual_key_id` / `virtual_key_name` - Virtual key identifiers
 - `routing_engine_used` - Comma-separated list of routing engines that contributed to the decision (e.g. `governance`, `routing-rule`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — fallback transitions or retry transitions.
 - `routing_rule_id` / `routing_rule_name` - Routing rule that matched the request
 - `complexity_tier` - Complexity tier used for routing (`SIMPLE` / `MEDIUM` / `COMPLEX`); empty when no routing rule referenced `complexity_tier`
-- `complexity_mechanism` - How the effective complexity tier was determined (`semantic`, `llm`, `session`, or `skipped` when no tier was produced). The raw complexity score is deliberately not a label because it has unbounded cardinality; it remains available in request logs and trace attributes
+- `complexity_mechanism` - How the effective complexity tier was determined (`semantic`, `jev`, `llm`, `session`, or `skipped` when no tier was produced). Semantic similarity is not a label because it has unbounded cardinality; it remains available in request logs and trace attributes. Jev confidence is recorded in the routing decision log
 - `selected_key_id` / `selected_key_name` - API key that successfully served the request (`""` when all attempts failed)
 - `fallback_index` - Fallback position
 - `team_id` / `team_name` - Team identifiers (empty when governance is not used)
 - `customer_id` / `customer_name` - Customer identifiers (empty when governance is not used)
 - `project_id` / `project_name` - Project the request was scoped to (empty when the request named no project). A request is scoped to at most one project, so these stay singular where team and customer identifiers can fan out
 
+`user_id` / `user_name` are **not** included by default — see [User Labels](#user-labels).
+
 <Note>
   **v1.5.0-prerelease4+**: `selected_key_id` / `selected_key_name` are only populated when the request succeeds. On final errors both are empty — use the `attempt_trail` log field to see which keys were tried.
 </Note>
 
+### User Labels
+
+`user_id` and `user_name` identify the end user a request was made on behalf of. They are available on every other observability surface — BigQuery columns, Splunk event fields, Datadog tags, span attributes — but are **off by default** on Prometheus metrics.
+
+Enable them with the telemetry plugin's `user_labels_enabled` config field, or toggle **User labels** on the pull-based tab of the **Observability → Prometheus** page in the UI.
+
+```json
+{
+  "plugins": [
+    {
+      "name": "telemetry",
+      "enabled": true,
+      "config": {
+        "user_labels_enabled": true
+      }
+    }
+  ]
+}
+```
+
+<Note>
+  Values are populated by the enterprise auth middleware that resolves the calling user. On an OSS build with no user resolution, the labels are present but empty.
+</Note>
+
 ### Key Rotation Events <sup>v1.5.0-prerelease4+</sup>
 
-`bifrost_key_rotation_events_total` is incremented once per **actual key rotation** — i.e. when a per-key failure causes the next retry to switch to a different key. Rotation-triggering failures are bound to the specific key/account rather than the request:
+`bifrost_key_rotation_events_total` is incremented once per **actual key rotation**, i.e. when a per-key failure causes the next attempt to switch to a different key. Rotation-triggering failures are bound to the specific key/account rather than the request (see [how failures are classified](/features/retries-and-fallbacks#how-failures-are-classified)):
 
-- `429 Too Many Requests` — this key is rate-limited; another may have capacity.
-- `401 Unauthorized` / `403 Forbidden` — bad / revoked key, or key lacks permission.
-- `402 Payment Required` — billing issue on this key's account.
+- `rate_limit`: this key is rate-limited; another may have capacity.
+- `credential`: bad / revoked key, or key lacks permission.
+- `quota`: the account behind the key is out of credit or over a spend cap.
+- `model_access` / `model_gone`: this key cannot reach the model, or the model was retired; another key may still serve it.
+- `region_blocked`: the provider refuses the request's location. Gemini refuses a free-tier project where a billed project is served from the same address, and Bedrock checks the account's billing address as well as the caller's, so another key may serve. When the block is the gateway's own address (OpenAI checks only that), the walk ends with the provider's error after one refused call per key.
 
-It is **not** incremented for:
+Permanent per-key failures rotate even at `max_retries = 0`, so the counter moves for them regardless of the retry budget. It is **not** incremented for:
 
-- terminal failures (no retry happens, including `max_retries = 0` or every key permanently dead),
+- terminal failures (no key left to move to),
 - same-key retries on transient 5xx / network errors,
-- non-retryable request-bound 4xx (400/404/422/...).
+- non-retryable request-bound 4xx.
 
 Labels are attributed to the key that failed and triggered the rotation:
 
@@ -425,7 +460,7 @@ Labels are attributed to the key that failed and triggered the rotation:
 | `requested_model` | e.g. `gpt-4o` | Model as requested (before any alias resolution) |
 | `key_id` | UUID | The provider API key that failed and was rotated away from |
 | `key_name` | string | Human-readable name of the provider API key |
-| `fail_reason` | error type string | Reason the rotation fired: `rate_limit_error` (429), `authentication_error` (401/403), `billing_error` (402), or a provider-supplied error type for non-status-coded rate-limit messages |
+| `fail_reason` | error type string | Reason the rotation fired: `rate_limit_error`, `authentication_error`, `billing_error`, `model_access_error` or `model_retired_error` |
 
 To inspect every attempted key on a failed request (including terminal failures that did not rotate), read the `attempt_trail` field on the corresponding log entry instead.
 

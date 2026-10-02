@@ -68,6 +68,7 @@ export const ModelPlaceholders = {
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
+	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -103,6 +104,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	wafer: true,
 	databricks: false,
 	"github-copilot": false,
+	typesafe: true,
 };
 
 export const DefaultNetworkConfig = {
@@ -173,6 +175,7 @@ export const MCP_CREDENTIAL_STATUS_COLORS: Record<string, string> = {
 export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 	openai: [
 		"list_models",
+		"model_retrieve",
 		"text_completion",
 		"text_completion_stream",
 		"chat_completion",

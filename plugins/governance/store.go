@@ -1318,6 +1318,7 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 	recordVirtualKeyIdentity(ctx, virtualKey)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, virtualKey.ID)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, virtualKey.Name)
+	stampVirtualKeyContentLogging(ctx, virtualKey)
 	if virtualKey.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, virtualKey.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
@@ -1331,6 +1332,25 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 	if virtualKey.Customer != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, virtualKey.Customer.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
+	}
+}
+
+// stampVirtualKeyContentLogging publishes the key's own content-logging decision for the logging
+// plugin, which runs before governance in the plugin chain and so cannot look the key up itself.
+// Only a decision is stamped: a key that inherits leaves the context alone, so the plugin falls
+// through to the client setting instead of reading a false it would have to treat as a choice.
+//
+// A key that turns content off is also marked on the request's root span. Observability
+// connectors are handed the finished trace without the request context, so the span is the only
+// place they can read the decision from. The mark is one-directional: a key that keeps content on
+// says nothing to a connector, whose own disable_content_logging stays in charge.
+func stampVirtualKeyContentLogging(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) {
+	if ctx == nil || virtualKey == nil || virtualKey.DisableContentLogging == nil {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, *virtualKey.DisableContentLogging)
+	if *virtualKey.DisableContentLogging {
+		ctx.SetTraceAttribute(schemas.AttrBifrostContentLoggingDisabled, true)
 	}
 }
 
@@ -1450,6 +1470,9 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 			KeyIDs:            config.KeyIDs(),
 			Weight:            config.Weight,
 		})
+	}
+	if vk.AllowAllProviders && gs.inMemoryStore != nil {
+		providerPermits = AppendAllProviderPermits(providerPermits, gs.inMemoryStore.GetConfiguredProviderNames())
 	}
 
 	// A key's own MCP configs and its Virtual MCPs build one accumulator, so a Virtual MCP grants
@@ -2799,7 +2822,12 @@ func (gs *LocalGovernanceStore) dumpRateLimitBatch(ctx context.Context, tx *gorm
 		sb.WriteString("(?::varchar,?::bigint,?::timestamptz,?::bigint,?::timestamptz)")
 		args = append(args, row.ID, row.TokenCurrentUsage, row.TokenLastReset, row.RequestCurrentUsage, row.RequestLastReset)
 	}
-	sb.WriteString(") AS v(id, tcu, tlr, rcu, rlr) WHERE t.id = v.id")
+	// IS DISTINCT FROM skips rows already holding these values: an UPDATE that
+	// matches writes a new row version even when nothing changes, and every dump
+	// sends every row.
+	sb.WriteString(") AS v(id, tcu, tlr, rcu, rlr) WHERE t.id = v.id" +
+		" AND (t.token_current_usage, t.token_last_reset, t.request_current_usage, t.request_last_reset)" +
+		" IS DISTINCT FROM (v.tcu, v.tlr, v.rcu, v.rlr)")
 	if err := tx.WithContext(ctx).Exec(sb.String(), args...).Error; err != nil {
 		return fmt.Errorf("failed to dump %d rate limits: %w", len(batch), err)
 	}
@@ -2865,7 +2893,10 @@ func (gs *LocalGovernanceStore) writeBudgetBatch(ctx context.Context, tx *gorm.D
 		overrideArgs = append(overrideArgs, row.ID, row.OverrideAmount, string(row.OverrideMode),
 			row.OverrideCyclesRemaining, row.OverrideCyclesTotal, row.OverrideAnchorReset, row.LastReset)
 	}
-	overrideSQL.WriteString(") AS v(id, oa, om, ocr, oct, oar, lr) WHERE t.id = v.id AND t.last_reset < v.lr")
+	// IS DISTINCT FROM keeps an unchanged row from getting a new row version.
+	overrideSQL.WriteString(") AS v(id, oa, om, ocr, oct, oar, lr) WHERE t.id = v.id AND t.last_reset < v.lr" +
+		" AND (t.override_amount, t.override_mode, t.override_cycles_remaining, t.override_cycles_total, t.override_anchor_reset)" +
+		" IS DISTINCT FROM (v.oa, v.om, v.ocr, v.oct, v.oar)")
 	if err := tx.WithContext(ctx).Exec(overrideSQL.String(), overrideArgs...).Error; err != nil {
 		return fmt.Errorf("failed to update budget override lifecycle for %d budgets: %w", len(batch), err)
 	}
@@ -2880,7 +2911,8 @@ func (gs *LocalGovernanceStore) writeBudgetBatch(ctx context.Context, tx *gorm.D
 		usageSQL.WriteString("(?::varchar,?::double precision,?::timestamptz)")
 		usageArgs = append(usageArgs, row.ID, row.CurrentUsage, row.LastReset)
 	}
-	usageSQL.WriteString(") AS v(id, cu, lr) WHERE t.id = v.id AND t.last_reset " + usageGuard + " v.lr")
+	usageSQL.WriteString(") AS v(id, cu, lr) WHERE t.id = v.id AND t.last_reset " + usageGuard + " v.lr" +
+		" AND (t.current_usage, t.last_reset) IS DISTINCT FROM (v.cu, v.lr)")
 	if err := tx.WithContext(ctx).Exec(usageSQL.String(), usageArgs...).Error; err != nil {
 		return fmt.Errorf("failed to update %d budgets: %w", len(batch), err)
 	}
@@ -3191,6 +3223,36 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 	// Load providers
 	providers := config.Providers
 
+	// Populate teams with their relationships
+	for i := range teams {
+		team := &teams[i]
+
+		budgetIndexes := make(map[string]int, len(team.Budgets))
+		for j := range team.Budgets {
+			budgetIndexes[team.Budgets[j].ID] = j
+		}
+		for j := range budgets {
+			if budgets[j].TeamID == nil || *budgets[j].TeamID != team.ID {
+				continue
+			}
+			if index, exists := budgetIndexes[budgets[j].ID]; exists {
+				team.Budgets[index] = budgets[j]
+				continue
+			}
+			team.Budgets = append(team.Budgets, budgets[j])
+			budgetIndexes[budgets[j].ID] = len(team.Budgets) - 1
+		}
+
+		if team.RateLimitID != nil {
+			for j := range rateLimits {
+				if rateLimits[j].ID == *team.RateLimitID {
+					team.RateLimit = &rateLimits[j]
+					break
+				}
+			}
+		}
+	}
+
 	// Populate model configs with their relationships (Budgets and RateLimit)
 	for i := range modelConfigs {
 		mc := &modelConfigs[i]
@@ -3342,6 +3404,21 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
 		gs.storeVirtualKey(vk.Value.GetValue(), vk)
+	}
+
+	// Stamp team-owned budget and rate-limit entries in the flat caches so
+	// calendar-aligned resets survive restarts and reloads. GORM runs AfterFind
+	// before attaching preloaded relationships, so TableTeam cannot reliably do
+	// this itself.
+	for i := range teams {
+		team := &teams[i]
+		configstoreTables.StampCalendarAlignment(team.CalendarAligned, team.Budgets, team.RateLimit)
+		for j := range team.Budgets {
+			gs.storeBudget(team.Budgets[j].ID, &team.Budgets[j])
+		}
+		if team.RateLimit != nil {
+			gs.rateLimits.Store(team.RateLimit.ID, team.RateLimit)
+		}
 	}
 
 	// Build model configs map.
@@ -4858,31 +4935,50 @@ func modelConfigScopesFor(permit schemas.Permit) []limitScope {
 // modelConfigScopeFor is the scope a permit holder's own model configs are stored under.
 //
 // A permit type and a model-config scope are different vocabularies: the scope is a persisted
-// column, the type names what resolved the permit, and for virtual keys the two spell it
-// differently. The translation is explicit because casting one to the other silently finds
+// column, the type names what resolved the permit, and the two spell several of them differently.
+// The translation is explicit rather than a cast, because casting one to the other silently finds
 // nothing: the lookup is keyed by scope name, so a near-miss reads as "this holder configured no
 // model limits" rather than as an error.
+//
+// A type with no case falls back to its own name, which is a scope nothing is stored under - the
+// same "no per-model limits" answer, rather than another holder's rows.
 func modelConfigScopeFor(permitType string) string {
-	switch permitType {
-	case string(grant.PermitVirtualKey):
+	switch grant.PermitType(permitType) {
+	case grant.PermitVirtualKey:
 		return configstoreTables.ModelConfigScopeVirtualKey
-	case string(grant.PermitProject):
+	case grant.PermitProject:
 		return configstoreTables.ModelConfigScopeProject
+	case grant.PermitAccessProfile:
+		return configstoreTables.ModelConfigScopeAccessProfile
+	case grant.PermitTeamAccessProfile, grant.PermitBusinessUnitAccessProfile, grant.PermitCustomerAccessProfile:
+		// One scope for all three: an attachment's rows are keyed by the attachment's own id, and the
+		// kind below is what tells a refusal whose profile it was.
+		return configstoreTables.ModelConfigScopeEntityAccessProfile
 	default:
 		return permitType
 	}
 }
 
 // scopedModelConfigKind is the kind a permit holder's own per-model limits are attributed to, so a
-// refusal can say whose model limit ran out.
+// refusal can say whose model limit ran out. A type with no case is attributed to the generic
+// model-config holder rather than to a particular one: naming another holder's kind would put one
+// holder's name on a refusal that came from somewhere else.
 func scopedModelConfigKind(permitType string) grant.LimitHolderKind {
-	switch permitType {
-	case string(grant.PermitVirtualKey):
+	switch grant.PermitType(permitType) {
+	case grant.PermitVirtualKey:
 		return grant.LimitHolderVirtualKeyModelConfig
-	case string(grant.PermitProject):
+	case grant.PermitProject:
 		return grant.LimitHolderProjectModelConfig
-	default:
+	case grant.PermitAccessProfile:
 		return grant.LimitHolderUserAccessProfileModelConfig
+	case grant.PermitTeamAccessProfile:
+		return grant.LimitHolderTeamAccessProfileModelConfig
+	case grant.PermitBusinessUnitAccessProfile:
+		return grant.LimitHolderBusinessUnitAccessProfileModelConfig
+	case grant.PermitCustomerAccessProfile:
+		return grant.LimitHolderCustomerAccessProfileModelConfig
+	default:
+		return grant.LimitHolderModelConfig
 	}
 }
 

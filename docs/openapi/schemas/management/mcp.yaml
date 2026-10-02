@@ -261,6 +261,13 @@ MCPClientCreateRequestBase:
       description: |
         Per-client tool execution timeout in seconds. 0 (or omitted) falls back
         to the global mcp_tool_execution_timeout client config.
+    max_instructions_length:
+      type: integer
+      minimum: 0
+      description: |
+        Per-client cap on forwarded instructions, in bytes. 0 (or omitted) falls
+        back to the global mcp_max_instructions_per_client client config. The
+        aggregate across servers is still bounded by mcp_max_instructions_total.
     allowed_extra_headers:
       type: array
       items:
@@ -452,6 +459,13 @@ MCPClientUpdateRequest:
       description: |
         Per-client tool execution timeout in seconds. 0 falls back to the
         global mcp_tool_execution_timeout client config.
+    max_instructions_length:
+      type: integer
+      minimum: 0
+      description: |
+        Per-client cap on forwarded instructions, in bytes. 0 falls back to the
+        global mcp_max_instructions_per_client client config. The aggregate
+        across servers is still bounded by mcp_max_instructions_total.
     headers:
       type: object
       additionalProperties:

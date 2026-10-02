@@ -52,6 +52,11 @@ func CostUpdateFromBreakdown(bd *schemas.BifrostCost) CostUpdate {
 
 // LogStore is the interface for the log store.
 type LogStore interface {
+	// WarpConversationStore is Warp's saved-chat surface. Transcripts live here
+	// rather than in the config store because they are user-generated content
+	// that grows with use, not settings an install depends on.
+	WarpConversationStore
+
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
 	CreateIfNotExists(ctx context.Context, entry *Log) error
@@ -114,6 +119,10 @@ type LogStore interface {
 	GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error)
 	GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error)
 	GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error)
+	// GetUserSpend returns each user's total cost inside the filter window in one
+	// query: no previous-period comparison, no ordering, no row limit. It is the cheap
+	// read for jobs that rank every user by spend.
+	GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error)
 	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)
 	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension (e.g., team_id, customer_id).
 	GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error)
@@ -166,6 +175,9 @@ type LogStore interface {
 	GetMCPToolLogStats(ctx context.Context, filters MCPToolLogSearchFilters) (*MCPToolLogStats, error)
 	HasMCPToolLogs(ctx context.Context) (bool, error)
 	DeleteMCPToolLogs(ctx context.Context, ids []string) error
+	// DeleteMCPToolLogsBatch deletes up to batchSize MCP tool logs older than
+	// cutoff, oldest first, for the retention cleaner (see LogsCleaner).
+	DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 	FlushMCPToolLogs(ctx context.Context, since time.Time) error
 	GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)

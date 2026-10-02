@@ -125,7 +125,6 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	// and paths the deployment accepts, without ever presenting a credential.
 	if authErr := refuseUnauthenticatedRealtime(
 		h.config.ClientConfig.EnforceAuthOnInference,
-		h.handlerStore.GetKVStore(),
 		preReqCtx,
 		auth.authorization,
 	); authErr != nil {
@@ -138,6 +137,16 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		populateRealtimeRequestContext(ctx, preReqCtx)
 		h.handleTranscriptionUpgrade(ctx, preReqCtx, preReqCancel, auth, path)
 		return
+	}
+
+	// Resolve any Bifrost-minted ephemeral token mapping before the per-request pipeline runs,
+	// so governance resolves the originating virtual key rather than the opaque token string.
+	// This is what lets the resolution check below refuse a mapped token whose virtual key has
+	// since been revoked, instead of deferring that refusal to the first turn.
+	token := extractRealtimeTokenFromAuth(auth)
+	preMapping, preMapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetKVStore(), token)
+	if preMapped {
+		applyRealtimeEphemeralKeyMapping(preReqCtx, preMapping)
 	}
 
 	providerKey, model, err := resolveRealtimeTarget(ctx, h.config, path, modelParam, deploymentParam)
@@ -164,6 +173,20 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		},
 	}
 	h.client.RunPreRequestHooks(preReqCtx, preReq)
+	// Second admission question, now that the pipeline has resolved the request's access: a
+	// presented credential that resolved to nothing (forged or revoked sk-bf-*) is refused with
+	// a plain 401 before the upgrade, before a session slot is allocated, and before an
+	// upstream session opens on the operator's key.
+	if authErr := refuseUnresolvedRealtimeCredential(
+		h.config.ClientConfig.EnforceAuthOnInference,
+		preReqCtx,
+		token,
+		preMapped && preMapping.VirtualKey != "",
+	); authErr != nil {
+		preReqCancel()
+		SendBifrostError(ctx, authErr)
+		return
+	}
 	routedProvider, routedModel, _ := preReq.GetRequestFields()
 	if routedProvider == "" {
 		// Mirror the empty-provider check in core handleRequest. No routing layer
@@ -265,6 +288,13 @@ func (h *WSRealtimeHandler) handleTranscriptionUpgrade(
 		}
 
 		providerKey, model := schemas.ParseModelString(rawModel, realtimeDefaultProviderForPath(path))
+		// Same pre-pipeline mapping resolution as the main upgrade path: a Bifrost-minted
+		// token's virtual key must be on the context before governance resolves access.
+		token := extractRealtimeTokenFromAuth(auth)
+		mapping, mapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetKVStore(), token)
+		if mapped {
+			applyRealtimeEphemeralKeyMapping(preReqCtx, mapping)
+		}
 		preReq := &schemas.BifrostRequest{
 			RequestType: schemas.RealtimeRequest,
 			ResponsesRequest: &schemas.BifrostResponsesRequest{
@@ -273,6 +303,19 @@ func (h *WSRealtimeHandler) handleTranscriptionUpgrade(
 			},
 		}
 		h.client.RunPreRequestHooks(preReqCtx, preReq)
+		// The transcription model arrives in-band after the upgrade, so the resolution check
+		// necessarily runs post-upgrade here. It still runs before the session slot and the
+		// upstream connection, so an unresolved credential spends nothing beyond the socket.
+		if authErr := refuseUnresolvedRealtimeCredential(
+			h.config.ClientConfig.EnforceAuthOnInference,
+			preReqCtx,
+			token,
+			mapped && mapping.VirtualKey != "",
+		); authErr != nil {
+			clientConn.writeRealtimeError(authErr)
+			preReqCancel()
+			return
+		}
 		providerKey, model, _ = preReq.GetRequestFields()
 		if providerKey == "" || strings.TrimSpace(model) == "" {
 			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("no provider could be resolved for model %q (set as provider/model or configure the model catalog)", model)))
@@ -397,13 +440,10 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	// that everything the connection presented is on it.
 	lib.SettleIdentity(bifrostCtx)
 
-	// Resolve ephemeral key mapping to restore virtual key context.
-	token := extractRealtimeBearerTokenFromHeader(auth.authorization)
-	if isRealtimeEphemeralToken(token) {
-		mapping, ok := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetKVStore(), token)
-		if ok {
-			applyRealtimeEphemeralKeyMapping(bifrostCtx, mapping)
-		}
+	token := extractRealtimeTokenFromAuth(auth)
+	mapping, mapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetKVStore(), token)
+	if mapped {
+		applyRealtimeEphemeralKeyMapping(bifrostCtx, mapping)
 	}
 
 	bifrostCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
@@ -423,10 +463,23 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		return
 	}
 
-	key, err := h.client.SelectKeyForProviderRequestType(bifrostCtx, schemas.RealtimeRequest, providerKey, model)
-	if err != nil {
-		clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
-		return
+	var key schemas.Key
+	if isRealtimeEphemeralToken(token) && !mapped {
+		bifrostCtx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
+		bifrostCtx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
+		bifrostCtx.ClearValue(schemas.BifrostContextKeySelectedKeyID)
+		bifrostCtx.ClearValue(schemas.BifrostContextKeySelectedKeyName)
+		key = schemas.Key{Value: *schemas.NewSecretVar(token)}
+	} else {
+		var err error
+		key, err = h.client.SelectKeyForProviderRequestType(bifrostCtx, schemas.RealtimeRequest, providerKey, model)
+		if err != nil {
+			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
+			return
+		}
+		if mapped && mapping.ProviderToken != "" {
+			key.Value = *schemas.NewSecretVar(mapping.ProviderToken)
+		}
 	}
 
 	// Resolve model alias so the provider receives the actual model identifier.
@@ -1088,6 +1141,21 @@ func newRealtimeWireBifrostError(status int, code, message string) *schemas.Bifr
 // Values already explicitly set by createBifrostContextFromAuth (VK, parent request ID,
 // request headers, extra headers) are preserved — middleware values do not overwrite them
 // since createBifrostContextFromAuth runs first.
+func extractRealtimeTokenFromAuth(auth *authHeaders) string {
+	if auth == nil {
+		return ""
+	}
+	if token := extractRealtimeBearerTokenFromHeader(auth.authorization); token != "" {
+		return token
+	}
+	for _, token := range []string{auth.virtualKey, auth.apiKey, auth.googAPIKey} {
+		if token = strings.TrimSpace(token); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
 // realtimeMiddlewareKeys lists the BifrostContext keys that TransportInterceptorMiddleware
 // copies from the governance plugin's context onto individual fasthttp UserValue slots.
 // We snapshot exactly these keys before the WebSocket upgrade so the long-lived session
