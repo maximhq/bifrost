@@ -376,16 +376,20 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
-// MockConfigStore implements the ConfigStore interface for testing
+// MockConfigStore implements the ConfigStore interface for testing. The embedded
+// interface is nil: methods the tests do not override panic if called, and new
+// ConfigStore methods no longer break compilation of this package.
 type MockConfigStore struct {
+	configstore.ConfigStore
+
 	clientConfig     *configstore.ClientConfig
 	providers        map[schemas.ModelProvider]configstore.ProviderConfig
 	mcpConfig        *schemas.MCPConfig
@@ -1417,24 +1421,24 @@ func (m *MockConfigStore) CreateOauthConfig(ctx context.Context, config *tables.
 	return nil
 }
 
-func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig, tx ...*gorm.DB) error {
 	return nil
 }
 
 // OAuth token
-func (m *MockConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error) {
+func (m *MockConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
+func (m *MockConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time, authModes []string) ([]*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+func (m *MockConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken, tx ...*gorm.DB) error {
 	return nil
 }
 
-func (m *MockConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+func (m *MockConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
 	return nil
 }
 
@@ -1443,36 +1447,36 @@ func (m *MockConfigStore) DeleteOauthToken(ctx context.Context, id string) error
 }
 
 // Per-user OAuth session CRUD
-func (m *MockConfigStore) GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableOauthUserSession, error) {
+func (m *MockConfigStore) GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableMCPOauthFlow, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
+func (m *MockConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserSession, error) {
+func (m *MockConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthFlow, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+func (m *MockConfigStore) CreateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error {
 	return nil
 }
 
-func (m *MockConfigStore) UpdateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+func (m *MockConfigStore) UpdateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error {
 	return nil
 }
 
 // Per-user OAuth token CRUD
-func (m *MockConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserToken, error) {
+func (m *MockConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+func (m *MockConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
 	return nil
 }
 
-func (m *MockConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+func (m *MockConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
 	return nil
 }
 
@@ -1488,19 +1492,19 @@ func (m *MockConfigStore) DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx 
 	return nil
 }
 
-func (m *MockConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error {
+func (m *MockConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string, reason string) error {
 	return nil
 }
 
-func (m *MockConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableOauthUserToken, error) {
+func (m *MockConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListOauthUserTokens(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableOauthUserToken, error) {
+func (m *MockConfigStore) ListOauthUserTokens(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListPendingOauthUserSessions(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableOauthUserSession, error) {
+func (m *MockConfigStore) ListPendingOauthUserSessions(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPOauthFlow, error) {
 	return nil, nil
 }
 
@@ -1786,15 +1790,13 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	}
 	fileConfig := &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.11,
-			MediumComplex:    0.33,
-			ComplexReasoning: 0.77,
+			SimpleMedium:  0.11,
+			MediumComplex: 0.33,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{" Function ", "api", "API", "file-code-seed"},
-			ReasoningKeywords: []string{"tradeoffs", "file-reason-seed"},
-			TechnicalKeywords: []string{"latency", "file-tech-seed"},
-			SimpleKeywords:    []string{"hello", "file-simple-seed"},
+			MediumKeywords:  []string{" Function ", "api", "API", "file-code-seed"},
+			ComplexKeywords: []string{"tradeoffs", "file-reason-seed"},
+			SimpleKeywords:  []string{"hello", "file-simple-seed"},
 		},
 	}
 	configData := &ConfigData{
@@ -1808,11 +1810,9 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, stored)
-	require.Equal(t, 0.77, stored.TierBoundaries.ComplexReasoning)
 	defaults := complexity.DefaultAnalyzerConfig()
-	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.CodeKeywords, fileConfig.Keywords.CodeKeywords), stored.Keywords.CodeKeywords)
-	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.ReasoningKeywords, fileConfig.Keywords.ReasoningKeywords), stored.Keywords.ReasoningKeywords)
-	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.TechnicalKeywords, fileConfig.Keywords.TechnicalKeywords), stored.Keywords.TechnicalKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.MediumKeywords, fileConfig.Keywords.MediumKeywords), stored.Keywords.MediumKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.ComplexKeywords, fileConfig.Keywords.ComplexKeywords), stored.Keywords.ComplexKeywords)
 	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.SimpleKeywords, fileConfig.Keywords.SimpleKeywords), stored.Keywords.SimpleKeywords)
 	require.False(t, stored.ConfigHashes.Empty())
 	require.Equal(t, stored, config.GovernanceConfig.ComplexityAnalyzerConfig)
@@ -1824,7 +1824,7 @@ func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.TierBoundaries.SimpleMedium = 0.12
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-code"}
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -1847,7 +1847,7 @@ func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
-	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.CodeKeywords)
+	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.MediumKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
@@ -1880,7 +1880,7 @@ func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenSectionHashe
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = fileHashes
 	dbConfig.TierBoundaries.SimpleMedium = 0.21
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-code"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
 	config := &Config{
@@ -1899,7 +1899,7 @@ func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenSectionHashe
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, 0.21, stored.TierBoundaries.SimpleMedium)
-	require.Equal(t, []string{"ui-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, []string{"ui-code"}, stored.Keywords.MediumKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
@@ -1909,15 +1909,13 @@ func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "old-tier-hash",
-		CodeKeywords:      "old-code-hash",
-		ReasoningKeywords: "old-reason-hash",
-		TechnicalKeywords: "old-tech-hash",
-		SimpleKeywords:    "old-simple-hash",
+		TierBoundaries:  "old-tier-hash",
+		MediumKeywords:  "old-code-hash",
+		ComplexKeywords: "old-reason-hash",
+		SimpleKeywords:  "old-simple-hash",
 	}
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
-	dbConfig.Keywords.ReasoningKeywords = []string{"ui-reason"}
-	dbConfig.Keywords.TechnicalKeywords = []string{"ui-tech"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-code"}
+	dbConfig.Keywords.ComplexKeywords = []string{"ui-reason"}
 	dbConfig.Keywords.SimpleKeywords = []string{"ui-simple"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -1940,9 +1938,8 @@ func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
-	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.CodeKeywords)
-	require.ElementsMatch(t, []string{"file-reason", "ui-reason"}, stored.Keywords.ReasoningKeywords)
-	require.ElementsMatch(t, []string{"file-tech", "ui-tech"}, stored.Keywords.TechnicalKeywords)
+	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.MediumKeywords)
+	require.ElementsMatch(t, []string{"file-reason", "ui-reason"}, stored.Keywords.ComplexKeywords)
 	require.ElementsMatch(t, []string{"file-simple", "ui-simple"}, stored.Keywords.SimpleKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
@@ -1958,9 +1955,8 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = oldFileHashes
 	dbConfig.TierBoundaries.SimpleMedium = 0.21
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
-	dbConfig.Keywords.ReasoningKeywords = []string{"ui-reason"}
-	dbConfig.Keywords.TechnicalKeywords = []string{"ui-tech"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-code"}
+	dbConfig.Keywords.ComplexKeywords = []string{"ui-reason"}
 	dbConfig.Keywords.SimpleKeywords = []string{"ui-simple"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -1970,7 +1966,7 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 	}
 
 	newFileConfig := testFileComplexityAnalyzerConfig()
-	newFileConfig.Keywords.CodeKeywords = []string{"file-code", "file-code-new"}
+	newFileConfig.Keywords.MediumKeywords = []string{"file-code", "file-code-new"}
 	newFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(newFileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
@@ -1985,14 +1981,12 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, 0.21, stored.TierBoundaries.SimpleMedium)
-	require.ElementsMatch(t, []string{"file-code", "file-code-new", "ui-code"}, stored.Keywords.CodeKeywords)
-	require.Equal(t, []string{"ui-reason"}, stored.Keywords.ReasoningKeywords)
-	require.Equal(t, []string{"ui-tech"}, stored.Keywords.TechnicalKeywords)
+	require.ElementsMatch(t, []string{"file-code", "file-code-new", "ui-code"}, stored.Keywords.MediumKeywords)
+	require.Equal(t, []string{"ui-reason"}, stored.Keywords.ComplexKeywords)
 	require.Equal(t, []string{"ui-simple"}, stored.Keywords.SimpleKeywords)
 	require.Equal(t, oldFileHashes.TierBoundaries, stored.ConfigHashes.TierBoundaries)
-	require.Equal(t, newFileHashes.CodeKeywords, stored.ConfigHashes.CodeKeywords)
-	require.Equal(t, oldFileHashes.ReasoningKeywords, stored.ConfigHashes.ReasoningKeywords)
-	require.Equal(t, oldFileHashes.TechnicalKeywords, stored.ConfigHashes.TechnicalKeywords)
+	require.Equal(t, newFileHashes.MediumKeywords, stored.ConfigHashes.MediumKeywords)
+	require.Equal(t, oldFileHashes.ComplexKeywords, stored.ConfigHashes.ComplexKeywords)
 	require.Equal(t, oldFileHashes.SimpleKeywords, stored.ConfigHashes.SimpleKeywords)
 }
 
@@ -2002,13 +1996,12 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "old-tier-hash",
-		CodeKeywords:      "old-code-hash",
-		ReasoningKeywords: "old-reason-hash",
-		TechnicalKeywords: "old-tech-hash",
-		SimpleKeywords:    "old-simple-hash",
+		TierBoundaries:  "old-tier-hash",
+		MediumKeywords:  "old-code-hash",
+		ComplexKeywords: "old-reason-hash",
+		SimpleKeywords:  "old-simple-hash",
 	}
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-code"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
 	config := &Config{
@@ -2031,7 +2024,7 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
-	require.Equal(t, []string{"file-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, []string{"file-code"}, stored.Keywords.MediumKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
@@ -2041,11 +2034,10 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBC
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "old-tier-hash",
-		CodeKeywords:      "old-code-hash",
-		ReasoningKeywords: "old-reason-hash",
-		TechnicalKeywords: "old-tech-hash",
-		SimpleKeywords:    "old-simple-hash",
+		TierBoundaries:  "old-tier-hash",
+		MediumKeywords:  "old-code-hash",
+		ComplexKeywords: "old-reason-hash",
+		SimpleKeywords:  "old-simple-hash",
 	}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -2070,15 +2062,13 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBC
 func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.10,
-			MediumComplex:    0.30,
-			ComplexReasoning: 0.70,
+			SimpleMedium:  0.10,
+			MediumComplex: 0.30,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{"runtime-code"},
-			ReasoningKeywords: []string{"runtime-reason"},
-			TechnicalKeywords: []string{"runtime-tech"},
-			SimpleKeywords:    []string{"runtime-simple"},
+			MediumKeywords:  []string{"runtime-code"},
+			ComplexKeywords: []string{"runtime-reason"},
+			SimpleKeywords:  []string{"runtime-simple"},
 		},
 	}
 }
@@ -2086,15 +2076,13 @@ func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig
 func testFileComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.20,
-			MediumComplex:    0.40,
-			ComplexReasoning: 0.80,
+			SimpleMedium:  0.20,
+			MediumComplex: 0.40,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{"file-code"},
-			ReasoningKeywords: []string{"file-reason"},
-			TechnicalKeywords: []string{"file-tech"},
-			SimpleKeywords:    []string{"file-simple"},
+			MediumKeywords:  []string{"file-code"},
+			ComplexKeywords: []string{"file-reason"},
+			SimpleKeywords:  []string{"file-simple"},
 		},
 	}
 }
@@ -13650,7 +13638,8 @@ func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
 		},
 	}
 
-	mergePlugins(context.Background(), config, configData)
+	// A stored hash that no longer matches the file records that config.json changed since the last sync.
+	mergePlugins(context.Background(), config, configData, map[string]string{"plugin-a": "stale-hash"})
 
 	// Should have been replaced because placement changed
 	require.Len(t, config.PluginConfigs, 1)
@@ -13700,9 +13689,10 @@ func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 		},
 	}
 
-	mergePlugins(context.Background(), config, configData)
+	// No stored hash means no config.json baseline yet, so the stored row is kept.
+	mergePlugins(context.Background(), config, configData, nil)
 
-	// Should NOT have been replaced (version and placement unchanged)
+	// Should NOT have been replaced (no baseline hash recorded)
 	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "db-value", configMap["setting"], "config should remain from DB when version and placement are unchanged")
@@ -14377,7 +14367,7 @@ func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) 
 			nil, nil, // customers
 			nil, nil, // teams
 			nil, nil, // virtual keys
-			nil, nil, // routing rules
+			nil, nil, nil, // routing rules (add, update, delete)
 			nil, nil, // pricing overrides
 			modelAdds, modelUpdates,
 			providerAdds, providerUpdates,
@@ -14765,6 +14755,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		// Create MCP client with virtual field populated (simulates config file load)
 		mcpToSave := tables.TableMCPClient{
 			ClientID:       uuid.New().String(),
+			EndpointSlug:   uuid.New().String(), // unique index; raw db.Create bypasses the store that derives it
 			Name:           "Test MCP StdioConfig " + uuid.New().String(),
 			ConnectionType: "stdio",
 			StdioConfig:    stdioConfig,
@@ -14812,6 +14803,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 
 		mcpToSave := tables.TableMCPClient{
 			ClientID:         uuid.New().String(),
+			EndpointSlug:     uuid.New().String(), // unique index; raw db.Create bypasses the store that derives it
 			Name:             "Test MCP Tools " + uuid.New().String(),
 			ConnectionType:   "sse",
 			ConnectionString: schemas.NewSecretVar(connStr),
@@ -14846,6 +14838,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 
 		mcpToSave := tables.TableMCPClient{
 			ClientID:         uuid.New().String(),
+			EndpointSlug:     uuid.New().String(), // unique index; raw db.Create bypasses the store that derives it
 			Name:             "Test MCP Headers " + uuid.New().String(),
 			ConnectionType:   "sse",
 			ConnectionString: schemas.NewSecretVar(connStr),
@@ -14882,6 +14875,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 
 		mcpToSave := tables.TableMCPClient{
 			ClientID:       uuid.New().String(),
+			EndpointSlug:   uuid.New().String(), // unique index; raw db.Create bypasses the store that derives it
 			Name:           "Test MCP AllFields " + uuid.New().String(),
 			ConnectionType: "stdio",
 			StdioConfig:    stdioConfig,
@@ -14909,6 +14903,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 
 		mcpToSave := tables.TableMCPClient{
 			ClientID:         uuid.New().String(),
+			EndpointSlug:     uuid.New().String(), // unique index; raw db.Create bypasses the store that derives it
 			Name:             "Test MCP TxFind " + uuid.New().String(),
 			ConnectionType:   "sse",
 			ConnectionString: schemas.NewSecretVar(connStr),
@@ -17397,14 +17392,16 @@ var excludedGoFields = map[string]map[string]bool{
 		"virtual_keys": true, // GORM relation
 	},
 	"tables.TableVirtualKey": {
-		"config_hash":        true,
-		"created_at":         true,
-		"updated_at":         true,
-		"created_by_user_id": true, // DB ownership metadata; set by API/session layer
-		"budgets":            true, // GORM relation (budgets have virtual_key_id FK)
-		"rate_limit":         true, // GORM relation
-		"team":               true, // GORM relation
-		"customer":           true, // GORM relation
+		"previous_value_expires_at": true, // Key-rotation runtime state; excluded from the config hash
+		"rotated_at":                true, // Key-rotation runtime state; excluded from the config hash
+		"config_hash":               true,
+		"created_at":                true,
+		"updated_at":                true,
+		"created_by_user_id":        true, // DB ownership metadata; set by API/session layer
+		"budgets":                   true, // GORM relation (budgets have virtual_key_id FK)
+		"rate_limit":                true, // GORM relation
+		"team":                      true, // GORM relation
+		"customer":                  true, // GORM relation
 	},
 	"tables.TableVirtualKeyProviderConfig": {
 		"rate_limit":     true, // GORM relation
@@ -17426,20 +17423,25 @@ var excludedGoFields = map[string]map[string]bool{
 		"tool_sync_interval": true, // Internal
 	},
 	"schemas.MCPClientConfig": {
-		"client_id":             true, // Internal ID
-		"state":                 true, // Runtime state
-		"is_code_mode_client":   true, // Internal
-		"auth_type":             true, // Internal
-		"oauth_config_id":       true, // Internal
-		"oauth_client_id":       true, // Response-only: populated on GET from oauth config, not stored
-		"oauth_client_secret":   true, // Response-only: populated on GET from oauth config, not stored
-		"is_ping_available":     true, // Runtime state
-		"tool_sync_interval":    true, // Internal
-		"tool_pricing":          true, // Internal
-		"tools_to_auto_execute": true, // Internal
-		"tools_to_execute":      true, // Moved to VK MCP config
-		"connection_string":     true, // Use specific config types instead
-		"headers":               true, // Internal
+		"oauth_authorize_url":    true, // Populated on GET from oauth_config; not read from config.json
+		"oauth_token_url":        true, // Populated on GET from oauth_config; not read from config.json
+		"oauth_registration_url": true, // Populated on GET from oauth_config; not read from config.json
+		"oauth_scopes":           true, // Populated on GET from oauth_config; not read from config.json
+		"oauth_resource":         true, // Populated on GET from oauth_config; not read from config.json
+		"client_id":              true, // Internal ID
+		"state":                  true, // Runtime state
+		"is_code_mode_client":    true, // Internal
+		"auth_type":              true, // Internal
+		"oauth_config_id":        true, // Internal
+		"oauth_client_id":        true, // Response-only: populated on GET from oauth config, not stored
+		"oauth_client_secret":    true, // Response-only: populated on GET from oauth config, not stored
+		"is_ping_available":      true, // Runtime state
+		"tool_sync_interval":     true, // Internal
+		"tool_pricing":           true, // Internal
+		"tools_to_auto_execute":  true, // Internal
+		"tools_to_execute":       true, // Moved to VK MCP config
+		"connection_string":      true, // Use specific config types instead
+		"headers":                true, // Internal
 	},
 	"schemas.MCPToolManagerConfig": {
 		"code_mode_binding_level": true, // Internal
@@ -17464,6 +17466,10 @@ var excludedSchemaFields = map[string]map[string]bool{
 	"governance": {
 		"business_units": true, // Enterprise feature; not in OSS GovernanceConfig
 		"roles":          true, // Enterprise RBAC role bootstrap; not in OSS GovernanceConfig
+		"projects":       true, // Enterprise feature; not in OSS GovernanceConfig
+	},
+	"governance.complexity_analyzer_config.tier_boundaries": {
+		"complex_reasoning": true, // Retired boundary; accepted for backward-compatible config.json validation and ignored
 	},
 	"auth_config": {
 		"disable_auth_on_inference": true, // Deprecated and ignored; kept in schema for backward-compatible config.json validation. Use enforce_auth_on_inference.
@@ -17489,8 +17495,9 @@ var excludedSchemaFields = map[string]map[string]bool{
 		"tool_groups": true, // Enterprise governance feature; not in OSS MCPConfig
 	},
 	"mcp.client_configs": {
-		"websocket_config": true, // Schema documents all connection types
-		"http_config":      true, // Schema documents all connection types
+		"websocket_config":          true, // Schema documents all connection types
+		"http_config":               true, // Schema documents all connection types
+		"allow_on_all_virtual_keys": true, // Earlier name of allow_by_default; still read by UnmarshalJSON
 	},
 }
 
@@ -17577,6 +17584,16 @@ func getSchemaPropertiesAtPath(schema map[string]interface{}, path string) map[s
 				return props
 			}
 			props, _ := prop["properties"].(map[string]interface{})
+			if props == nil {
+				// A oneOf schema keeps its properties on the branches. The first branch is
+				// the canonical shape the Go struct serializes; later ones are deprecated
+				// input aliases.
+				if branches, ok := prop["oneOf"].([]interface{}); ok && len(branches) > 0 {
+					if first, ok := branches[0].(map[string]interface{}); ok {
+						props, _ = first["properties"].(map[string]interface{})
+					}
+				}
+			}
 			return props
 		}
 
@@ -18220,8 +18237,21 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.Equal(t, modelcatalog.MinimumPricingSyncIntervalSec, *normalizedModelCatalog.MCPLibrarySyncInterval)
 	})
 
+	t.Run("mcp library zero db interval is honoured as disabled", func(t *testing.T) {
+		disabledDBSync := modelcatalog.MCPLibrarySyncDisabled
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     10,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &disabledDBSync,
+		}
+
+		normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(dbConfig, nil)
+		require.Equal(t, modelcatalog.MCPLibrarySyncDisabled, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, modelcatalog.MCPLibrarySyncDisabled, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
 	t.Run("mcp library invalid db interval falls back and requests db update", func(t *testing.T) {
-		invalidDBSync := int64(0)
+		invalidDBSync := int64(-1)
 		dbConfig := &tables.TableFrameworkConfig{
 			ID:                     10,
 			MCPLibraryURL:          &defaultMCPLibraryURL,
