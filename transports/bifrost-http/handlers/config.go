@@ -1261,9 +1261,27 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 	return nil
 }
 
+// checkURLAccessibilityDialContext is the dial function checkURLAccessibility's
+// HTTP client uses. Overridable in tests that need to reach a loopback-bound
+// httptest.Server; production code must never reassign it.
+var checkURLAccessibilityDialContext = network.SSRFSafeDialContext(10 * time.Second)
+
 // checkURLAccessibility verifies that the given URL is reachable.
 // For file:// URLs it checks that the path exists on disk.
 // For http(s):// URLs it performs a GET and expects a 200 OK.
+//
+// This runs against an admin-supplied URL (framework config's pricing_url,
+// model_parameters_url, mcp_library_url), and no documented deployment
+// (including the air-gapped guide, which uses file:// instead) points these
+// at a private-network HTTP(S) target, so private/link-local/CGNAT addresses
+// are rejected outright rather than allowed. Both the save-time hostname
+// check (ValidateExternalURL) and the actual dial are guarded, since a save-time-only
+// check leaves a DNS-rebinding window between validation and the real
+// connection. Errors are deliberately generic: a non-HTTP service on the
+// target port can make Go's client surface its raw response bytes (e.g. an
+// SSH banner) inside the transport error, which would otherwise be reflected
+// straight back to the caller as a fingerprinting/banner-grab primitive - the
+// detailed error is logged server-side only.
 func checkURLAccessibility(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -1279,13 +1297,37 @@ func checkURLAccessibility(rawURL string) error {
 		}
 		return nil
 	}
-	if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+	if err := bifrost.ValidateExternalURL(rawURL, false); err != nil {
 		return fmt.Errorf("URL validation failed: %w", err)
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(rawURL)
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{
+			DialContext: checkURLAccessibilityDialContext,
+		},
+		// The operator validated this URL, not wherever it redirects: a redirect
+		// is returned as-is and fails the 200 check below instead of being followed.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	reqCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		// Log the host and the underlying transport error only: the full URL
+		// can carry userinfo or query secrets, and *url.Error echoes it back.
+		logErr := err
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			logErr = urlErr.Err
+		}
+		logger.Warn(fmt.Sprintf("URL accessibility check failed for host %s: %v", parsed.Hostname(), logErr))
+		return fmt.Errorf("URL is not accessible")
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
