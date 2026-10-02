@@ -403,6 +403,38 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	copied := *currentConfig
 	updatedConfig := &copied
 
+	// Validate first-admin setup before any live mutation or persistence below.
+	var existingAuthConfig *configstore.AuthConfig
+	var initialPasswordHash string
+	if payload.AuthConfig != nil {
+		var err error
+		existingAuthConfig, err = h.store.ConfigStore.GetAuthConfig(ctx)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
+			return
+		}
+		if existingAuthConfig == nil && payload.AuthConfig.IsEnabled {
+			if !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
+				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account")
+				return
+			}
+			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" ||
+				payload.AuthConfig.AdminPassword == nil || payload.AuthConfig.AdminPassword.GetValue() == "" || payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+				SendError(ctx, fasthttp.StatusBadRequest, "auth username and password must be provided")
+				return
+			}
+			if failures := getPasswordPolicyFailures(payload.AuthConfig.AdminPassword.GetValue()); len(failures) > 0 {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(failures, ", ")))
+				return
+			}
+			initialPasswordHash, err = encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
+			if err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid auth password: %v", err))
+				return
+			}
+		}
+	}
+
 	// Validate MCP auth-mode / OAuth2 server settings before any live mutation
 	// below (drop-excess flag, MCP tool-manager reload, compat plugin reload,
 	// in-memory MCP config). A late rejection would return 400 while runtime
@@ -440,6 +472,18 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		effectiveOAuth2Config.DisableVKIdentity &&
 		effectiveAuthMode != configstoreTables.MCPServerAuthModeOAuth {
 		SendError(ctx, fasthttp.StatusBadRequest, "disable_vk_identity is only valid when mcp_server_auth_mode is oauth")
+		return
+	}
+
+	// Enabling discovery without a pinned issuer_url would leave every issuer
+	// reference (discovery documents, authorize redirect, JWT iss/aud) derived
+	// from the unauthenticated, per-request Host header - reject the write here
+	// rather than accepting it and requiring a restart to discover the
+	// misconfiguration (validateClientConfig enforces the same invariant at
+	// load time, for config.json and pre-existing DB rows).
+	if (effectiveAuthMode == configstoreTables.MCPServerAuthModeOAuth || effectiveAuthMode == configstoreTables.MCPServerAuthModeBoth) &&
+		(effectiveOAuth2Config == nil || !effectiveOAuth2Config.IssuerURL.IsSet()) {
+		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set when mcp_server_auth_mode is oauth or both")
 		return
 	}
 
@@ -603,10 +647,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// which atomically swaps in a fresh immutable snapshot carrying the new value.
 	updatedConfig.DumpErrorsInConsoleLogs = payload.ClientConfig.DumpErrorsInConsoleLogs
 
-	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
+	enforceAuthOnInference := currentConfig.EnforceAuthOnInference
+	if payload.ClientConfig.HasInferenceAuthSetting() {
+		enforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
+	} else if payload.AuthConfig != nil && payload.AuthConfig.IsEnabled && existingAuthConfig == nil {
+		enforceAuthOnInference = true
+	}
+	updatedConfig.EnforceAuthOnInference = enforceAuthOnInference
 	// Sync deprecated columns to match new field so they stay consistent in the DB
-	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference
-	updatedConfig.EnforceSCIMAuth = payload.ClientConfig.EnforceAuthOnInference
+	updatedConfig.EnforceGovernanceHeader = enforceAuthOnInference
+	updatedConfig.EnforceSCIMAuth = enforceAuthOnInference
 
 	// Only update when explicitly provided to avoid clearing the stored default (prefer_idp).
 	// The conflict-vs-token_exchange validation already ran up front, before
@@ -884,15 +934,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	// Checking auth config and trying to update if required
 	if payload.AuthConfig != nil {
-		// Getting current governance config
-		authConfig, err := h.store.ConfigStore.GetAuthConfig(ctx)
-		if err != nil {
-			if !errors.Is(err, configstore.ErrNotFound) {
-				logger.Warn("failed to get auth config from store: %v", err)
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
-				return
-			}
-		}
+		authConfig := existingAuthConfig
 
 		// Check if auth config has changed
 		authChanged := false
@@ -967,7 +1009,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 						return
 					}
 					// We will hash the password
-					hashedPassword, err := encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
+					hashedPassword := initialPasswordHash
+					if hashedPassword == "" {
+						hashedPassword, err = encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
+					}
 					if err != nil {
 						logger.Warn("failed to hash password: %v", err)
 						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
@@ -1289,9 +1334,27 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 	return nil
 }
 
+// checkURLAccessibilityDialContext is the dial function checkURLAccessibility's
+// HTTP client uses. Overridable in tests that need to reach a loopback-bound
+// httptest.Server; production code must never reassign it.
+var checkURLAccessibilityDialContext = network.SSRFSafeDialContext(10 * time.Second)
+
 // checkURLAccessibility verifies that the given URL is reachable.
 // For file:// URLs it checks that the path exists on disk.
 // For http(s):// URLs it performs a GET and expects a 200 OK.
+//
+// This runs against an admin-supplied URL (framework config's pricing_url,
+// model_parameters_url, mcp_library_url), and no documented deployment
+// (including the air-gapped guide, which uses file:// instead) points these
+// at a private-network HTTP(S) target, so private/link-local/CGNAT addresses
+// are rejected outright rather than allowed. Both the save-time hostname
+// check (ValidateExternalURL) and the actual dial are guarded, since a save-time-only
+// check leaves a DNS-rebinding window between validation and the real
+// connection. Errors are deliberately generic: a non-HTTP service on the
+// target port can make Go's client surface its raw response bytes (e.g. an
+// SSH banner) inside the transport error, which would otherwise be reflected
+// straight back to the caller as a fingerprinting/banner-grab primitive - the
+// detailed error is logged server-side only.
 func checkURLAccessibility(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -1307,13 +1370,26 @@ func checkURLAccessibility(rawURL string) error {
 		}
 		return nil
 	}
-	if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+	if err := bifrost.ValidateExternalURL(rawURL, false); err != nil {
 		return fmt.Errorf("URL validation failed: %w", err)
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{
+			DialContext: checkURLAccessibilityDialContext,
+		},
+	}
 	resp, err := client.Get(rawURL)
 	if err != nil {
-		return err
+		// Log the host and the underlying transport error only: the full URL
+		// can carry userinfo or query secrets, and *url.Error echoes it back.
+		logErr := err
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			logErr = urlErr.Err
+		}
+		logger.Warn(fmt.Sprintf("URL accessibility check failed for host %s: %v", parsed.Hostname(), logErr))
+		return fmt.Errorf("URL is not accessible")
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
