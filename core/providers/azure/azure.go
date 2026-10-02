@@ -3775,11 +3775,7 @@ func (provider *AzureProvider) buildPassthroughURL(ctx *schemas.BifrostContext, 
 		}
 	}
 
-	fullURL := endpoint + path
-	if rawQuery != "" {
-		fullURL += "?" + rawQuery
-	}
-	return fullURL, nil
+	return providerUtils.BuildPassthroughURL(endpoint, path, rawQuery)
 }
 
 // extractAzurePassthroughUsage dispatches usage extraction by the upstream API the

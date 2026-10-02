@@ -4638,9 +4638,9 @@ func (provider *VertexProvider) Passthrough(
 		path = fmt.Sprintf("/projects/%s/locations/%s%s", projectID, keyRegion, path)
 	}
 
-	requestURL := baseURL + path
-	if req.RawQuery != "" {
-		requestURL += "?" + req.RawQuery
+	requestURL, err := providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
 
 	// Only use API key for Google publisher endpoints; Anthropic/Mistral/OpenAPI-style paths require OAuth.
@@ -4791,9 +4791,9 @@ func (provider *VertexProvider) PassthroughStream(
 		path = fmt.Sprintf("/projects/%s/locations/%s%s", projectID, keyRegion, path)
 	}
 
-	requestURL := baseURL + path
-	if req.RawQuery != "" {
-		requestURL += "?" + req.RawQuery
+	requestURL, err := providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
@@ -4854,7 +4854,7 @@ func (provider *VertexProvider) PassthroughStream(
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	startTime := time.Now()
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
+	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
