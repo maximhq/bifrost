@@ -43892,6 +43892,74 @@
               }
             }
           ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-pro-anthropic preserves output_config.effort on the wire (#6740)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with the number only.\"\n    }\n  ],\n  \"reasoning_effort\": \"high\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// DeepSeek's Anthropic-compatible API takes reasoning depth through",
+                  "// output_config.effort and documents thinking.budget_tokens as ignored. The shared",
+                  "// Anthropic converters gated effort on the Claude model ladder, so deepseek-v4-pro",
+                  "// fell through it: the caller's reasoning_effort only became a budget_tokens value",
+                  "// this upstream discards, and a raw output_config.effort was removed by the",
+                  "// capability strip. The wire carried no effort at all, and the caller could not tell",
+                  "// because the answer still looked fine. raw_request is the only place that silence",
+                  "// is visible, which is why this row asserts on the wire and not on the response.",
+                  "pm.test('output_config.effort reaches the DeepSeek wire', function () {",
+                  "  pm.expect(rr, 'no raw_request in extra_fields: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.output_config, 'output_config missing from the wire: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(rr.output_config.effort, 'effort missing or altered on the wire: ' + wire.slice(0, 600)).to.eql('high');",
+                  "});",
+                  "",
+                  "// The alias pins the Anthropic-compatible endpoint, so a wire that came out in the",
+                  "// OpenAI-compatible shape would mean the row stopped testing what it claims.",
+                  "pm.test('the request really went out on the Anthropic-compatible shape', function () {",
+                  "  pm.expect(rr.messages, 'no messages on the wire: ' + wire.slice(0, 600)).to.be.an('array');",
+                  "  pm.expect(rr.max_tokens, 'no max_tokens: Anthropic requires it: ' + wire.slice(0, 600)).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
