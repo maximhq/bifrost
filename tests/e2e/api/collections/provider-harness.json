@@ -184101,6 +184101,382 @@
           }
         }
       ]
+    },
+    {
+      "name": "134. Bare Claude id keeps signed thinking order when routed to Bedrock (#7768 / PR #7767) (bare-claude-thinking-order)",
+      "description": "Issue #7768. POST /anthropic/v1/messages with a bare Claude id (no provider prefix) is converted to Bifrost Responses before governance picks a provider. The order-preserving converter used to run only for a bedrock/ prefix, so a bare id that governance then routed to Bedrock had its signed thinking blocks hoisted to the front of the assistant turn, and Converse refused the replay: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. Each case is self-contained (the harness runs cases in parallel shards): its prerequest creates a header-scoped routing rule sending the bare id to bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0, runs turn 1 to capture a signed thinking block plus a tool_use, and builds the turn 2 replay across a tool result that the request under test sends; the test script deletes the rule (needs managementApiKey when auth is enabled). (1) non-streaming replay, (2) streaming replay, (3) an interleaved turn built from two real turn-1 responses, asserted on the Converse body through x-bf-send-back-raw-request (Bedrock accepts either order, so the sent body is where a hoisted thinking block shows). The deterministic interleaved-order pin is the Go test TestAnthropicIngressBedrockPreservesInterleavedThinkingOrder/claude-opus-5-5; a single live turn is thinking-first, so cases 1 and 2 pin the production path and case 3 pins the order. Folder 68 covers the explicit bedrock/ prefix.",
+      "item": [
+        {
+          "name": "bare claude-sonnet-4-5 routed to bedrock /anthropic/v1/messages turn 2: thinking replayed across a tool result - #7768",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('bareClaudeMarker', marker);",
+                  "pm.variables.unset('bareClaudeRuleID');",
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "var rule = {",
+                  "  name: 'harness-bare-claude-' + marker,",
+                  "  enabled: true,",
+                  "  scope: 'global',",
+                  "  priority: Date.now() % 1000000000,",
+                  "  cel_expression: '\"x-bare-claude-test\" in headers && headers[\"x-bare-claude-test\"] == \"' + marker + '\"',",
+                  "  targets: [{provider: 'bedrock', model: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0', weight: 1}]",
+                  "};",
+                  "var tools = [{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}];",
+                  "var prompt = \"What is the weather in Tokyo right now? Think it through, then use the get_weather tool.\";",
+                  "pm.sendRequest({url: base + '/api/routing/rules', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(rule)}}, function (err, response) {",
+                  "  pm.test('routing API accepts the bare-id to bedrock rule', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(response.code, 'set managementApiKey when auth is enabled: ' + (response && response.text())).to.equal(200);",
+                  "  });",
+                  "  if (err || response.code !== 200) { return; }",
+                  "  pm.variables.set('bareClaudeRuleID', response.json().rule.id);",
+                  "  var turn1 = {model: 'claude-sonnet-4-5', max_tokens: 2048, thinking: {type: 'enabled', budget_tokens: 1024}, tools: tools, messages: [{role: 'user', content: prompt}]};",
+                  "  pm.sendRequest({url: base + '/anthropic/v1/messages', method: 'POST', header: {'Content-Type': 'application/json', 'x-bare-claude-test': marker}, body: {mode: 'raw', raw: JSON.stringify(turn1)}}, function (err1, r1) {",
+                  "    pm.test('turn 1 through the bare id returns a signed thinking block and a tool call', function () {",
+                  "      pm.expect(err1).to.equal(null);",
+                  "      var body = r1.text() || '';",
+                  "      pm.expect(r1.code, 'turn 1 failed: ' + body).to.equal(200);",
+                  "      var types = (r1.json().content || []).map(function (b) { return b.type; });",
+                  "      pm.expect(types, body).to.include('tool_use');",
+                  "      pm.expect(types.indexOf('thinking') !== -1 || types.indexOf('redacted_thinking') !== -1, 'no thinking block: ' + body).to.equal(true);",
+                  "    });",
+                  "    if (err1 || r1.code !== 200) { return; }",
+                  "    var content = r1.json().content || [];",
+                  "    var uses = content.filter(function (b) { return b.type === 'tool_use'; });",
+                  "    var msgs = [{role: 'user', content: prompt}, {role: 'assistant', content: content}, {role: 'user', content: uses.map(function (u) { return {type: 'tool_result', tool_use_id: u.id, content: '{\"city\":\"Tokyo\",\"temp_c\":18}'}; })}];",
+                  "    pm.variables.set('bareClaudeReplay_7768', JSON.stringify(msgs));",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('turn 2 accepts the replayed signed thinking', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Bedrock refused the replayed thinking block').to.not.include('cannot be modified');",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + body).to.equal(200);",
+                  "});",
+                  "var ruleID = pm.variables.get('bareClaudeRuleID');",
+                  "if (ruleID) {",
+                  "  var h = {};",
+                  "  var t = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (t) { h.Authorization = 'Bearer ' + t; }",
+                  "  var del = function (attempt) {",
+                  "    pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules/' + ruleID, method: 'DELETE', header: h}, function (err, response) {",
+                  "      // the harness runs shards in parallel against one sqlite file, so a delete can lose a lock race once",
+                  "      if (!err && response.code === 500 && attempt < 3) { return del(attempt + 1); }",
+                  "      pm.test('temporary bare-id rule is removed', function () {",
+                  "        pm.expect(err).to.equal(null);",
+                  "        pm.expect(response.code, response.text()).to.be.below(300);",
+                  "      });",
+                  "    });",
+                  "  };",
+                  "  del(0);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bare-claude-test",
+                "value": "{{bareClaudeMarker}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-sonnet-4-5\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":{{bareClaudeReplay_7768}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bare claude-sonnet-4-5 routed to bedrock /anthropic/v1/messages streaming turn 2: thinking replayed across a tool result - #7768",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('bareClaudeMarker', marker);",
+                  "pm.variables.unset('bareClaudeRuleID');",
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "var rule = {",
+                  "  name: 'harness-bare-claude-' + marker,",
+                  "  enabled: true,",
+                  "  scope: 'global',",
+                  "  priority: Date.now() % 1000000000,",
+                  "  cel_expression: '\"x-bare-claude-test\" in headers && headers[\"x-bare-claude-test\"] == \"' + marker + '\"',",
+                  "  targets: [{provider: 'bedrock', model: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0', weight: 1}]",
+                  "};",
+                  "var tools = [{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}];",
+                  "var prompt = \"What is the weather in Tokyo right now? Think it through, then use the get_weather tool.\";",
+                  "pm.sendRequest({url: base + '/api/routing/rules', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(rule)}}, function (err, response) {",
+                  "  pm.test('routing API accepts the bare-id to bedrock rule', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(response.code, 'set managementApiKey when auth is enabled: ' + (response && response.text())).to.equal(200);",
+                  "  });",
+                  "  if (err || response.code !== 200) { return; }",
+                  "  pm.variables.set('bareClaudeRuleID', response.json().rule.id);",
+                  "  var turn1 = {model: 'claude-sonnet-4-5', max_tokens: 2048, thinking: {type: 'enabled', budget_tokens: 1024}, tools: tools, messages: [{role: 'user', content: prompt}]};",
+                  "  pm.sendRequest({url: base + '/anthropic/v1/messages', method: 'POST', header: {'Content-Type': 'application/json', 'x-bare-claude-test': marker}, body: {mode: 'raw', raw: JSON.stringify(turn1)}}, function (err1, r1) {",
+                  "    pm.test('turn 1 through the bare id returns a signed thinking block and a tool call', function () {",
+                  "      pm.expect(err1).to.equal(null);",
+                  "      var body = r1.text() || '';",
+                  "      pm.expect(r1.code, 'turn 1 failed: ' + body).to.equal(200);",
+                  "      var types = (r1.json().content || []).map(function (b) { return b.type; });",
+                  "      pm.expect(types, body).to.include('tool_use');",
+                  "      pm.expect(types.indexOf('thinking') !== -1 || types.indexOf('redacted_thinking') !== -1, 'no thinking block: ' + body).to.equal(true);",
+                  "    });",
+                  "    if (err1 || r1.code !== 200) { return; }",
+                  "    var content = r1.json().content || [];",
+                  "    var uses = content.filter(function (b) { return b.type === 'tool_use'; });",
+                  "    var msgs = [{role: 'user', content: prompt}, {role: 'assistant', content: content}, {role: 'user', content: uses.map(function (u) { return {type: 'tool_result', tool_use_id: u.id, content: '{\"city\":\"Tokyo\",\"temp_c\":18}'}; })}];",
+                  "    pm.variables.set('bareClaudeReplay_7768', JSON.stringify(msgs));",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streaming turn 2 accepts the replayed signed thinking', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Bedrock refused the replayed thinking block').to.not.include('cannot be modified');",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + body).to.equal(200);",
+                  "});",
+                  "var ruleID = pm.variables.get('bareClaudeRuleID');",
+                  "if (ruleID) {",
+                  "  var h = {};",
+                  "  var t = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (t) { h.Authorization = 'Bearer ' + t; }",
+                  "  var del = function (attempt) {",
+                  "    pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules/' + ruleID, method: 'DELETE', header: h}, function (err, response) {",
+                  "      // the harness runs shards in parallel against one sqlite file, so a delete can lose a lock race once",
+                  "      if (!err && response.code === 500 && attempt < 3) { return del(attempt + 1); }",
+                  "      pm.test('temporary bare-id rule is removed', function () {",
+                  "        pm.expect(err).to.equal(null);",
+                  "        pm.expect(response.code, response.text()).to.be.below(300);",
+                  "      });",
+                  "    });",
+                  "  };",
+                  "  del(0);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bare-claude-test",
+                "value": "{{bareClaudeMarker}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-sonnet-4-5\",\"max_tokens\":2048,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":{{bareClaudeReplay_7768}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bare claude-sonnet-4-5 routed to bedrock /anthropic/v1/messages interleaved thinking keeps its order in the Converse body - #7768",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('bareClaudeMarker', marker);",
+                  "pm.variables.unset('bareClaudeRuleID');",
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "var tools = [{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}];",
+                  "var rule = {name: 'harness-bare-claude-' + marker, enabled: true, scope: 'global', priority: Date.now() % 1000000000,",
+                  "  cel_expression: '\"x-bare-claude-test\" in headers && headers[\"x-bare-claude-test\"] == \"' + marker + '\"',",
+                  "  targets: [{provider: 'bedrock', model: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0', weight: 1}]};",
+                  "var turn1 = function (city, cb) {",
+                  "  var body = {model: 'claude-sonnet-4-5', max_tokens: 2048, thinking: {type: 'enabled', budget_tokens: 1024}, tools: tools, messages: [{role: 'user', content: 'What is the weather in ' + city + ' right now? Think it through, then use the get_weather tool.'}]};",
+                  "  pm.sendRequest({url: base + '/anthropic/v1/messages', method: 'POST', header: {'Content-Type': 'application/json', 'x-bare-claude-test': marker}, body: {mode: 'raw', raw: JSON.stringify(body)}}, function (err, r) {",
+                  "    pm.test('turn 1 (' + city + ') returns a signed thinking block and a tool call', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      var txt = r.text() || '';",
+                  "      pm.expect(r.code, 'turn 1 failed: ' + txt).to.equal(200);",
+                  "      var types = (r.json().content || []).map(function (b) { return b.type; });",
+                  "      pm.expect(types, txt).to.include('tool_use');",
+                  "      pm.expect(types.indexOf('thinking') !== -1 || types.indexOf('redacted_thinking') !== -1, 'no thinking block: ' + txt).to.equal(true);",
+                  "    });",
+                  "    if (err || r.code !== 200) { return; }",
+                  "    cb(r.json().content || []);",
+                  "  });",
+                  "};",
+                  "pm.sendRequest({url: base + '/api/routing/rules', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(rule)}}, function (err, response) {",
+                  "  pm.test('routing API accepts the bare-id to bedrock rule', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(response.code, 'set managementApiKey when auth is enabled: ' + (response && response.text())).to.equal(200);",
+                  "  });",
+                  "  if (err || response.code !== 200) { return; }",
+                  "  pm.variables.set('bareClaudeRuleID', response.json().rule.id);",
+                  "  turn1('Tokyo', function (a) {",
+                  "    turn1('Osaka', function (b) {",
+                  "      var keep = function (blocks) { return blocks.filter(function (x) { return x.type === 'thinking' || x.type === 'redacted_thinking' || x.type === 'tool_use'; }); };",
+                  "      var turn = keep(a).concat(keep(b));",
+                  "      var uses = turn.filter(function (x) { return x.type === 'tool_use'; });",
+                  "      var msgs = [{role: 'user', content: 'What is the weather in Tokyo and Osaka right now? Think it through, then use the get_weather tool.'}, {role: 'assistant', content: turn}, {role: 'user', content: uses.map(function (u) { return {type: 'tool_result', tool_use_id: u.id, content: '{\"temp_c\":18}'}; })}];",
+                  "      pm.variables.set('bareClaudeInterleaved_7768', JSON.stringify(msgs));",
+                  "      pm.variables.set('bareClaudeInterleavedWant_7768', turn.map(function (x) { return x.type === 'tool_use' ? 'toolUse' : 'reasoning'; }).join(','));",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var want = pm.variables.get('bareClaudeInterleavedWant_7768') || '';",
+                  "pm.test('interleaved replay is accepted', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Bedrock refused the replayed thinking block').to.not.include('cannot be modified');",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('Converse body keeps thinking where the client sent it', function () {",
+                  "  var body = pm.response.json() || {};",
+                  "  var rr = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing - is send_back_raw_request honoured? body=' + pm.response.text()).to.be.an('object');",
+                  "  var assistant = (rr.messages || []).filter(function (m) { return m.role === 'assistant'; })[0];",
+                  "  pm.expect(assistant, 'no assistant message in the Converse body: ' + JSON.stringify(rr)).to.be.an('object');",
+                  "  var got = (assistant.content || []).filter(function (b) { return !b.cachePoint; }).map(function (b) { return b.reasoningContent ? 'reasoning' : (b.toolUse ? 'toolUse' : Object.keys(b).join('+')); }).join(',');",
+                  "  pm.expect(want, 'the case built no interleaved turn').to.not.equal('');",
+                  "  pm.expect(got, 'a hoisted thinking block reorders the turn; sent=' + JSON.stringify(assistant.content)).to.equal(want);",
+                  "});",
+                  "var ruleID = pm.variables.get('bareClaudeRuleID');",
+                  "if (ruleID) {",
+                  "  var h = {};",
+                  "  var t = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (t) { h.Authorization = 'Bearer ' + t; }",
+                  "  var del = function (attempt) {",
+                  "    pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules/' + ruleID, method: 'DELETE', header: h}, function (err, response) {",
+                  "      // the harness runs shards in parallel against one sqlite file, so a delete can lose a lock race once",
+                  "      if (!err && response.code === 500 && attempt < 3) { return del(attempt + 1); }",
+                  "      pm.test('temporary bare-id rule is removed', function () {",
+                  "        pm.expect(err).to.equal(null);",
+                  "        pm.expect(response.code, response.text()).to.be.below(300);",
+                  "      });",
+                  "    });",
+                  "  };",
+                  "  del(0);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bare-claude-test",
+                "value": "{{bareClaudeMarker}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-sonnet-4-5\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":{{bareClaudeInterleaved_7768}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
