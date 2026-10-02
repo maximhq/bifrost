@@ -3683,6 +3683,23 @@ func TestSecurityHeadersMiddleware_APINoStore(t *testing.T) {
 	}
 }
 
+// TestAuthBypassedMiddleware_MarksRequest pins the marker the server installs when there is
+// no config store and so no auth middleware. Handlers that require genuine auth for dangerous
+// changes key off BifrostContextKeyAuthBypassed; an unmarked request reads as authenticated,
+// so without the marker every such guard fails open in exactly the no-auth deployment.
+func TestAuthBypassedMiddleware_MarksRequest(t *testing.T) {
+	var sawBypassed bool
+	handler := lib.ChainMiddlewares(func(ctx *fasthttp.RequestCtx) {
+		sawBypassed, _ = ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	}, AuthBypassedMiddleware())
+
+	handler(&fasthttp.RequestCtx{})
+
+	if !sawBypassed {
+		t.Fatalf("expected request to be marked as auth-bypassed")
+	}
+}
+
 // Copies the root span's attributes out of a flushed trace, synchronously because
 // the tracer pools the trace.
 type captureRootAttrsPlugin struct {

@@ -16,6 +16,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -351,6 +352,17 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
 			return
 		}
+		// Setting a provider's base URL or opting into private networks - like a provider
+		// key's endpoint URL, see requireGenuineAuthForEndpointChange - requires genuine auth.
+		// The destination check below (ValidateExternalURL) only blocks private-network
+		// targets when allow_private_network is false; an unauthenticated caller under the
+		// fail-open bypass could otherwise set both fields together and self-authorize its
+		// own SSRF target. The flag alone also widens what ConfigureDialer lets key-level
+		// URLs (Ollama/SGL/VLLM) reach.
+		if isAuthBypassed(ctx) && providerDialTargetChanged(nil, *payload.NetworkConfig) {
+			SendError(ctx, fasthttp.StatusForbidden, providerDialTargetForbiddenMsg)
+			return
+		}
 		if payload.NetworkConfig.BaseURL != "" {
 			if err := bifrost.ValidateExternalURL(payload.NetworkConfig.BaseURL, payload.NetworkConfig.AllowPrivateNetwork); err != nil {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
@@ -380,6 +392,9 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
 		PromptCache:              payload.PromptCache,
+	}
+	if requireGenuineAuthForInterception(ctx, configstore.ProviderConfig{}, config) {
+		return
 	}
 	// Validate custom provider configuration before persisting
 	if err := lib.ValidateCustomProvider(config, payload.Provider); err != nil {
@@ -565,6 +580,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
 		return
 	}
+	if isAuthBypassed(ctx) && providerDialTargetChanged(oldConfigRaw.NetworkConfig, nc) {
+		SendError(ctx, fasthttp.StatusForbidden, providerDialTargetForbiddenMsg)
+		return
+	}
 	if nc.BaseURL != "" {
 		if err := bifrost.ValidateExternalURL(nc.BaseURL, nc.AllowPrivateNetwork); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
@@ -597,6 +616,11 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	applyProviderConfigUpdates(&config, &payload.providerUpdatePayload, bodyFields)
+	// Runs after the redacted-echo restores above, so a UI save that sends the stored proxy
+	// and CA cert back masked compares equal to what is stored.
+	if requireGenuineAuthForInterception(ctx, *oldConfigRaw, config) {
+		return
+	}
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
 	}
@@ -1581,4 +1605,94 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
+}
+
+// providerInterceptionChanges returns the settings next adds or changes, relative to old, that
+// let a third party read credentials in flight without touching base_url: a caller-chosen
+// proxy, a caller-trusted CA (for the provider or the proxy), skipped TLS verification, or an
+// absolute request_path_overrides URL (GetRequestPath sends the request, key included, straight
+// to it). Removing a proxy, CA or override, turning verification back on, or a path-only
+// override (still sent to the stored base URL) only narrows the exposure and is not reported.
+func providerInterceptionChanges(old, next configstore.ProviderConfig) []string {
+	var oldNC, nextNC schemas.NetworkConfig
+	if old.NetworkConfig != nil {
+		oldNC = *old.NetworkConfig
+	}
+	if next.NetworkConfig != nil {
+		nextNC = *next.NetworkConfig
+	}
+	var oldProxy, nextProxy schemas.ProxyConfig
+	if old.ProxyConfig != nil {
+		oldProxy = *old.ProxyConfig
+	}
+	if next.ProxyConfig != nil {
+		nextProxy = *next.ProxyConfig
+	}
+	widened := func(oldV, nextV *schemas.SecretVar) bool {
+		return nextV.IsSet() && !nextV.Equals(oldV)
+	}
+	var changed []string
+	if nextNC.InsecureSkipVerify && !oldNC.InsecureSkipVerify {
+		changed = append(changed, "network_config.insecure_skip_verify")
+	}
+	if widened(oldNC.CACertPEM, nextNC.CACertPEM) {
+		changed = append(changed, "network_config.ca_cert_pem")
+	}
+	if widened(oldProxy.URL, nextProxy.URL) {
+		changed = append(changed, "proxy_config.url")
+	}
+	if widened(oldProxy.CACertPEM, nextProxy.CACertPEM) {
+		changed = append(changed, "proxy_config.ca_cert_pem")
+	}
+	var oldOverrides, nextOverrides map[schemas.RequestType]string
+	if old.CustomProviderConfig != nil {
+		oldOverrides = old.CustomProviderConfig.RequestPathOverrides
+	}
+	if next.CustomProviderConfig != nil {
+		nextOverrides = next.CustomProviderConfig.RequestPathOverrides
+	}
+	for requestType, override := range nextOverrides {
+		if providerUtils.IsAbsoluteRequestURL(override) && override != oldOverrides[requestType] {
+			changed = append(changed, "custom_provider_config.request_path_overrides."+string(requestType))
+		}
+	}
+	slices.Sort(changed)
+	return changed
+}
+
+// requireGenuineAuthForInterception rejects a provider create/update under the fail-open
+// bypass that would let a third party read provider credentials in flight (see
+// providerInterceptionChanges) - the same credential exposure a caller-chosen base_url
+// gives, reached without touching base_url. On rejection this sends the response and
+// returns true; callers should return immediately.
+func requireGenuineAuthForInterception(ctx *fasthttp.RequestCtx, old, next configstore.ProviderConfig) bool {
+	if !isAuthBypassed(ctx) {
+		return false
+	}
+	changed := providerInterceptionChanges(old, next)
+	if len(changed) == 0 {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing a provider's proxy, TLS trust or absolute request URL settings (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
+	return true
+}
+
+const providerDialTargetForbiddenMsg = "Setting a provider's base URL or allow_private_network requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first."
+
+// providerDialTargetChanged reports whether next widens where the provider can dial compared
+// to the stored config (nil on create): a new or different base URL, or allow_private_network
+// turned on. The flag counts even with no base URL, because ConfigureDialer applies it to
+// key-level URLs too (Ollama/SGL/VLLM), and it counts behind an unchanged base URL because
+// the dialer enforces it at connect time, where DNS can move an allowed hostname to a private
+// IP. Clearing the base URL or turning the flag off only narrows the target and passes.
+func providerDialTargetChanged(old *schemas.NetworkConfig, next schemas.NetworkConfig) bool {
+	var oldBaseURL string
+	var oldAllowPrivate bool
+	if old != nil {
+		oldBaseURL, oldAllowPrivate = old.BaseURL, old.AllowPrivateNetwork
+	}
+	if next.AllowPrivateNetwork && !oldAllowPrivate {
+		return true
+	}
+	return next.BaseURL != "" && next.BaseURL != oldBaseURL
 }
