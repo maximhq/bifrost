@@ -782,12 +782,18 @@ func TestUpdateConfig_RejectsMissingIssuerURLForDiscovery(t *testing.T) {
 			}
 			h := &ConfigHandler{store: cfg}
 
-			body := `{"client_config":{"mcp_server_auth_mode":"` + string(mode) + `"}}`
-			ctx := putConfigCtx(body)
-			h.updateConfig(ctx)
+			for name, body := range map[string]string{
+				"omitted":             `{"client_config":{"mcp_server_auth_mode":"` + string(mode) + `"}}`,
+				"unset env reference": `{"client_config":{"mcp_server_auth_mode":"` + string(mode) + `","oauth2_server_config":{"issuer_url":"env.BIFROST_TEST_UNSET_ISSUER_URL"}}}`,
+			} {
+				t.Run(name, func(t *testing.T) {
+					ctx := putConfigCtx(body)
+					h.updateConfig(ctx)
 
-			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
-			assert.Contains(t, string(ctx.Response.Body()), "issuer_url")
+					require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+					assert.Contains(t, string(ctx.Response.Body()), "issuer_url")
+				})
+			}
 		})
 	}
 }

@@ -1160,8 +1160,10 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 			ctx.Request.SetRequestURI(route)
 
 			nextCalled := false
+			bypassMarked := false
 			next := func(ctx *fasthttp.RequestCtx) {
 				nextCalled = true
+				bypassMarked, _ = ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
 			}
 
 			middleware := am.APIMiddleware()
@@ -1170,6 +1172,12 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 
 			if !nextCalled {
 				t.Errorf("Next handler should be called for whitelisted route %s", route)
+			}
+			// A whitelisted request reaches its handler with no credential checked, so
+			// handlers that gate on genuine auth (proxy config, dial targets) must see
+			// it as bypassed rather than as an authenticated admin.
+			if !bypassMarked {
+				t.Errorf("whitelisted route %s must be marked auth-bypassed", route)
 			}
 		})
 	}
@@ -3693,15 +3701,22 @@ func TestSecurityHeadersMiddleware_APINoStore(t *testing.T) {
 // changes key off BifrostContextKeyAuthBypassed; an unmarked request reads as authenticated,
 // so without the marker every such guard fails open in exactly the no-auth deployment.
 func TestAuthBypassedMiddleware_MarksRequest(t *testing.T) {
-	var sawBypassed bool
+	var sawBypassed, sawLocalAdmin bool
 	handler := lib.ChainMiddlewares(func(ctx *fasthttp.RequestCtx) {
 		sawBypassed, _ = ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+		sawLocalAdmin, _ = ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
 	}, AuthBypassedMiddleware())
 
 	handler(&fasthttp.RequestCtx{})
 
 	if !sawBypassed {
 		t.Fatalf("expected request to be marked as auth-bypassed")
+	}
+	// Same posture as the auth-disabled branch of the real middleware: the request
+	// is the local admin for ordinary handlers (notifications check this marker
+	// directly), while the bypass marker keeps the sensitive-change guards closed.
+	if !sawLocalAdmin {
+		t.Fatalf("expected request to be marked local admin as well")
 	}
 }
 

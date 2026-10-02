@@ -4833,8 +4833,11 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 	}
 
 	// Extended-thinking token count. Already a subset of OutputTokens upstream, so it
-	// carries across unchanged and OutputTokens/TotalTokens are left alone.
-	if billable.OutputTokensDetails != nil && billable.OutputTokensDetails.ThinkingTokens > 0 {
+	// carries across unchanged and OutputTokens/TotalTokens are left alone. Presence is
+	// the signal: Anthropic reports an explicit thinking_tokens: 0 when thinking was
+	// requested but adaptive thinking chose not to think, and that breakdown must reach
+	// the client too (#7649).
+	if billable.OutputTokensDetails != nil {
 		if bifrostUsage.OutputTokensDetails == nil {
 			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
 		}
@@ -4893,8 +4896,11 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 
 	// Reasoning tokens map back to Anthropic's thinking-token breakdown. Unlike the
 	// cache counters above, OutputTokens is not adjusted: thinking tokens are already
-	// inside it on both sides.
-	if bifrostUsage.OutputTokensDetails != nil && bifrostUsage.OutputTokensDetails.ReasoningTokens > 0 {
+	// inside it on both sides. An explicit zero is forwarded as well; details that only
+	// carry web-search counts are not a thinking breakdown and stay omitted, matching
+	// Anthropic's own non-thinking responses.
+	if bifrostUsage.OutputTokensDetails != nil &&
+		(bifrostUsage.OutputTokensDetails.ReasoningTokens > 0 || bifrostUsage.OutputTokensDetails.NumSearchQueries == nil) {
 		anthropicUsage.OutputTokensDetails = &AnthropicOutputTokensDetails{
 			ThinkingTokens: bifrostUsage.OutputTokensDetails.ReasoningTokens,
 		}

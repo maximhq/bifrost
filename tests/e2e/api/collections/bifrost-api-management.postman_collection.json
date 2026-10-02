@@ -10790,6 +10790,1122 @@
           }
         }
       ]
+    },
+    {
+      "name": "Provider Secret Redaction",
+      "description": "All standard providers: create/get/list/update/delete disabled keys using only env.BIFROST_SECRET_REDACTION_CANARY. Start the gateway with BIFROST_SECRET_REDACTION_CANARY=synthetic-secretvar-harness-canary-0123456789. Exact masks reject missing/unresolved canaries. Provider responses must omit keys. Existing providers/keys are preserved; only test-created resources are deleted. Authenticated passes forward admin_auth_header to every management request. No inference or live model discovery is requested.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var auth = pm.variables.get('admin_auth_header');",
+              "if (auth) { pm.request.headers.upsert({key: 'Authorization', value: auth}); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// These requests exercise management APIs only. Disabled keys prevent discovery/inference.",
+              "var fixture = JSON.parse(pm.variables.get('secret_redaction_fixture'));",
+              "var provider = fixture.provider;",
+              "var base = pm.variables.replaceIn('{{base_url}}');",
+              "var providerPath = '/api/providers/' + provider;",
+              "var key = fixture.key;",
+              "key.id = 'secretvar-' + pm.variables.replaceIn('{{$guid}}');",
+              "key.name = key.id;",
+              "var keyPath = providerPath + '/keys/' + key.id;",
+              "var canary = 'synthetic-secretvar-harness-canary-0123456789';",
+              "var ref = 'env.BIFROST_SECRET_REDACTION_CANARY';",
+              "var masked = canary.slice(0, 4) + new Array(25).join('*') + canary.slice(-4);",
+              "var headers = {'Content-Type': 'application/json'};",
+              "var auth = pm.variables.get('admin_auth_header');",
+              "if (auth) { headers.Authorization = auth; }",
+              "var providerCreated = false;",
+              "var keyAttempted = false;",
+              "var keyCreated = false;",
+              "var secretPaths = [];",
+              "function collectRefs(value, path) {",
+              "  if (value === ref) { secretPaths.push(path); }",
+              "  else if (value && typeof value === 'object') {",
+              "    Object.keys(value).forEach(function (name) {",
+              "      collectRefs(value[name], path ? path + '.' + name : name);",
+              "    });",
+              "  }",
+              "}",
+              "collectRefs(key, '');",
+              "function atPath(value, path) {",
+              "  path.split('.').forEach(function (name) { value = value && value[name]; });",
+              "  return value;",
+              "}",
+              "function send(method, path, body, callback) {",
+              "  var req = {method: method, url: base + path, header: headers};",
+              "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+              "  pm.sendRequest(req, callback);",
+              "}",
+              "function status(label, err, res, expected) {",
+              "  pm.test(provider + ': ' + label + ' status', function () {",
+              "    pm.expect(err || null, label + ' transport error').to.equal(null);",
+              "    pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(expected);",
+              "  });",
+              "  return !err && res && res.code === expected;",
+              "}",
+              "function checkKey(label, res, listed) {",
+              "  var result = null;",
+              "  pm.test(provider + ': ' + label + ' masks all secrets and preserves references and literals', function () {",
+              "    var body = res.json();",
+              "    if (listed) {",
+              "      pm.expect(body.keys, 'missing key list').to.be.an('array');",
+              "      result = body.keys.filter(function (candidate) { return candidate.id === key.id; })[0];",
+              "    } else { result = body; }",
+              "    pm.expect(result, 'test key missing').to.be.an('object');",
+              "    pm.expect(result.id).to.equal(key.id);",
+              "    pm.expect(result.enabled).to.equal(false);",
+              "    pm.expect(res.text(), 'resolved canary leaked').not.to.include(canary);",
+              "    secretPaths.forEach(function (path) {",
+              "      var field = atPath(result, path);",
+              "      pm.expect(field, path + ' missing').to.be.an('object');",
+              "      pm.expect(field.ref, path + ' reference').to.equal(ref);",
+              "      pm.expect(field.type, path + ' source').to.equal('env');",
+              "      // Checking the exact mask also rejects unresolved/mismatched server canaries.",
+              "      pm.expect(field.value, path + ' unmasked or canary unset/mismatched').to.equal(masked);",
+              "    });",
+              "    pm.expect(result.aliases.literal.region.value).to.equal('us-east-1');",
+              "    pm.expect(result.aliases.literal.project_id.value).to.equal('literal-project');",
+              "  });",
+              "  return result;",
+              "}",
+              "function checkProvider(label, res, listed) {",
+              "  pm.test(provider + ': ' + label + ' omits keys and resolved secrets', function () {",
+              "    var body = res.json();",
+              "    if (listed) {",
+              "      pm.expect(body.providers).to.be.an('array');",
+              "      body = body.providers.filter(function (item) { return item.name === provider; })[0];",
+              "    }",
+              "    pm.expect(body, 'provider missing').to.be.an('object');",
+              "    pm.expect(body.name).to.equal(provider);",
+              "    pm.expect(body.keys, 'provider responses should omit keys').to.equal(undefined);",
+              "    pm.expect(res.text(), 'resolved canary leaked').not.to.include(canary);",
+              "  });",
+              "}",
+              "function cleanupProvider() {",
+              "  if (!providerCreated) { return; }",
+              "  send('DELETE', providerPath, null, function (err, res) {",
+              "    if (status('temporary provider cleanup', err, res, 200)) {",
+              "      send('GET', providerPath, null, function (err2, res2) {",
+              "        status('temporary provider removed', err2, res2, 404);",
+              "      });",
+              "    }",
+              "  });",
+              "}",
+              "function cleanup() {",
+              "  if (!keyAttempted) { cleanupProvider(); return; }",
+              "  send('DELETE', keyPath, null, function (err, res) {",
+              "    // A failed create may have persisted the key before returning an error.",
+              "    // Only that cleanup path accepts 404; successful creates require deletion.",
+              "    var expected = !keyCreated && res && res.code === 404 ? 404 : 200;",
+              "    if (status('temporary key cleanup', err, res, expected) && expected === 200) {",
+              "      checkKey('key delete', res, false);",
+              "    }",
+              "    send('GET', keyPath, null, function (err2, res2) {",
+              "      status('temporary key removed', err2, res2, 404);",
+              "      cleanupProvider();",
+              "    });",
+              "  });",
+              "}",
+              "function exerciseKey() {",
+              "  keyAttempted = true;",
+              "  send('POST', providerPath + '/keys', key, function (err, res) {",
+              "    if (!status('key create', err, res, 200)) { cleanup(); return; }",
+              "    keyCreated = true;",
+              "    checkKey('key create', res, false);",
+              "    var steps = [",
+              "      {label: 'key get', path: keyPath, shape: 'key'},",
+              "      {label: 'key list', path: providerPath + '/keys', shape: 'keys'},",
+              "      {label: 'provider get', path: providerPath, shape: 'provider'},",
+              "      {label: 'provider list', path: '/api/providers', shape: 'providers'}",
+              "    ];",
+              "    var roundTrip = null;",
+              "    function next() {",
+              "      var step = steps.shift();",
+              "      if (!step) {",
+              "        if (!roundTrip || roundTrip.id !== key.id) { cleanup(); return; }",
+              "        // Echo the redacted wire object as an update: its env references must survive.",
+              "        send('PUT', keyPath, roundTrip, function (err3, res3) {",
+              "          if (!status('key update', err3, res3, 200)) { cleanup(); return; }",
+              "          checkKey('key update', res3, false);",
+              "          send('GET', keyPath, null, function (err4, res4) {",
+              "            if (status('key get after update', err4, res4, 200)) { checkKey('key get after update', res4, false); }",
+              "            cleanup();",
+              "          });",
+              "        });",
+              "        return;",
+              "      }",
+              "      send('GET', step.path, null, function (err2, res2) {",
+              "        if (!status(step.label, err2, res2, 200)) { cleanup(); return; }",
+              "        if (step.shape === 'key') { roundTrip = checkKey(step.label, res2, false); }",
+              "        else if (step.shape === 'keys') { checkKey(step.label, res2, true); }",
+              "        else { checkProvider(step.label, res2, step.shape === 'providers'); }",
+              "        next();",
+              "      });",
+              "    }",
+              "    next();",
+              "  });",
+              "}",
+              "if (status('initial provider list', null, pm.response, 200)) {",
+              "  var providers = null;",
+              "  pm.test(provider + ': initial provider list has an array', function () {",
+              "    providers = pm.response.json().providers;",
+              "    pm.expect(providers).to.be.an('array');",
+              "  });",
+              "  if (Array.isArray(providers)) {",
+              "    if (providers.some(function (item) { return item.name === provider; })) { exerciseKey(); }",
+              "    else {",
+              "      send('POST', '/api/providers', {",
+              "        provider: provider,",
+              "        concurrency_and_buffer_size: {concurrency: 1, buffer_size: 1}",
+              "      }, function (err, res) {",
+              "        if (!status('temporary standard provider create', err, res, 200)) { return; }",
+              "        providerCreated = true;",
+              "        exerciseKey();",
+              "      });",
+              "    }",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "anthropic - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"anthropic\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"azure\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"endpoint\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"azure_key_config\": {\n      \"endpoint\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"client_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"client_secret\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"tenant_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"bedrock\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"inference_profile_arn\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"bedrock_key_config\": {\n      \"access_key\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"secret_key\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"session_token\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"arn\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"role_arn\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"external_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"session_name\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"batch_role_arn\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"endpoints\": {\n        \"runtime\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"control_plane\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"mantle\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"agent_runtime\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"s3\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"bedrock_mantle\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"bedrock_mantle_key_config\": {\n      \"access_key\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"secret_key\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"session_token\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"role_arn\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"external_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"session_name\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"endpoints\": {\n        \"runtime\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"control_plane\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"mantle\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"agent_runtime\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"s3\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cerebras - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"cerebras\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cohere - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"cohere\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"deepseek\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"gemini\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "groq - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"groq\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mistral - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"mistral\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "ollama - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"ollama\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"ollama_key_config\": {\n      \"url\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "opencode-go - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"opencode-go\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "opencode-zen - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"opencode-zen\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"openai\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "parasail - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"parasail\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "perplexity - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"perplexity\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "sgl - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"sgl\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"sgl_key_config\": {\n      \"url\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"vertex\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_number\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"vertex_key_config\": {\n      \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"project_number\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"auth_credentials\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"openrouter\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "elevenlabs - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"elevenlabs\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "huggingface - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"huggingface\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "nebius - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"nebius\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "xai - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"xai\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "replicate - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"replicate\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vllm - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"vllm\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"vllm_key_config\": {\n      \"url\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"model_name\": \"secretvar-test-model\"\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "runway - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"runway\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "runware - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"runware\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "fireworks - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"fireworks\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "sarvam - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"sarvam\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "wafer - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"wafer\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "github-copilot - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"github-copilot\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"github_copilot_key_config\": {\n      \"app_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"installation_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"repository_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"private_key\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"github_domain\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"databricks\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"databricks_key_config\": {\n      \"workspace_url\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"client_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"client_secret\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "typesafe - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"typesafe\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

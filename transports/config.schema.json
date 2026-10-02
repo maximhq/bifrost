@@ -67,6 +67,18 @@
     },
     "client": {
       "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": { "mcp_server_auth_mode": { "enum": ["oauth", "both"] } },
+            "required": ["mcp_server_auth_mode"]
+          },
+          "then": {
+            "required": ["oauth2_server_config"],
+            "properties": { "oauth2_server_config": { "required": ["issuer_url"] } }
+          }
+        }
+      ],
       "description": "Client configuration settings",
       "properties": {
         "drop_excess_requests": {

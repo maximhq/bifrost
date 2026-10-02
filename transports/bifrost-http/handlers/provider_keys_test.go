@@ -19,6 +19,60 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+func TestProviderKeyReadRedactsNestedSecrets(t *testing.T) {
+	const canary = "synthetic-provider-key-secret-canary-0123456789"
+	const ref = "env.BIFROST_PROVIDER_KEY_REDACTION_TEST"
+	t.Setenv("BIFROST_PROVIDER_KEY_REDACTION_TEST", canary)
+	secret := func() *schemas.SecretVar { return schemas.NewSecretVar(ref) }
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle} {
+		t.Run(string(provider), func(t *testing.T) {
+			key := schemas.Key{
+				ID: "redaction-key", Name: "redaction-key", Value: *secret(),
+				Aliases: schemas.KeyAliases{"test": {ModelID: "model", Region: secret(), ProjectID: secret()}},
+			}
+			if provider == schemas.Bedrock {
+				key.BedrockKeyConfig = &schemas.BedrockKeyConfig{
+					ProjectID: secret(), Endpoints: &schemas.BedrockEndpoints{Runtime: secret()},
+				}
+			} else {
+				key.BedrockMantleKeyConfig = &schemas.BedrockMantleKeyConfig{
+					ProjectID: secret(), Endpoints: &schemas.BedrockEndpoints{Runtime: secret()},
+				}
+			}
+			h := &ProviderHandler{inMemoryStore: &lib.Config{
+				Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+					provider: {Keys: []schemas.Key{key}},
+				},
+			}}
+			for name, handler := range map[string]func(*fasthttp.RequestCtx){
+				"get": h.getProviderKey, "list": h.listProviderKeys,
+			} {
+				t.Run(name, func(t *testing.T) {
+					ctx := newTestRequestCtx("")
+					ctx.SetUserValue("provider", string(provider))
+					ctx.SetUserValue("key_id", key.ID)
+					handler(ctx)
+					body := string(ctx.Response.Body())
+					if ctx.Response.StatusCode() != fasthttp.StatusOK {
+						t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), body)
+					}
+					if strings.Contains(body, canary) {
+						t.Fatalf("resolved secret leaked: %s", body)
+					}
+					// All five populated fields (including the credential control)
+					// must be present, resolved, masked, and retain their references.
+					if strings.Count(body, ref) != 5 || strings.Count(body, secret().Redacted().GetValue()) != 5 {
+						t.Fatalf("missing masked values or references: %s", body)
+					}
+					if key.Aliases["test"].Region.GetValue() != canary {
+						t.Fatal("reading a key modified the live secret")
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestMergeUpdatedKey_Value locks in the invariant that a masked key preview can
 // never be persisted as the real key value. The provider keys API renders keys
 // redacted on GET; when a client echoes that placeholder back on update, the

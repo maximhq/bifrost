@@ -399,6 +399,11 @@ func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage) {
 }
 
 // ToOpenAIResponsesRequest converts a Bifrost responses request to OpenAI format
+// bareTextContentBlockType is the Anthropic/Gemini spelling of a text content block.
+// OpenAI's Responses input only knows input_text / output_text, so the converter
+// retags it by role.
+const bareTextContentBlockType schemas.ResponsesMessageContentBlockType = "text"
+
 func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
@@ -483,6 +488,32 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
+		// A bare "text" content block (the Anthropic/Gemini spelling) is not an OpenAI
+		// content part: OpenAI rejects it with "Invalid value: 'text'". Retag by role,
+		// output_text on assistant history and input_text elsewhere, before the later
+		// passes that key on those canonical types. Clone the blocks first; the caller's
+		// input (shared with fallback providers) stays untouched.
+		if message.Content != nil && (message.Type == nil || *message.Type == schemas.ResponsesMessageTypeMessage) {
+			for _, b := range message.Content.ContentBlocks {
+				if b.Type != bareTextContentBlockType {
+					continue
+				}
+				target := schemas.ResponsesInputMessageContentBlockTypeText
+				if message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleAssistant {
+					target = schemas.ResponsesOutputMessageContentTypeText
+				}
+				contentCopy := *message.Content
+				contentCopy.ContentBlocks = slices.Clone(message.Content.ContentBlocks)
+				for i := range contentCopy.ContentBlocks {
+					if contentCopy.ContentBlocks[i].Type == bareTextContentBlockType {
+						contentCopy.ContentBlocks[i].Type = target
+					}
+				}
+				message.Content = &contentCopy
+				break
+			}
+		}
+
 		// OpenAI's Responses schema requires "detail" on input_image items, and strict
 		// downstream validators (e.g. vLLM importing the official OpenAI types) reject
 		// requests without it. Blocks converted from non-OpenAI surfaces (Anthropic,
@@ -521,6 +552,93 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		if (message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||
 			(message.Type == nil && message.ResponsesReasoning != nil) {
 			message.Role = nil
+		}
+
+		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
+		// Strip it from all items. message is a value copy, so the caller's input is untouched.
+		message.Status = nil
+
+		// Gemini streaming generates non-standard IDs for reasoning items (msg_<id>_reasoning_N,
+		// reasoning_N) and function_call_output items (func_resp_<id>). OpenAI rejects these.
+		// Drop them; the call_id and output pairing are unaffected. message is a value copy.
+		// But preserve native OpenAI reasoning IDs (rs_ prefix) which are needed for replay.
+		if message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeReasoning ||
+			*message.Type == schemas.ResponsesMessageTypeFunctionCallOutput ||
+			*message.Type == schemas.ResponsesMessageTypeWebSearchCall) &&
+			message.ID != nil && *message.ID != "" &&
+			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) {
+			message.ID = nil
+		}
+
+		// Gemini sets Name on function_call_output items (the tool name), but OpenAI's
+		// function_call_output does not accept this field. Strip it. message is a value copy.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
+			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Name != nil {
+			// Clone to avoid mutating the caller's input
+			toolMsgCopy := *message.ResponsesToolMessage
+			toolMsgCopy.Name = nil
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+
+		// Strip signatures (e.g., Gemini thoughtSignature) from content blocks.
+		// OpenAI does not accept this field on input. Only mutate if a signature exists;
+		// copy message.Content and clone the ContentBlocks slice before clearing to preserve
+		// the caller's data and avoid data races with fallback providers.
+		if message.Content != nil {
+			for _, b := range message.Content.ContentBlocks {
+				if b.Signature == nil {
+					continue
+				}
+				// Signature found; copy content and blocks before clearing
+				contentCopy := *message.Content
+				contentCopy.ContentBlocks = slices.Clone(message.Content.ContentBlocks)
+				for i := range contentCopy.ContentBlocks {
+					contentCopy.ContentBlocks[i].Signature = nil
+				}
+				message.Content = &contentCopy
+				break
+			}
+		}
+
+		// OpenAI's web_search_call input item carries only id, status and action. The
+		// Gemini-shaped history also sets call_id and name, which OpenAI rejects with
+		// "Unknown parameter: input[N].call_id". Clone before clearing.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeWebSearchCall &&
+			message.ResponsesToolMessage != nil &&
+			(message.ResponsesToolMessage.CallID != nil || message.ResponsesToolMessage.Name != nil) {
+			toolMsgCopy := *message.ResponsesToolMessage
+			toolMsgCopy.CallID = nil
+			toolMsgCopy.Name = nil
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+
+		// arguments is a required string on function_call items. Gemini streaming emits
+		// "" for argument-less calls and foreign histories may omit the field; OpenAI
+		// rejects both with "Missing required parameter: input[N].arguments", so send the
+		// empty object. Clone before setting.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCall &&
+			(message.ResponsesToolMessage == nil || message.ResponsesToolMessage.Arguments == nil ||
+				*message.ResponsesToolMessage.Arguments == "") {
+			var toolMsgCopy schemas.ResponsesToolMessage
+			if message.ResponsesToolMessage != nil {
+				toolMsgCopy = *message.ResponsesToolMessage
+			}
+			toolMsgCopy.Arguments = schemas.Ptr("{}")
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+
+		// summary is a required array on reasoning items. A reasoning item that arrives
+		// without one (a foreign shape the schema could not map) must still carry
+		// "summary": [] - OpenAI accepts that and rejects the item without the field;
+		// a nil slice would marshal as null. Clone before setting.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeReasoning {
+			if message.ResponsesReasoning == nil {
+				message.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}
+			} else if message.ResponsesReasoning.Summary == nil {
+				reasoningCopy := *message.ResponsesReasoning
+				reasoningCopy.Summary = []schemas.ResponsesReasoningSummary{}
+				message.ResponsesReasoning = &reasoningCopy
+			}
 		}
 
 		if message.ResponsesReasoning != nil {
