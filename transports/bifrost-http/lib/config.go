@@ -1302,8 +1302,10 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	// requirement must not silently run with a Host-derived issuer.
 	if cc.IsMCPOAuthDiscoveryEnabled() {
 		oc := cc.OAuth2ServerConfig
-		if oc == nil || !oc.IssuerURL.IsSet() {
-			return fmt.Errorf("oauth2_server_config.issuer_url must be set when mcp_server_auth_mode is oauth or both")
+		// A reference ("env.X") counts as set even when it resolves to nothing,
+		// so the resolved value is checked too; the error never echoes it.
+		if oc == nil || !oc.IssuerURL.IsSet() || oc.IssuerURL.GetValue() == "" {
+			return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
 		}
 	}
 	return nil

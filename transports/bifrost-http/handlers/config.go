@@ -482,8 +482,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// misconfiguration (validateClientConfig enforces the same invariant at
 	// load time, for config.json and pre-existing DB rows).
 	if (effectiveAuthMode == configstoreTables.MCPServerAuthModeOAuth || effectiveAuthMode == configstoreTables.MCPServerAuthModeBoth) &&
-		(effectiveOAuth2Config == nil || !effectiveOAuth2Config.IssuerURL.IsSet()) {
-		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set when mcp_server_auth_mode is oauth or both")
+		(effectiveOAuth2Config == nil || !effectiveOAuth2Config.IssuerURL.IsSet() || effectiveOAuth2Config.IssuerURL.GetValue() == "") {
+		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
 		return
 	}
 
@@ -1378,8 +1378,19 @@ func checkURLAccessibility(rawURL string) error {
 		Transport: &http.Transport{
 			DialContext: checkURLAccessibilityDialContext,
 		},
+		// The operator validated this URL, not wherever it redirects: a redirect
+		// is returned as-is and fails the 200 check below instead of being followed.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
-	resp, err := client.Get(rawURL)
+	reqCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		// Log the host and the underlying transport error only: the full URL
 		// can carry userinfo or query secrets, and *url.Error echoes it back.

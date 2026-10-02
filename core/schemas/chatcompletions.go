@@ -1789,6 +1789,10 @@ const (
 	BifrostServiceTierPriority    BifrostServiceTier = "priority"
 	BifrostServiceTierUltrafast   BifrostServiceTier = "ultrafast"
 	BifrostServiceTierProvisioned BifrostServiceTier = "provisioned"
+	// BifrostServiceTierFast is OpenAI Fast mode, the Priority tier renamed on
+	// 2026-07-30. OpenAI accepts "priority" and "fast" interchangeably and bills
+	// both at the same rates, so the two values share the priority pricing columns.
+	BifrostServiceTierFast BifrostServiceTier = "fast"
 )
 
 type BifrostReasoningDetailsType string

@@ -1417,6 +1417,9 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			url := string(ctx.Request.URI().PathOriginal())
 			// We skip authorization for the login route
 			if shouldSkip(authConfig, url) {
+				// No credential was checked, so handlers that gate on genuine auth
+				// must not mistake a whitelisted request for an authenticated admin.
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
 				next(ctx)
 				return
 			}
@@ -1869,6 +1872,10 @@ func GetObservabilityPlugins(plugins []schemas.BasePlugin) []schemas.Observabili
 func AuthBypassedMiddleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			// Mirror the auth-disabled branch of the real middleware: the request
+			// acts as the local admin for ordinary handlers, and the bypass marker
+			// keeps the guards on dangerous changes closed.
+			ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
 			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
 			next(ctx)
 		}

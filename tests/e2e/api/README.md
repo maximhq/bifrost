@@ -2,6 +2,40 @@
 
 End-to-end API tests for the Bifrost API using Postman collections and [Newman](https://www.npmjs.com/package/newman) (CLI).
 
+## Provider secret redaction
+
+The API management collection's `Provider Secret Redaction` folder covers every
+standard provider, including each provider's credential and alias fields. It uses
+disabled keys and a synthetic canary, with no inference requests. The script tests
+also compare the fixtures against the Go provider registry and secret-field definitions.
+
+The gateway process must have this exact environment variable set before startup:
+
+```bash
+export BIFROST_SECRET_REDACTION_CANARY=synthetic-secretvar-harness-canary-0123456789
+```
+
+Run the focused checks against your test gateway:
+
+```bash
+node tests/e2e/api/collections/collection-scripts.test.mjs
+newman run tests/e2e/api/collections/bifrost-api-management.postman_collection.json \
+  --folder "Provider Secret Redaction" \
+  --env-var base_url=http://localhost:8080 \
+  --timeout-script 120000
+```
+
+For an authenticated gateway, also pass `--env-var "admin_auth_header=$ADMIN_AUTH_HEADER"`.
+The folder forwards this header to its setup, assertion, and cleanup requests.
+The normal API runner runs both auth modes; the release API integration job and
+its local wrapper supply the canary before starting the gateway.
+
+Each case creates a uniquely named disabled key, checks create/get/list/update/delete
+responses, and verifies cleanup. Existing keys and providers are preserved; providers
+created by a case are deleted afterward. Missing fields, missing references, unset or
+mismatched canaries, unexpected HTTP statuses, and failed cleanup fail the test.
+Use only the documented synthetic canary, never a real credential.
+
 ## Azure streaming preamble fallback
 
 These two deterministic cases use a local SSE fixture and an isolated gateway.

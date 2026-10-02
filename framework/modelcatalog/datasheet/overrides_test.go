@@ -1140,3 +1140,36 @@ func TestPatchPricing_TimeOfDayFields(t *testing.T) {
 		assert.Same(t, baseSchedule, base.PeakHours)
 	})
 }
+
+func TestPatchPricing_UltrafastAbove272kRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "gpt-6-astra", Provider: "openai", Mode: "responses"}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenAbove272kTokensUltrafast:           bifrost.Ptr(0.00012),
+		OutputCostPerTokenAbove272kTokensUltrafast:          bifrost.Ptr(0.00045),
+		CacheReadInputTokenCostAbove272kTokensUltrafast:     bifrost.Ptr(0.000012),
+		CacheCreationInputTokenCostAbove272kTokensUltrafast: bifrost.Ptr(0.00015),
+	})
+	require.NotNil(t, patched.InputCostPerTokenAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00012, *patched.InputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, patched.OutputCostPerTokenAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00045, *patched.OutputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, patched.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	assert.Equal(t, 0.000012, *patched.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00015, *patched.CacheCreationInputTokenCostAbove272kTokensUltrafast)
+}
+
+func TestPatchPricing_PriorityAbove272kCacheCreationRate(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "gpt-6-astra", Provider: "openai", Mode: "responses",
+		CacheCreationInputTokenCostPriority: bifrost.Ptr(0.000025)}
+
+	patched := patchPricing(base, Options{
+		CacheCreationInputTokenCostAbove272kTokensPriority: bifrost.Ptr(0.00005),
+	})
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove272kTokensPriority)
+	assert.Equal(t, 0.00005, *patched.CacheCreationInputTokenCostAbove272kTokensPriority)
+	// Untouched sibling survives the patch.
+	require.NotNil(t, patched.CacheCreationInputTokenCostPriority)
+	assert.Equal(t, 0.000025, *patched.CacheCreationInputTokenCostPriority)
+}
