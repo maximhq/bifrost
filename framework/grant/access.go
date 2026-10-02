@@ -135,6 +135,18 @@ func (a *Access) IsMCPToolAllowed(toolPattern string) bool {
 	return a.compose(base, allowsTool(a.scoping, toolPattern))
 }
 
+// IsAgentAllowed implements schemas.Access.
+func (a *Access) IsAgentAllowed(agentName string) bool {
+	if a == nil || agentName == "" {
+		return false
+	}
+	base := a.anyBase(func(p schemas.Permit) bool { return allowsAgent(p, agentName) })
+	if a.scoping == nil {
+		return base
+	}
+	return a.compose(base, allowsAgent(a.scoping, agentName))
+}
+
 // PermitsForModel implements schemas.Access.
 func (a *Access) PermitsForModel(provider string, model string) []schemas.Permit {
 	if a == nil || !a.IsModelAllowed(provider, model) {
@@ -499,6 +511,14 @@ func (a *Access) DeniedPermitsForModel(provider string, model string) []schemas.
 		return nil
 	}
 	return a.deniedBy(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) })
+}
+
+// DeniedPermitsForAgent implements schemas.Access.
+func (a *Access) DeniedPermitsForAgent(agentName string) []schemas.Permit {
+	if a == nil {
+		return nil
+	}
+	return a.deniedBy(func(p schemas.Permit) bool { return allowsAgent(p, agentName) })
 }
 
 // DeniedPermitsForMCPTool implements schemas.Access.
