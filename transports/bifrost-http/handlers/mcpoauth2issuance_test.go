@@ -841,3 +841,101 @@ func TestHandleAuthorize_AuthCodeTTLResolution(t *testing.T) {
 		})
 	}
 }
+
+// TestIssuance_GatedOnAuthMode mirrors TestDiscovery_GatedOnAuthMode for the
+// issuer side: in headers mode the three issuance endpoints must 404 exactly
+// like the discovery documents do, so turning MCP OAuth off turns the whole
+// authorization server off, not just its metadata. In oauth/both modes the
+// same requests reach the handlers (any status other than 404).
+func TestIssuance_GatedOnAuthMode(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	requests := func() []*fasthttp.RequestCtx {
+		register := formPostCtx("")
+		register.Request.SetBodyString(`{"client_name":"Cli","redirect_uris":["http://127.0.0.1:1234/cb"]}`)
+		register.Request.Header.SetContentType("application/json")
+		return []*fasthttp.RequestCtx{
+			register,
+			getCtx("/oauth2/authorize?client_id=nope&redirect_uri=http://127.0.0.1/cb&response_type=code"),
+			formPostCtx("grant_type=authorization_code&code=x&code_verifier=y&client_id=z"),
+		}
+	}
+
+	t.Run("headers mode returns 404 on all issuance endpoints", func(t *testing.T) {
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false), nil, nil)
+		ctxs := requests()
+		for i, fn := range []func(*fasthttp.RequestCtx){h.handleRegister, h.handleAuthorize, h.handleToken} {
+			fn(ctxs[i])
+			assert.Equal(t, fasthttp.StatusNotFound, ctxs[i].Response.StatusCode(), "endpoint %d: %s", i, ctxs[i].Response.Body())
+		}
+	})
+
+	t.Run("oauth and both modes serve issuance", func(t *testing.T) {
+		for _, mode := range []configtables.MCPServerAuthMode{configtables.MCPServerAuthModeBoth, configtables.MCPServerAuthModeOAuth} {
+			h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, mode, false), nil, nil)
+			ctxs := requests()
+			for i, fn := range []func(*fasthttp.RequestCtx){h.handleRegister, h.handleAuthorize, h.handleToken} {
+				fn(ctxs[i])
+				assert.NotEqual(t, fasthttp.StatusNotFound, ctxs[i].Response.StatusCode(), "%s endpoint %d", mode, i)
+			}
+		}
+	})
+}
+
+// TestHandleRegister_RejectsOversizeMetadata pins the application-level bounds on
+// the free-text DCR fields. Registration is anonymous and the columns are text
+// since the varchar bounds were lifted, so without these caps a caller could park
+// request-body-sized payloads in the config store. The caps sit well above the
+// sizes the "long client_name and scope" case above pins as accepted.
+func TestHandleRegister_RejectsOversizeMetadata(t *testing.T) {
+	manyURIs := make([]string, 33)
+	for i := range manyURIs {
+		manyURIs[i] = fmt.Sprintf("https://app.example/cb/%d", i)
+	}
+	cases := []struct {
+		name    string
+		body    map[string]any
+		wantErr string
+	}{
+		{"client_name over cap", map[string]any{"client_name": strings.Repeat("n", 2049), "redirect_uris": []string{"https://app.example/cb"}}, "invalid_client_metadata"},
+		{"scope over cap", map[string]any{"scope": strings.Repeat("s", 4097), "redirect_uris": []string{"https://app.example/cb"}}, "invalid_client_metadata"},
+		{"too many redirect_uris", map[string]any{"redirect_uris": manyURIs}, "invalid_redirect_uri"},
+		{"redirect_uri over cap", map[string]any{"redirect_uris": []string{"https://app.example/" + strings.Repeat("p", 2049)}}, "invalid_redirect_uri"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, _ := newIssuanceHandler(t)
+			body, err := json.Marshal(tc.body)
+			require.NoError(t, err)
+			ctx := formPostCtx("")
+			ctx.Request.SetBody(body)
+			ctx.Request.Header.SetContentType("application/json")
+
+			h.handleRegister(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var resp map[string]string
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+			assert.Equal(t, tc.wantErr, resp["error"])
+		})
+	}
+}
+
+// TestHandleAuthorize_RejectsOversizeParameters pins that an over-cap state is
+// refused with a direct 400 before any row is written or redirect built: the
+// oversize value must not be persisted, and must not be echoed back into a
+// redirect to the client either. 8192 bytes is comfortably above the 4096-char
+// state the long-fields regression pins as accepted.
+func TestHandleAuthorize_RejectsOversizeParameters(t *testing.T) {
+	h, store, _ := newIssuanceHandler(t)
+	clientID := seedClient(t, store, []string{"https://app.example/cb"})
+	ctx := getCtx("/oauth2/authorize?client_id=" + clientID +
+		"&redirect_uri=https://app.example/cb&response_type=code&code_challenge=" + pkceChallenge("verifier") +
+		"&code_challenge_method=S256&state=" + strings.Repeat("s", 8193))
+
+	h.handleAuthorize(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Empty(t, string(ctx.Response.Header.Peek("Location")), "oversize request must not be redirected")
+	var resp map[string]string
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	assert.Equal(t, "invalid_request", resp["error"])
+}
