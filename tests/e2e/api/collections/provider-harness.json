@@ -185413,6 +185413,342 @@
           }
         }
       ]
+    },
+    {
+      "name": "139. MCP OAuth2 server guards: issuance gating, metadata bounds, consent identity (mcp-oauth2-server)",
+      "description": "Pins the hardening of Bifrost's built-in MCP OAuth2 authorization server. The harness profile runs with mcp_server_auth_mode=both and a pinned issuer_url (both are now required together: config load and PUT /api/config reject oauth/both without issuer_url, and in headers mode /oauth2/register, /oauth2/authorize and /oauth2/token return 404 exactly like the discovery documents). Case 1 sends a 2049-char client_name and expects 400 invalid_client_metadata (the cap is 2048; folder 112 pins that 1024 is still accepted). Cases 2-3 register a client and open a consent flow, chaining the flow id and the consent token out of the 302 Location. Case 4 reads the flow with only that token and asserts available_modes offers vk but never session. Case 5 submits mode=session with only the token and expects 401: the anonymous session identity may only be granted by a consenting user Bifrost has authenticated, and the harness profile has no dashboard auth configured, which does not count. Case 6 submits mode=vk with the profile's virtual key and expects 200 with a redirect_url carrying code=, proving virtual-key consent is unaffected. Case 7 fetches the RFC 8414 document with a spoofed Host header and asserts the issuer, token_endpoint and jwks_uri do not follow it and that the response is Cache-Control: no-store. No provider spend.",
+      "item": [
+        {
+          "name": "[EXPECT-400] oauth2 register refuses a 2049-char client_name - mcp oauth2 server",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('mcpOauth2ServerClientId');",
+                  "pm.collectionVariables.unset('mcpOauth2ServerFlow');",
+                  "pm.collectionVariables.unset('mcpOauth2ServerToken');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oversize client_name refused exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('oversize client_name is refused as invalid_client_metadata - mcp oauth2 server', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error).to.equal('invalid_client_metadata');",
+                  "  pm.expect(body.error_description).to.include('client_name');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/oauth2/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_name\": \"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\", \"redirect_uris\": [\"https://harness.example/cb\"], \"token_endpoint_auth_method\": \"none\"}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-201] oauth2 register consent client - mcp oauth2 server",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('register exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(201);",
+                  "});",
+                  "pm.test('client registered - mcp oauth2 server', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.client_id).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('mcpOauth2ServerClientId', body.client_id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/oauth2/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_name\": \"mcp oauth2 server guards\", \"redirect_uris\": [\"https://harness.example/cb\"], \"token_endpoint_auth_method\": \"none\"}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-302] oauth2 authorize opens a consent flow - mcp oauth2 server",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerClientId'), 'register case must run first').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('authorize exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(302);",
+                  "});",
+                  "pm.test('redirect carries the consent flow and token - mcp oauth2 server', function () {",
+                  "  var location = pm.response.headers.get('Location') || '';",
+                  "  pm.expect(location).to.include('/oauth/consent?flow=');",
+                  "  pm.expect(location).not.to.include('error=');",
+                  "  var flow = location.match(/[?&]flow=([^&#]+)/);",
+                  "  var token = location.match(/#t=([^&]+)/);",
+                  "  pm.expect(flow, 'flow missing in redirect').not.to.equal(null);",
+                  "  pm.expect(token, 'token missing in redirect').not.to.equal(null);",
+                  "  pm.collectionVariables.set('mcpOauth2ServerFlow', decodeURIComponent(flow[1]));",
+                  "  pm.collectionVariables.set('mcpOauth2ServerToken', decodeURIComponent(token[1]));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/oauth2/authorize?client_id={{mcpOauth2ServerClientId}}&redirect_uri=https%3A%2F%2Fharness.example%2Fcb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&state=guard"
+          }
+        },
+        {
+          "name": "[EXPECT-200] consent flow detail offers no session mode to an anonymous consenter - mcp oauth2 server",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerFlow'), 'authorize case must run first').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerToken'), 'authorize case must run first').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('flow detail exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('anonymous consenter is offered vk but never session - mcp oauth2 server', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.available_modes).to.be.an('array').that.includes('vk');",
+                  "  pm.expect(body.available_modes).not.to.include('session');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{mcpOauth2ServerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{mcpOauth2ServerFlow}}"
+          }
+        },
+        {
+          "name": "[EXPECT-401] anonymous session-mode consent is refused - mcp oauth2 server",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerFlow'), 'authorize case must run first').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerToken'), 'authorize case must run first').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anonymous session consent exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});",
+                  "pm.test('refusal names the missing identity - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.text()).to.include('authenticated consenting user');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{mcpOauth2ServerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{mcpOauth2ServerFlow}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\":\"session\"}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] virtual-key consent still completes the grant - mcp oauth2 server",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerFlow'), 'authorize case must run first').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('mcpOauth2ServerToken'), 'authorize case must run first').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk consent exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('vk consent returns a redirect with an authorization code - mcp oauth2 server', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.redirect_url).to.be.a('string').and.include('code=');",
+                  "  pm.expect(body.redirect_url).to.include('state=guard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{mcpOauth2ServerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{mcpOauth2ServerFlow}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\": \"vk\", \"value\": \"sk-bf-test-key-nocontent\"}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] discovery document pins the configured issuer and is not cacheable - mcp oauth2 server",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('discovery exact response status - mcp oauth2 server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('issuer is the configured value, not the request host, and the document is no-store - mcp oauth2 server', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.issuer).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.issuer).not.to.include('evil.example');",
+                  "  pm.expect(body.token_endpoint).not.to.include('evil.example');",
+                  "  pm.expect(body.jwks_uri).not.to.include('evil.example');",
+                  "  pm.expect((pm.response.headers.get('Cache-Control') || '').toLowerCase()).to.include('no-store');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Host",
+                "value": "evil.example"
+              }
+            ],
+            "url": "{{baseUrl}}/.well-known/oauth-authorization-server"
+          }
+        }
+      ]
     }
   ]
 }
