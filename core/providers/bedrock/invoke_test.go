@@ -2067,3 +2067,70 @@ func TestToAnthropicInvokeStreamBytes_IncompleteEmitsTerminal(t *testing.T) {
 		})
 	}
 }
+
+// TestToBedrockInvokeAnthropicResponse_ZeroThinkingTokensForwarded: when adaptive
+// thinking is requested but the model chooses not to think, InvokeModel upstream
+// still returns usage.output_tokens_details.thinking_tokens: 0 (verified in the log
+// store for global.anthropic.claude-sonnet-5). That explicit zero must reach the
+// client; only an absent upstream breakdown (previous test) stays absent.
+func TestToBedrockInvokeAnthropicResponse_ZeroThinkingTokensForwarded(t *testing.T) {
+	model := "global.anthropic.claude-sonnet-5"
+	resp := &schemas.BifrostResponsesResponse{
+		Model: model,
+		Usage: &schemas.ResponsesResponseUsage{
+			InputTokens:         63,
+			OutputTokens:        281,
+			TotalTokens:         344,
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{ReasoningTokens: 0},
+		},
+	}
+
+	raw, err := sonic.Marshal(toBedrockInvokeAnthropicResponse(resp, model))
+	require.NoError(t, err)
+	usage := gjson.GetBytes(raw, "usage")
+	thinking := usage.Get("output_tokens_details.thinking_tokens")
+	assert.True(t, thinking.Exists(), "explicit zero breakdown must be forwarded, got usage %s", usage.Raw)
+	assert.EqualValues(t, 0, thinking.Int())
+	assert.EqualValues(t, 281, usage.Get("output_tokens").Int())
+}
+
+// A breakdown that only carries web-search counts is not a thinking breakdown;
+// Anthropic omits output_tokens_details on such responses and so must the egress.
+func TestToBedrockInvokeAnthropicResponse_SearchOnlyDetailsOmitThinking(t *testing.T) {
+	model := "global.anthropic.claude-sonnet-5"
+	resp := &schemas.BifrostResponsesResponse{
+		Model: model,
+		Usage: &schemas.ResponsesResponseUsage{
+			InputTokens:         10,
+			OutputTokens:        5,
+			TotalTokens:         15,
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{NumSearchQueries: schemas.Ptr(2)},
+		},
+	}
+	raw, err := sonic.Marshal(toBedrockInvokeAnthropicResponse(resp, model))
+	require.NoError(t, err)
+	assert.False(t, gjson.GetBytes(raw, "usage.output_tokens_details").Exists(), "search-only details must not fabricate a thinking breakdown: %s", raw)
+}
+
+func TestToAnthropicInvokeStreamBytes_MessageDeltaCarriesZeroThinkingTokens(t *testing.T) {
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens:         63,
+				OutputTokens:        281,
+				TotalTokens:         344,
+				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{ReasoningTokens: 0},
+			},
+		},
+	}
+
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
+	require.NoError(t, err)
+	require.Len(t, frames, 2, "expected message_delta + message_stop")
+
+	usage := gjson.GetBytes(frames[0], "usage")
+	thinking := usage.Get("output_tokens_details.thinking_tokens")
+	assert.True(t, thinking.Exists(), "message_delta must forward an explicit zero breakdown, got usage %s", usage.Raw)
+	assert.EqualValues(t, 0, thinking.Int())
+}

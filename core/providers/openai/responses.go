@@ -399,6 +399,11 @@ func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage) {
 }
 
 // ToOpenAIResponsesRequest converts a Bifrost responses request to OpenAI format
+// bareTextContentBlockType is the Anthropic/Gemini spelling of a text content block.
+// OpenAI's Responses input only knows input_text / output_text, so the converter
+// retags it by role.
+const bareTextContentBlockType schemas.ResponsesMessageContentBlockType = "text"
+
 func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
@@ -470,6 +475,32 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					// Nothing survived (empty-summary compaction and/or fallback markers)
 					continue
 				}
+			}
+		}
+
+		// A bare "text" content block (the Anthropic/Gemini spelling) is not an OpenAI
+		// content part: OpenAI rejects it with "Invalid value: 'text'". Retag by role,
+		// output_text on assistant history and input_text elsewhere, before the later
+		// passes that key on those canonical types. Clone the blocks first; the caller's
+		// input (shared with fallback providers) stays untouched.
+		if message.Content != nil && (message.Type == nil || *message.Type == schemas.ResponsesMessageTypeMessage) {
+			for _, b := range message.Content.ContentBlocks {
+				if b.Type != bareTextContentBlockType {
+					continue
+				}
+				target := schemas.ResponsesInputMessageContentBlockTypeText
+				if message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleAssistant {
+					target = schemas.ResponsesOutputMessageContentTypeText
+				}
+				contentCopy := *message.Content
+				contentCopy.ContentBlocks = slices.Clone(message.Content.ContentBlocks)
+				for i := range contentCopy.ContentBlocks {
+					if contentCopy.ContentBlocks[i].Type == bareTextContentBlockType {
+						contentCopy.ContentBlocks[i].Type = target
+					}
+				}
+				message.Content = &contentCopy
+				break
 			}
 		}
 
@@ -556,6 +587,47 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				}
 				message.Content = &contentCopy
 				break
+			}
+		}
+
+		// OpenAI's web_search_call input item carries only id, status and action. The
+		// Gemini-shaped history also sets call_id and name, which OpenAI rejects with
+		// "Unknown parameter: input[N].call_id". Clone before clearing.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeWebSearchCall &&
+			message.ResponsesToolMessage != nil &&
+			(message.ResponsesToolMessage.CallID != nil || message.ResponsesToolMessage.Name != nil) {
+			toolMsgCopy := *message.ResponsesToolMessage
+			toolMsgCopy.CallID = nil
+			toolMsgCopy.Name = nil
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+
+		// arguments is a required string on function_call items. Gemini streaming emits
+		// "" for argument-less calls and foreign histories may omit the field; OpenAI
+		// rejects both with "Missing required parameter: input[N].arguments", so send the
+		// empty object. Clone before setting.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCall &&
+			(message.ResponsesToolMessage == nil || message.ResponsesToolMessage.Arguments == nil ||
+				*message.ResponsesToolMessage.Arguments == "") {
+			var toolMsgCopy schemas.ResponsesToolMessage
+			if message.ResponsesToolMessage != nil {
+				toolMsgCopy = *message.ResponsesToolMessage
+			}
+			toolMsgCopy.Arguments = schemas.Ptr("{}")
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+
+		// summary is a required array on reasoning items. A reasoning item that arrives
+		// without one (a foreign shape the schema could not map) must still carry
+		// "summary": [] - OpenAI accepts that and rejects the item without the field;
+		// a nil slice would marshal as null. Clone before setting.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeReasoning {
+			if message.ResponsesReasoning == nil {
+				message.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}
+			} else if message.ResponsesReasoning.Summary == nil {
+				reasoningCopy := *message.ResponsesReasoning
+				reasoningCopy.Summary = []schemas.ResponsesReasoningSummary{}
+				message.ResponsesReasoning = &reasoningCopy
 			}
 		}
 

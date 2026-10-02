@@ -2949,6 +2949,143 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 			},
 			origMutable: false,
 		},
+		{
+			// OpenAI's web_search_call input item carries only id, status and action;
+			// Gemini-shaped history adds call_id and name, which OpenAI rejects with
+			// "Unknown parameter: input[N].call_id". Live OpenAI accepts the bare item.
+			name: "web_search_call call_id and name stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("msg_abc_ws_0"),
+				Status: schemas.Ptr("in_progress"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ws_123"),
+					Name:   schemas.Ptr("web_search"),
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status", "call_id", "name"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// arguments is a required string on function_call; a call with no
+			// arguments (nil or "") must be sent as "{}" or OpenAI returns
+			// "Missing required parameter: input[N].arguments".
+			name: "function_call without arguments gets {}",
+			input: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_123"),
+					Name:   schemas.Ptr("get_weather"),
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				var args string
+				if err := sonic.Unmarshal(item["arguments"], &args); err != nil || args != "{}" {
+					t.Errorf("function_call arguments = %s, want \"{}\" (err=%v)", item["arguments"], err)
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "function_call with empty-string arguments gets {}",
+			input: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("call_123"),
+					Name:      schemas.Ptr("get_weather"),
+					Arguments: schemas.Ptr(""),
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				var args string
+				if err := sonic.Unmarshal(item["arguments"], &args); err != nil || args != "{}" {
+					t.Errorf("function_call arguments = %s, want \"{}\" (err=%v)", item["arguments"], err)
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// A bare "text" content block (Anthropic/Gemini spelling) is not an
+			// OpenAI content part; assistant history must be output_text.
+			name: "bare text block retagged output_text on assistant message",
+			input: schemas.ResponsesMessage{
+				Type: &messageType,
+				Role: &assistant,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesMessageContentBlockType("text"), Text: schemas.Ptr("This is a response"), Signature: schemas.Ptr("sig")},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				var blocks []map[string]json.RawMessage
+				if err := sonic.Unmarshal(item["content"], &blocks); err != nil || len(blocks) != 1 {
+					t.Fatalf("unmarshal content: %v (%s)", err, item["content"])
+				}
+				var typ string
+				if err := sonic.Unmarshal(blocks[0]["type"], &typ); err != nil || typ != "output_text" {
+					t.Errorf("assistant text block type = %s, want output_text", blocks[0]["type"])
+				}
+				if _, ok := blocks[0]["signature"]; ok {
+					t.Error("signature present in content block")
+				}
+			},
+			origMutable: false,
+		},
+		{
+			name: "bare text block retagged input_text on user message",
+			input: schemas.ResponsesMessage{
+				Type: &messageType,
+				Role: &user,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesMessageContentBlockType("text"), Text: schemas.Ptr("hello")},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				var blocks []map[string]json.RawMessage
+				if err := sonic.Unmarshal(item["content"], &blocks); err != nil || len(blocks) != 1 {
+					t.Fatalf("unmarshal content: %v (%s)", err, item["content"])
+				}
+				var typ string
+				if err := sonic.Unmarshal(blocks[0]["type"], &typ); err != nil || typ != "input_text" {
+					t.Errorf("user text block type = %s, want input_text", blocks[0]["type"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// summary is a required array on reasoning items. A reasoning item that
+			// reaches the converter with no summary (e.g. a foreign wrapper shape the
+			// schema could not map) must still carry "summary": [] on the wire; live
+			// OpenAI accepts that, and rejects the item without the field.
+			name: "reasoning item without summary emits summary []",
+			input: schemas.ResponsesMessage{
+				Type: &reasoningType,
+				ID:   schemas.Ptr("msg_abc123_reasoning_0"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				raw, ok := item["summary"]
+				if !ok {
+					t.Fatalf("summary missing from reasoning item: %v", item)
+				}
+				var summary []json.RawMessage
+				if err := sonic.Unmarshal(raw, &summary); err != nil || summary == nil || len(summary) != 0 {
+					t.Errorf("summary = %s, want []", raw)
+				}
+				if _, ok := item["id"]; ok {
+					t.Error("non-rs_ id present in wire request for reasoning item")
+				}
+			},
+			origMutable: true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -3960,5 +4097,63 @@ func TestToOpenAIResponsesRequest_ForwardsComputerTool(t *testing.T) {
 	}
 	if result.Tools[0].ResponsesToolComputerUsePreview != nil {
 		t.Fatal("expected no computer_use_preview fields on the bare computer tool")
+	}
+}
+
+// TestToOpenAIResponsesRequest_SanitizesGeminiShapedHarnessBodies decodes the exact
+// request bodies of provider-harness cases 124-127 ("OpenAI Responses strips ...")
+// and pins the wire shape that live OpenAI (gpt-4o) accepted with HTTP 200 for each.
+// These bodies are Gemini-shaped histories replayed to OpenAI: non-rs_ ids, status,
+// signatures, a "reasoning" wrapper, call_id/name on web_search_call, a function_call
+// without arguments, an object function_call_output and bare "text" blocks.
+func TestToOpenAIResponsesRequest_SanitizesGeminiShapedHarnessBodies(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		wantInput string
+	}{
+		{
+			name: "124 reasoning item ID stripped",
+			body: `{"model":"gpt-4o","input":[{"type":"reasoning","id":"msg_abc123_reasoning_0","reasoning":{"summary":["thinking about this"]}},{"type":"message","role":"user","content":"continue"}],"max_output_tokens":100}`,
+			wantInput: `[{"type":"reasoning","summary":[{"type":"summary_text","text":"thinking about this"}]},` +
+				`{"type":"message","role":"user","content":"continue"}]`,
+		},
+		{
+			name: "125 function_call_output ID and Name stripped",
+			body: `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"get weather"},{"type":"function_call","call_id":"call_123","name":"get_weather"},{"type":"function_call_output","id":"func_resp_abc","name":"get_weather","call_id":"call_123","output":{"temperature":72}}],"max_output_tokens":100}`,
+			wantInput: `[{"type":"message","role":"user","content":"get weather"},` +
+				`{"type":"function_call","call_id":"call_123","name":"get_weather","arguments":"{}"},` +
+				`{"type":"function_call_output","call_id":"call_123","output":"{\"temperature\":72}"}]`,
+		},
+		{
+			name: "126 signature stripped from content blocks",
+			body: `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"what is in this text"},{"type":"message","role":"assistant","content":[{"type":"text","text":"This is a response","signature":"base64encodedSignature"}]}],"max_output_tokens":100}`,
+			wantInput: `[{"type":"message","role":"user","content":"what is in this text"},` +
+				`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"This is a response"}]}]`,
+		},
+		{
+			name:      "127 web_search_call ID and status stripped",
+			body:      `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"search web"},{"type":"web_search_call","id":"msg_abc_ws_0","call_id":"ws_123","name":"web_search","status":"in_progress"}],"max_output_tokens":100}`,
+			wantInput: `[{"type":"message","role":"user","content":"search web"},{"type":"web_search_call"}]`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var req schemas.BifrostResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(tc.body), &req))
+			req.Provider = schemas.OpenAI
+
+			converted := ToOpenAIResponsesRequest(nil, &req)
+			require.NotNil(t, converted)
+			wire, err := sonic.Marshal(converted)
+			require.NoError(t, err)
+
+			var payload struct {
+				Input json.RawMessage `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+			require.JSONEq(t, tc.wantInput, string(payload.Input), "wire input for %s: %s", tc.name, payload.Input)
+		})
 	}
 }
