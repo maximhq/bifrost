@@ -1,3 +1,4 @@
+import { coreConfigApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { ConfigSettingsState } from './pages/config-settings.page'
 import { DefaultCoreConfig } from '../../../../ui/lib/types/config'
@@ -551,6 +552,85 @@ test.describe('Config Settings', () => {
     test('should display rate limiting section', async ({ configSettingsPage }) => {
       const isVisible = await configSettingsPage.isRateLimitingSectionVisible()
       expect(isVisible).toBeDefined()
+    })
+
+    test.describe('Dashboard Auth Confirmation', () => {
+      // Once an admin account exists, switching dashboard protection off lets
+      // anyone reach the settings API without signing in, so switching it back
+      // on from that state must prove control of the instance with the stored
+      // admin password (or the operator's setup token). The fixture signs the
+      // browser back in with BIFROST_ADMIN_USERNAME/PASSWORD when the server
+      // flushes sessions, so that password is also what this test confirms with.
+      const adminPassword = process.env.BIFROST_ADMIN_PASSWORD
+
+      test.beforeEach(async ({ configSettingsPage, request }) => {
+        test.skip(!adminPassword, 'BIFROST_ADMIN_PASSWORD is not set, so there is no stored admin password to confirm with')
+        const current = await coreConfigApi.get(request)
+        test.skip(
+          current.auth_config?.is_enabled !== true,
+          'Dashboard auth is not enabled with stored credentials on this instance'
+        )
+        // The onboarding checklist covers the Save button in the bottom-right
+        // corner on a fresh instance, so dismiss it before touching settings.
+        await configSettingsPage.dismissOnboardingWidget()
+      })
+
+      test.afterEach(async ({ configSettingsPage, request }) => {
+        // If the test stopped while protection was off, turn it back on with the
+        // proof the server now requires. GET fails with 401 once auth is already
+        // on and the session was flushed, which means there is nothing to undo.
+        const current = await coreConfigApi.get(request).catch(() => null)
+        if (current?.auth_config && !current.auth_config.is_enabled) {
+          await coreConfigApi.setDashboardAuthEnabled(request, true, { currentPassword: adminPassword })
+        }
+        // Refresh the page state so the outer restore sees the switch already on
+        // rather than clicking it and saving without proof.
+        await configSettingsPage.goto('security')
+        await expect(configSettingsPage.dashboardAuthSwitch).toHaveAttribute('data-state', 'checked', { timeout: 20000 })
+      })
+
+      test('should require the current admin password to turn protection back on after disabling it', async ({
+        configSettingsPage,
+        request,
+      }) => {
+        // Signed-in session: no confirmation field while protection is on, and
+        // switching it off needs no proof.
+        await expect(configSettingsPage.dashboardAuthSwitch).toHaveAttribute('data-state', 'checked')
+        await expect(configSettingsPage.currentPasswordInput).not.toBeVisible()
+        await configSettingsPage.toggleDashboardAuth()
+        await configSettingsPage.saveSettings()
+
+        await configSettingsPage.goto('security')
+        await expect(configSettingsPage.dashboardAuthSwitch).toHaveAttribute('data-state', 'unchecked')
+        expect((await coreConfigApi.get(request)).auth_config?.is_enabled).toBe(false)
+
+        // Protection off, stored account: turning it on reveals the confirmation
+        // field, and saving without filling it is refused in the form itself.
+        await configSettingsPage.toggleDashboardAuth()
+        await expect(configSettingsPage.currentPasswordInput).toBeVisible()
+        await configSettingsPage.saveBtn.click()
+        await expect(configSettingsPage.currentPasswordError).toBeVisible()
+        await expect(configSettingsPage.currentPasswordError).toContainText(/current admin password/i)
+        expect((await coreConfigApi.get(request)).auth_config?.is_enabled).toBe(false)
+
+        // A wrong password is refused by the server with 403, shown inline on the
+        // same field rather than as a toast, and nothing is saved.
+        await configSettingsPage.setCurrentPassword(`${adminPassword}-wrong`)
+        await configSettingsPage.saveBtn.click()
+        await expect(configSettingsPage.currentPasswordError).toContainText(/current_password|setup_token/i)
+        await expect(configSettingsPage.getToast('error')).not.toBeVisible()
+        expect((await coreConfigApi.get(request)).auth_config?.is_enabled).toBe(false)
+
+        // The stored password turns protection back on. The server flushes every
+        // session on that change, so the next page load goes through the login
+        // redirect, which the base fixture completes.
+        await configSettingsPage.setCurrentPassword(adminPassword!)
+        await configSettingsPage.saveBtn.click()
+        await configSettingsPage.goto('security')
+        await expect(configSettingsPage.dashboardAuthSwitch).toHaveAttribute('data-state', 'checked', { timeout: 20000 })
+        await expect(configSettingsPage.currentPasswordInput).not.toBeVisible()
+        expect((await coreConfigApi.get(request)).auth_config?.is_enabled).toBe(true)
+      })
     })
 
     test.describe('Virtual Key Rotation Cooldown', () => {

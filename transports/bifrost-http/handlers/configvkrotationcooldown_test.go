@@ -20,6 +20,7 @@ type stubConfigManager struct{}
 
 func (stubConfigManager) UpdateAuthConfig(context.Context, *configstore.AuthConfig) error { return nil }
 func (stubConfigManager) ValidateSetupToken(string) bool                                  { return true }
+func (stubConfigManager) ValidateConfiguredSetupToken(string) bool                        { return false }
 func (stubConfigManager) ReloadClientConfigFromConfigStore(context.Context) error         { return nil }
 func (stubConfigManager) UpdateSyncConfig(context.Context) error                          { return nil }
 func (stubConfigManager) ForceReloadPricing(context.Context) error                        { return nil }

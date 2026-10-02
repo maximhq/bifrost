@@ -51,6 +51,12 @@ config:
     description: |
       Updates the Bifrost configuration. Supports hot-reloading of certain settings
       like drop_excess_requests. Some settings may require a restart to take effect.
+      Creating the very first admin account requires auth_config.setup_token. When an
+      admin account already exists but dashboard authentication is disabled, a request
+      that re-enables it or changes admin_username / admin_password must carry either
+      auth_config.current_password (the stored admin password) or a valid
+      auth_config.setup_token; otherwise it is refused with 403. A genuinely
+      authenticated session needs neither.
     tags:
       - Configuration
     requestBody:
@@ -71,6 +77,12 @@ config:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          auth_config was changed without the required proof: the first admin account
+          needs a valid setup_token, and re-enabling authentication or changing the admin
+          credentials while dashboard authentication is disabled needs current_password
+          or a valid setup_token
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
