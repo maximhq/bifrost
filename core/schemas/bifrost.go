@@ -75,6 +75,7 @@ const (
 	Fireworks     ModelProvider = "fireworks"
 	Sarvam        ModelProvider = "sarvam"
 	Wafer         ModelProvider = "wafer"
+	Tencent       ModelProvider = "tencent"
 	GithubCopilot ModelProvider = "github-copilot"
 	Databricks    ModelProvider = "databricks"
 	Typesafe      ModelProvider = "typesafe"
@@ -123,6 +124,7 @@ var StandardProviders = []ModelProvider{
 	Fireworks,
 	Sarvam,
 	Wafer,
+	Tencent,
 	GithubCopilot,
 	Databricks,
 	Typesafe,

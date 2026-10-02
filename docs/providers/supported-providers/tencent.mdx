@@ -1,0 +1,192 @@
+---
+title: "Tencent TokenHub"
+description: "Tencent TokenHub conversion guide - OpenAI-compatible chat, streaming, reasoning, tool calling, Anthropic Messages routing, and pricing"
+icon: "t"
+---
+
+## Overview
+
+Tencent TokenHub is a **dual-protocol provider**: it exposes an OpenAI-compatible Chat Completions API and an Anthropic-compatible Messages API from the same host. Bifrost uses the shared OpenAI-compatible converters by default and can route each key through the Anthropic Messages endpoint when requested. Key characteristics:
+
+- **OpenAI-compatible chat** - Chat Completions use `/v1/chat/completions`
+- **Streaming support** - Server-Sent Events for chat and Responses
+- **Anthropic Messages routing** - Opt a key into `/v1/messages` with `use_anthropic_endpoints`
+- **Tool calling** - Function tools use the OpenAI-compatible schema
+- **Reasoning support** - Reasoning models accept the `thinking` parameter via `extra_params`
+- **Responses API** - Routed to the Anthropic Messages endpoint when enabled, otherwise converted to Chat Completions internally
+- **Pricing** - Model pricing is sourced from Bifrost's model catalog (for example `deepseek-v4-pro`, `deepseek-v4-flash`, `minimax-m3`)
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Chat Completions (Anthropic mode) | ✅ | ✅ | `/v1/messages` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions`, `/v1/messages` |
+| Count Tokens | ✅ | - | `/v1/messages/count_tokens` |
+| List Models | ✅ | - | `/v1/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+## Setup & Configuration
+
+Tencent TokenHub authenticates with an API key. The OpenAI-compatible endpoint takes `Authorization: Bearer <key>`; the Anthropic-compatible endpoint takes `x-api-key: <key>`.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Tencent TokenHub** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Tencent TokenHub**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.TENCENT_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "tencent": {
+      "keys": [
+        {
+          "name": "tencent-key-1",
+          "value": "env.TENCENT_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Tencent:
+    return []schemas.Key{{
+        Name:   "tencent-key-1",
+        Value:  *schemas.NewSecretVar("env.TENCENT_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+### Custom Base URL
+
+The default base URL is `https://tokenhub-intl.tencentcloudmaas.com`. Override it in the provider's `network_config.base_url` when using a regional or self-hosted endpoint. The override must be an `https://` URL: Tencent preserves the configured base and sends Bearer or `x-api-key` credentials to it, so cleartext `http://` endpoints are rejected. Bifrost appends `/v1/chat/completions`, `/v1/messages`, and `/v1/models` to the configured base.
+
+---
+
+# 1. Chat Completions
+
+Tencent TokenHub supports OpenAI-compatible chat completion parameters. For the full parameter reference and message conversion behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tencent/deepseek-v4-pro",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### Reasoning Parameter
+
+Tencent TokenHub reasoning models accept a `thinking` object:
+
+```json
+{ "thinking": { "type": "enabled" } }
+```
+
+Pass it through `extra_params` on the request. Bifrost forwards provider-specific extra parameters unchanged for chat requests.
+
+### Anthropic Messages Routing
+
+Set `use_anthropic_endpoints` on a key to send chat and Responses requests to Tencent TokenHub's Anthropic-compatible `/v1/messages` endpoint instead of `/v1/chat/completions`. This is useful for models or features exposed only on the Messages API.
+
+```json
+{
+  "providers": {
+    "tencent": {
+      "keys": [
+        {
+          "name": "tencent-anthropic-key",
+          "value": "env.TENCENT_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "use_anthropic_endpoints": true
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+# 2. Responses API
+
+When a key opts into Anthropic endpoints, Responses requests are sent to `/v1/messages`. Otherwise Bifrost converts Responses format to Chat Completions internally, then converts the response back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Streaming Responses requests follow the same routing.
+
+---
+
+# 3. Count Tokens
+
+Token counting uses Tencent TokenHub's Anthropic-compatible `/v1/messages/count_tokens` endpoint. This is available regardless of the key's chat routing mode.
+
+---
+
+# 4. List Models
+
+Lists available models from Tencent TokenHub through `/v1/models`.
+
+---
+
+# 5. Pricing
+
+Bifrost tracks costs for Tencent TokenHub models using the shared model catalog. For the current per-token rates, model limits, and capabilities, see the [Model Catalog](/models-catalog/list). Pricing can be overridden per model with [Custom Pricing](/providers/custom-pricing).
+
+## Caveats
+
+<Accordion title="Only chat and Responses are available">
+**Severity**: Low
+**Behavior**: Text completions, embeddings, image generation, speech, transcription, rerank, OCR, and Batch are not supported by Tencent TokenHub.
+**Impact**: Requests to those operations return an unsupported-operation error from Bifrost.
+</Accordion>
+
+<Accordion title="Dual authentication schemes">
+**Severity**: Low
+**Behavior**: The OpenAI-compatible endpoint uses `Authorization: Bearer`, while the Anthropic-compatible endpoint uses `x-api-key`.
+**Impact**: Bifrost selects the correct header automatically based on whether the key opts into Anthropic endpoints. No manual header configuration is required.
+</Accordion>
+
+<Accordion title="Anthropic routing is per key">
+**Severity**: Low
+**Behavior**: `use_anthropic_endpoints` is configured on the key (or alias), not the provider.
+**Impact**: Different keys for the same provider can use different protocols simultaneously.
+</Accordion>
