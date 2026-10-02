@@ -2291,6 +2291,103 @@ func TestValidateClientConfig_AuthCodeTTL(t *testing.T) {
 	}
 }
 
+// TestValidateClientConfig_VKRotationCooldown covers the same load-time
+// invariant for the rotation grace period. PUT /api/config rejects a cooldown
+// outside 0..30d, but config.json and any pre-existing DB row bypass that
+// handler, so the bound has to hold here too: an unbounded cooldown keeps a
+// retired credential authenticating indefinitely.
+func TestValidateClientConfig_VKRotationCooldown(t *testing.T) {
+	cooldown := func(d time.Duration) *configstore.ClientConfig {
+		return &configstore.ClientConfig{VKRotationCooldown: schemas.Duration(d)}
+	}
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr bool
+	}{
+		{"unset means no grace period", &configstore.ClientConfig{}, false},
+		{"zero is valid", cooldown(0), false},
+		{"in-range", cooldown(5 * time.Minute), false},
+		{"exactly at cap", cooldown(configstore.MaxVKRotationCooldown), false},
+		{"one nanosecond over cap", cooldown(configstore.MaxVKRotationCooldown + 1), true},
+		{"744h is over the 30 day cap", cooldown(744 * time.Hour), true},
+		{"negative", cooldown(-time.Minute), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "vk_rotation_cooldown")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateClientConfig_IssuerURLRequiredForDiscovery locks in that OAuth
+// discovery (mode oauth|both) cannot be enabled without a pinned issuer_url -
+// left unset, every issuer reference would derive from the unauthenticated,
+// per-request Host header.
+func TestValidateClientConfig_IssuerURLRequiredForDiscovery(t *testing.T) {
+	withMode := func(mode tables.MCPServerAuthMode, issuerURL string) *configstore.ClientConfig {
+		cc := &configstore.ClientConfig{MCPServerAuthMode: mode}
+		if issuerURL != "" {
+			cc.OAuth2ServerConfig = &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar(issuerURL)}
+		}
+		return cc
+	}
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr bool
+	}{
+		{"headers mode, no issuer_url", withMode(tables.MCPServerAuthModeHeaders, ""), false},
+		{"unset mode, no issuer_url", withMode("", ""), false},
+		{"oauth mode, no issuer_url", withMode(tables.MCPServerAuthModeOAuth, ""), true},
+		{"both mode, no issuer_url", withMode(tables.MCPServerAuthModeBoth, ""), true},
+		{"oauth mode, issuer_url set", withMode(tables.MCPServerAuthModeOAuth, "https://issuer.example.com"), false},
+		{"both mode, issuer_url set", withMode(tables.MCPServerAuthModeBoth, "https://issuer.example.com"), false},
+		// A reference to an unset env var is "set" as a reference but resolves to
+		// nothing, which would leave discovery running with no fixed issuer.
+		{"oauth mode, issuer_url env reference unset", withMode(tables.MCPServerAuthModeOAuth, "env.BIFROST_TEST_UNSET_ISSUER_URL"), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "issuer_url")
+				require.NotContains(t, err.Error(), "BIFROST_TEST_UNSET_ISSUER_URL", "the error must not echo the reference")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestLoadConfig_OAuthDiscoveryWithoutIssuerURLFailsBoot verifies OAuth
+// discovery enabled with no issuer_url in config.json makes LoadConfig fail
+// rather than silently falling back to Host-derived issuer identity.
+func TestLoadConfig_OAuthDiscoveryWithoutIssuerURLFailsBoot(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	createConfigFile(t, tempDir, &ConfigData{
+		Client: &configstore.ClientConfig{
+			MCPServerAuthMode: tables.MCPServerAuthModeOAuth,
+		},
+	})
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	if config != nil {
+		defer config.Close(ctx)
+	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "issuer_url")
+}
+
 // TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot verifies an over-cap auth_code_ttl
 // in config.json makes LoadConfig fail rather than silently clamping the value.
 func TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot(t *testing.T) {
