@@ -193,6 +193,10 @@ const (
 	unassignedDimensionName = "Unassigned"
 )
 
+// UnassignedDimensionID is the id of the synthetic Unassigned ranking bucket,
+// so callers that decorate rankings can tell it apart from a real entity.
+const UnassignedDimensionID = unassignedDimensionID
+
 // isBucketedDimension reports whether a scalar id column is a rollup dimension
 // that uses the Unassigned bucket: rows with no owner collapse into a synthetic
 // "Unassigned" entry instead of being dropped, so the rollup reconciles to
@@ -950,8 +954,16 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 }
 
 // SearchLogsForBilling searches with the billing projection.
+//
+// With pagination.OmitBillingPayloads the modality payload columns come back
+// NULL, so a large page holds only scalar pricing inputs; the caller re-reads
+// each row for which BillingPayloadRequired is true before pricing it.
 func (s *RDBLogStore) SearchLogsForBilling(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
-	result, err := s.searchLogs(ctx, filters, pagination, s.billingSelectColumns())
+	columns := s.billingSelectColumns()
+	if pagination.OmitBillingPayloads {
+		columns = billingScalarSelectColumns()
+	}
+	result, err := s.searchLogs(ctx, filters, pagination, columns)
 	if err != nil || result == nil {
 		return result, err
 	}
@@ -1078,27 +1090,30 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 
 	g, gCtx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
-		// Pagination total count uses the same time-window hybrid as
-		// /api/logs/stats: short windows go raw so the count stays consistent
-		// with the (always-raw) row list rendered alongside it. Long windows
-		// keep the matview win because raw COUNT over multi-day ranges is the
-		// expensive path.
-		if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
-			c, err := s.getCountFromMatView(gCtx, filters)
-			if !s.fallBackToRaw(err) {
-				totalCount = c
-				return err
+	if !pagination.SkipCount {
+		g.Go(func() error {
+			// Pagination total count uses the same time-window hybrid as
+			// /api/logs/stats: short windows go raw so the count stays consistent
+			// with the (always-raw) row list rendered alongside it. Long windows
+			// keep the matview win because raw COUNT over multi-day ranges is the
+			// expensive path.
+			if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+				c, err := s.getCountFromMatView(gCtx, filters)
+				if !s.fallBackToRaw(err) {
+					totalCount = c
+					return err
+				}
 			}
-		}
-		countQuery := s.scopedLogsDB(gCtx).Model(&Log{})
-		countQuery = s.applyFilters(countQuery, filters)
-		return countQuery.Count(&totalCount).Error
-	})
+			countQuery := s.scopedLogsDB(gCtx).Model(&Log{})
+			countQuery = s.applyFilters(countQuery, filters)
+			return countQuery.Count(&totalCount).Error
+		})
+	}
 
 	g.Go(func() error {
 		dataQuery := s.scopedLogsDB(gCtx).Model(&Log{})
 		dataQuery = s.applyFilters(dataQuery, filters)
+		dataQuery = applyKeysetCursor(dataQuery, pagination)
 		dataQuery = dataQuery.Order(orderClause).Select(selectColumns).Limit(limit)
 		if pagination.Offset > 0 {
 			dataQuery = dataQuery.Offset(pagination.Offset)
@@ -1143,6 +1158,24 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 		},
 		HasLogs: hasLogs,
 	}, nil
+}
+
+// applyKeysetCursor restricts query to rows strictly after the pagination
+// cursor in (timestamp, id) order. It applies only when SortBy is timestamp
+// (or the default) and both cursor fields are set. The direction follows
+// pagination.Order, the same rule logsOrderClause applies to the ORDER BY.
+func applyKeysetCursor(query *gorm.DB, pagination PaginationOptions) *gorm.DB {
+	if pagination.AfterTimestamp == nil || pagination.AfterID == "" {
+		return query
+	}
+	if pagination.SortBy != "" && pagination.SortBy != "timestamp" {
+		return query
+	}
+	ts := *pagination.AfterTimestamp
+	if pagination.Order != "asc" {
+		return query.Where("(timestamp < ? OR (timestamp = ? AND id < ?))", ts, ts, pagination.AfterID)
+	}
+	return query.Where("(timestamp > ? OR (timestamp = ? AND id > ?))", ts, ts, pagination.AfterID)
 }
 
 // attachChildAggregates populates ChildCount/ChildrenCost/ChildrenTokens on the
@@ -1604,6 +1637,30 @@ func (s *RDBLogStore) billingSelectColumns() string {
 		))
 	}
 	return strings.Join(cols, ", ")
+}
+
+// billingScalarSelectColumns returns the billing projection with every modality
+// payload column replaced by NULL, for pages that must not materialize payloads.
+func billingScalarSelectColumns() string {
+	cols := make([]string, 0, len(billingScalarColumns)+len(billingPayloadColumns))
+	cols = append(cols, billingScalarColumns...)
+	payloadCols := make([]string, 0, len(billingPayloadColumns))
+	for col := range billingPayloadColumns {
+		payloadCols = append(payloadCols, col)
+	}
+	sort.Strings(payloadCols)
+	for _, col := range payloadCols {
+		cols = append(cols, "NULL AS "+col)
+	}
+	return strings.Join(cols, ", ")
+}
+
+// BillingPayloadRequired reports whether a log of this object type is priced
+// from a modality payload column (audio, image, video, OCR output). Such a row
+// read with PaginationOptions.OmitBillingPayloads must be re-read with the full
+// billing projection before it is priced.
+func BillingPayloadRequired(objectType string) bool {
+	return billingPayloadColumnFor(objectType) != ""
 }
 
 // billingPayloadColumnFor returns the payload column an object_type bills on, or ""
@@ -4871,26 +4928,46 @@ func (s *RDBLogStore) FindAllDistinct(ctx context.Context, query any, fields ...
 	return logs, nil
 }
 
-// DeleteLogsBatch deletes logs older than the cutoff time in batches.
+// DeleteLogsBatch deletes up to batchSize logs whose created_at is older than
+// cutoff, oldest first, in one statement. The cutoff column is created_at, the
+// same retention semantics as before; ordering by it lets each batch walk
+// idx_logs_created_at from its low end instead of scanning for matches.
 func (s *RDBLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error) {
-	// First, select the IDs of logs to delete with proper LIMIT
-	var ids []string
-	if err := s.db.WithContext(ctx).
-		Model(&Log{}).
-		Select("id").
-		Where("created_at < ?", cutoff).
-		Limit(batchSize).
-		Pluck("id", &ids).Error; err != nil {
-		return 0, err
-	}
+	return s.deleteExpiredBatch(ctx, "logs", "created_at", cutoff, batchSize)
+}
 
-	// If no IDs found, return early
-	if len(ids) == 0 {
+// DeleteMCPToolLogsBatch deletes up to batchSize MCP tool logs whose timestamp
+// is older than cutoff, oldest first, in one statement through the timestamp
+// index (idx_mcp_logs_timestamp on Postgres). Before this, mcp_tool_logs had
+// no time-based retention at all.
+//
+// ClickHouse is not handled here: the embedded RDB statement shape is not valid
+// there, so the call is a no-op until ClickHouseLogStore overrides it with a
+// lightweight delete (the same shape as its DeleteLogsBatch).
+func (s *RDBLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error) {
+	if s.db.Dialector.Name() == "clickhouse" {
 		return 0, nil
 	}
+	return s.deleteExpiredBatch(ctx, "mcp_tool_logs", "timestamp", cutoff, batchSize)
+}
 
-	// Delete the selected IDs
-	result := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&Log{})
+// deleteExpiredBatch deletes the oldest batchSize rows of table whose column is
+// before cutoff. table and column are internal constants, never user input.
+//
+// Postgres and SQLite delete by primary key from an ordered, limited subquery
+// on the indexed column. MySQL rejects LIMIT inside an IN subquery, so it uses
+// its single-table DELETE ... ORDER BY ... LIMIT form instead.
+func (s *RDBLogStore) deleteExpiredBatch(ctx context.Context, table, column string, cutoff time.Time, batchSize int) (int64, error) {
+	if batchSize <= 0 {
+		return 0, nil
+	}
+	var stmt string
+	if s.db.Dialector.Name() == "mysql" {
+		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s < ? ORDER BY %s LIMIT ?", table, column, column)
+	} else {
+		stmt = fmt.Sprintf("DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, table, column, column)
+	}
+	result := s.db.WithContext(ctx).Exec(stmt, cutoff, batchSize)
 	if result.Error != nil {
 		return 0, result.Error
 	}
@@ -5081,8 +5158,10 @@ func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogS
 
 	// Get total count for pagination
 	var totalCount int64
-	if err := baseQuery.Count(&totalCount).Error; err != nil {
-		return nil, err
+	if !pagination.SkipCount {
+		if err = baseQuery.Session(&gorm.Session{}).Count(&totalCount).Error; err != nil {
+			return nil, err
+		}
 	}
 
 	// Build order clause

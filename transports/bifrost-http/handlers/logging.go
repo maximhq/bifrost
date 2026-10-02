@@ -16,6 +16,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
@@ -1561,8 +1562,184 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Dimension rankings calculation failed: %v", err))
 		return
 	}
+	h.applyCurrentRankingNames(ctx, result)
 
 	SendJSON(ctx, result)
+}
+
+// RankingNameResolver returns the current display name of each id of one
+// ranking dimension, looked up in the config store. An id missing from the map
+// no longer exists; its row keeps the name the log store resolved.
+type RankingNameResolver func(ctx context.Context, ids []string) (map[string]string, error)
+
+// rankingNameResolvers holds resolvers registered for dimensions whose entities
+// the OSS config store does not own (user, business unit, project) or that a
+// build wants to resolve differently. Guarded by rankingNameResolversMu.
+var (
+	rankingNameResolversMu sync.RWMutex
+	rankingNameResolvers   = map[logstore.RankingDimension]RankingNameResolver{}
+)
+
+// RegisterRankingNameResolver installs the name resolver for a ranking
+// dimension, replacing the built-in one. A nil fn removes the registration.
+// Intended to be called at startup; safe to call concurrently.
+func RegisterRankingNameResolver(dim logstore.RankingDimension, fn RankingNameResolver) {
+	rankingNameResolversMu.Lock()
+	defer rankingNameResolversMu.Unlock()
+	if fn == nil {
+		delete(rankingNameResolvers, dim)
+		return
+	}
+	rankingNameResolvers[dim] = fn
+}
+
+// redactedTeamNames and redactedCustomerNames are the batch name lookups
+// RDBConfigStore provides; a config store without them keeps the log names.
+type redactedTeamNames interface {
+	GetRedactedTeams(ctx context.Context, ids []string) ([]tables.TableTeam, error)
+}
+type redactedCustomerNames interface {
+	GetRedactedCustomers(ctx context.Context, ids []string) ([]tables.TableCustomer, error)
+}
+
+// The OSS config store must keep serving both lookups: without them team and
+// customer rankings would silently fall back to their logged names.
+var (
+	_ redactedTeamNames     = (*configstore.RDBConfigStore)(nil)
+	_ redactedCustomerNames = (*configstore.RDBConfigStore)(nil)
+)
+
+// rankingNameResolver returns the resolver for dim: a registered one first,
+// otherwise the built-in config-store lookup for the entities OSS owns.
+func (h *LoggingHandler) rankingNameResolver(dim logstore.RankingDimension) RankingNameResolver {
+	rankingNameResolversMu.RLock()
+	fn, ok := rankingNameResolvers[dim]
+	rankingNameResolversMu.RUnlock()
+	if ok {
+		return fn
+	}
+	rk := h.redactedKeysManager
+	var cs configstore.ConfigStore
+	if h.config != nil {
+		cs = h.config.ConfigStore
+	}
+	switch dim {
+	case logstore.RankingDimensionVirtualKey:
+		if rk == nil {
+			return nil
+		}
+		return func(ctx context.Context, ids []string) (map[string]string, error) {
+			names := make(map[string]string, len(ids))
+			for _, vk := range rk.GetAllRedactedVirtualKeys(ctx, ids) {
+				names[vk.ID] = vk.Name
+			}
+			return names, nil
+		}
+	case logstore.RankingDimensionRoutingRule:
+		if rk == nil {
+			return nil
+		}
+		return func(ctx context.Context, ids []string) (map[string]string, error) {
+			names := make(map[string]string, len(ids))
+			for _, rule := range rk.GetAllRedactedRoutingRules(ctx, ids) {
+				names[rule.ID] = rule.Name
+			}
+			return names, nil
+		}
+	case logstore.RankingDimensionSelectedKey:
+		if rk == nil {
+			return nil
+		}
+		return func(ctx context.Context, ids []string) (map[string]string, error) {
+			names := make(map[string]string, len(ids))
+			for _, key := range rk.GetAllRedactedKeys(ctx, ids) {
+				names[key.ID] = key.Name
+			}
+			return names, nil
+		}
+	case logstore.RankingDimensionTeam:
+		teams, ok := cs.(redactedTeamNames)
+		if !ok {
+			return nil
+		}
+		return func(ctx context.Context, ids []string) (map[string]string, error) {
+			rows, err := teams.GetRedactedTeams(ctx, ids)
+			if err != nil {
+				return nil, err
+			}
+			names := make(map[string]string, len(rows))
+			for _, team := range rows {
+				names[team.ID] = team.Name
+			}
+			return names, nil
+		}
+	case logstore.RankingDimensionCustomer:
+		customers, ok := cs.(redactedCustomerNames)
+		if !ok {
+			return nil
+		}
+		return func(ctx context.Context, ids []string) (map[string]string, error) {
+			rows, err := customers.GetRedactedCustomers(ctx, ids)
+			if err != nil {
+				return nil, err
+			}
+			names := make(map[string]string, len(rows))
+			for _, customer := range rows {
+				names[customer.ID] = customer.Name
+			}
+			return names, nil
+		}
+	}
+	return nil
+}
+
+// rankingNameLookupBatchSize bounds how many ids one ranking name lookup
+// carries, well under the Postgres and SQLite bind-parameter limits.
+const rankingNameLookupBatchSize = vkHydrationChunkSize
+
+// applyCurrentRankingNames replaces each ranked entity's name with its current
+// name from the config store, so a rename shows at once. An entity the config
+// store no longer has (deleted) keeps the name the log store resolved, which is
+// the last name it was logged under. The Unassigned bucket and dimensions whose
+// id is the name (app, user agent, alias) are left as they are.
+func (h *LoggingHandler) applyCurrentRankingNames(ctx context.Context, result *logstore.DimensionRankingResult) {
+	if result == nil || len(result.Rankings) == 0 {
+		return
+	}
+	resolve := h.rankingNameResolver(result.Dimension)
+	if resolve == nil {
+		return
+	}
+	ids := make([]string, 0, len(result.Rankings))
+	for _, row := range result.Rankings {
+		// The redacted lookups return every row for an empty id list, so only
+		// real entity ids are sent, never "" or the Unassigned bucket.
+		if row.ID != "" && row.ID != logstore.UnassignedDimensionID {
+			ids = append(ids, row.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	// An uncapped ranking (all=true) can list every id in the window, and some
+	// lookups bind one parameter per id, so the ids go out in bounded batches.
+	names := make(map[string]string, len(ids))
+	for start := 0; start < len(ids); start += rankingNameLookupBatchSize {
+		end := min(start+rankingNameLookupBatchSize, len(ids))
+		batch, err := resolve(ctx, ids[start:end])
+		if err != nil {
+			logger.Warn("failed to resolve current %s names for rankings, keeping logged names: %v", result.Dimension, err)
+			return
+		}
+		for id, name := range batch {
+			names[id] = name
+		}
+	}
+	for i := range result.Rankings {
+		if name, ok := names[result.Rankings[i].ID]; ok && name != "" {
+			result.Rankings[i].Name = name
+		}
+	}
 }
 
 // dashboardRankingDimensions is the fixed set of dimensions returned in the
@@ -1735,6 +1912,7 @@ func (h *LoggingHandler) getDashboard(ctx *fasthttp.RequestCtx) {
 			if err != nil {
 				return fmt.Errorf("%s rankings: %w", dim, err)
 			}
+			h.applyCurrentRankingNames(gCtx, res)
 			dimMu.Lock()
 			result.DimensionRankings[string(dim)] = res
 			dimMu.Unlock()

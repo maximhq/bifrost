@@ -335,17 +335,17 @@ func (m *countingRetentionManager) DeleteLogsBatch(_ context.Context, _ time.Tim
 // issuing the delete again.
 func TestLogsCleanerStopsAfterOversizedBatch(t *testing.T) {
 	t.Run("OversizedCountEndsTheLoop", func(t *testing.T) {
-		m := &countingRetentionManager{counts: []int64{250}}
+		m := &countingRetentionManager{counts: []int64{batchSize + 150}}
 		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
 		assert.Equal(t, 1, m.calls, "a count above batchSize means the store already deleted everything")
 	})
 	t.Run("FullBatchesKeepGoing", func(t *testing.T) {
-		m := &countingRetentionManager{counts: []int64{100, 100, 40}}
+		m := &countingRetentionManager{counts: []int64{batchSize, batchSize, 40}}
 		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
 		assert.Equal(t, 3, m.calls, "SQL stores return exactly batchSize while rows remain")
 	})
 	t.Run("ExactBatchThenEmpty", func(t *testing.T) {
-		m := &countingRetentionManager{counts: []int64{100, 0}}
+		m := &countingRetentionManager{counts: []int64{batchSize, 0}}
 		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
 		assert.Equal(t, 2, m.calls, "a full batch is followed by one more probe that finds nothing")
 	})
