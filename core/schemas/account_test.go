@@ -7,6 +7,55 @@ import (
 	"testing"
 )
 
+func TestAliasConfigRedactedPreservesShape(t *testing.T) {
+	for name, original := range map[string]AliasConfig{
+		"empty":  {},
+		"legacy": {ModelID: "model"},
+		"metadata": {
+			ModelID: "model", ModelName: Ptr("canonical"), ModelFamily: Ptr(ModelFamilyAnthropic),
+			Description: "alias description", UseAnthropicEndpoints: Ptr(true), UseOpenAIEndpoints: Ptr(false),
+			AzureAliasCfg:     &AzureAliasCfg{APIVersion: Ptr("api-version"), AnthropicVersion: Ptr("anthropic-version")},
+			VertexAliasCfg:    &VertexAliasCfg{ForceSingleRegion: Ptr(true)},
+			BedrockAliasCfg:   &BedrockAliasCfg{},
+			ReplicateAliasCfg: &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			redacted := original.Redacted()
+			if !reflect.DeepEqual(original, redacted) {
+				t.Fatalf("redaction changed non-secret fields: got %+v, want %+v", redacted, original)
+			}
+			before, err := json.Marshal(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := json.Marshal(redacted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatalf("redaction changed wire shape: got %s, want %s", after, before)
+			}
+		})
+	}
+}
+
+func TestBedrockEndpointsRedactedPreservesUnsetFields(t *testing.T) {
+	var unset *BedrockEndpoints
+	if unset.Redacted() != nil {
+		t.Fatal("nil endpoints must remain nil")
+	}
+	original := &BedrockEndpoints{Runtime: NewSecretVar("runtime.example.com")}
+	redacted := original.Redacted()
+	if !reflect.DeepEqual(original, redacted) {
+		t.Fatalf("literal endpoints or nil fields changed: got %+v, want %+v", redacted, original)
+	}
+	redacted.Runtime.Val = "changed.example.com"
+	if original.Runtime.GetValue() != "runtime.example.com" {
+		t.Fatal("redacted endpoints share secrets with live config")
+	}
+}
+
 func TestKeyAliasesUnmarshalLegacyStringShape(t *testing.T) {
 	in := []byte(`{"best-model": "gpt-4o-deployment"}`)
 	var ka KeyAliases
