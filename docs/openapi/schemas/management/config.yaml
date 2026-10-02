@@ -333,7 +333,20 @@ UpdateConfigRequest:
                 persisted or returned by GET /api/config. If the operator hasn't
                 configured a setup token, requests that would create the first
                 admin account are rejected until they do. Once an admin account
-                exists, this field is ignored.
+                exists it is also accepted, as an alternative to current_password,
+                when auth_config is changed while dashboard authentication is
+                disabled (see current_password).
+            current_password:
+              type: string
+              description: >-
+                The currently stored admin password. Required (unless a valid
+                setup_token is supplied) when an admin account exists, dashboard
+                authentication is disabled, and this request re-enables it or
+                changes admin_username / admin_password. Such requests reach the
+                API without any credential check, so one of the two proofs must be
+                presented or the request is refused with 403. Ignored when the
+                request is genuinely authenticated or when no admin account exists
+                yet. Never persisted or returned by GET /api/config.
   example:
     auth_config:
       admin_username: admin

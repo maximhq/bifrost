@@ -73,10 +73,20 @@ const authConfig = mode === "enable"
       admin_password: "<redacted>",
     };
 
-// Only meaningful while bootstrapping; the server ignores it once an admin
-// exists, and it is never persisted.
+// The setup token creates the first admin account. Once one exists it is also
+// accepted as proof of control (see below); it is never persisted.
 if (mode === "enable" && setupToken) {
   authConfig.setup_token = setupToken;
+}
+
+// Re-enabling auth while an admin account is stored but auth is disabled -- the
+// state every re-run of the suite starts from on a persistent database -- is
+// refused (403) from an unauthenticated caller unless the request proves
+// control of the account: current_password (the stored admin password) or the
+// configured setup token. This script knows the password, so send it; the
+// server then accepts the request whether or not a setup token is available.
+if (mode === "enable" && adminExists) {
+  authConfig.current_password = password;
 }
 
 // The server reports log_retention_days:0 by default but rejects that on write
