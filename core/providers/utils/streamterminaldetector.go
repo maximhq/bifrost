@@ -7,98 +7,10 @@ import (
 	"github.com/bytedance/sonic"
 )
 
-const maxTerminalDetectorBufferBytes = 256 * 1024
-
 var (
 	sseFrameDelimiterLF   = []byte("\n\n")
 	sseFrameDelimiterCRLF = []byte("\r\n\r\n")
 )
-
-// StreamTerminalDetector incrementally parses stream frames and detects
-// semantic completion markers such as finishReason or [DONE].
-type StreamTerminalDetector struct {
-	pending bytes.Buffer
-}
-
-// ObserveChunk ingests a new raw stream chunk and returns true if a terminal
-// marker was detected in a parsed frame payload.
-func (d *StreamTerminalDetector) ObserveChunk(chunk []byte) bool {
-	if len(chunk) == 0 {
-		return false
-	}
-
-	// Fast path: detect terminal markers when a single chunk already contains
-	// a complete payload (SSE data line or plain JSON body).
-	// Skip this when the chunk already contains full SSE frame delimiters,
-	// because multi-event chunks need frame-by-frame parsing.
-	if !containsSSEFrameDelimiter(chunk) && d.detectInFrame(chunk) {
-		return true
-	}
-
-	d.pending.Write(chunk)
-
-	for {
-		data := d.pending.Bytes()
-		delimIdx, delimLen := findFirstSSEFrameDelimiter(data)
-		if delimIdx < 0 {
-			break
-		}
-
-		frame := append([]byte(nil), data[:delimIdx]...)
-		d.pending.Next(delimIdx + delimLen)
-		if d.detectInFrame(frame) {
-			return true
-		}
-	}
-
-	// Some passthrough streams emit plain JSON chunks (no SSE "\n\n" framing).
-	// Try parsing the current pending buffer as a whole JSON payload.
-	if d.detectInUndelimitedPending() {
-		return true
-	}
-
-	// Keep memory bounded if the upstream never emits a frame delimiter.
-	if d.pending.Len() > maxTerminalDetectorBufferBytes {
-		drain := d.pending.Bytes()
-		if idx, delimLen := findLastSSEFrameDelimiter(drain); idx >= 0 {
-			d.pending.Next(idx + delimLen)
-		} else {
-			trimTo := maxTerminalDetectorBufferBytes / 2
-			keptPrefix := append([]byte(nil), drain[:trimTo]...)
-			d.pending.Reset()
-			d.pending.Write(keptPrefix)
-		}
-	}
-	return false
-}
-
-func (d *StreamTerminalDetector) detectInUndelimitedPending() bool {
-	if d.pending.Len() == 0 {
-		return false
-	}
-	payload := bytes.TrimSpace(d.pending.Bytes())
-	if len(payload) == 0 {
-		return false
-	}
-	return hasFinishReasonMarker(payload)
-}
-
-func (d *StreamTerminalDetector) detectInFrame(frame []byte) bool {
-	payload := extractSSEDataPayload(frame)
-	if len(payload) == 0 {
-		return false
-	}
-
-	text := strings.TrimSpace(string(payload))
-	if text == "" {
-		return false
-	}
-	if text == "[DONE]" {
-		return true
-	}
-
-	return hasFinishReasonMarker([]byte(text))
-}
 
 func extractSSEDataPayload(frame []byte) []byte {
 	trimmed := bytes.TrimSpace(frame)
@@ -282,10 +194,6 @@ func findLastSSEFrameDelimiter(data []byte) (idx int, delimLen int) {
 	default:
 		return idxLF, len(sseFrameDelimiterLF)
 	}
-}
-
-func containsSSEFrameDelimiter(data []byte) bool {
-	return bytes.Contains(data, sseFrameDelimiterLF) || bytes.Contains(data, sseFrameDelimiterCRLF)
 }
 
 // hasGoogleErrorObject reports whether a payload is a Google/Vertex API error envelope. It
