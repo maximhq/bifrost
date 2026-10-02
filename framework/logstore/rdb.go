@@ -76,6 +76,9 @@ type RDBLogStore struct {
 	// Self-heal state for the matview read path (see matviewheal.go).
 	matViewHealInFlight    atomic.Bool
 	matViewHealLastAttempt atomic.Int64 // unix nanos of the last repair attempt
+	// matViewRefreshTimeout bounds a self-heal refresh the same way a periodic
+	// tick is bounded. Zero means unbounded (maintenance not configured).
+	matViewRefreshTimeout time.Duration
 }
 
 // generateBucketTimestamps generates all bucket timestamps for a time range.
@@ -666,8 +669,27 @@ func (s *RDBLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
 	}).Create(entry).Error
 }
 
+// maxInsertBindParams caps the bind parameters of one multi-row INSERT. SQLite
+// allows 32,766 per statement and Postgres 65,535 (the Bind message counts them in
+// an Int16), so the lower limit, minus headroom, keeps both dialects safe.
+const maxInsertBindParams = 30000
+
+// insertBatchSize returns how many rows of model fit in one multi-row INSERT under
+// maxInsertBindParams, and the column count it used. A `logs` row binds about 117
+// columns, so the writer's 1000-row batch would otherwise bind about 117k parameters
+// and be rejected by both Postgres and SQLite.
+func insertBatchSize(db *gorm.DB, model any) (int, int) {
+	stmt := &gorm.Statement{DB: db}
+	if err := stmt.Parse(model); err != nil || len(stmt.Schema.DBNames) == 0 {
+		return 100, 0
+	}
+	columns := len(stmt.Schema.DBNames)
+	return max(1, maxInsertBindParams/columns), columns
+}
+
 // BatchCreateIfNotExists inserts multiple log entries in a single transaction.
-// Uses ON CONFLICT DO NOTHING for idempotency.
+// Uses ON CONFLICT DO NOTHING for idempotency. Entries are written in chunks
+// sized by insertBatchSize so no single INSERT exceeds the parameter limit.
 func (s *RDBLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log) error {
 	if len(entries) == 0 {
 		return nil
@@ -676,10 +698,11 @@ func (s *RDBLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log
 	if s.db.Dialector.Name() == "postgres" {
 		db = db.Omit("inc_number")
 	}
+	batchSize, _ := insertBatchSize(s.db, &Log{})
 	return db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
-	}).Create(&entries).Error
+	}).CreateInBatches(&entries, batchSize).Error
 }
 
 // Ping checks if the database is reachable.
@@ -2998,7 +3021,10 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 			for i, r := range currentResults {
 				userIDs[i] = r.UserID
 			}
-			prevQuery = prevQuery.Where("user_id IN ?", userIDs)
+			// One bind for the whole list: in export mode (no ranking limit)
+			// the list can exceed the per-statement parameter limit.
+			inClause, inArg := queryscope.InStrings(prevQuery, "user_id", userIDs)
+			prevQuery = prevQuery.Where(inClause, inArg)
 		}
 
 		var prevResults []struct {
@@ -3288,7 +3314,10 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 			for i, r := range currentResults {
 				ids[i] = r.ID
 			}
-			prevQuery = prevQuery.Where(fmt.Sprintf("%s IN ?", groupExpr), ids)
+			// One bind for the whole list: in export mode (no ranking limit)
+			// the list can exceed the per-statement parameter limit.
+			inClause, inArg := queryscope.InStrings(prevQuery, groupExpr, ids)
+			prevQuery = prevQuery.Where(inClause, inArg)
 		}
 
 		var prevResults []struct {
@@ -4978,15 +5007,17 @@ func (s *RDBLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) e
 }
 
 // BatchCreateMCPToolLogsIfNotExists inserts multiple MCP tool log entries in a single transaction.
-// Uses ON CONFLICT DO NOTHING for idempotency.
+// Uses ON CONFLICT DO NOTHING for idempotency. Entries are written in chunks sized by
+// insertBatchSize so no single INSERT exceeds the parameter limit.
 func (s *RDBLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error {
 	if len(entries) == 0 {
 		return nil
 	}
+	batchSize, _ := insertBatchSize(s.db, &MCPToolLog{})
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
-	}).Create(&entries).Error
+	}).CreateInBatches(&entries, batchSize).Error
 }
 
 // FindMCPToolLog retrieves a single MCP tool log entry by its ID. When ctx

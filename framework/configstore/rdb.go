@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -3471,7 +3472,10 @@ func (s *RDBConfigStore) GetRedactedVirtualKeys(ctx context.Context, ids []strin
 	var virtualKeys []tables.TableVirtualKey
 
 	if len(ids) > 0 {
-		err := s.DB().WithContext(ctx).Select("id, name, description, is_active").Where("id IN ?", ids).Find(&virtualKeys).Error
+		// One bound parameter for the whole list: ids can hold every VK assigned
+		// to an MCP client, which exceeds the bind-parameter limit at scale.
+		db := s.DB().WithContext(ctx)
+		err := db.Select("id, name, description, is_active").Where(queryscope.InStrings(db, "id", ids)).Find(&virtualKeys).Error
 		if err != nil {
 			return nil, err
 		}
@@ -3783,11 +3787,65 @@ func VirtualKeySearchConditions(db *gorm.DB, search string) *gorm.DB {
 
 // GetVirtualKeysPaginated retrieves virtual keys with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error) {
-	// Build base query with filters
+	// Apply pagination defaults
+	limit := params.Limit
+	if params.Export {
+		// Export mode: allow large fetches, cap at 10000 as a safety net
+		if limit <= 0 {
+			limit = 10000
+		}
+		if limit > 10000 {
+			limit = 10000
+		}
+	} else {
+		if limit <= 0 {
+			limit = 25
+		}
+		if limit > 100 {
+			limit = 100
+		}
+	}
+
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
 	// ScopedDB applies any caller-supplied row visibility before
 	// per-call filters so the total count and the page result agree
 	// on what the caller is allowed to see.
-	baseQuery := s.ScopedDB(ctx).Model(&tables.TableVirtualKey{})
+	if limit <= virtualKeyInternalPageSize {
+		return s.getVirtualKeysWindow(ctx, s.ScopedDB(ctx), params, limit, offset)
+	}
+
+	// A window larger than one chunk is loaded by several statements. Run the count
+	// and every chunk in one read-only transaction so they all see the same snapshot:
+	// otherwise a key created or deleted between chunks shifts the offsets, repeating
+	// or skipping a row, and the total disagrees with the rows returned. Postgres needs
+	// REPEATABLE READ for that (READ COMMITTED snapshots per statement); a SQLite read
+	// transaction already holds one snapshot, and its drivers reject isolation levels.
+	var txOpts []*sql.TxOptions
+	if s.DB().Dialector.Name() == "postgres" {
+		txOpts = append(txOpts, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	}
+	var virtualKeys []tables.TableVirtualKey
+	var totalCount int64
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		virtualKeys, totalCount, err = s.getVirtualKeysWindow(ctx, s.ScopedDB(ctx, tx), params, limit, offset)
+		return err
+	}, txOpts...)
+	if err != nil {
+		return nil, 0, err
+	}
+	return virtualKeys, totalCount, nil
+}
+
+// getVirtualKeysWindow counts the virtual keys matching params on db and loads the
+// window [offset, offset+limit) in chunks of at most virtualKeyInternalPageSize.
+func (s *RDBConfigStore) getVirtualKeysWindow(ctx context.Context, db *gorm.DB, params VirtualKeyQueryParams, limit, offset int) ([]tables.TableVirtualKey, int64, error) {
+	// Build base query with filters
+	baseQuery := db.Model(&tables.TableVirtualKey{})
 
 	// A virtual key is assigned to at most one of customer / team / user, so
 	// combining assignment filters ORs them rather than narrowing to nothing.
@@ -3824,30 +3882,6 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		return nil, 0, err
 	}
 
-	// Apply pagination defaults
-	limit := params.Limit
-	if params.Export {
-		// Export mode: allow large fetches, cap at 10000 as a safety net
-		if limit <= 0 {
-			limit = 10000
-		}
-		if limit > 10000 {
-			limit = 10000
-		}
-	} else {
-		if limit <= 0 {
-			limit = 25
-		}
-		if limit > 100 {
-			limit = 100
-		}
-	}
-
-	offset := params.Offset
-	if offset < 0 {
-		offset = 0
-	}
-
 	// Determine sort order
 	orderClause := "governance_virtual_keys.created_at ASC, governance_virtual_keys.id ASC"
 	if params.SortBy != "" {
@@ -3879,13 +3913,28 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 			GROUP BY virtual_key_id
 		) AS vk_budget_totals ON vk_budget_totals.virtual_key_id = governance_virtual_keys.id`)
 	}
+	// Load the requested window in chunks of at most virtualKeyInternalPageSize.
+	// Each preload (ProviderConfigs.Budgets, ProviderConfigs.Keys, ...) binds one
+	// parameter per parent row, so a 10,000-key export page with a handful of
+	// provider configs per key would exceed the bind-parameter limit in a single
+	// Find. Every order clause ends in the unique id, so consecutive offset chunks
+	// concatenate to exactly the rows one Find would have returned.
 	var virtualKeys []tables.TableVirtualKey
-	if err := query.
-		Order(orderClause).
-		Offset(offset).
-		Limit(limit).
-		Find(&virtualKeys).Error; err != nil {
-		return nil, 0, err
+	for loaded := 0; loaded < limit; {
+		chunkSize := min(limit-loaded, virtualKeyInternalPageSize)
+		var chunk []tables.TableVirtualKey
+		if err := query.Session(&gorm.Session{}).
+			Order(orderClause).
+			Offset(offset + loaded).
+			Limit(chunkSize).
+			Find(&chunk).Error; err != nil {
+			return nil, 0, err
+		}
+		virtualKeys = append(virtualKeys, chunk...)
+		loaded += len(chunk)
+		if len(chunk) < chunkSize {
+			break
+		}
 	}
 	return virtualKeys, totalCount, nil
 }
@@ -6245,9 +6294,15 @@ func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*ta
 // BudgetID/RateLimitID after the IDs are collected; rows are locked in stable id
 // order to keep concurrent deleters deadlock-free. Configs are removed before
 // their owned rows, matching DeleteModelConfig's order.
+//
+// A provider can own more model configs than a statement can bind parameters for,
+// so every id list below travels as one bound parameter (queryscope.InStrings).
+// That is also why the owned budgets are loaded by an explicit query instead of
+// Preload("Budgets"), which would bind one parameter per config. The query runs
+// unlocked, exactly like the preload it replaces.
 func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm.DB, query string, args ...any) error {
 	var modelConfigs []tables.TableModelConfig
-	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budgets").Order("id").Where(query, args...).Find(&modelConfigs).Error; err != nil {
+	if err := dbForUpdate(txDB.WithContext(ctx)).Order("id").Where(query, args...).Find(&modelConfigs).Error; err != nil {
 		return err
 	}
 	if len(modelConfigs) == 0 {
@@ -6259,9 +6314,15 @@ func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm
 	rateLimitIDs := make([]string, 0, len(modelConfigs))
 	for i := range modelConfigs {
 		mcIDs = append(mcIDs, modelConfigs[i].ID)
-		for j := range modelConfigs[i].Budgets {
-			budgetIDs = append(budgetIDs, modelConfigs[i].Budgets[j].ID)
-		}
+	}
+	var ownedBudgetIDs []string
+	if err := txDB.WithContext(ctx).Model(&tables.TableBudget{}).
+		Where(queryscope.InStrings(txDB, "model_config_id", mcIDs)).
+		Pluck("id", &ownedBudgetIDs).Error; err != nil {
+		return err
+	}
+	budgetIDs = append(budgetIDs, ownedBudgetIDs...)
+	for i := range modelConfigs {
 		if modelConfigs[i].BudgetID != nil {
 			budgetIDs = append(budgetIDs, *modelConfigs[i].BudgetID)
 		}
@@ -6270,16 +6331,16 @@ func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm
 		}
 	}
 
-	if err := txDB.WithContext(ctx).Where("id IN ?", mcIDs).Delete(&tables.TableModelConfig{}).Error; err != nil {
+	if err := txDB.WithContext(ctx).Where(queryscope.InStrings(txDB, "id", mcIDs)).Delete(&tables.TableModelConfig{}).Error; err != nil {
 		return err
 	}
 	if len(budgetIDs) > 0 {
-		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id IN ?", budgetIDs).Error; err != nil {
+		if err := txDB.WithContext(ctx).Where(queryscope.InStrings(txDB, "id", budgetIDs)).Delete(&tables.TableBudget{}).Error; err != nil {
 			return err
 		}
 	}
 	if len(rateLimitIDs) > 0 {
-		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
+		if err := txDB.WithContext(ctx).Where(queryscope.InStrings(txDB, "id", rateLimitIDs)).Delete(&tables.TableRateLimit{}).Error; err != nil {
 			return err
 		}
 	}
@@ -8902,11 +8963,13 @@ func applyMCPSessionFilters(query *gorm.DB, params MCPSessionsFilterParams, t mc
 	if len(params.MCPClientIDs) > 0 {
 		query = query.Where(t.table+".mcp_client_id IN ?", params.MCPClientIDs)
 	}
+	// The VK and user lists can be as large as the caller's directory, so each
+	// travels as a single bound parameter instead of one per id.
 	if len(params.VirtualKeyIDs) > 0 {
-		query = query.Where(t.table+".virtual_key_id IN ?", params.VirtualKeyIDs)
+		query = query.Where(queryscope.InStrings(query, t.table+".virtual_key_id", params.VirtualKeyIDs))
 	}
 	if len(params.UserIDs) > 0 {
-		query = query.Where(t.table+".user_id IN ?", params.UserIDs)
+		query = query.Where(queryscope.InStrings(query, t.table+".user_id", params.UserIDs))
 	}
 	if params.Identity != "" {
 		// Exact match against whichever identity column carries the value for this
@@ -8926,8 +8989,11 @@ func applyMCPSessionFilters(query *gorm.DB, params MCPSessionsFilterParams, t mc
 		whereClause := "LOWER(config_mcp_clients.name) LIKE ? OR LOWER(config_mcp_clients.client_id) LIKE ? OR LOWER(" + t.table + ".user_id) LIKE ? OR LOWER(" + t.table + ".session_id) LIKE ? OR LOWER(governance_virtual_keys.id) LIKE ? OR LOWER(governance_virtual_keys.name) LIKE ?"
 		whereArgs := []any{needle, needle, needle, needle, needle, needle}
 		if len(params.MatchedUserIDs) > 0 {
-			whereClause += " OR " + t.table + ".user_id IN ?"
-			whereArgs = append(whereArgs, params.MatchedUserIDs)
+			// Every user matching the search can be resolved here (up to the
+			// whole directory), so bind the list as one parameter.
+			matchedClause, matchedArg := queryscope.InStrings(query, t.table+".user_id", params.MatchedUserIDs)
+			whereClause += " OR " + matchedClause
+			whereArgs = append(whereArgs, matchedArg)
 		}
 		query = query.Where(whereClause, whereArgs...)
 	}

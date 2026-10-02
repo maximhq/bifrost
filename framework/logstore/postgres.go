@@ -280,6 +280,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			return
 		}
 		refreshTimeout := resolveMatViewRefreshTimeout(config.MatViewRefreshTimeout, refreshInterval, logger)
+		d.matViewRefreshTimeout = refreshTimeout
 
 		// The initial refresh gets the same budget as a periodic tick; on a large
 		// logs table it can be slow, and it must not hold the advisory lock forever.

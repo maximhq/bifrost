@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"sort"
@@ -916,14 +917,23 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 		}
 	}()
 
+	// A failed REFRESH leaves the existing view intact (CONCURRENTLY builds into a
+	// temp table and diffs at commit), so readers keep working against slightly
+	// staler data. One view failing for its own reason must not starve the others,
+	// so the pass continues; it stops only once the deadline has passed, since every
+	// later statement would fail the same way. markRefreshed is skipped on any
+	// failure so the next tick sees a changed activity counter and retries.
+	var refreshErrs []error
 	for _, view := range matViewRefreshOrder() {
 		if _, err := conn.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+view); err != nil {
-			// A cancelled REFRESH leaves the existing view intact (CONCURRENTLY builds
-			// into a temp table and diffs at commit), so readers keep working against
-			// slightly staler data. markRefreshed is intentionally skipped so the next
-			// tick sees a changed activity counter and retries.
-			return fmt.Errorf("failed to refresh %s: %w", view, err)
+			refreshErrs = append(refreshErrs, fmt.Errorf("failed to refresh %s: %w", view, err))
+			if ctx.Err() != nil {
+				break
+			}
 		}
+	}
+	if len(refreshErrs) > 0 {
+		return errors.Join(refreshErrs...)
 	}
 	refreshGate.markRefreshed(activityAtStart, activityOK)
 	return nil
@@ -2601,9 +2611,12 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 			ID   string `gorm:"column:id"`
 			Name string `gorm:"column:name"`
 		}
-		if err := s.scopedLogsDB(ctx).Model(&Log{}).
+		// In export mode ids holds every current-period id, which can exceed the
+		// 65,535-parameter limit as an "IN ?" list, so it binds as one argument.
+		nameDB := s.scopedLogsDB(ctx)
+		if err := nameDB.Model(&Log{}).
 			Select(fmt.Sprintf("DISTINCT ON (%s) %s AS id, %s AS name", idCol, idCol, nameCol)).
-			Where(fmt.Sprintf("%s IN ?", idCol), ids).
+			Where(queryscope.InStrings(nameDB, idCol, ids)).
 			Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", nameCol, nameCol)).
 			Order(fmt.Sprintf("%s, timestamp DESC", idCol)).
 			Find(&nameRows).Error; err == nil {
