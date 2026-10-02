@@ -342,6 +342,22 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 		return nil, fmt.Errorf("failed to unmarshal cached response: %w", err)
 	}
 
+	// Entries written when the original request sent raw payloads back can
+	// carry them in extra_fields; a request whose ctx marks them for
+	// client-side strip must not get them on replay either. The unmarshaled
+	// response is plugin-owned, so clearing the fields here mutates nothing
+	// the caller holds.
+	if dropRequest, dropResponse := clientDropRawFieldFlags(ctx); dropRequest || dropResponse {
+		if ef := cachedResponse.GetExtraFields(); ef != nil {
+			if dropRequest {
+				ef.RawRequest = nil
+			}
+			if dropResponse {
+				ef.RawResponse = nil
+			}
+		}
+	}
+
 	plugin.stampCacheMetadataForHit(state, cachedResponse.GetExtraFields(), result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 	state.ShortCircuited = true
 	return &schemas.LLMPluginShortCircuit{Response: &cachedResponse}, nil
@@ -361,6 +377,12 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 	// purpose of streaming for long responses. A malformed chunk is
 	// extremely unlikely (we wrote it as JSON ourselves), and on the rare
 	// occasion it happens we log+skip rather than truncate the user's view.
+	//
+	// dropRequest/dropResponse mirror the client-side raw-field strip core
+	// applies to delivered chunks; replayed chunks must honor this request's
+	// flags too, since stored chunks may carry raw payloads from a request
+	// that sent them back.
+	dropRequest, dropResponse := clientDropRawFieldFlags(ctx)
 	go func() {
 		defer close(streamChan)
 		for i, chunkStr := range streamArray {
@@ -368,6 +390,17 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 			if err := json.Unmarshal([]byte(chunkStr), &cachedResponse); err != nil {
 				plugin.logger.Warn("Failed to unmarshal stream chunk %d, skipping: %v", i, err)
 				continue
+			}
+
+			if dropRequest || dropResponse {
+				if ef := cachedResponse.GetExtraFields(); ef != nil {
+					if dropRequest {
+						ef.RawRequest = nil
+					}
+					if dropResponse {
+						ef.RawResponse = nil
+					}
+				}
 			}
 
 			// Ensure RequestType is set on every chunk so downstream consumers
