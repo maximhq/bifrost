@@ -15,6 +15,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const collection = JSON.parse(
   readFileSync(join(here, "bifrost-api-management.postman_collection.json"), "utf8"),
 );
+const rateLimitCollection = JSON.parse(
+  readFileSync(join(here, "bifrost-v1-rate-limit.postman_collection.json"), "utf8"),
+);
 
 // Locate a request by "Folder / Request Name" and return one of its scripts.
 function scriptFor(path, listen) {
@@ -39,6 +42,29 @@ function scriptFor(path, listen) {
   return src;
 }
 
+// Same lookup inside the rate-limit collection.
+function rateLimitScriptFor(path, listen) {
+  const wanted = path.split(" / ");
+  function walk(items, trail) {
+    for (const item of items) {
+      const here = [...trail, item.name];
+      if (item.item) {
+        const found = walk(item.item, here);
+        if (found) return found;
+        continue;
+      }
+      if (here.join(" / ") !== wanted.join(" / ")) continue;
+      const event = (item.event || []).find((e) => e.listen === listen);
+      assert.ok(event, `${path} has no ${listen} script`);
+      return event.script.exec.join("\n");
+    }
+    return null;
+  }
+  const src = walk(rateLimitCollection.item, []);
+  assert.ok(src, `request not found: ${path}`);
+  return src;
+}
+
 // A no-op chai-style chain, so pm.expect(...) assertions neither throw nor pass
 // judgement - these tests are about the code *outside* pm.test.
 function expectChain() {
@@ -52,7 +78,7 @@ function expectChain() {
 
 // Minimal Newman-alike sandbox. pm.test swallows assertion failures the way the
 // real runner does (a failed assertion is reported, it does not abort the script).
-function sandbox({ responseBody = "", variables = {} } = {}) {
+function sandbox({ responseBody = "", responseCode = 200, variables = {} } = {}) {
   const vars = { ...variables };
   const state = { skipped: false, tests: [] };
   const pm = {
@@ -64,6 +90,7 @@ function sandbox({ responseBody = "", variables = {} } = {}) {
     },
     variables: { get: (key) => (key in vars ? vars[key] : undefined) },
     response: {
+      code: responseCode,
       text: () => responseBody,
       json: () => JSON.parse(responseBody),
     },
@@ -608,6 +635,56 @@ for (const mode of ["leaked", "unset", "missing", "missing-ref", "http-error", "
     assert.ok(state.failures.length > 0, `${mode} was falsely accepted`);
   });
 }
+
+// ── Rate limit - Model config spelling: skip guards and the sibling check ─────
+// The folder's counter-dependent assertions must be skip-guarded on priming success like
+// the budget folder's, the dated-alias case must only run when the alias really aliases
+// the configured model, and the sibling check must not accept a governance refusal.
+const MS = "Model config spelling / ";
+const msSetupPre = rateLimitScriptFor(MS + "Setup - Create VK for model config spelling", "prerequest");
+const msPrimeTest = rateLimitScriptFor(MS + "Model config request 1 with the configured spelling succeeds", "test");
+const msUsagePre = rateLimitScriptFor(MS + "Model config usage is recorded", "prerequest");
+const msUsageTest = rateLimitScriptFor(MS + "Model config usage is recorded", "test");
+const msUpperPre = rateLimitScriptFor(MS + "Prefixed upper-case spelling is blocked with 402 budget_exceeded", "prerequest");
+const msAliasPre = rateLimitScriptFor(MS + "Dated alias spelling is blocked with 402 budget_exceeded", "prerequest");
+const msSiblingTest = rateLimitScriptFor(MS + "Sibling model is not blocked by the model config budget", "test");
+
+test("model config setup ties the dated-alias case to the configured model", () => {
+  const defaults = run(msSetupPre, { variables: { chat_model: "gpt-4o", chat_model_alias: "gpt-4o-2024-08-06" } });
+  assert.strictEqual(defaults.vars.ms_alias_ok, "1", "the default pair is an alias of the configured model");
+  const overridden = run(msSetupPre, { variables: { chat_model: "claude-3-5-sonnet-latest", chat_model_alias: "gpt-4o-2024-08-06" } });
+  assert.strictEqual(overridden.vars.ms_alias_ok, "", "a model override without a matching alias disables the alias case");
+  assert.strictEqual(overridden.vars.ms_priming_ok, "", "priming and usage flags start cleared");
+  assert.strictEqual(overridden.vars.ms_usage_ok, "");
+});
+
+test("model config priming records success only on a 2xx", () => {
+  assert.strictEqual(run(msPrimeTest, { responseBody: "{}", responseCode: 200 }).vars.ms_priming_ok, "1");
+  const down = run(msPrimeTest, { responseBody: SPA_FALLBACK, responseCode: 502 });
+  assert.strictEqual(down.vars.ms_priming_ok, "");
+  assert.ok(down.state.tests.every((x) => x.passed), "a failed priming is reported as skipped, not failed");
+});
+
+test("model config usage poll and 402 checks skip without priming or recorded usage", () => {
+  assert.strictEqual(run(msUsagePre, { variables: { ms_priming_ok: "" } }).state.skipped, true);
+  assert.strictEqual(run(msUsagePre, { variables: { ms_priming_ok: "1", ms_poll_retry: "0" } }).state.skipped, false);
+  const skipped = run(msUsageTest, { responseBody: "{}", responseCode: 200, variables: { ms_priming_ok: "" } });
+  assert.ok(skipped.state.tests.every((x) => x.passed), "the usage poll reports skipped when priming failed");
+  assert.strictEqual(run(msUpperPre, { variables: { ms_usage_ok: "" } }).state.skipped, true);
+  assert.strictEqual(run(msUpperPre, { variables: { ms_usage_ok: "1" } }).state.skipped, false);
+  assert.strictEqual(run(msAliasPre, { variables: { ms_usage_ok: "1", ms_alias_ok: "" } }).state.skipped, true, "alias case skips when the alias is not tied to the model");
+  assert.strictEqual(run(msAliasPre, { variables: { ms_usage_ok: "", ms_alias_ok: "1" } }).state.skipped, true, "alias case skips without recorded usage");
+  assert.strictEqual(run(msAliasPre, { variables: { ms_usage_ok: "1", ms_alias_ok: "1" } }).state.skipped, false);
+});
+
+test("sibling check treats a governance refusal as a failure, not only budget_exceeded", () => {
+  const blocked = run(msSiblingTest, { responseBody: JSON.stringify({ error: { type: "model_blocked", message: "model not allowed" } }), responseCode: 403 });
+  assert.strictEqual(blocked.vars.ms_sibling_refused, "1", "a 403 model_blocked is a governance refusal");
+  const provider = run(msSiblingTest, { responseBody: JSON.stringify({ error: { message: "upstream unavailable" } }), responseCode: 502 });
+  assert.strictEqual(provider.vars.ms_sibling_refused, "", "a provider-side error is not a governance refusal");
+  const ok = run(msSiblingTest, { responseBody: JSON.stringify({ choices: [] }), responseCode: 200 });
+  assert.strictEqual(ok.vars.ms_sibling_refused, "");
+});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
