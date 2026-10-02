@@ -772,6 +772,25 @@ func (s *Span) SetAttributeIfMatch(id, key string, value any) bool {
 	return true
 }
 
+// EnsureLLMIfMatch returns the span's LLM payload, creating it when absent, but only
+// while the SpanID still equals id. Returns nil once the span has been recycled.
+// Callers must hold the returned pointer rather than re-reading span.LLM: Reset nils
+// the field, so a later deref would panic.
+func (s *Span) EnsureLLMIfMatch(id string) *LLMSpanData {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return nil
+	}
+	if s.LLM == nil {
+		s.LLM = &LLMSpanData{}
+	}
+	return s.LLM
+}
+
 // MatchesID reports whether the span's SpanID still equals id, read under the span
 // lock so it does not race a concurrent Reset. Used by the tracer to decide whether
 // a cached span pointer is still the one the handle refers to before returning it.
