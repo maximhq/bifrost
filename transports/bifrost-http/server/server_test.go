@@ -128,6 +128,101 @@ func TestReloadVirtualKeyAvoidsGovernanceSnapshot(t *testing.T) {
 	}
 }
 
+// batchReloadConfigStore serves the batched reads ReloadVirtualKeys makes and
+// records the id lists it was asked for.
+type batchReloadConfigStore struct {
+	configstore.ConfigStore
+	vks      map[string]*configstoreTables.TableVirtualKey
+	mcs      []configstoreTables.TableModelConfig
+	vkLoads  [][]string
+	mcsLoads [][]string
+}
+
+// GetVirtualKeysByIDs returns the persisted keys among ids.
+func (s *batchReloadConfigStore) GetVirtualKeysByIDs(_ context.Context, ids []string) ([]configstoreTables.TableVirtualKey, error) {
+	s.vkLoads = append(s.vkLoads, append([]string(nil), ids...))
+	var out []configstoreTables.TableVirtualKey
+	for _, id := range ids {
+		if vk, ok := s.vks[id]; ok {
+			out = append(out, *vk)
+		}
+	}
+	return out, nil
+}
+
+// GetModelConfigsByScopeAndScopeIDs returns the configured model configs scoped to ids.
+func (s *batchReloadConfigStore) GetModelConfigsByScopeAndScopeIDs(_ context.Context, _ string, ids []string, _ ...*gorm.DB) ([]configstoreTables.TableModelConfig, error) {
+	s.mcsLoads = append(s.mcsLoads, append([]string(nil), ids...))
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	var out []configstoreTables.TableModelConfig
+	for _, mc := range s.mcs {
+		if mc.ScopeID != nil && want[*mc.ScopeID] {
+			out = append(out, mc)
+		}
+	}
+	return out, nil
+}
+
+// TestReloadVirtualKeysMatchesPerKeyReload pins that a batched reload leaves
+// every key as ReloadVirtualKey would: the persisted key replaces the cached
+// one, its VK-scoped model configs are installed and stale ones evicted. It
+// reads each table once for all ids (deduplicated), skips an id with no row,
+// and never takes a full governance snapshot.
+func TestReloadVirtualKeysMatchesPerKeyReload(t *testing.T) {
+	handlers.SetLogger(noopTestLogger{})
+	previousLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = previousLogger })
+	ctx := context.Background()
+	baseStore, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
+	if err != nil {
+		t.Fatalf("create governance store: %v", err)
+	}
+	vkScope := configstoreTables.ModelConfigScopeVirtualKey
+	for _, id := range []string{"vk-a", "vk-b"} {
+		baseStore.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: id, Name: "old", Value: *schemas.NewSecretVar("sk-bf-old-" + id)})
+	}
+	scopeA, scopeB := "vk-a", "vk-b"
+	baseStore.UpdateModelConfigInMemory(ctx, &configstoreTables.TableModelConfig{ID: "mc-stale", ModelName: "gpt-4o", Scope: vkScope, ScopeID: &scopeA})
+	store := &reloadVirtualKeyGovernanceStore{GovernanceStore: baseStore}
+	cs := &batchReloadConfigStore{
+		vks: map[string]*configstoreTables.TableVirtualKey{
+			"vk-a": {ID: "vk-a", Name: "new-a", Value: *schemas.NewSecretVar("sk-bf-new-a")},
+			"vk-b": {ID: "vk-b", Name: "new-b", Value: *schemas.NewSecretVar("sk-bf-new-b")},
+		},
+		mcs: []configstoreTables.TableModelConfig{{ID: "mc-new", ModelName: "gpt-4o", Scope: vkScope, ScopeID: &scopeB}},
+	}
+	config := &lib.Config{ConfigStore: cs, ClientConfig: &configstore.ClientConfig{}}
+	plugins := []schemas.BasePlugin{&reloadVirtualKeyPlugin{store: store}}
+	config.BasePlugins.Store(&plugins)
+	server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config}
+
+	if err := server.ReloadVirtualKeys(ctx, []string{"vk-a", "vk-b", "vk-missing", "vk-a"}); err != nil {
+		t.Fatalf("ReloadVirtualKeys returned unexpected error: %v", err)
+	}
+	for id, want := range map[string]string{"vk-a": "new-a", "vk-b": "new-b"} {
+		vk, ok := baseStore.GetVirtualKeyByID(ctx, id)
+		if !ok || vk.Name != want {
+			t.Fatalf("%s not reloaded: %+v", id, vk)
+		}
+	}
+	if got := baseStore.ScopedModelConfigIDs(vkScope, "vk-a"); len(got) != 0 {
+		t.Fatalf("stale model configs for vk-a not evicted: %v", got)
+	}
+	if got := baseStore.ScopedModelConfigIDs(vkScope, "vk-b"); len(got) != 1 || got[0] != "mc-new" {
+		t.Fatalf("model configs for vk-b = %v, want [mc-new]", got)
+	}
+	if len(cs.vkLoads) != 1 || len(cs.vkLoads[0]) != 3 || len(cs.mcsLoads) != 1 || len(cs.mcsLoads[0]) != 3 {
+		t.Fatalf("want one deduplicated read per table, got keys %v, model configs %v", cs.vkLoads, cs.mcsLoads)
+	}
+	if store.governanceDataCalls != 0 {
+		t.Fatalf("GetGovernanceData called %d times, want 0", store.governanceDataCalls)
+	}
+}
+
 // TestConfig is a sample config struct for testing
 type TestConfig struct {
 	Name    string `json:"name"`

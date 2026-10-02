@@ -4,6 +4,7 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1394,6 +1395,11 @@ func HandleAnthropicResponsesRequest(
 		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
 	}
 
+	if config.Provider == schemas.Bedrock {
+		action, trace := bedrockInvokeGuardrailOutcome(responseBody)
+		setBedrockInvokeGuardrailOutcome(bifrostResponse, action, trace)
+	}
+
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
@@ -1666,6 +1672,12 @@ func HandleAnthropicResponsesStream(
 		// here rather than stamped in the converter: the per-chunk loop below replaces
 		// ExtraFields wholesale, so anything the converter puts there is discarded.
 		var servedFallbackModel *string
+		// Native InvokeModelWithResponseStream reports the guardrail outcome on its final event
+		// as top-level amazon-bedrock-* fields AnthropicStreamEvent cannot hold; latched here and
+		// stamped on the terminal response. Gated on the marker rather than the provider name so
+		// a custom provider aliasing Bedrock behaves the same.
+		var invokeGuardrailAction string
+		var invokeGuardrailTrace json.RawMessage
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1691,6 +1703,11 @@ func HandleAnthropicResponsesStream(
 			eventData := string(eventDataBytes)
 			if eventType == "" || eventData == "" {
 				continue
+			}
+			if bytes.Contains(eventDataBytes, []byte(`"amazon-bedrock-`)) {
+				if action, trace := bedrockInvokeGuardrailOutcome(eventDataBytes); action != "" || len(trace) > 0 {
+					invokeGuardrailAction, invokeGuardrailTrace = action, trace
+				}
 			}
 			var event AnthropicStreamEvent
 			parseStart := time.Now()
@@ -1815,6 +1832,7 @@ func HandleAnthropicResponsesStream(
 							usage.InputTokens = usage.InputTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
 							usage.TotalTokens = usage.TotalTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
 						}
+						setBedrockInvokeGuardrailOutcome(response.Response, invokeGuardrailAction, invokeGuardrailTrace)
 						response.Response.Usage = usage
 						if servedServiceTier != nil {
 							response.Response.ServiceTier = servedServiceTier

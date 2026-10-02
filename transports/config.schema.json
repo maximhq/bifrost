@@ -160,7 +160,7 @@
         },
         "enforce_auth_on_inference": {
           "type": "boolean",
-          "description": "Require auth (VK, API key, or user token) on inference endpoints"
+          "description": "Require auth (VK, API key, or user token) on inference endpoints. Defaults to true when creating the first enabled admin account if omitted; explicit false opts out. Existing deployments retain their setting when omitted."
         },
         "dual_credential_conflict_behavior": {
           "type": "string",
@@ -2336,6 +2336,18 @@
                     "description": "How long an idle physical connection is kept before being closed (Go duration string, default 5m). Without this the idle cap alone controls pool size, so bursts above max_idle_conns close and reopen connections repeatedly. Note the logs store and config store open separate pools, so a pod's connection ceiling is the sum of their max_open_conns.",
                     "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$",
                     "default": "5m"
+                  },
+                  "statement_timeout": {
+                    "type": "string",
+                    "description": "Server-side statement_timeout set on every runtime pool connection (Go duration string, default 120s). Bounds a runaway query so it cannot hold a pooled connection and its locks indefinitely. \"0\" or a negative value leaves the server default. Migrations and background index builds are never bound by it.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
+                  },
+                  "idle_in_transaction_session_timeout": {
+                    "type": "string",
+                    "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
                   }
                 },
                 "required": [
@@ -2870,6 +2882,18 @@
                     "description": "How long an idle physical connection is kept before being closed (Go duration string, default 5m). Without this the idle cap alone controls pool size, so bursts above max_idle_conns close and reopen connections repeatedly. Note the logs store and config store open separate pools, so a pod's connection ceiling is the sum of their max_open_conns.",
                     "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$",
                     "default": "5m"
+                  },
+                  "statement_timeout": {
+                    "type": "string",
+                    "description": "Server-side statement_timeout set on every runtime pool connection (Go duration string, default 120s). Bounds a runaway query so it cannot hold a pooled connection and its locks indefinitely. \"0\" or a negative value leaves the server default. Migrations and background index builds are never bound by it.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
+                  },
+                  "idle_in_transaction_session_timeout": {
+                    "type": "string",
+                    "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
                   }
                 },
                 "required": [
@@ -6773,13 +6797,57 @@
                   "type": "boolean",
                   "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
                   "default": false
+                },
+                "aws_workload_identity": {
+                  "type": "object",
+                  "description": "GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity, ECS task role, EC2 instance profile, AWS_* env vars). Bifrost signs an STS GetCallerIdentity request with the AWS SDK default chain and exchanges it at GCP STS, so no service-account key or static AWS key is needed. Takes precedence over auth_credentials; the two must not be combined.",
+                  "properties": {
+                    "audience": {
+                      "type": "string",
+                      "description": "Workload Identity Pool provider resource name, e.g. //iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID (can use env. prefix)"
+                    },
+                    "service_account_email": {
+                      "type": "string",
+                      "description": "Service account to impersonate after federation. Omit to use the federated principal directly (can use env. prefix)"
+                    },
+                    "token_lifetime_seconds": {
+                      "type": "integer",
+                      "minimum": 600,
+                      "maximum": 43200,
+                      "description": "Lifetime of the impersonated service-account token in seconds. Only used with service_account_email. Default 3600. Lifetimes above 3600 require the target service account to be allowed by the organization policy constraint constraints/iam.allowServiceAccountCredentialLifetimeExtension; otherwise token generation fails."
+                    },
+                    "aws_region": {
+                      "type": "string",
+                      "description": "AWS region used to sign the STS GetCallerIdentity request. Defaults to AWS_REGION / AWS_DEFAULT_REGION, then instance metadata (can use env. prefix)"
+                    },
+                    "aws_role_arn": {
+                      "type": "string",
+                      "description": "Optional IAM role to assume with the workload's credentials before the GCP exchange (can use env. prefix)"
+                    }
+                  },
+                  "required": [
+                    "audience"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
                 "project_id",
                 "region"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "if": {
+                "required": [
+                  "aws_workload_identity"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "auth_credentials": {
+                    "maxLength": 0
+                  }
+                }
+              }
             }
           },
           "required": [

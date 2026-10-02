@@ -175,6 +175,9 @@ type LogStore interface {
 	GetMCPToolLogStats(ctx context.Context, filters MCPToolLogSearchFilters) (*MCPToolLogStats, error)
 	HasMCPToolLogs(ctx context.Context) (bool, error)
 	DeleteMCPToolLogs(ctx context.Context, ids []string) error
+	// DeleteMCPToolLogsBatch deletes up to batchSize MCP tool logs older than
+	// cutoff, oldest first, for the retention cleaner (see LogsCleaner).
+	DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 	FlushMCPToolLogs(ctx context.Context, since time.Time) error
 	GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)

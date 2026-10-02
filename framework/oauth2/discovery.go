@@ -8,14 +8,81 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// testDialContextOverride, when non-nil, replaces the SSRF-safe dialer used by
+// newOAuthDiscoveryHTTPClient. It exists solely so this package's own tests can
+// reach loopback-bound httptest.Server instances; production code must never
+// set it.
+var testDialContextOverride func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// SetDiscoveryDialContextForTests overrides the dialer behind every OAuth
+// discovery, registration and token-exchange client. Test-only: other packages
+// whose tests stand up loopback-bound OAuth servers call it from their TestMain,
+// the same way core/mcp exposes SetDialContextForTests. Pass nil to restore the
+// guarded dialer.
+func SetDiscoveryDialContextForTests(dial func(ctx context.Context, network, addr string) (net.Conn, error)) {
+	testDialContextOverride = dial
+}
+
+// newOAuthDiscoveryHTTPClient builds an SSRF-hardened *http.Client for the OAuth
+// discovery/registration/token-exchange chain. Only the first request in that
+// chain targets an admin-supplied URL (an MCP client's connection_string) -
+// every subsequent URL (resource_metadata, authorization_servers,
+// token_endpoint, registration_endpoint) is taken from the PREVIOUS response,
+// which is under the control of whatever server connection_string pointed at.
+// The remote MCP server controls every hop of this chain and can point
+// Bifrost's own outbound requests - including a real OAuth dynamic client
+// registration POST - at internal infrastructure or cloud metadata.
+// Mirrors core/providers/utils/fetch.go's FetchAndEncodeURL: dial-time IP
+// validation (defeats DNS rebinding, unlike a save-time-only check) and
+// redirect re-validation, so a 3xx mid-chain can't hop the guard.
+// oauthDiscoveryTransport is the one guarded transport every OAuth discovery,
+// registration and token-exchange client shares, so connections are reused
+// across flows and idle sockets are bounded instead of accumulating per call.
+var oauthDiscoveryTransport = newOAuthDiscoveryTransport(network.SSRFSafeDialContext(10 * time.Second))
+
+// newOAuthDiscoveryTransport builds a transport around dial with bounded idle
+// connection settings. Production uses the single shared instance above; a
+// test dialer override gets its own transport so it never mutates the shared one.
+func newOAuthDiscoveryTransport(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
+	return &http.Transport{
+		DialContext:         dial,
+		MaxIdleConns:        32,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+}
+
+func newOAuthDiscoveryHTTPClient(timeout time.Duration) *http.Client {
+	transport := oauthDiscoveryTransport
+	if testDialContextOverride != nil {
+		transport = newOAuthDiscoveryTransport(testDialContextOverride)
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			return nil
+		},
+	}
+}
 
 // OAuthMetadata contains discovered OAuth configuration from authorization server
 type OAuthMetadata struct {
@@ -60,9 +127,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	}
 
 	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
+	client := newOAuthDiscoveryHTTPClient(10 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", serverURL, nil)
 	if err != nil {
@@ -173,9 +238,7 @@ func parseWWWAuthenticateHeader(header string) (resourceMetadataURL string, scop
 
 // fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728)
 func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, []string, string, error) {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
+	client := newOAuthDiscoveryHTTPClient(10 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
 	if err != nil {
@@ -274,9 +337,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 		strings.TrimSuffix(issuer, "/"), // Try the issuer URL itself
 	)
 
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
+	client := newOAuthDiscoveryHTTPClient(10 * time.Second)
 
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))
@@ -471,7 +532,7 @@ func RegisterDynamicClient(ctx context.Context, registrationURL string, req *Dyn
 	httpReq.Header.Set("Accept", "application/json")
 
 	// Send request
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := newOAuthDiscoveryHTTPClient(15 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("registration request failed: %w", err)

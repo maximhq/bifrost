@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 
@@ -20,6 +22,15 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
+
+// TestMain points the OAuth discovery/registration client at an unguarded
+// dialer for this package: the MCP OAuth tests here register against
+// loopback-bound httptest.Server instances, which the production guard in
+// framework/oauth2 refuses to dial. The guard has its own coverage there.
+func TestMain(m *testing.M) {
+	oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+	os.Exit(m.Run())
+}
 
 // =============================================================================
 // POST /api/mcp/client/{id}/reregister and /reauthorize, driven through

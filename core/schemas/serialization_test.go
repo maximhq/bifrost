@@ -1995,3 +1995,27 @@ func TestEmbeddingData_EncodingFormatSurvivesRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestDeepCopyChatMessagePreservesGuardContent(t *testing.T) {
+	text := "What is the capital of France?"
+	original := ChatMessage{
+		Role: ChatMessageRoleUser,
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+			Type:         ChatContentBlockTypeText,
+			Text:         &text,
+			GuardContent: &GuardContent{Qualifiers: []string{"query"}},
+		}}},
+	}
+	copied := DeepCopyChatMessage(original)
+	got := copied.Content.ContentBlocks[0].GuardContent
+	if got == nil {
+		t.Fatal("deep copy dropped the guard marker")
+	}
+	if got == original.Content.ContentBlocks[0].GuardContent {
+		t.Error("copy aliases the original guard marker struct")
+	}
+	got.Qualifiers[0] = "grounding_source"
+	if original.Content.ContentBlocks[0].GuardContent.Qualifiers[0] != "query" {
+		t.Error("copy shares the qualifiers backing array with the original")
+	}
+}

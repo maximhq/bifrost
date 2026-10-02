@@ -3216,18 +3216,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// reload, but only fires when req.VKConfigs != nil — a name-only update
 	// otherwise leaves every cached VK pointing at the old MCPClient.Name and
 	// the per-VK allowlist check rejects tool calls under the new prefix.
-	if h.store.ConfigStore != nil && h.governanceManager != nil {
-		assignedVKs, listErr := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientID(ctx, oldDBConfig.ID)
-		if listErr != nil {
-			logger.Error(fmt.Sprintf("failed to fetch VK assignments for MCP client %s after update: %v", id, listErr))
-		} else {
-			for _, av := range assignedVKs {
-				if _, err := h.governanceManager.ReloadVirtualKey(ctx, av.VirtualKeyID); err != nil {
-					logger.Error(fmt.Sprintf("failed to reload virtual key %s after MCP client update: %v", av.VirtualKeyID, err))
-				}
-			}
-		}
-	}
+	h.refreshMCPClientOnAssignedVirtualKeys(ctx, id, oldDBConfig.ID)
 
 	// Manage VK assignments if vk_configs was provided
 	if req.VKConfigs != nil && h.store.ConfigStore != nil {
@@ -4331,4 +4320,42 @@ func (h *MCPHandler) deleteMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 		"status":  "success",
 		"message": "MCP library server removed successfully",
 	})
+}
+
+// refreshMCPClientOnAssignedVirtualKeys makes every cached virtual key that
+// references the updated MCP client see its new row (name, tools, headers).
+//
+// The assigned keys are reloaded through one batched ReloadVirtualKeys call,
+// which does for each key exactly what ReloadVirtualKey does (re-read with
+// every relation, VK-scoped model configs, token and credential eviction) and
+// which a clustered deployment propagates to peers. It replaces a
+// ReloadVirtualKey per assigned key: at 100k assigned keys that was well over a
+// million queries, run synchronously inside the request. If the batched reload
+// fails, each key is reloaded on its own as before.
+func (h *MCPHandler) refreshMCPClientOnAssignedVirtualKeys(ctx context.Context, clientID string, dbID uint) {
+	if h.store == nil || h.store.ConfigStore == nil || h.governanceManager == nil {
+		return
+	}
+	assignedVKs, listErr := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientID(ctx, dbID)
+	if listErr != nil {
+		logger.Error(fmt.Sprintf("failed to fetch VK assignments for MCP client %s after update: %v", clientID, listErr))
+		return
+	}
+	if len(assignedVKs) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(assignedVKs))
+	for _, av := range assignedVKs {
+		ids = append(ids, av.VirtualKeyID)
+	}
+	err := h.governanceManager.ReloadVirtualKeys(ctx, ids)
+	if err == nil {
+		return
+	}
+	logger.Error(fmt.Sprintf("batched virtual key reload for MCP client %s failed, falling back to per-key reload: %v", clientID, err))
+	for _, id := range ids {
+		if _, err := h.governanceManager.ReloadVirtualKey(ctx, id); err != nil {
+			logger.Error(fmt.Sprintf("failed to reload virtual key %s after MCP client update: %v", id, err))
+		}
+	}
 }

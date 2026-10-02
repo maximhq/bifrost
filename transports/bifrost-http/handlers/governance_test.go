@@ -190,6 +190,9 @@ func (m *budgetOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemo
 func (m *budgetOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
 	return nil
 }
+func (m *budgetOverrideTestGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
+	return nil
+}
 
 func (m *mockRotateGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
 	return nil, nil
@@ -201,6 +204,9 @@ func (m *mockRotateGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx c
 	return nil
 }
 func (m *mockRotateGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m *mockRotateGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
 	return nil
 }
 
@@ -216,6 +222,9 @@ func (m pricingOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemo
 func (m pricingOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
 	return nil
 }
+func (m pricingOverrideTestGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
+	return nil
+}
 
 func (m *providerGovernanceAdoptionManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
 	return nil, nil
@@ -227,6 +236,9 @@ func (m *providerGovernanceAdoptionManager) AttachVirtualMCPToVirtualKeyInMemory
 	return nil
 }
 func (m *providerGovernanceAdoptionManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+	return nil
+}
+func (m *providerGovernanceAdoptionManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
 	return nil
 }
 

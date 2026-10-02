@@ -52,7 +52,11 @@ For Enterprise deployments, prefer **SSO / OIDC** over a shared dashboard passwo
 
 ## 2. Enforce authentication on inference
 
-By default, inference endpoints (`/v1/chat/completions`, `/v1/embeddings`, `/v1/images/generations`, and related endpoints) accept anonymous requests. On a public host that means anyone who finds the URL can spend against your provider keys.
+By default, inference endpoints (`/v1/chat/completions`, `/v1/embeddings`, `/v1/images/generations`, and related endpoints) accept anonymous requests. On a public host that means anyone who finds the URL can spend against your provider keys - and, for endpoints that list or retrieve stored provider-side resources (files, batches, videos, responses), read whatever any other caller stored there.
+
+<Warning>
+**This is a separate control from dashboard authentication.** Locking the dashboard with a password or SSO does not, by itself, protect inference. That covers every inference route: `/v1/*`, the provider SDK integration routes (`/openai/*`, `/anthropic/*`, `/genai/*`, `/bedrock/*`, and others), realtime, and the MCP server. These routes are public by default because your own clients call them, and this toggle enforces auth on them instead of session auth. Check both.
+</Warning>
 
 Turn on the **Enable Auth on Inference** toggle on the Security Settings page (labeled **Enforce Virtual Keys on Inference** in OSS). This requires every inference call to present a valid credential, such as a [Virtual Key](/features/governance/virtual-keys), API key, or user token, which Bifrost resolves to scoped upstream provider keys. Your raw provider keys never leave the gateway.
 
@@ -66,6 +70,14 @@ Turn on the **Enable Auth on Inference** toggle on the Security Settings page (l
 
 <Note>
 This is the main setting. The older fields `enforce_governance_header` and `enforce_scim_auth` are deprecated. Don't use them in new deployments. Changing this setting requires a Bifrost restart in Enterprise.
+</Note>
+
+<Note>
+**Defaults on when you create your first enabled admin account**, through either `PUT /api/config` or `config.json` (including the legacy `governance.auth_config` location). An omitted inference-auth setting defaults to `true`; explicitly setting `enforce_auth_on_inference: false` opts out. In the dashboard, enabling password protection for the first time preselects inference auth, and you can turn it off before saving.
+
+Existing deployments keep their setting: there is no upgrade migration. Later API saves and file reloads that omit the field preserve the stored choice, including when `config.json` is the source of truth. The onboarding checklist includes **Enforce auth on inference**, but skipping, snoozing, or dismissing onboarding does not secure inference. Operators must enable enforcement to close anonymous access. `GET /api/session/is-auth-enabled` reports the stored setting as `inference_auth_enforced`, and Security Settings shows a warning when the dashboard is locked but inference auth is off.
+
+If your callers don't already present an accepted inference credential, inference calls start returning `401 virtual_key_required` as soon as this is on. Provision one before or right after you lock the dashboard so existing integrations don't break. A [virtual key](/features/governance/virtual-keys) works everywhere. Enterprise deployments can also use an API key or user token. The dashboard password does not count as an inference credential.
 </Note>
 
 Once enforced, pair it with [budgets and rate limits](/features/governance/budget-and-limits) per virtual key so a runaway client can't burn through your provider spend even with valid credentials.

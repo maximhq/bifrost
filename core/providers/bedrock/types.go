@@ -371,9 +371,21 @@ type BedrockCitationsConfig struct {
 	Enabled bool `json:"enabled"` // Required: whether citations are enabled
 }
 
-// BedrockGuardContent represents guard content for guardrails
+// BedrockGuardContent represents guard content for guardrails (a union of text and image)
 type BedrockGuardContent struct {
-	Text *BedrockGuardContentText `json:"text,omitempty"`
+	Text  *BedrockGuardContentText  `json:"text,omitempty"`
+	Image *BedrockGuardContentImage `json:"image,omitempty"`
+}
+
+// BedrockGuardContentImage is an image the guardrail assesses (GuardrailConverseImageBlock)
+type BedrockGuardContentImage struct {
+	Format string                         `json:"format"` // Required: "png" or "jpeg"
+	Source BedrockGuardContentImageSource `json:"source"` // Required: inline bytes only
+}
+
+// BedrockGuardContentImageSource is the inline source of a guarded image
+type BedrockGuardContentImageSource struct {
+	Bytes *string `json:"bytes,omitempty"` // Base64-encoded image bytes
 }
 
 type BedrockReasoningContent struct {
@@ -501,6 +513,7 @@ type BedrockGuardrailConfig struct {
 	GuardrailVersion     string  `json:"guardrailVersion"`               // Required: Guardrail version
 	Trace                *string `json:"trace,omitempty"`                // Optional: Trace level ("enabled" or "disabled")
 	StreamProcessingMode *string `json:"streamProcessingMode,omitempty"` // Optional: Stream processing mode ("sync" or "async")
+	TagSuffix            string  `json:"tagSuffix,omitempty"`            // InvokeModel-only input-tagging suffix; consumed before any Converse marshal
 }
 
 // BedrockPerformanceConfig represents performance configuration
@@ -769,6 +782,9 @@ type BedrockInvokeMessagesResponse struct {
 	StopReason   string                              `json:"stop_reason,omitempty"`
 	StopSequence *string                             `json:"stop_sequence,omitempty"`
 	Usage        *BedrockInvokeMessagesUsage         `json:"usage,omitempty"`
+
+	GuardrailAction string          `json:"amazon-bedrock-guardrailAction,omitempty"` // "INTERVENED" or "NONE" when a guardrail applied
+	Trace           json.RawMessage `json:"amazon-bedrock-trace,omitempty"`           // Guardrail trace when the caller enabled it
 }
 
 // BedrockInvokeMessagesContentBlock represents a content block in an Anthropic Messages response.
@@ -913,6 +929,9 @@ type BedrockStreamEvent struct {
 	// Multiple chunks are needed when a single Bifrost event maps to multiple Anthropic SSE events
 	// (e.g., Completed → message_delta + message_stop).
 	InvokeModelRawChunks [][]byte `json:"invokeModelRawChunks,omitempty"`
+
+	InvokeModelGuardrailAction string          `json:"-"` // InvokeModel stream: amazon-bedrock-guardrailAction on the last chunk
+	InvokeModelTrace           json.RawMessage `json:"-"` // InvokeModel stream: amazon-bedrock-trace on the last chunk
 }
 
 // BedrockMessageStartEvent indicates the start of a message
