@@ -2092,6 +2092,11 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 	if fileClient.NeedsSessionStickiness == nil {
 		fileClient.NeedsSessionStickiness = existing.NeedsSessionStickiness
 	}
+
+	// A stored require_public_target records that the client was registered
+	// with no credential check; a file entry that omits it must not lift the
+	// dial-time restriction. Declaring it true in the file is honored.
+	fileClient.RequirePublicTarget = fileClient.RequirePublicTarget || existing.RequirePublicTarget
 	return changed
 }
 
@@ -2321,6 +2326,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.DiscoveredInstructions = clientConfig.DiscoveredInstructions
 	row.PendingOAuthConfig = clientConfig.PendingOAuthConfig
 	row.NeedsSessionStickiness = clientConfig.NeedsSessionStickiness
+	row.RequirePublicTarget = clientConfig.RequirePublicTarget
 }
 
 // mergeMCPConfig merges MCP config from file with store
@@ -2547,6 +2553,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
 		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
+		RequirePublicTarget:       clientConfig.RequirePublicTarget,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
 		ToolPricing:               clientConfig.ToolPricing,

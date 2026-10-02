@@ -506,6 +506,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_discovered_instructions_column"}, run: migrationAddMCPDiscoveredInstructionsColumn},
 	{IDs: []string{"add_mcp_instruction_cap_columns"}, run: migrationAddMCPInstructionCapColumns},
 	{IDs: []string{"add_mcp_client_max_instructions_length_column"}, run: migrationAddMCPClientMaxInstructionsLengthColumn},
+	{IDs: []string{"add_mcp_client_require_public_target_column"}, run: migrationAddMCPClientRequirePublicTargetColumn},
 	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
 	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
@@ -14377,6 +14378,31 @@ func migrationAddMCPClientMaxInstructionsLengthColumn(ctx context.Context, db *g
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running mcp client max instructions length migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientRequirePublicTargetColumn adds the flag recording that an MCP client
+// was registered over the management API with no credential check, which restricts every
+// later dial to public addresses. Defaults to false: existing rows keep the dial policy they
+// ran with, since nothing on record says how they were registered.
+func migrationAddMCPClientRequirePublicTargetColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_require_public_target_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "require_public_target")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "require_public_target")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client require public target migration: %s", err.Error())
 	}
 	return nil
 }

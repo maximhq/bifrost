@@ -185134,6 +185134,101 @@
           }
         }
       ]
+    },
+    {
+      "name": "137. MCP client registration validation (mcp-registration-validation)",
+      "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an unauthenticated (auth-bypassed) registration whose target hostname cannot be resolved must be refused rather than handed to the connect path. Both run against the harness profile, which has no admin auth configured.",
+      "item": [
+        {
+          "name": "POST /api/mcp/client · unknown connection_type is rejected with 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An unknown connection_type used to match neither registration gate and reach the connect path.",
+                  "pm.test('unknown connection_type is a 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('error names connection_type', function () {",
+                  "  pm.expect(pm.response.text()).to.include('connection_type');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_mcp_enum_probe\",\n  \"connection_type\": \"streamable\",\n  \"connection_string\": \"http://127.0.0.1:1/mcp\",\n  \"auth_type\": \"none\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /api/mcp/client · unresolvable target is refused with 403 (fail closed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// .invalid never resolves (RFC 6761). With no admin auth configured the registration gate",
+                  "// has nothing to classify and must refuse, not fall through to the connect path.",
+                  "pm.test('unresolvable target is a 403 for an unauthenticated caller', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(403);",
+                  "});",
+                  "pm.test('error explains the public-address requirement', function () {",
+                  "  pm.expect(pm.response.text()).to.include('public address');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_mcp_unresolvable_probe\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"http://does-not-resolve.invalid/mcp\",\n  \"auth_type\": \"none\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
