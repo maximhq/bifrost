@@ -5,6 +5,11 @@ description: "v2.2.5 changelog - 2026-10-02"
 
 <Update label="Bifrost Enterprise" description="v2.2.5">
 
+<Warning>
+**Upgrade recommended for all deployments.** v2.2.5 includes the OSS fix for an authentication bypass where percent-encoded path traversal (for example `..%2F`) could reach protected API endpoints without credentials.
+Earlier versions are affected. Upgrade, then restrict management ports to trusted networks.
+</Warning>
+
 ## Changelog
 
 v2.2.5 moves the enterprise gateway onto OSS transports v2.2.5. Bedrock guardrail transforms on requests that mix text and image blocks now land on the submitted text positions, and a transform that cannot be mapped safely becomes an intervention instead of failing open. The OSS release adds a first-time setup token for new installs and long-context fast-tier pricing, and fixes an auth path-normalization bypass and code-mode allow-list enforcement.

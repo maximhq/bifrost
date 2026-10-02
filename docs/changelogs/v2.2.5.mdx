@@ -17,6 +17,11 @@ description: "v2.2.5 changelog - 2026-10-02"
 </Tabs>
 
 <Update label="Bifrost(HTTP)" description="2.2.5">
+<Warning>
+**Upgrade recommended for all deployments with authentication enabled.** v2.2.5 fixes an authentication bypass where percent-encoded path traversal (for example `..%2F`) could reach protected API endpoints without credentials.
+Earlier versions are affected. Upgrade, then restrict management ports to trusted networks.
+</Warning>
+
 ## ✨ Features
 
 - **First-Time Setup Token** - New installs now require a setup token before the initial dashboard setup can be completed, so a fresh instance is no longer open to anyone who can reach it (#7830)
