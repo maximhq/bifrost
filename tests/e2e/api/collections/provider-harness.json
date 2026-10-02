@@ -9435,6 +9435,106 @@
               ]
             }
           }
+        },
+        {
+          "name": "[EXPECT-400] POST /genai_passthrough/v1@host/x with x-model-provider anthropic - passthrough path guard rejects before upstream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Passthrough path guard: a remainder whose first segment carries '@' would be concatenated",
+                  "// onto the provider BaseURL and could re-point the upstream authority. The router must reject",
+                  "// it with 400 before any provider dispatch - no live provider is involved in this case.",
+                  "pm.test('router rejects the path before dispatch', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('invalid passthrough path');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'request must not have been routed to a provider').to.not.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "anthropic"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1@127.0.0.1/x",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1@127.0.0.1",
+                "x"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] POST /anthropic_passthrough/v1/messages with unknown x-model-provider - passthrough path guard rejects before upstream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// x-model-provider selects the key pool and upstream for the catch-all passthrough, so it",
+                  "// must be a known provider. An unknown value is a 400 from the router, never a dispatch.",
+                  "pm.test('router rejects the unknown provider before dispatch', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('x-model-provider');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "not-a-provider"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Hello via Anthropic passthrough.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          }
         }
       ]
     },
