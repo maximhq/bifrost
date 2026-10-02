@@ -8,15 +8,26 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// oauth2IssuerURL resolves the effective AS issuer URL for a request.
-// Uses the explicitly configured IssuerURL when set; falls back to deriving
-// it from the request Host header for single-host / dev deployments.
+// oauth2IssuerURL resolves the effective AS issuer URL for a request. It is
+// the explicitly configured IssuerURL whenever one is set. With MCP OAuth
+// enabled (discovery/issuance live) the issuer must be a deployment constant:
+// config validation already refuses to enable it without issuer_url, and this
+// function never substitutes the request Host header in that mode, since Host
+// is caller-controlled and would let one request poison the issuer, token and
+// JWKS URLs that every client trusts. It returns "" if that invariant is ever
+// bypassed, which yields relative URLs rather than attacker-chosen absolute
+// ones. The Host-derived fallback remains only for headers mode, where no
+// OAuth issuer identity is served and the value feeds nothing security-relevant.
 func oauth2IssuerURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
 	store.Mu.RLock()
 	cfg := store.ClientConfig.OAuth2ServerConfig
+	oauthEnabled := store.ClientConfig.IsMCPOAuthDiscoveryEnabled()
 	store.Mu.RUnlock()
 	if cfg != nil && cfg.IssuerURL.IsSet() {
 		return cfg.IssuerURL.GetValue()
+	}
+	if oauthEnabled {
+		return ""
 	}
 	return lib.BuildBaseURL(ctx, "")
 }
