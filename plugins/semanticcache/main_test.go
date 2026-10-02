@@ -82,6 +82,25 @@ func TestResolveCacheKey(t *testing.T) {
 		}
 	})
 
+	t.Run("unscoped key shaped like a VK key never collides with a real VK bucket", func(t *testing.T) {
+		ctxVK := newCtx()
+		ctxVK.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-A")
+		keyVK, _ := plugin.resolveCacheKey(ctxVK)
+
+		forged := newCtx()
+		forged.SetValue(CacheKey, "vk:vk-A:shared-default-bucket")
+		keyForged, ok := plugin.resolveCacheKey(forged)
+		if !ok {
+			t.Fatal("expected the forged request to still resolve a cache key")
+		}
+		if keyForged == keyVK {
+			t.Fatalf("a request with no virtual key resolved to a VK-scoped bucket: %q", keyForged)
+		}
+		if keyForged != "raw:vk:vk-A:shared-default-bucket" {
+			t.Errorf("got %q, want %q", keyForged, "raw:vk:vk-A:shared-default-bucket")
+		}
+	})
+
 	t.Run("empty VK ID treated as no VK", func(t *testing.T) {
 		ctx := newCtx()
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "")
@@ -113,6 +132,7 @@ func TestResolveCacheThreshold(t *testing.T) {
 		{"override above configured raises the bar", 0.95, 0.95},
 		{"override exactly at configured threshold is a no-op", 0.8, 0.8},
 		{"non-float override falls back to configured threshold", "not-a-float", 0.8},
+		{"override above 1 is capped at 1", 1.7, 1.0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

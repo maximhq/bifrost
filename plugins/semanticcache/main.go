@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -513,6 +514,13 @@ func (plugin *Plugin) resolveCacheKey(ctx *schemas.BifrostContext) (string, bool
 	if vkID, isSet := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); isSet && vkID != "" {
 		return "vk:" + vkID + ":" + rawKey, true
 	}
+	// The "vk:" namespace is reserved for VK-derived keys. A request with no
+	// virtual key that supplies a cache key shaped like one is moved out of
+	// that namespace so it can never land in another tenant's bucket. Ordinary
+	// unscoped keys keep their existing format.
+	if strings.HasPrefix(rawKey, "vk:") {
+		return "raw:" + rawKey, true
+	}
 	return rawKey, true
 }
 
@@ -531,6 +539,11 @@ func (plugin *Plugin) resolveCacheThreshold(ctx *schemas.BifrostContext) float64
 	if !ok {
 		plugin.logger.Warn("Threshold is not a float64, using default threshold")
 		return cacheThreshold
+	}
+	// Cosine similarity cannot exceed 1, so an override above it would never
+	// match anything; cap it before applying the floor.
+	if threshold > 1 {
+		threshold = 1
 	}
 	if threshold > cacheThreshold {
 		return threshold
