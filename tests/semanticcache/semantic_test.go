@@ -383,10 +383,8 @@ func TestSemantic(t *testing.T) {
 	// 2.13 cross_provider_semantic — both cache_by_* flags off; paraphrase across providers → hit.
 	t.Run("2.13_cross_provider_semantic", func(t *testing.T) {
 		// Serial: mutates plugin config (cache_by_provider/model=false).
-		if cfg.AnthroModel == "" {
-			t.Skip("anthropic model not configured")
-		}
 		lc := newLogCtx("semantic", "2.13_cross_provider_semantic")
+		requireProvider(t, lc, "anthropic")
 
 		cfg2 := semanticBaseline()
 		cfg2["cache_by_model"] = false
@@ -652,10 +650,8 @@ func TestSemantic(t *testing.T) {
 	// 2.28 gemini_semantic_hit — chat provider != embedding provider.
 	t.Run("2.28_gemini_semantic_hit", func(t *testing.T) {
 		t.Parallel()
-		if cfg.GeminiModel == "" {
-			t.Skip("gemini model not configured")
-		}
 		lc := newLogCtx("semantic", "2.28_gemini_semantic_hit")
+		requireProvider(t, lc, "gemini")
 		key := "phase2-k28"
 		pair := pairByName(t, "capital_france")
 
