@@ -1002,6 +1002,25 @@ func TestPatchPricing_InputCostPerQuery(t *testing.T) {
 	assert.Equal(t, 0.002, *patched.InputCostPerQuery)
 }
 
+func TestPatchPricing_UltrafastAbove272kRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "gpt-6-astra", Provider: "openai", Mode: "responses"}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenAbove272kTokensUltrafast:           bifrost.Ptr(0.00012),
+		OutputCostPerTokenAbove272kTokensUltrafast:          bifrost.Ptr(0.00045),
+		CacheReadInputTokenCostAbove272kTokensUltrafast:     bifrost.Ptr(0.000012),
+		CacheCreationInputTokenCostAbove272kTokensUltrafast: bifrost.Ptr(0.00015),
+	})
+	require.NotNil(t, patched.InputCostPerTokenAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00012, *patched.InputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, patched.OutputCostPerTokenAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00045, *patched.OutputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, patched.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	assert.Equal(t, 0.000012, *patched.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00015, *patched.CacheCreationInputTokenCostAbove272kTokensUltrafast)
+}
+
 func TestPatchPricing_SizeAndQualityImageRates(t *testing.T) {
 	base := configstoreTables.TableModelPricing{
 		Model:    "gpt-image-1",
