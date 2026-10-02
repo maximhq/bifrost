@@ -184969,7 +184969,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: pong\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: pong\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"thinking\": {\"type\": \"disabled\"}\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/chat/completions",
