@@ -238,6 +238,16 @@ func TestBifrostResponsesResponseWithDefaultsPreservesUltrafastServiceTier(t *te
 	}
 }
 
+// OpenAI echoes service_tier "fast" (the renamed Priority tier) on served
+// requests; the client must see that value, not a coerced "auto".
+func TestBifrostResponsesResponseWithDefaultsPreservesFastServiceTier(t *testing.T) {
+	tier := BifrostServiceTierFast
+	got := (&BifrostResponsesResponse{ServiceTier: &tier}).WithDefaults()
+	if got.ServiceTier == nil || *got.ServiceTier != BifrostServiceTierFast {
+		t.Fatalf("service tier = %v, want fast", got.ServiceTier)
+	}
+}
+
 // Cursor (and other Chat Completions clients) send function tools nested under
 // a "function" wrapper. The unmarshal must lift name/description/parameters so
 // providers that require a top-level name (e.g. Bedrock) don't reject the tool.

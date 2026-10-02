@@ -3791,6 +3791,18 @@ func TestTierFromResponse_Ultrafast(t *testing.T) {
 	assert.True(t, tier.isUltrafast)
 }
 
+// OpenAI renamed Priority processing to Fast mode on 2026-07-30 and accepts
+// service_tier "priority" and "fast" interchangeably, so "fast" bills on the
+// priority columns. It must not flip isFast, which is the Anthropic speed flag.
+func TestTierFromResponse_Fast(t *testing.T) {
+	s := schemas.BifrostServiceTierFast
+	tier := tierFromResponse(&s, nil, nil)
+	assert.True(t, tier.isPriority)
+	assert.False(t, tier.isFlex)
+	assert.False(t, tier.isUltrafast)
+	assert.False(t, tier.isFast)
+}
+
 func TestUltrafastRates(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
 		InputCostPerToken:                    new(1.0),
@@ -4908,6 +4920,84 @@ func TestGoldenOpenAIPricing_GPT56Family(t *testing.T) {
 	}
 }
 
+// gpt6AstraDatasheet is the live openai/gpt-6-astra entry (pricing fields only).
+// OpenAI publishes the Fast tier (ex-Priority, renamed 2026-07-30) and the
+// datasheet stores it under the _priority keys: $20/$2/$25/$100 per 1M short
+// context, $40/$4/$50/$150 above 272k.
+const gpt6AstraDatasheet = `{
+		"provider": "openai", "mode": "responses", "base_model": "gpt-6-astra",
+		"input_cost_per_token": 0.00001,
+		"input_cost_per_token_above_272k_tokens": 0.00002,
+		"input_cost_per_token_priority": 0.00002,
+		"input_cost_per_token_above_272k_tokens_priority": 0.00004,
+		"output_cost_per_token": 0.00005,
+		"output_cost_per_token_above_272k_tokens": 0.000075,
+		"output_cost_per_token_priority": 0.0001,
+		"output_cost_per_token_above_272k_tokens_priority": 0.00015,
+		"cache_read_input_token_cost": 0.000001,
+		"cache_read_input_token_cost_above_272k_tokens": 0.000002,
+		"cache_read_input_token_cost_priority": 0.000002,
+		"cache_read_input_token_cost_above_272k_tokens_priority": 0.000004,
+		"cache_creation_input_token_cost": 0.0000125,
+		"cache_creation_input_token_cost_above_272k_tokens": 0.000025,
+		"cache_creation_input_token_cost_priority": 0.000025,
+		"cache_creation_input_token_cost_above_272k_tokens_priority": 0.00005
+	}`
+
+// TestGoldenOpenAIPricing_GPT6AstraFast drives the served service_tier string
+// through tierFromResponse (not a pre-built serviceTier) so the wire value
+// "fast" is what selects the rates. The short-context row is the exact usage
+// from a customer report that Bifrost billed at standard ($0.00886) instead of
+// Fast ($0.01772). The "default" rows pin the downgrade path: OpenAI echoes
+// service_tier "default" when it serves a Fast request at standard speed and
+// charges standard rates.
+func TestGoldenOpenAIPricing_GPT6AstraFast(t *testing.T) {
+	astra := pricingRowFromDatasheetJSON(t, "gpt-6-astra", gpt6AstraDatasheet)
+
+	type rates struct{ in, cacheRead, out float64 }
+	cases := []struct {
+		name              string
+		served            schemas.BifrostServiceTier
+		prompt, read, out int
+		r                 rates
+	}{
+		// Reported request: 7283 input (7280 cached), 31 output, no cache writes.
+		{"fast/short", schemas.BifrostServiceTierFast, 7283, 7280, 31, rates{0.00002, 0.000002, 0.0001}},
+		{"priority/short", schemas.BifrostServiceTierPriority, 7283, 7280, 31, rates{0.00002, 0.000002, 0.0001}},
+		{"default/short", schemas.BifrostServiceTierDefault, 7283, 7280, 31, rates{0.00001, 0.000001, 0.00005}},
+		// Above 272k the long-context priority columns apply.
+		{"fast/long", schemas.BifrostServiceTierFast, 300000, 100000, 1000, rates{0.00004, 0.000004, 0.00015}},
+		{"default/long", schemas.BifrostServiceTierDefault, 300000, 100000, 1000, rates{0.00002, 0.000002, 0.000075}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := &schemas.BifrostLLMUsage{
+				PromptTokens:     tc.prompt,
+				CompletionTokens: tc.out,
+				TotalTokens:      tc.prompt + tc.out,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					CachedReadTokens: tc.read,
+				},
+			}
+			served := tc.served
+			p := astra
+			cost := computeTextCostTotal(&p, usage, tierFromResponse(&served, nil, nil))
+			nonCached := tc.prompt - tc.read
+			want := float64(nonCached)*tc.r.in + float64(tc.read)*tc.r.cacheRead + float64(tc.out)*tc.r.out
+			assert.InDelta(t, want, cost, 1e-9)
+		})
+	}
+
+	// The reported invoice, in dollars: 3 x $20/M + 7280 x $2/M + 31 x $100/M.
+	fast := schemas.BifrostServiceTierFast
+	reported := &schemas.BifrostLLMUsage{
+		PromptTokens: 7283, CompletionTokens: 31, TotalTokens: 7314,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 7280},
+	}
+	assert.InDelta(t, 0.017720, computeTextCostTotal(&astra, reported, tierFromResponse(&fast, nil, nil)), 1e-9)
+}
+
 // TestGoldenOpenAIPricing_NoCacheWriteModels covers models that OpenAI prices
 // without a cache-write rate (gpt-5.5) and without a long-context tier
 // (gpt-5.4-mini): cache-write tokens fall back to the input rate, and a >272k
@@ -4999,8 +5089,8 @@ func TestCalculateCost_GPT56_Responses_FlexLongContext_EndToEnd(t *testing.T) {
 
 // TestTieredCacheCreationRate_PriorityWinsOver200kBand verifies a priority cache-write
 // request in the 200k–272k band uses the flat priority rate, not the standard >200k
-// rate. Priority has no long context (OpenAI does not offer priority >272k), so its
-// flat rate must take precedence over the standard context tiers.
+// rate. The priority cache-write rate is flat, so it must take precedence over the
+// standard context tiers.
 func TestTieredCacheCreationRate_PriorityWinsOver200kBand(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
 		CacheCreationInputTokenCost:                bifrost.Ptr(0.000001),

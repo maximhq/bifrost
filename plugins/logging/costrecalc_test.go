@@ -254,6 +254,41 @@ func TestCalculateCostForLog_BedrockMantleChatStreamUsesResponsesPricing(t *test
 	}
 }
 
+// TestCalculateCostForLog_ServedTierSelectsRates pins the reprice entry point on
+// the stored service_tier column: "fast" (OpenAI's renamed Priority tier) and
+// "priority" both bill on the priority columns, and "default" stays on standard.
+func TestCalculateCostForLog_ServedTierSelectsRates(t *testing.T) {
+	p := newRecalcPlugin(t, newFakeRecalcStore(nil))
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// gpt-4o testdata rates for 100 prompt / 50 completion tokens.
+	standard := 100*2.5e-6 + 50*1e-5
+	priority := 100*4.25e-6 + 50*1.7e-5
+
+	cases := []struct {
+		tier string
+		want float64
+	}{
+		{"fast", priority},
+		{"priority", priority},
+		{"default", standard},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tier, func(t *testing.T) {
+			entry := positiveLog("tier-"+tc.tier, base)
+			entry.ServiceTier = &tc.tier
+
+			cost, err := p.calculateCostForLog(&entry)
+			if err != nil {
+				t.Fatalf("calculateCostForLog() error = %v", err)
+			}
+			if diff := cost - tc.want; diff < -1e-12 || diff > 1e-12 {
+				t.Fatalf("cost = %v, want %v for service_tier %q", cost, tc.want, tc.tier)
+			}
+		})
+	}
+}
+
 // TestRunCostRecalcJob_BackfillsBedrockMantleStreamRow drives the full
 // missing-cost recalc job over an uncosted bedrock_mantle streaming row and
 // proves it is now backfilled instead of counted as skipped.

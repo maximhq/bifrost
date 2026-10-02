@@ -420,7 +420,7 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 
 	if resp.ServiceTier != nil {
 		switch *resp.ServiceTier {
-		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority, BifrostServiceTierUltrafast:
+		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority, BifrostServiceTierFast, BifrostServiceTierUltrafast:
 			result.ServiceTier = resp.ServiceTier
 		default:
 			result.ServiceTier = new(BifrostServiceTierAuto)

@@ -1737,15 +1737,21 @@ func totalOnlyCost(c float64) *schemas.BifrostCost {
 // ---------------------------------------------------------------------------
 
 // tierFromResponse builds a serviceTier from a response's billing-relevant
-// fields: the OpenAI service_tier (priority/flex/ultrafast) and the Anthropic speed
-// (fast mode). speed == "fast" means fast mode was actually served — the
-// provider echoes the served speed, so stripped/fell-back requests report
-// "standard" and bill at standard rates.
+// fields: the OpenAI service_tier (priority/fast/flex/ultrafast) and the Anthropic
+// speed (fast mode). Both are served values: OpenAI echoes service_tier "default"
+// when it downgrades a Fast request to standard speed, and Anthropic echoes
+// speed "standard" when fast mode was stripped or fell back, so either way a
+// downgraded request bills at standard rates.
+//
+// OpenAI service_tier "fast" is the Priority tier renamed on 2026-07-30; the two
+// values are interchangeable on the wire and share the priority pricing columns.
+// It is unrelated to the Anthropic speed "fast" flag (isFast), which selects the
+// flat *Fast columns.
 func tierFromResponse(s *schemas.BifrostServiceTier, speed *string, inferenceGeo *string) serviceTier {
 	var tier serviceTier
 	if s != nil {
 		switch *s {
-		case schemas.BifrostServiceTierPriority:
+		case schemas.BifrostServiceTierPriority, schemas.BifrostServiceTierFast:
 			tier.isPriority = true
 		case schemas.BifrostServiceTierFlex:
 			tier.isFlex = true
@@ -1999,10 +2005,11 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 			return *pricing.CacheCreationInputTokenCostFlex
 		}
 	}
-	// Priority has no long context: OpenAI does not offer priority >272k, and billing
-	// uses the served tier (response.service_tier), so an actual-priority request is
-	// always ≤272k. Its cache-write rate is flat, so it takes precedence over the
-	// standard context tiers below (which would otherwise capture the 200k–272k band).
+	// The priority cache-write rate is flat across the context window, so it takes
+	// precedence over the standard context tiers below (which would otherwise
+	// capture the 200k-272k band). OpenAI now publishes a >272k Fast cache-write
+	// rate, but there is no CacheCreationInputTokenCostAbove272kTokensPriority
+	// column yet, so the flat rate also covers >272k until that column lands.
 	if tier.isPriority && pricing.CacheCreationInputTokenCostPriority != nil {
 		return *pricing.CacheCreationInputTokenCostPriority
 	}
