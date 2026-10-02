@@ -1874,6 +1874,12 @@ PricingPatch:
     output_cost_per_token_priority:
       type: number
       minimum: 0
+    input_cost_per_token_ultrafast:
+      type: number
+      minimum: 0
+    output_cost_per_token_ultrafast:
+      type: number
+      minimum: 0
     input_cost_per_token_flex:
       type: number
       minimum: 0
@@ -1939,6 +1945,12 @@ PricingPatch:
     output_cost_per_token_flex_above_272k_tokens:
       type: number
       minimum: 0
+    input_cost_per_token_above_272k_tokens_ultrafast:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_272k_tokens_ultrafast:
+      type: number
+      minimum: 0
     # Costs - Cache
     cache_creation_input_token_cost:
       type: number
@@ -1967,6 +1979,9 @@ PricingPatch:
     cache_read_input_token_cost_priority:
       type: number
       minimum: 0
+    cache_read_input_token_cost_ultrafast:
+      type: number
+      minimum: 0
     cache_read_input_token_cost_flex:
       type: number
       minimum: 0
@@ -1982,6 +1997,9 @@ PricingPatch:
     cache_read_input_token_cost_flex_above_272k_tokens:
       type: number
       minimum: 0
+    cache_read_input_token_cost_above_272k_tokens_ultrafast:
+      type: number
+      minimum: 0
     cache_creation_input_token_cost_above_272k_tokens:
       type: number
       minimum: 0
@@ -1992,6 +2010,12 @@ PricingPatch:
       type: number
       minimum: 0
     cache_creation_input_token_cost_priority:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_ultrafast:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_272k_tokens_ultrafast:
       type: number
       minimum: 0
     cache_creation_input_token_cost_fast:

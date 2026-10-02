@@ -3823,6 +3823,105 @@ func TestUltrafastRatesFallBackToStandardWhenUnconfigured(t *testing.T) {
 	assert.Equal(t, 0.75, tieredCacheCreationInputTokenRate(&p, 1000, tier))
 }
 
+func TestUltrafastAbove272kRates(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:                                   new(1.0),
+		OutputCostPerToken:                                  new(2.0),
+		CacheReadInputTokenCost:                             new(0.5),
+		CacheCreationInputTokenCost:                         new(0.75),
+		InputCostPerTokenAbove272kTokens:                    new(10.0),
+		OutputCostPerTokenAbove272kTokens:                   new(20.0),
+		CacheReadInputTokenCostAbove272kTokens:              new(5.0),
+		CacheCreationInputTokenCostAbove272kTokens:          new(7.5),
+		InputCostPerTokenUltrafast:                          new(3.0),
+		OutputCostPerTokenUltrafast:                         new(6.0),
+		CacheReadInputTokenCostUltrafast:                    new(1.5),
+		CacheCreationInputTokenCostUltrafast:                new(2.25),
+		InputCostPerTokenAbove272kTokensUltrafast:           new(30.0),
+		OutputCostPerTokenAbove272kTokensUltrafast:          new(60.0),
+		CacheReadInputTokenCostAbove272kTokensUltrafast:     new(15.0),
+		CacheCreationInputTokenCostAbove272kTokensUltrafast: new(22.5),
+	}
+	tier := serviceTier{isUltrafast: true}
+	above := TokenTierAbove272K + 1
+
+	assert.Equal(t, 30.0, tieredInputRate(&p, above, tier))
+	assert.Equal(t, 60.0, tieredOutputRate(&p, above, tier))
+	assert.Equal(t, 15.0, tieredCacheReadInputTokenRate(&p, above, tier))
+	assert.Equal(t, 22.5, tieredCacheCreationInputTokenRate(&p, above, tier))
+
+	// At or below the boundary the flat ultrafast rate still applies.
+	assert.Equal(t, 3.0, tieredInputRate(&p, TokenTierAbove272K, tier))
+	assert.Equal(t, 6.0, tieredOutputRate(&p, TokenTierAbove272K, tier))
+	assert.Equal(t, 1.5, tieredCacheReadInputTokenRate(&p, TokenTierAbove272K, tier))
+	assert.Equal(t, 2.25, tieredCacheCreationInputTokenRate(&p, TokenTierAbove272K, tier))
+
+	// Standard tier above 272k is unaffected by the ultrafast long-context rates.
+	assert.Equal(t, 10.0, tieredInputRate(&p, above, serviceTier{}))
+	assert.Equal(t, 20.0, tieredOutputRate(&p, above, serviceTier{}))
+	assert.Equal(t, 5.0, tieredCacheReadInputTokenRate(&p, above, serviceTier{}))
+	assert.Equal(t, 7.5, tieredCacheCreationInputTokenRate(&p, above, serviceTier{}))
+}
+
+func TestUltrafastAbove272kFallsBackToFlatUltrafast(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:                          new(1.0),
+		OutputCostPerToken:                         new(2.0),
+		CacheReadInputTokenCost:                    new(0.5),
+		CacheCreationInputTokenCost:                new(0.75),
+		InputCostPerTokenAbove272kTokens:           new(10.0),
+		OutputCostPerTokenAbove272kTokens:          new(20.0),
+		CacheReadInputTokenCostAbove272kTokens:     new(5.0),
+		CacheCreationInputTokenCostAbove272kTokens: new(7.5),
+		InputCostPerTokenUltrafast:                 new(3.0),
+		OutputCostPerTokenUltrafast:                new(6.0),
+		CacheReadInputTokenCostUltrafast:           new(1.5),
+		CacheCreationInputTokenCostUltrafast:       new(2.25),
+	}
+	tier := serviceTier{isUltrafast: true}
+	above := TokenTierAbove272K + 1
+	assert.Equal(t, 3.0, tieredInputRate(&p, above, tier))
+	assert.Equal(t, 6.0, tieredOutputRate(&p, above, tier))
+	assert.Equal(t, 1.5, tieredCacheReadInputTokenRate(&p, above, tier))
+	assert.Equal(t, 2.25, tieredCacheCreationInputTokenRate(&p, above, tier))
+}
+
+// TestUltrafastAbove272kFromDatasheetJSON feeds the gpt-6-astra datasheet entry
+// through the production JSON -> row conversion, so a missing json tag or
+// conversion-map line for the long-context ultrafast rates fails here.
+func TestUltrafastAbove272kFromDatasheetJSON(t *testing.T) {
+	p := pricingRowFromDatasheetJSON(t, "gpt-6-astra", `{
+		"provider": "openai", "mode": "responses", "base_model": "gpt-6-astra",
+		"input_cost_per_token": 0.00001,
+		"input_cost_per_token_above_272k_tokens": 0.00002,
+		"input_cost_per_token_ultrafast": 0.00006,
+		"input_cost_per_token_above_272k_tokens_ultrafast": 0.00012,
+		"output_cost_per_token_ultrafast": 0.0003,
+		"output_cost_per_token_above_272k_tokens_ultrafast": 0.00045,
+		"cache_read_input_token_cost_ultrafast": 0.000006,
+		"cache_read_input_token_cost_above_272k_tokens_ultrafast": 0.000012,
+		"cache_creation_input_token_cost_ultrafast": 0.000075,
+		"cache_creation_input_token_cost_above_272k_tokens_ultrafast": 0.00015
+	}`)
+	tier := serviceTier{isUltrafast: true}
+	short, long := 100_000, 300_000
+
+	assert.InDelta(t, 0.00006, tieredInputRate(&p, short, tier), 1e-15)
+	assert.InDelta(t, 0.00012, tieredInputRate(&p, long, tier), 1e-15)
+	assert.InDelta(t, 0.0003, tieredOutputRate(&p, short, tier), 1e-15)
+	assert.InDelta(t, 0.00045, tieredOutputRate(&p, long, tier), 1e-15)
+	assert.InDelta(t, 0.000006, tieredCacheReadInputTokenRate(&p, short, tier), 1e-15)
+	assert.InDelta(t, 0.000012, tieredCacheReadInputTokenRate(&p, long, tier), 1e-15)
+	assert.InDelta(t, 0.000075, tieredCacheCreationInputTokenRate(&p, short, tier), 1e-15)
+	assert.InDelta(t, 0.00015, tieredCacheCreationInputTokenRate(&p, long, tier), 1e-15)
+
+	roundTrip := convertTablePricingToEntry(&p)
+	require.NotNil(t, roundTrip.InputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, roundTrip.OutputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, roundTrip.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	require.NotNil(t, roundTrip.CacheCreationInputTokenCostAbove272kTokensUltrafast)
+}
+
 func TestTierFromResponse_Default(t *testing.T) {
 	for _, s := range []schemas.BifrostServiceTier{schemas.BifrostServiceTierAuto, schemas.BifrostServiceTierDefault, ""} {
 		tier := tierFromResponse(&s, nil, nil)

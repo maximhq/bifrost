@@ -495,6 +495,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_use_openai_endpoints_column"}, run: migrationAddUseOpenAIEndpointsColumn},
 	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
+	{IDs: []string{"add_ultrafast_above_272k_pricing_columns"}, run: migrationAddUltrafastAbove272kPricingColumns},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -12981,6 +12982,46 @@ func migrationAddUltrafastPricingColumns(ctx context.Context, db *gorm.DB, logge
 		"output_cost_per_token_ultrafast",
 		"cache_read_input_token_cost_ultrafast",
 		"cache_creation_input_token_cost_ultrafast",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddUltrafastAbove272kPricingColumns adds the OpenAI Ultrafast rates
+// for prompts above 272k tokens. The fields are nullable so catalogs without them
+// keep the flat Ultrafast rate as the fallback.
+func migrationAddUltrafastAbove272kPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_ultrafast_above_272k_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"input_cost_per_token_above_272k_tokens_ultrafast",
+		"output_cost_per_token_above_272k_tokens_ultrafast",
+		"cache_read_input_token_cost_above_272k_tokens_ultrafast",
+		"cache_creation_input_token_cost_above_272k_tokens_ultrafast",
 	}
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: migrationName,
