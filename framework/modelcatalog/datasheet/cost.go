@@ -2005,13 +2005,16 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 			return *pricing.CacheCreationInputTokenCostFlex
 		}
 	}
-	// The priority cache-write rate is flat across the context window, so it takes
-	// precedence over the standard context tiers below (which would otherwise
-	// capture the 200k-272k band). OpenAI now publishes a >272k Fast cache-write
-	// rate, but there is no CacheCreationInputTokenCostAbove272kTokensPriority
-	// column yet, so the flat rate also covers >272k until that column lands.
-	if tier.isPriority && pricing.CacheCreationInputTokenCostPriority != nil {
-		return *pricing.CacheCreationInputTokenCostPriority
+	// Priority (and Fast, its renamed form) has a long-context cache-write rate
+	// above 272k; below that the rate is flat, so it takes precedence over the
+	// standard context tiers (which would otherwise capture the 200k-272k band).
+	if tier.isPriority {
+		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove272kTokensPriority != nil {
+			return *pricing.CacheCreationInputTokenCostAbove272kTokensPriority
+		}
+		if pricing.CacheCreationInputTokenCostPriority != nil {
+			return *pricing.CacheCreationInputTokenCostPriority
+		}
 	}
 	if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove272kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove272kTokens

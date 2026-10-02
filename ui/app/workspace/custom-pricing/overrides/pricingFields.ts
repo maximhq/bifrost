@@ -341,6 +341,12 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
+		key: "cache_creation_input_token_cost_above_272k_tokens_priority",
+		label: "Cache creation / token (>272k, priority)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "search_context_cost_per_query",
 		label: "Search context / query",
 		group: "chat",

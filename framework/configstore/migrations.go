@@ -496,6 +496,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
 	{IDs: []string{"add_ultrafast_above_272k_pricing_columns"}, run: migrationAddUltrafastAbove272kPricingColumns},
+	{IDs: []string{"add_priority_above_272k_cache_creation_pricing_column"}, run: migrationAddPriorityAbove272kCacheCreationPricingColumn},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -13813,3 +13814,35 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 	return nil
 }
 
+// migrationAddPriorityAbove272kCacheCreationPricingColumn adds the OpenAI
+// Priority/Fast cache-write rate for prompts above 272k tokens. The input,
+// output, and cache-read >272k priority columns already exist; this is the
+// one the datasheet publishes that the table had no home for. Nullable so
+// catalogs without it keep the flat priority cache-write rate as the fallback.
+func migrationAddPriorityAbove272kCacheCreationPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_priority_above_272k_cache_creation_pricing_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	column := "cache_creation_input_token_cost_above_272k_tokens_priority"
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
+				return fmt.Errorf("failed to add column %s: %w", column, err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
+				return fmt.Errorf("failed to drop column %s: %w", column, err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}

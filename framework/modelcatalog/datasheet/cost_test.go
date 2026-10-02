@@ -4998,6 +4998,32 @@ func TestGoldenOpenAIPricing_GPT6AstraFast(t *testing.T) {
 	assert.InDelta(t, 0.017720, computeTextCostTotal(&astra, reported, tierFromResponse(&fast, nil, nil)), 1e-9)
 }
 
+// TestGoldenOpenAIPricing_GPT6AstraFastLongContextCacheWrite pins the Fast
+// (priority-column) cache-write rate above 272k through the production JSON -> row
+// conversion: OpenAI publishes $50/M for Fast cache writes on long context, twice
+// the $25/M short-context Fast rate, and the datasheet carries it as
+// cache_creation_input_token_cost_above_272k_tokens_priority.
+func TestGoldenOpenAIPricing_GPT6AstraFastLongContextCacheWrite(t *testing.T) {
+	astra := pricingRowFromDatasheetJSON(t, "gpt-6-astra", gpt6AstraDatasheet)
+	fast := schemas.BifrostServiceTierFast
+	tier := tierFromResponse(&fast, nil, nil)
+
+	// 272k is the boundary: at or below it the flat $25/M Fast rate applies.
+	assert.InDelta(t, 0.000025, tieredCacheCreationInputTokenRate(&astra, TokenTierAbove272K, tier), 1e-15)
+	assert.InDelta(t, 0.00005, tieredCacheCreationInputTokenRate(&astra, 300000, tier), 1e-15)
+	// Standard above 272k is unaffected.
+	assert.InDelta(t, 0.000025, tieredCacheCreationInputTokenRate(&astra, 300000, serviceTier{}), 1e-15)
+
+	// Long-context Fast invoice with cache writes: 200k uncached x $40/M + 50k read x $4/M
+	// + 50k write x $50/M + 1k out x $150/M.
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 300000, CompletionTokens: 1000, TotalTokens: 301000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 50000, CachedWriteTokens: 50000},
+	}
+	want := 200000*0.00004 + 50000*0.000004 + 50000*0.00005 + 1000*0.00015
+	assert.InDelta(t, want, computeTextCostTotal(&astra, usage, tier), 1e-9)
+}
+
 // TestGoldenOpenAIPricing_NoCacheWriteModels covers models that OpenAI prices
 // without a cache-write rate (gpt-5.5) and without a long-context tier
 // (gpt-5.4-mini): cache-write tokens fall back to the input rate, and a >272k
@@ -5101,6 +5127,25 @@ func TestTieredCacheCreationRate_PriorityWinsOver200kBand(t *testing.T) {
 	assert.Equal(t, 0.000005, tieredCacheCreationInputTokenRate(&p, 250000, serviceTier{isPriority: true}))
 	// Non-priority at the same size still uses the standard >200k rate.
 	assert.Equal(t, 0.000002, tieredCacheCreationInputTokenRate(&p, 250000, serviceTier{}))
+}
+
+// TestTieredCacheCreationRate_PriorityAbove272k verifies the long-context priority
+// cache-write column wins above 272k and that, when a catalog lacks it, the flat
+// priority rate still covers the whole context window (never the standard >272k rate).
+func TestTieredCacheCreationRate_PriorityAbove272k(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		CacheCreationInputTokenCost:                        bifrost.Ptr(0.000001),
+		CacheCreationInputTokenCostAbove272kTokens:         bifrost.Ptr(0.000002),
+		CacheCreationInputTokenCostPriority:                bifrost.Ptr(0.000005),
+		CacheCreationInputTokenCostAbove272kTokensPriority: bifrost.Ptr(0.00001),
+	}
+	priority := serviceTier{isPriority: true}
+	assert.Equal(t, 0.00001, tieredCacheCreationInputTokenRate(&p, 300000, priority))
+	assert.Equal(t, 0.000005, tieredCacheCreationInputTokenRate(&p, TokenTierAbove272K, priority))
+	assert.Equal(t, 0.000002, tieredCacheCreationInputTokenRate(&p, 300000, serviceTier{}))
+
+	p.CacheCreationInputTokenCostAbove272kTokensPriority = nil
+	assert.Equal(t, 0.000005, tieredCacheCreationInputTokenRate(&p, 300000, priority), "flat priority covers >272k when the long-context column is absent")
 }
 
 // ---------------------------------------------------------------------------

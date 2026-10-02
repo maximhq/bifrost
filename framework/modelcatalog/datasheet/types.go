@@ -154,6 +154,7 @@ type Options struct {
 	CacheCreationInputTokenCostFlex                     *float64 `json:"cache_creation_input_token_cost_flex,omitempty"`
 	CacheCreationInputTokenCostFlexAbove272kTokens      *float64 `json:"cache_creation_input_token_cost_flex_above_272k_tokens,omitempty"`
 	CacheCreationInputTokenCostPriority                 *float64 `json:"cache_creation_input_token_cost_priority,omitempty"`
+	CacheCreationInputTokenCostAbove272kTokensPriority  *float64 `json:"cache_creation_input_token_cost_above_272k_tokens_priority,omitempty"`
 	CacheCreationInputTokenCostUltrafast                *float64 `json:"cache_creation_input_token_cost_ultrafast,omitempty"`
 	CacheCreationInputTokenCostAbove272kTokensUltrafast *float64 `json:"cache_creation_input_token_cost_above_272k_tokens_ultrafast,omitempty"`
 	// Fast mode (Anthropic) cache rates — flat across the full context window, no tiering.
@@ -728,6 +729,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		CacheCreationInputTokenCostFlex:                     entry.CacheCreationInputTokenCostFlex,
 		CacheCreationInputTokenCostFlexAbove272kTokens:      entry.CacheCreationInputTokenCostFlexAbove272kTokens,
 		CacheCreationInputTokenCostPriority:                 entry.CacheCreationInputTokenCostPriority,
+		CacheCreationInputTokenCostAbove272kTokensPriority:  entry.CacheCreationInputTokenCostAbove272kTokensPriority,
 		CacheCreationInputTokenCostUltrafast:                entry.CacheCreationInputTokenCostUltrafast,
 		CacheCreationInputTokenCostAbove272kTokensUltrafast: entry.CacheCreationInputTokenCostAbove272kTokensUltrafast,
 		CacheCreationInputTokenCostFast:                     entry.CacheCreationInputTokenCostFast,
@@ -855,6 +857,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		CacheCreationInputTokenCostFlex:                     pricing.CacheCreationInputTokenCostFlex,
 		CacheCreationInputTokenCostFlexAbove272kTokens:      pricing.CacheCreationInputTokenCostFlexAbove272kTokens,
 		CacheCreationInputTokenCostPriority:                 pricing.CacheCreationInputTokenCostPriority,
+		CacheCreationInputTokenCostAbove272kTokensPriority:  pricing.CacheCreationInputTokenCostAbove272kTokensPriority,
 		CacheCreationInputTokenCostUltrafast:                pricing.CacheCreationInputTokenCostUltrafast,
 		CacheCreationInputTokenCostAbove272kTokensUltrafast: pricing.CacheCreationInputTokenCostAbove272kTokensUltrafast,
 		CacheCreationInputTokenCostFast:                     pricing.CacheCreationInputTokenCostFast,

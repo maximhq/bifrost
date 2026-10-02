@@ -2842,6 +2842,7 @@ var pricingSyncUpdateColumns = []string{
 	"cache_creation_input_token_cost_flex",
 	"cache_creation_input_token_cost_flex_above_272k_tokens",
 	"cache_creation_input_token_cost_priority",
+	"cache_creation_input_token_cost_above_272k_tokens_priority",
 	"cache_creation_input_token_cost_ultrafast",
 	"cache_creation_input_token_cost_above_272k_tokens_ultrafast",
 	"cache_creation_input_token_cost_fast",
