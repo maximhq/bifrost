@@ -16,8 +16,12 @@ const collection = JSON.parse(
   readFileSync(join(here, "bifrost-api-management.postman_collection.json"), "utf8"),
 );
 
+const guardsCollection = JSON.parse(
+  readFileSync(join(here, "bifrost-v1-request-guards.postman_collection.json"), "utf8"),
+);
+
 // Locate a request by "Folder / Request Name" and return one of its scripts.
-function scriptFor(path, listen) {
+function scriptFor(path, listen, source = collection) {
   const wanted = path.split(" / ");
   function walk(items, trail) {
     for (const item of items) {
@@ -34,9 +38,14 @@ function scriptFor(path, listen) {
     }
     return null;
   }
-  const src = walk(collection.item, []);
+  const src = walk(source.item, []);
   assert.ok(src, `request not found: ${path}`);
   return src;
+}
+
+// Same lookup inside the request-guards collection.
+function guardsScriptFor(path, listen) {
+  return scriptFor(path, listen, guardsCollection);
 }
 
 // A no-op chai-style chain, so pm.expect(...) assertions neither throw nor pass
@@ -655,6 +664,94 @@ test("the two cache probes are allowed a 405", () => {
     runGate({ requestName: "Clear Cache by Key (Coverage Probe)", code: 405 }),
     true,
   );
+});
+
+// ── Request guards - restore steps for a stored rejected value ───────────────
+// The guards assert that a refused proxy change or catalog URL was not persisted. If a
+// guard regresses and the value is stored, the check fails loudly and a skip-gated PUT
+// must put the earlier config back, the same way the leaked MCP client / provider / key
+// cleanups do, so the suites after this one do not run against a changed gateway.
+const catalogRead = guardsScriptFor("Catalog URL validation / Read the stored catalog URLs", "test");
+const catalogCheck = guardsScriptFor("Catalog URL validation / The stored catalog URLs are unchanged", "test");
+const catalogRestorePre = guardsScriptFor("Catalog URL validation / Cleanup: restore the stored catalog URLs", "prerequest");
+const catalogBefore = JSON.stringify({
+  client_config: { log_retention_days: 0, compat: { should_drop_params: true } },
+  framework_config: {
+    pricing_url: "https://example.com/pricing.json",
+    model_parameters_url: "https://example.com/params.json",
+    mcp_library_url: "https://example.com/mcp",
+    pricing_sync_interval: 86400,
+  },
+});
+
+test("catalog read stores a restore payload holding exactly the three earlier catalog URLs", () => {
+  const { vars } = run(catalogRead, { responseBody: catalogBefore });
+  // client_config rides along verbatim (with the write-rejected log_retention_days 0 patched to 1)
+  // so the handler sees an unchanged compat block and never reloads or removes the compat plugin.
+  assert.strictEqual(
+    vars.rg_catalog_restore_raw,
+    '{"client_config":{"log_retention_days":1,"compat":{"should_drop_params":true}},"framework_config":{"pricing_url":"https://example.com/pricing.json","model_parameters_url":"https://example.com/params.json","mcp_library_url":"https://example.com/mcp"}}',
+  );
+});
+
+test("catalog read leaves the restore payload empty when the config read has no client_config object", () => {
+  const { vars } = run(catalogRead, { responseBody: catalogBefore.replace('"client_config":{"log_retention_days":0,"compat":{"should_drop_params":true}},', "") });
+  assert.strictEqual(vars.rg_catalog_restore_raw, "");
+});
+
+test("catalog read leaves the restore payload empty on a non-200 so the restore can never send a placeholder", () => {
+  const { vars } = run(catalogRead, { responseBody: SPA_FALLBACK, responseCode: 503, variables: { rg_catalog_restore_raw: "stale" } });
+  assert.strictEqual(vars.rg_catalog_restore_raw, "");
+});
+
+test("catalog check flags a leak only when a stored catalog URL differs from the earlier value", () => {
+  const before = {
+    rg_pricing_url: "https://example.com/pricing.json",
+    rg_model_parameters_url: "https://example.com/params.json",
+    rg_mcp_library_url: "https://example.com/mcp",
+  };
+  const same = run(catalogCheck, { responseBody: catalogBefore, variables: { ...before, rg_catalog_leaked: "1" } });
+  assert.strictEqual(same.vars.rg_catalog_leaked, "", "unchanged URLs clear a stale flag");
+  const leakedBody = catalogBefore.replace("https://example.com/mcp", "file:///etc/hostname");
+  const leaked = run(catalogCheck, { responseBody: leakedBody, variables: before });
+  assert.strictEqual(leaked.vars.rg_catalog_leaked, "1", "a stored file:// URL sets the flag");
+});
+
+test("catalog restore skips unless a leak was flagged and a restore payload exists", () => {
+  assert.strictEqual(run(catalogRestorePre, { variables: { rg_catalog_leaked: "", rg_catalog_restore_raw: "{}" } }).state.skipped, true);
+  assert.strictEqual(run(catalogRestorePre, { variables: { rg_catalog_leaked: "1", rg_catalog_restore_raw: "" } }).state.skipped, true);
+  const live = run(catalogRestorePre, { variables: { rg_catalog_leaked: "1", rg_catalog_restore_raw: '{"framework_config":{"pricing_url":"x"}}' } });
+  assert.strictEqual(live.state.skipped, false);
+  assert.strictEqual(live.pm.request.body.raw, '{"framework_config":{"pricing_url":"x"}}', "the earlier URLs are resent verbatim");
+});
+
+const proxyRead = guardsScriptFor("Provider endpoint changes / Read the stored proxy config", "test");
+const proxyCheck = guardsScriptFor("Provider endpoint changes / The proxy config is unchanged", "test");
+const proxyRestorePre = guardsScriptFor("Provider endpoint changes / Cleanup: restore the stored proxy config", "prerequest");
+const proxyBefore = '{"enabled":false,"type":"http","url":"","timeout":0,"enable_for_scim":false,"enable_for_inference":false,"enable_for_api":false}';
+
+test("proxy read stores the raw response text for a verbatim restore", () => {
+  const { vars } = run(proxyRead, { responseBody: proxyBefore });
+  assert.strictEqual(vars.rg_proxy_before_raw, proxyBefore);
+  const bad = run(proxyRead, { responseBody: SPA_FALLBACK, responseCode: 503, variables: { rg_proxy_before_raw: "stale" } });
+  assert.strictEqual(bad.vars.rg_proxy_before_raw, "", "a failed read never leaves a stale snapshot behind");
+});
+
+test("proxy check flags a leak only when enabled, type or url moved from the earlier value", () => {
+  const before = { rg_proxy_before: JSON.stringify({ enabled: false, type: "http", url: "" }) };
+  const same = run(proxyCheck, { responseBody: proxyBefore, variables: { ...before, rg_proxy_leaked: "1" } });
+  assert.strictEqual(same.vars.rg_proxy_leaked, "", "an unchanged config clears a stale flag");
+  const leakedBody = proxyBefore.replace('"enabled":false,"type":"http","url":""', '"enabled":true,"type":"http","url":"http://proxy.example.com:3128"');
+  const leaked = run(proxyCheck, { responseBody: leakedBody, variables: before });
+  assert.strictEqual(leaked.vars.rg_proxy_leaked, "1", "a stored rejected URL sets the flag");
+});
+
+test("proxy restore skips unless a leak was flagged and a raw snapshot exists", () => {
+  assert.strictEqual(run(proxyRestorePre, { variables: { rg_proxy_leaked: "", rg_proxy_before_raw: proxyBefore } }).state.skipped, true);
+  assert.strictEqual(run(proxyRestorePre, { variables: { rg_proxy_leaked: "1", rg_proxy_before_raw: "" } }).state.skipped, true);
+  const live = run(proxyRestorePre, { variables: { rg_proxy_leaked: "1", rg_proxy_before_raw: proxyBefore } });
+  assert.strictEqual(live.state.skipped, false);
+  assert.strictEqual(live.pm.request.body.raw, proxyBefore, "the earlier config is resent byte for byte");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

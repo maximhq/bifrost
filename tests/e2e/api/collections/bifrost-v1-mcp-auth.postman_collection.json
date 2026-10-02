@@ -403,12 +403,21 @@
                 "type": "text/javascript",
                 "exec": [
                   "// A deactivated key must never connect, in any mode: headers/both reject",
-                  "// it at the shared key-lookup chokepoint, oauth-strict rejects the header",
-                  "// credential outright.",
+                  "// it at the shared key-lookup chokepoint (403), oauth-strict refuses every",
+                  "// header credential before any key lookup (401, with WWW-Authenticate).",
+                  "var mode = String(pm.variables.get('auth_mode') || '');",
                   "var code = pm.response.code;",
-                  "pm.test('inactive virtual key is rejected (403)', function () {",
-                  "  pm.expect(code, pm.response.text()).to.equal(403);",
-                  "});"
+                  "if (mode === 'oauth') {",
+                  "  pm.test('header credential is refused in oauth-strict mode (401)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(401);",
+                  "    pm.expect(pm.response.text()).to.include('header credentials are not accepted in oauth mode');",
+                  "    pm.expect(pm.response.headers.get('WWW-Authenticate')).to.be.a('string');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('inactive virtual key is rejected (403)', function () {",
+                  "    pm.expect(code, pm.response.text()).to.equal(403);",
+                  "  });",
+                  "}"
                 ]
               }
             }

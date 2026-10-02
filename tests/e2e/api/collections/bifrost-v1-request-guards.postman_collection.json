@@ -91,20 +91,60 @@
       "type": "string"
     },
     {
-      "key": "rg_client_config",
+      "key": "rg_client_config_raw",
       "value": "",
       "type": "string"
     },
     {
-      "key": "rg_framework_config",
+      "key": "rg_framework_config_raw",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "rg_config_snapshot_ok",
+      "value": ""
+    },
+    {
+      "key": "rg_catalog_restore_raw",
+      "value": ""
+    },
+    {
+      "key": "rg_catalog_leaked",
+      "value": ""
+    },
+    {
+      "key": "rg_mcp_leaked_streamable",
+      "value": ""
+    },
+    {
+      "key": "rg_mcp_leaked_unresolvable",
+      "value": ""
+    },
+    {
+      "key": "rg_mcp_leaked_loopback",
+      "value": ""
+    },
+    {
+      "key": "rg_custom_provider_leaked",
+      "value": ""
+    },
+    {
+      "key": "rg_azure_key_leaked_id",
+      "value": ""
+    },
+    {
+      "key": "rg_proxy_before_raw",
+      "value": ""
+    },
+    {
+      "key": "rg_proxy_leaked",
+      "value": ""
     }
   ],
   "item": [
     {
       "name": "Catalog URL validation",
-      "description": "PUT /api/config refuses file:// values for pricing_url, model_parameters_url and mcp_library_url (those are config.json-only), reports an unreachable http URL with one fixed message, and persists none of them.",
+      "description": "PUT /api/config refuses file:// values for pricing_url, model_parameters_url and mcp_library_url (those are config.json-only), reports an unreachable http URL with one fixed message, and persists none of them. If a guard regresses and a rejected URL is stored, a skip-gated PUT restores the three earlier catalog URLs.",
       "item": [
         {
           "name": "Read the stored catalog URLs",
@@ -134,6 +174,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var txt = pm.response.text() || '';",
+                  "pm.collectionVariables.set('rg_catalog_restore_raw', '');",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
                   "pm.test('Read config: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
@@ -147,7 +188,53 @@
                   "});",
                   "pm.collectionVariables.set('rg_pricing_url', fw.pricing_url || '');",
                   "pm.collectionVariables.set('rg_model_parameters_url', fw.model_parameters_url || '');",
-                  "pm.collectionVariables.set('rg_mcp_library_url', fw.mcp_library_url || '');"
+                  "pm.collectionVariables.set('rg_mcp_library_url', fw.mcp_library_url || '');",
+                  "// rawTopLevelField returns the raw JSON text of a top-level object field from the response",
+                  "// body, by brace matching outside strings, so it can be sent back byte-for-byte: the e2e rule",
+                  "// is never to round-trip a payload through JSON.parse/JSON.stringify, since field order matters.",
+                  "function rawTopLevelField(text, key) {",
+                  "  var depth = 0, inStr = false, esc = false, i = 0;",
+                  "  var marker = '\"' + key + '\"';",
+                  "  for (; i < text.length; i++) {",
+                  "    var ch = text[i];",
+                  "    if (inStr) { if (esc) { esc = false; } else if (ch === '\\\\') { esc = true; } else if (ch === '\"') { inStr = false; } continue; }",
+                  "    if (ch === '\"') {",
+                  "      if (depth === 1 && text.substr(i, marker.length) === marker) {",
+                  "        var colon = text.indexOf(':', i + marker.length);",
+                  "        var start = colon + 1;",
+                  "        while (text[start] === ' ' || text[start] === '\\n' || text[start] === '\\r' || text[start] === '\\t') { start++; }",
+                  "        if (text[start] !== '{') { return ''; }",
+                  "        var d2 = 0, s2 = false, e2 = false;",
+                  "        for (var j = start; j < text.length; j++) {",
+                  "          var c2 = text[j];",
+                  "          if (s2) { if (e2) { e2 = false; } else if (c2 === '\\\\') { e2 = true; } else if (c2 === '\"') { s2 = false; } continue; }",
+                  "          if (c2 === '\"') { s2 = true; } else if (c2 === '{') { d2++; } else if (c2 === '}') { d2--; if (d2 === 0) { return text.slice(start, j + 1); } }",
+                  "        }",
+                  "        return '';",
+                  "      }",
+                  "      inStr = true; continue;",
+                  "    }",
+                  "    if (ch === '{') { depth++; } else if (ch === '}') { depth--; }",
+                  "  }",
+                  "  return '';",
+                  "}",
+                  "var ccRaw = rawTopLevelField(txt, 'client_config');",
+                  "// The server reports log_retention_days 0 by default but rejects it on write (must be >= 1):",
+                  "// patch that one value in the raw text rather than rebuilding the object.",
+                  "var retention = ccRaw.match(/\"log_retention_days\"\\s*:\\s*(-?\\d+)/);",
+                  "if (retention && !(Number(retention[1]) >= 1)) {",
+                  "  ccRaw = ccRaw.replace(/\"log_retention_days\"\\s*:\\s*-?\\d+/, '\"log_retention_days\":1');",
+                  "} else if (ccRaw && !retention) {",
+                  "  ccRaw = ccRaw === '{}' ? '{\"log_retention_days\":1}' : '{\"log_retention_days\":1,' + ccRaw.slice(1);",
+                  "}",
+                  "// The restore request at the end of this folder resends this payload if a guard regresses and a",
+                  "// rejected URL is stored. client_config rides along verbatim so the handler sees an unchanged",
+                  "// compat block (a framework_config-only PUT makes it reload or remove the compat plugin), and",
+                  "// framework_config is a literal with the three URLs in a fixed order, only their string values",
+                  "// JSON-escaped: never an object round-tripped through JSON.stringify.",
+                  "if (ccRaw && fw.pricing_url && fw.model_parameters_url && fw.mcp_library_url) {",
+                  "  pm.collectionVariables.set('rg_catalog_restore_raw', '{\"client_config\":' + ccRaw + ',\"framework_config\":{\"pricing_url\":' + JSON.stringify(fw.pricing_url) + ',\"model_parameters_url\":' + JSON.stringify(fw.model_parameters_url) + ',\"mcp_library_url\":' + JSON.stringify(fw.mcp_library_url) + '}}');",
+                  "}"
                 ]
               }
             }
@@ -379,11 +466,15 @@
                 "type": "text/javascript",
                 "exec": [
                   "var txt = pm.response.text() || '';",
+                  "pm.collectionVariables.set('rg_catalog_leaked', '');",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
                   "pm.test('Config after rejected URLs: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
                   "if (pm.response.code !== 200) { return; }",
                   "var fw = pm.response.json().framework_config || {};",
+                  "// Record whether anything leaked before asserting, so the restore request that follows can run.",
+                  "var catalogLeaked = (fw.pricing_url || '') !== pm.collectionVariables.get('rg_pricing_url') || (fw.model_parameters_url || '') !== pm.collectionVariables.get('rg_model_parameters_url') || (fw.mcp_library_url || '') !== pm.collectionVariables.get('rg_mcp_library_url');",
+                  "pm.collectionVariables.set('rg_catalog_leaked', catalogLeaked ? '1' : '');",
                   "pm.test('Config after rejected URLs: every catalog URL still holds its earlier value', function () {",
                   "  pm.expect(fw.pricing_url, 'framework_config: ' + JSON.stringify(fw)).to.eql(pm.collectionVariables.get('rg_pricing_url'));",
                   "  pm.expect(fw.model_parameters_url, 'framework_config: ' + JSON.stringify(fw)).to.eql(pm.collectionVariables.get('rg_model_parameters_url'));",
@@ -399,6 +490,67 @@
               }
             }
           ]
+        },
+        {
+          "name": "Cleanup: restore the stored catalog URLs",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only runs when the persistence check above found a rejected value stored on the gateway, which",
+                  "// means a guard let it through: the check has already failed loudly, and this puts the earlier",
+                  "// config back so the shared gateway is left as this suite found it.",
+                  "if (!pm.collectionVariables.get('rg_catalog_leaked') || !pm.collectionVariables.get('rg_catalog_restore_raw')) {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}",
+                  "// The snapshot is resent as the text it was captured as: no JSON round trip, so field order holds.",
+                  "pm.request.body.raw = pm.collectionVariables.get('rg_catalog_restore_raw');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('catalog URL restore: earlier config restored (2xx)', function () { pm.expect(pm.response.code, 'body: ' + txt).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "description": "Runs only if the persistence check found a rejected catalog URL stored; sends the three URLs read at the start of this folder back so the shared gateway does not keep a URL a guard let through."
+          }
         }
       ]
     },
@@ -441,7 +593,10 @@
                   "var ts = Date.now();",
                   "pm.collectionVariables.set('rg_mcp_id_streamable', 'rg-streamable-' + ts);",
                   "pm.collectionVariables.set('rg_mcp_id_unresolvable', 'rg-unresolvable-' + ts);",
-                  "pm.collectionVariables.set('rg_mcp_id_loopback', 'rg-loopback-' + ts);"
+                  "pm.collectionVariables.set('rg_mcp_id_loopback', 'rg-loopback-' + ts);",
+                  "pm.collectionVariables.set('rg_mcp_leaked_streamable', '');",
+                  "pm.collectionVariables.set('rg_mcp_leaked_unresolvable', '');",
+                  "pm.collectionVariables.set('rg_mcp_leaked_loopback', '');"
                 ]
               }
             },
@@ -601,25 +756,185 @@
                   "pm.test('MCP client list: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
                   "if (pm.response.code !== 200) { return; }",
                   "var json = pm.response.json();",
-                  "var clients = Array.isArray(json) ? json : (json.clients || []);",
-                  "var listed = JSON.stringify(clients);",
+                  "// The list is the only proof the rejected registrations were not persisted, so its shape",
+                  "// is asserted rather than defaulted: a renamed key must fail here, not pass vacuously.",
+                  "pm.test('MCP client list: response carries a clients array', function () {",
+                  "  pm.expect(json, 'body: ' + txt.slice(0, 2000)).to.be.an('object').that.has.property('clients');",
+                  "  pm.expect(json.clients, 'clients').to.be.an('array');",
+                  "});",
+                  "var clients = Array.isArray(json.clients) ? json.clients : null;",
+                  "// Record anything that leaked before asserting, so the cleanup requests that follow can",
+                  "// delete it even though the assertion below fails the run.",
+                  "if (clients) {",
+                  "  var present = clients.map(function (c) { return c && c.config ? c.config.client_id : undefined; });",
+                  "  [['rg_mcp_id_streamable', 'rg_mcp_leaked_streamable'], ['rg_mcp_id_unresolvable', 'rg_mcp_leaked_unresolvable'], ['rg_mcp_id_loopback', 'rg_mcp_leaked_loopback']].forEach(function (pair) {",
+                  "    var id = pm.collectionVariables.get(pair[0]);",
+                  "    pm.collectionVariables.set(pair[1], id && present.indexOf(id) !== -1 ? id : '');",
+                  "  });",
+                  "}",
                   "pm.test('MCP client list: no rejected client was stored', function () {",
+                  "  pm.expect(clients, 'clients array').to.not.eql(null);",
+                  "  // Each entry nests the registration under config (see MCPClientResponse).",
+                  "  var ids = clients.map(function (c) { return c && c.config ? c.config.client_id : undefined; });",
+                  "  pm.expect(ids.filter(function (v) { return !v; }).length, 'entries without config.client_id: ' + txt.slice(0, 2000)).to.eql(0);",
                   "  ['rg_mcp_id_streamable', 'rg_mcp_id_unresolvable', 'rg_mcp_id_loopback'].forEach(function (k) {",
                   "    var id = pm.collectionVariables.get(k);",
                   "    pm.expect(id, k).to.be.a('string').and.not.be.empty;",
-                  "    pm.expect(listed, 'clients: ' + listed.slice(0, 2000)).to.not.include(id);",
+                  "    pm.expect(ids, 'client ids: ' + JSON.stringify(ids).slice(0, 2000)).to.not.include(id);",
+                  "    pm.expect(txt, 'full body: ' + txt.slice(0, 2000)).to.not.include(id);",
                   "  });",
                   "});"
                 ]
               }
             }
           ]
+        },
+        {
+          "name": "Cleanup: remove a leaked streamable client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only runs when the persistence check above found this resource on the gateway, which",
+                  "// means a guard let it through: the check has already failed loudly, and this removes the",
+                  "// leaked resource so the shared gateway is left as this suite found it.",
+                  "if (!pm.collectionVariables.get('rg_mcp_leaked_streamable')) {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('streamable client cleanup: leaked resource removed (2xx)', function () { pm.expect(pm.response.code, 'body: ' + txt).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client/{{rg_mcp_leaked_streamable}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{rg_mcp_leaked_streamable}}"
+              ]
+            },
+            "description": "Runs only if the persistence check found this rejected registration stored; removes it so the shared gateway does not keep a client a guard let through."
+          }
+        },
+        {
+          "name": "Cleanup: remove a leaked unresolvable client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only runs when the persistence check above found this resource on the gateway, which",
+                  "// means a guard let it through: the check has already failed loudly, and this removes the",
+                  "// leaked resource so the shared gateway is left as this suite found it.",
+                  "if (!pm.collectionVariables.get('rg_mcp_leaked_unresolvable')) {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('unresolvable client cleanup: leaked resource removed (2xx)', function () { pm.expect(pm.response.code, 'body: ' + txt).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client/{{rg_mcp_leaked_unresolvable}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{rg_mcp_leaked_unresolvable}}"
+              ]
+            },
+            "description": "Runs only if the persistence check found this rejected registration stored; removes it so the shared gateway does not keep a client a guard let through."
+          }
+        },
+        {
+          "name": "Cleanup: remove a leaked loopback client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only runs when the persistence check above found this resource on the gateway, which",
+                  "// means a guard let it through: the check has already failed loudly, and this removes the",
+                  "// leaked resource so the shared gateway is left as this suite found it.",
+                  "if (!pm.collectionVariables.get('rg_mcp_leaked_loopback')) {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('loopback client cleanup: leaked resource removed (2xx)', function () { pm.expect(pm.response.code, 'body: ' + txt).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client/{{rg_mcp_leaked_loopback}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{rg_mcp_leaked_loopback}}"
+              ]
+            },
+            "description": "Runs only if the persistence check found this rejected registration stored; removes it so the shared gateway does not keep a client a guard let through."
+          }
         }
       ]
     },
     {
       "name": "Provider endpoint changes",
-      "description": "Pointing the global proxy, a custom provider's base URL or a provider key's endpoint somewhere new requires an admin session; the refusals leave the stored config untouched.",
+      "description": "Pointing the global proxy, a custom provider's base URL or a provider key's endpoint somewhere new requires an admin session; the refusals leave the stored config untouched. If a guard regresses and a rejected proxy change is stored, a skip-gated PUT restores the earlier proxy config.",
       "item": [
         {
           "name": "Read the stored proxy config",
@@ -649,12 +964,17 @@
                 "type": "text/javascript",
                 "exec": [
                   "var txt = pm.response.text() || '';",
+                  "pm.collectionVariables.set('rg_proxy_before_raw', '');",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
                   "pm.test('Read proxy config: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
                   "if (pm.response.code !== 200) { return; }",
                   "var json = pm.response.json();",
-                  "pm.collectionVariables.set('rg_proxy_before', JSON.stringify({enabled: !!json.enabled, type: json.type || '', url: json.url || ''}));"
+                  "pm.collectionVariables.set('rg_proxy_before', JSON.stringify({enabled: !!json.enabled, type: json.type || '', url: json.url || ''}));",
+                  "// The restore request after the persistence check resends this body byte for byte if a guard",
+                  "// regresses and a rejected change is stored; the handler keeps the stored password when it",
+                  "// receives the <redacted> placeholder this read reports.",
+                  "pm.collectionVariables.set('rg_proxy_before_raw', txt);"
                 ]
               }
             }
@@ -782,12 +1102,18 @@
                 "type": "text/javascript",
                 "exec": [
                   "var txt = pm.response.text() || '';",
+                  "pm.collectionVariables.set('rg_proxy_leaked', '');",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
                   "pm.test('Proxy config after rejected updates: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
                   "if (pm.response.code !== 200) { return; }",
                   "var json = pm.response.json();",
                   "var before = JSON.parse(pm.collectionVariables.get('rg_proxy_before') || '{}');",
+                  "// Record whether anything leaked before asserting, so the restore request that follows can run.",
+                  "if (pm.collectionVariables.get('rg_proxy_before')) {",
+                  "  var proxyLeaked = !!json.enabled !== before.enabled || (json.type || '') !== before.type || (json.url || '') !== before.url;",
+                  "  pm.collectionVariables.set('rg_proxy_leaked', proxyLeaked ? '1' : '');",
+                  "}",
                   "pm.test('Proxy config after rejected updates: enabled, type and url still hold their earlier values', function () {",
                   "  pm.expect(!!json.enabled, 'body: ' + txt).to.eql(before.enabled);",
                   "  pm.expect(json.type || '', 'body: ' + txt).to.eql(before.type);",
@@ -801,6 +1127,67 @@
               }
             }
           ]
+        },
+        {
+          "name": "Cleanup: restore the stored proxy config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only runs when the persistence check above found a rejected value stored on the gateway, which",
+                  "// means a guard let it through: the check has already failed loudly, and this puts the earlier",
+                  "// config back so the shared gateway is left as this suite found it.",
+                  "if (!pm.collectionVariables.get('rg_proxy_leaked') || !pm.collectionVariables.get('rg_proxy_before_raw')) {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}",
+                  "// The snapshot is resent as the text it was captured as: no JSON round trip, so field order holds.",
+                  "pm.request.body.raw = pm.collectionVariables.get('rg_proxy_before_raw');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('proxy config restore: earlier config restored (2xx)', function () { pm.expect(pm.response.code, 'body: ' + txt).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            },
+            "description": "Runs only if the persistence check found a rejected proxy change stored; resends the proxy config read at the start of this folder verbatim so the shared gateway does not keep a proxy a guard let through."
+          }
         },
         {
           "name": "A custom provider with a base URL is rejected",
@@ -833,7 +1220,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.collectionVariables.set('rg_custom_provider', 'rg-custom-' + Date.now());"
+                  "pm.collectionVariables.set('rg_custom_provider', 'rg-custom-' + Date.now());",
+                  "pm.collectionVariables.set('rg_custom_provider_leaked', '');"
                 ]
               }
             },
@@ -890,6 +1278,8 @@
                   "var txt = pm.response.text() || '';",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "// A 200 means the guard let the provider through: remember it so the cleanup below removes it.",
+                  "pm.collectionVariables.set('rg_custom_provider_leaked', pm.response.code === 200 ? pm.collectionVariables.get('rg_custom_provider') : '');",
                   "pm.test('rejected custom provider lookup: responds 404', function () {",
                   "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(404);",
                   "});"
@@ -897,6 +1287,52 @@
               }
             }
           ]
+        },
+        {
+          "name": "Cleanup: remove a leaked custom provider",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only runs when the persistence check above found this resource on the gateway, which",
+                  "// means a guard let it through: the check has already failed loudly, and this removes the",
+                  "// leaked resource so the shared gateway is left as this suite found it.",
+                  "if (!pm.collectionVariables.get('rg_custom_provider_leaked')) {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('custom provider cleanup: leaked resource removed (2xx)', function () { pm.expect(pm.response.code, 'body: ' + txt).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/{{rg_custom_provider_leaked}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{rg_custom_provider_leaked}}"
+              ]
+            },
+            "description": "Runs only if the rejected custom provider turned out to be stored; removes it so the shared gateway does not keep a provider a guard let through."
+          }
         },
         {
           "name": "Check whether the azure provider is configured",
@@ -973,7 +1409,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.collectionVariables.set('rg_azure_key_name', 'rg-azure-key-' + Date.now());"
+                  "pm.collectionVariables.set('rg_azure_key_name', 'rg-azure-key-' + Date.now());",
+                  "pm.collectionVariables.set('rg_azure_key_leaked_id', '');"
                 ]
               }
             },
@@ -1040,16 +1477,73 @@
                   "pm.test('azure key list: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
                   "if (pm.response.code !== 200) { return; }",
                   "var json = pm.response.json();",
-                  "var keys = Array.isArray(json) ? json : (json.keys || []);",
+                  "pm.test('azure key list: response carries a keys array', function () {",
+                  "  pm.expect(json, 'body: ' + txt.slice(0, 2000)).to.be.an('object').that.has.property('keys');",
+                  "  pm.expect(json.keys, 'keys').to.be.an('array');",
+                  "});",
+                  "var keys = Array.isArray(json.keys) ? json.keys : null;",
                   "var name = pm.collectionVariables.get('rg_azure_key_name');",
+                  "// Remember a leaked key's id before asserting, so the cleanup below can delete it.",
+                  "var leaked = (keys || []).filter(function (k) { return k && k.name === name; })[0];",
+                  "pm.collectionVariables.set('rg_azure_key_leaked_id', leaked && leaked.id ? leaked.id : '');",
                   "pm.test('azure key list: the rejected key is absent', function () {",
+                  "  pm.expect(keys, 'keys array').to.not.eql(null);",
                   "  pm.expect(name, 'rg_azure_key_name').to.be.a('string').and.not.be.empty;",
                   "  pm.expect(keys.some(function (k) { return k && k.name === name; }), 'keys: ' + JSON.stringify(keys).slice(0, 2000)).to.eql(false);",
+                  "  pm.expect(txt, 'full body: ' + txt.slice(0, 2000)).to.not.include(name);",
                   "});"
                 ]
               }
             }
           ]
+        },
+        {
+          "name": "Cleanup: remove a leaked azure key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only runs when the persistence check above found this resource on the gateway, which",
+                  "// means a guard let it through: the check has already failed loudly, and this removes the",
+                  "// leaked resource so the shared gateway is left as this suite found it.",
+                  "if (!pm.collectionVariables.get('rg_azure_key_leaked_id')) {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('azure key cleanup: leaked resource removed (2xx)', function () { pm.expect(pm.response.code, 'body: ' + txt).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/azure/keys/{{rg_azure_key_leaked_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "azure",
+                "keys",
+                "{{rg_azure_key_leaked_id}}"
+              ]
+            },
+            "description": "Runs only if the rejected azure key turned out to be stored; removes it so later azure requests on the shared gateway cannot be routed to its endpoint."
+          }
         }
       ]
     },
@@ -1795,6 +2289,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var txt = pm.response.text() || '';",
+                  "pm.collectionVariables.set('rg_config_snapshot_ok', '');",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
                   "pm.test('Read config: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
@@ -1808,11 +2303,56 @@
                   "  pm.expect(json.auth_config, 'auth_config in: ' + txt.slice(0, 600)).to.be.an('object');",
                   "  pm.expect(json.auth_config.is_enabled, 'auth_config: ' + JSON.stringify(json.auth_config)).to.eql(false);",
                   "});",
-                  "var cc = json.client_config || {};",
-                  "// The server reports log_retention_days 0 by default but rejects it on write (must be >= 1).",
-                  "if (!(cc.log_retention_days >= 1)) { cc.log_retention_days = 1; }",
-                  "pm.collectionVariables.set('rg_client_config', JSON.stringify(cc));",
-                  "pm.collectionVariables.set('rg_framework_config', JSON.stringify(json.framework_config || {}));"
+                  "// rawTopLevelField returns the raw JSON text of a top-level object field from the response",
+                  "// body, by brace matching outside strings, so it can be sent back byte-for-byte: the e2e rule",
+                  "// is never to round-trip a payload through JSON.parse/JSON.stringify, since field order matters.",
+                  "function rawTopLevelField(text, key) {",
+                  "  var depth = 0, inStr = false, esc = false, i = 0;",
+                  "  var marker = '\"' + key + '\"';",
+                  "  for (; i < text.length; i++) {",
+                  "    var ch = text[i];",
+                  "    if (inStr) { if (esc) { esc = false; } else if (ch === '\\\\') { esc = true; } else if (ch === '\"') { inStr = false; } continue; }",
+                  "    if (ch === '\"') {",
+                  "      if (depth === 1 && text.substr(i, marker.length) === marker) {",
+                  "        var colon = text.indexOf(':', i + marker.length);",
+                  "        var start = colon + 1;",
+                  "        while (text[start] === ' ' || text[start] === '\\n' || text[start] === '\\r' || text[start] === '\\t') { start++; }",
+                  "        if (text[start] !== '{') { return ''; }",
+                  "        var d2 = 0, s2 = false, e2 = false;",
+                  "        for (var j = start; j < text.length; j++) {",
+                  "          var c2 = text[j];",
+                  "          if (s2) { if (e2) { e2 = false; } else if (c2 === '\\\\') { e2 = true; } else if (c2 === '\"') { s2 = false; } continue; }",
+                  "          if (c2 === '\"') { s2 = true; } else if (c2 === '{') { d2++; } else if (c2 === '}') { d2--; if (d2 === 0) { return text.slice(start, j + 1); } }",
+                  "        }",
+                  "        return '';",
+                  "      }",
+                  "      inStr = true; continue;",
+                  "    }",
+                  "    if (ch === '{') { depth++; } else if (ch === '}') { depth--; }",
+                  "  }",
+                  "  return '';",
+                  "}",
+                  "var ccRaw = rawTopLevelField(txt, 'client_config');",
+                  "var fwRaw = rawTopLevelField(txt, 'framework_config');",
+                  "// The PUTs below resend these objects verbatim. A placeholder is never a valid payload: a",
+                  "// successful re-enable would persist a near-empty config on the shared gateway and break",
+                  "// every suite after this one. So the snapshot is asserted, and the PUTs run only when it exists.",
+                  "pm.test('Precondition: the config read carries client_config and framework_config objects', function () {",
+                  "  pm.expect(ccRaw, 'client_config in: ' + txt.slice(0, 600)).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(fwRaw, 'framework_config in: ' + txt.slice(0, 600)).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (!ccRaw || !fwRaw) { return; }",
+                  "// The server reports log_retention_days 0 by default but rejects it on write (must be >= 1):",
+                  "// patch that one value in the raw text rather than rebuilding the object.",
+                  "var retention = ccRaw.match(/\"log_retention_days\"\\s*:\\s*(-?\\d+)/);",
+                  "if (retention && !(Number(retention[1]) >= 1)) {",
+                  "  ccRaw = ccRaw.replace(/\"log_retention_days\"\\s*:\\s*-?\\d+/, '\"log_retention_days\":1');",
+                  "} else if (!retention) {",
+                  "  ccRaw = ccRaw === '{}' ? '{\"log_retention_days\":1}' : '{\"log_retention_days\":1,' + ccRaw.slice(1);",
+                  "}",
+                  "pm.collectionVariables.set('rg_client_config_raw', ccRaw);",
+                  "pm.collectionVariables.set('rg_framework_config_raw', fwRaw);",
+                  "pm.collectionVariables.set('rg_config_snapshot_ok', '1');"
                 ]
               }
             }
@@ -1856,10 +2396,18 @@
                   "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
                   "  return;",
                   "}",
-                  "var cc = JSON.parse(pm.collectionVariables.get('rg_client_config') || '{}');",
-                  "var fw = JSON.parse(pm.collectionVariables.get('rg_framework_config') || '{}');",
+                  "// client_config and framework_config are spliced back in as the raw text the server sent",
+                  "// (no JSON round trip); auth_config is this request's own literal, in the intended order.",
+                  "// Never send a placeholder config: without the raw snapshot from the read step this",
+                  "// request is skipped (that step already failed its named precondition).",
+                  "if (pm.collectionVariables.get('rg_config_snapshot_ok') !== '1') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}",
+                  "var ccRaw = pm.collectionVariables.get('rg_client_config_raw');",
+                  "var fwRaw = pm.collectionVariables.get('rg_framework_config_raw');",
                   "var authConfig = {is_enabled: true, admin_username: pm.variables.get('admin_username'), admin_password: pm.variables.get('admin_password')};",
-                  "pm.request.body.raw = JSON.stringify({client_config: cc, framework_config: fw, auth_config: authConfig});"
+                  "pm.request.body.raw = '{\"client_config\":' + ccRaw + ',\"framework_config\":' + fwRaw + ',\"auth_config\":' + JSON.stringify(authConfig) + '}';"
                 ]
               }
             },
@@ -1920,10 +2468,18 @@
                   "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
                   "  return;",
                   "}",
-                  "var cc = JSON.parse(pm.collectionVariables.get('rg_client_config') || '{}');",
-                  "var fw = JSON.parse(pm.collectionVariables.get('rg_framework_config') || '{}');",
+                  "// client_config and framework_config are spliced back in as the raw text the server sent",
+                  "// (no JSON round trip); auth_config is this request's own literal, in the intended order.",
+                  "// Never send a placeholder config: without the raw snapshot from the read step this",
+                  "// request is skipped (that step already failed its named precondition).",
+                  "if (pm.collectionVariables.get('rg_config_snapshot_ok') !== '1') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}",
+                  "var ccRaw = pm.collectionVariables.get('rg_client_config_raw');",
+                  "var fwRaw = pm.collectionVariables.get('rg_framework_config_raw');",
                   "var authConfig = {is_enabled: true, admin_username: pm.variables.get('admin_username'), admin_password: pm.variables.get('admin_password'), current_password: 'not-the-stored-password-' + Date.now()};",
-                  "pm.request.body.raw = JSON.stringify({client_config: cc, framework_config: fw, auth_config: authConfig});"
+                  "pm.request.body.raw = '{\"client_config\":' + ccRaw + ',\"framework_config\":' + fwRaw + ',\"auth_config\":' + JSON.stringify(authConfig) + '}';"
                 ]
               }
             },
@@ -1984,10 +2540,18 @@
                   "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
                   "  return;",
                   "}",
-                  "var cc = JSON.parse(pm.collectionVariables.get('rg_client_config') || '{}');",
-                  "var fw = JSON.parse(pm.collectionVariables.get('rg_framework_config') || '{}');",
+                  "// client_config and framework_config are spliced back in as the raw text the server sent",
+                  "// (no JSON round trip); auth_config is this request's own literal, in the intended order.",
+                  "// Never send a placeholder config: without the raw snapshot from the read step this",
+                  "// request is skipped (that step already failed its named precondition).",
+                  "if (pm.collectionVariables.get('rg_config_snapshot_ok') !== '1') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}",
+                  "var ccRaw = pm.collectionVariables.get('rg_client_config_raw');",
+                  "var fwRaw = pm.collectionVariables.get('rg_framework_config_raw');",
                   "var authConfig = {is_enabled: true, admin_username: pm.variables.get('admin_username'), admin_password: pm.variables.get('admin_password'), current_password: pm.variables.get('admin_password')};",
-                  "pm.request.body.raw = JSON.stringify({client_config: cc, framework_config: fw, auth_config: authConfig});"
+                  "pm.request.body.raw = '{\"client_config\":' + ccRaw + ',\"framework_config\":' + fwRaw + ',\"auth_config\":' + JSON.stringify(authConfig) + '}';"
                 ]
               }
             },
@@ -2177,10 +2741,18 @@
                   "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
                   "  return;",
                   "}",
-                  "var cc = JSON.parse(pm.collectionVariables.get('rg_client_config') || '{}');",
-                  "var fw = JSON.parse(pm.collectionVariables.get('rg_framework_config') || '{}');",
+                  "// client_config and framework_config are spliced back in as the raw text the server sent",
+                  "// (no JSON round trip); auth_config is this request's own literal, in the intended order.",
+                  "// Never send a placeholder config: without the raw snapshot from the read step this",
+                  "// request is skipped (that step already failed its named precondition).",
+                  "if (pm.collectionVariables.get('rg_config_snapshot_ok') !== '1') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}",
+                  "var ccRaw = pm.collectionVariables.get('rg_client_config_raw');",
+                  "var fwRaw = pm.collectionVariables.get('rg_framework_config_raw');",
                   "var authConfig = {is_enabled: false, admin_username: pm.variables.get('admin_username'), admin_password: '<redacted>'};",
-                  "pm.request.body.raw = JSON.stringify({client_config: cc, framework_config: fw, auth_config: authConfig});"
+                  "pm.request.body.raw = '{\"client_config\":' + ccRaw + ',\"framework_config\":' + fwRaw + ',\"auth_config\":' + JSON.stringify(authConfig) + '}';"
                 ]
               }
             },

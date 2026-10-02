@@ -112,13 +112,51 @@ admin_username="${BIFROST_E2E_ADMIN_USERNAME:-admin}"
 admin_password="${BIFROST_E2E_ADMIN_PASSWORD:-Bifrost-E2E-Admin-Pass1!}"
 admin_auth_header="Bearer $(printf '%s:%s' "$admin_username" "$admin_password" | base64 | tr -d '\n')"
 
+# The admin password and the derived Authorization header are secrets: they go to Newman
+# through a 0600 temporary environment file, never as command-line arguments, which any
+# local user could read from /proc/<pid>/cmdline while Newman runs. The file is removed by
+# the exit trap below.
+if ! command -v jq &>/dev/null; then
+    echo -e "${RED}Error: jq is required to write the Newman environment file${NC}"
+    exit 1
+fi
+SECRET_ENV_FILE="$(mktemp "${TMPDIR:-/tmp}/request-guards-secrets.XXXXXX")"
+chmod 600 "$SECRET_ENV_FILE"
+jq -n --arg password "$admin_password" --arg header "$admin_auth_header" '{
+  id: "request-guards-secrets",
+  name: "request-guards-secrets",
+  values: [
+    {key: "admin_password", value: $password, type: "secret", enabled: true},
+    {key: "admin_auth_header", value: $header, type: "secret", enabled: true}
+  ]
+}' > "$SECRET_ENV_FILE"
+
+# The Dashboard auth folder re-enables auth and disables it again in its last request. A run
+# that stops in between (--bail, a crash, Ctrl-C) would leave the gateway with auth enabled, so
+# unless the run completed, best-effort restore the disabled state the suite started from.
+RUN_COMPLETED=0
+restore_dashboard_auth() {
+    rm -f "$SECRET_ENV_FILE"
+    if [ "$RUN_COMPLETED" = "1" ] || [ "$admin_exists" != "1" ]; then
+        return
+    fi
+    echo -e "${YELLOW}Run did not complete; restoring dashboard auth to disabled...${NC}"
+    BIFROST_E2E_AUTH_HEADER="$admin_auth_header" \
+    BIFROST_E2E_BASE_URL="$base_url" \
+    BIFROST_E2E_ADMIN_USERNAME="$admin_username" \
+    BIFROST_E2E_ADMIN_PASSWORD="$admin_password" \
+        node runners/set-auth-config.mjs disable >/dev/null 2>&1 || true
+}
+trap restore_dashboard_auth EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Build Newman command
 cmd=(newman run "$COLLECTION")
 cmd+=(--env-var "base_url=$base_url")
 cmd+=(--env-var "admin_exists=$admin_exists")
 cmd+=(--env-var "admin_username=$admin_username")
-cmd+=(--env-var "admin_password=$admin_password")
-cmd+=(--env-var "admin_auth_header=$admin_auth_header")
+cmd+=(--environment "$SECRET_ENV_FILE")
 
 cmd+=(--timeout-script 60000 --timeout 300000)
 cmd+=(-r "$REPORTERS")
@@ -145,6 +183,9 @@ set +e
 "${cmd[@]}"
 EXIT_CODE=$?
 set -e
+if [ $EXIT_CODE -eq 0 ]; then
+    RUN_COMPLETED=1
+fi
 
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
