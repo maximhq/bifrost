@@ -353,7 +353,7 @@ type Override struct {
 // serviceTier captures the OpenAI service_tier value from a response.
 // Add new tier flags here as OpenAI introduces them.
 type serviceTier struct {
-	isPriority  bool // true when service_tier == "priority"
+	isPriority  bool // true when service_tier == "priority" or "fast" (OpenAI renamed Priority to Fast on 2026-07-30)
 	isFlex      bool // true when service_tier == "flex"
 	isUltrafast bool // true when service_tier == "ultrafast"
 	isFast      bool // true when usage.speed == "fast" (Anthropic fast mode)
