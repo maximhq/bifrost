@@ -534,6 +534,7 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.CacheCreationInputTokenCostFlex, src: override.CacheCreationInputTokenCostFlex},
 		{dst: &patched.CacheCreationInputTokenCostFlexAbove272kTokens, src: override.CacheCreationInputTokenCostFlexAbove272kTokens},
 		{dst: &patched.CacheCreationInputTokenCostPriority, src: override.CacheCreationInputTokenCostPriority},
+		{dst: &patched.CacheCreationInputTokenCostAbove272kTokensPriority, src: override.CacheCreationInputTokenCostAbove272kTokensPriority},
 		{dst: &patched.CacheCreationInputTokenCostUltrafast, src: override.CacheCreationInputTokenCostUltrafast},
 		{dst: &patched.CacheCreationInputTokenCostAbove272kTokensUltrafast, src: override.CacheCreationInputTokenCostAbove272kTokensUltrafast},
 		{dst: &patched.CacheCreationInputTokenCostFast, src: override.CacheCreationInputTokenCostFast},

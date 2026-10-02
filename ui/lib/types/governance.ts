@@ -556,6 +556,7 @@ export interface PricingOverridePatch {
 	cache_creation_input_token_cost_flex_above_272k_tokens?: number;
 	cache_creation_input_token_cost_above_272k_tokens_ultrafast?: number;
 	cache_creation_input_token_cost_priority?: number;
+	cache_creation_input_token_cost_above_272k_tokens_priority?: number;
 	cache_creation_input_token_cost_ultrafast?: number;
 	cache_creation_input_token_cost_fast?: number;
 	cache_creation_input_token_cost_above_1hr_fast?: number;

@@ -41,6 +41,7 @@ describe("pricingFieldUnit", () => {
 			"output_cost_per_token_above_272k_tokens_ultrafast",
 			"cache_read_input_token_cost_above_272k_tokens_ultrafast",
 			"cache_creation_input_token_cost_above_272k_tokens_ultrafast",
+			"cache_creation_input_token_cost_above_272k_tokens_priority",
 		]) {
 			expect(pricingFieldUnit(key), key).toBe("token");
 		}
@@ -88,7 +89,7 @@ describe("pricingFieldUnit", () => {
 			expect(byUnit[unit], `${field.key} resolved to unexpected unit ${unit}`).toBeDefined();
 			byUnit[unit].push(field.key);
 		}
-		expect(PRICING_FIELDS).toHaveLength(111);
+		expect(PRICING_FIELDS).toHaveLength(112);
 		expect(byUnit.multiplier).toEqual(["inference_geo_us_multiplier", "off_peak_cost_multiplier"]);
 		expect(byUnit.character).toEqual(["input_cost_per_character"]);
 		// Sanity: the split is real, not everything collapsing into one bucket.

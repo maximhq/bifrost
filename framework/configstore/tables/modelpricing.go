@@ -79,6 +79,7 @@ type TableModelPricing struct {
 	CacheCreationInputTokenCostFlex                     *float64 `gorm:"default:null;column:cache_creation_input_token_cost_flex" json:"cache_creation_input_token_cost_flex,omitempty"`
 	CacheCreationInputTokenCostFlexAbove272kTokens      *float64 `gorm:"default:null;column:cache_creation_input_token_cost_flex_above_272k_tokens" json:"cache_creation_input_token_cost_flex_above_272k_tokens,omitempty"`
 	CacheCreationInputTokenCostPriority                 *float64 `gorm:"default:null;column:cache_creation_input_token_cost_priority" json:"cache_creation_input_token_cost_priority,omitempty"`
+	CacheCreationInputTokenCostAbove272kTokensPriority  *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_272k_tokens_priority" json:"cache_creation_input_token_cost_above_272k_tokens_priority,omitempty"`
 	CacheCreationInputTokenCostUltrafast                *float64 `gorm:"default:null;column:cache_creation_input_token_cost_ultrafast" json:"cache_creation_input_token_cost_ultrafast,omitempty"`
 	CacheCreationInputTokenCostAbove272kTokensUltrafast *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_272k_tokens_ultrafast" json:"cache_creation_input_token_cost_above_272k_tokens_ultrafast,omitempty"`
 	// Fast mode (Anthropic) cache rates — flat across the full context window, no tiering.
