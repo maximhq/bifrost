@@ -513,6 +513,52 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			message.Role = nil
 		}
 
+		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
+		// Strip it from all items. message is a value copy, so the caller's input is untouched.
+		message.Status = nil
+
+		// Gemini streaming generates non-standard IDs for reasoning items (msg_<id>_reasoning_N,
+		// reasoning_N) and function_call_output items (func_resp_<id>). OpenAI rejects these.
+		// Drop them; the call_id and output pairing are unaffected. message is a value copy.
+		// But preserve native OpenAI reasoning IDs (rs_ prefix) which are needed for replay.
+		if message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeReasoning ||
+			*message.Type == schemas.ResponsesMessageTypeFunctionCallOutput ||
+			*message.Type == schemas.ResponsesMessageTypeWebSearchCall) &&
+			message.ID != nil && *message.ID != "" &&
+			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) {
+			message.ID = nil
+		}
+
+		// Gemini sets Name on function_call_output items (the tool name), but OpenAI's
+		// function_call_output does not accept this field. Strip it. message is a value copy.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
+			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Name != nil {
+			// Clone to avoid mutating the caller's input
+			toolMsgCopy := *message.ResponsesToolMessage
+			toolMsgCopy.Name = nil
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+
+		// Strip signatures (e.g., Gemini thoughtSignature) from content blocks.
+		// OpenAI does not accept this field on input. Only mutate if a signature exists;
+		// copy message.Content and clone the ContentBlocks slice before clearing to preserve
+		// the caller's data and avoid data races with fallback providers.
+		if message.Content != nil {
+			for _, b := range message.Content.ContentBlocks {
+				if b.Signature == nil {
+					continue
+				}
+				// Signature found; copy content and blocks before clearing
+				contentCopy := *message.Content
+				contentCopy.ContentBlocks = slices.Clone(message.Content.ContentBlocks)
+				for i := range contentCopy.ContentBlocks {
+					contentCopy.ContentBlocks[i].Signature = nil
+				}
+				message.Content = &contentCopy
+				break
+			}
+		}
+
 		if message.ResponsesReasoning != nil {
 			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(capModel))
 			isReasoning := caps.SupportsReasoning(IsOpenAIReasoningModel(capModel))

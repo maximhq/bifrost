@@ -963,15 +963,17 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 					}
 				}
 
-				// Verify that original message fields are preserved
+				// Verify that original message fields are preserved.
+				// Note: Status is stripped by the sanitizer for all item types,
+				// including message types, since OpenAI rejects status on input.
 				if tt.message.ID != nil && (resultMsg.ID == nil || *resultMsg.ID != *tt.message.ID) {
 					t.Errorf("Expected ID to be preserved")
 				}
 				if tt.message.Type != nil && (resultMsg.Type == nil || *resultMsg.Type != *tt.message.Type) {
 					t.Errorf("Expected Type to be preserved")
 				}
-				if tt.message.Status != nil && (resultMsg.Status == nil || *resultMsg.Status != *tt.message.Status) {
-					t.Errorf("Expected Status to be preserved")
+				if resultMsg.Status != nil {
+					t.Errorf("Expected Status to be stripped (OpenAI rejects status on input)")
 				}
 			} else {
 				// For other cases, verify message is preserved as-is
@@ -2737,6 +2739,276 @@ func TestToOpenAIResponsesRequest_OmitsRoleFromNonMessageInputItems(t *testing.T
 	}
 	if req.Input[0].Role == nil || req.Input[1].Role == nil {
 		t.Error("original input roles were mutated")
+	}
+}
+
+// TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput verifies that
+// Gemini-streamed item fields (status, IDs, signatures, content-block shapes) are
+// stripped when converting to OpenAI input. All items are value copies; the caller's
+// input is never mutated. Each case documents which field and item type is stripped.
+func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testing.T) {
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	user := schemas.ResponsesInputMessageRoleUser
+	messageType := schemas.ResponsesMessageTypeMessage
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	functionCallOutputType := schemas.ResponsesMessageTypeFunctionCallOutput
+	webSearchCallType := schemas.ResponsesMessageTypeWebSearchCall
+
+	cases := []struct {
+		name        string
+		input       schemas.ResponsesMessage
+		wantWire    func(t *testing.T, item map[string]json.RawMessage)
+		origMutable bool // if true, assert original input still has the field
+	}{
+		{
+			name: "status stripped from message",
+			input: schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &user,
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if _, ok := item["status"]; ok {
+					t.Error("status present in wire request")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "status stripped from reasoning",
+			input: schemas.ResponsesMessage{
+				Type:   &reasoningType,
+				Status: schemas.Ptr("in_progress"),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary: []schemas.ResponsesReasoningSummary{
+						{Text: "thinking"},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if _, ok := item["status"]; ok {
+					t.Error("status present in wire request")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "reasoning item ID stripped (non-rs_ prefix)",
+			input: schemas.ResponsesMessage{
+				Type:   &reasoningType,
+				ID:     schemas.Ptr("msg_abc123_reasoning_0"),
+				Status: schemas.Ptr("completed"),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary: []schemas.ResponsesReasoningSummary{
+						{Text: "thinking"},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if _, ok := item["id"]; ok {
+					t.Error("id present in wire request for reasoning item")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "native reasoning ID preserved (rs_ prefix)",
+			input: schemas.ResponsesMessage{
+				Type:   &reasoningType,
+				ID:     schemas.Ptr("rs_abc123"),
+				Status: schemas.Ptr("completed"),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary: []schemas.ResponsesReasoningSummary{
+						{Text: "native thinking"},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				// rs_ IDs should be preserved for native replay
+				if _, ok := item["id"]; !ok {
+					t.Error("rs_ id should be preserved in wire request for reasoning item")
+				}
+				var id string
+				if err := sonic.Unmarshal(item["id"], &id); err != nil {
+					t.Fatalf("unmarshal id: %v", err)
+				}
+				if id != "rs_abc123" {
+					t.Errorf("expected id rs_abc123, got %q", id)
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "function_call_output ID and Name stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &functionCallOutputType,
+				Role:   &user,
+				ID:     schemas.Ptr("func_resp_abc123"),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_123"),
+					Name:   schemas.Ptr("get_weather"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: schemas.Ptr(`{"temperature": 72}`),
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if _, ok := item["id"]; ok {
+					t.Error("id present in wire request for function_call_output")
+				}
+				if _, ok := item["name"]; ok {
+					t.Error("name present in wire request for function_call_output")
+				}
+				if _, ok := item["status"]; ok {
+					t.Error("status present in wire request for function_call_output")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "web_search_call ID and status stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("msg_abc_ws_0"),
+				Status: schemas.Ptr("in_progress"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ws_123"),
+					Name:   schemas.Ptr("web_search"),
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if _, ok := item["id"]; ok {
+					t.Error("id present in wire request for web_search_call")
+				}
+				if _, ok := item["status"]; ok {
+					t.Error("status present in wire request for web_search_call")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "signature stripped from content blocks",
+			input: schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type:      schemas.ResponsesOutputMessageContentTypeText,
+							Text:      schemas.Ptr("hello"),
+							Signature: schemas.Ptr("base64encodedSig"),
+						},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				// Content is marshaled as a direct array of blocks
+				var blocks []map[string]json.RawMessage
+				if err := sonic.Unmarshal(item["content"], &blocks); err != nil {
+					t.Fatalf("unmarshal content: %v", err)
+				}
+				if len(blocks) > 0 {
+					if _, ok := blocks[0]["signature"]; ok {
+						t.Error("signature present in content block")
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "signature stripping does not mutate caller's content blocks",
+			input: schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type:      schemas.ResponsesOutputMessageContentTypeText,
+							Text:      schemas.Ptr("thinking"),
+							Signature: schemas.Ptr("sig_abc123"),
+						},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				var blocks []map[string]json.RawMessage
+				if err := sonic.Unmarshal(item["content"], &blocks); err != nil {
+					t.Fatalf("unmarshal content: %v", err)
+				}
+				if len(blocks) > 0 && blocks[0] != nil {
+					if _, ok := blocks[0]["signature"]; ok {
+						t.Error("signature present in wire content block")
+					}
+				}
+			},
+			origMutable: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Store original pointers to verify immutability
+			origStatus := tc.input.Status
+			origID := tc.input.ID
+
+			req := &schemas.BifrostResponsesRequest{
+				Model: "gpt-4o",
+				Input: []schemas.ResponsesMessage{tc.input},
+			}
+
+			converted := ToOpenAIResponsesRequest(nil, req)
+			if converted == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+
+			wire, err := sonic.Marshal(converted)
+			if err != nil {
+				t.Fatalf("marshal wire request: %v", err)
+			}
+
+			var payload struct {
+				Input []json.RawMessage `json:"input"`
+			}
+			if err := sonic.Unmarshal(wire, &payload); err != nil {
+				t.Fatalf("unmarshal wire request: %v", err)
+			}
+
+			if len(payload.Input) == 0 {
+				t.Fatal("no input items in converted request")
+			}
+
+			var item map[string]json.RawMessage
+			if err := sonic.Unmarshal(payload.Input[0], &item); err != nil {
+				t.Fatalf("unmarshal input item: %v", err)
+			}
+
+			tc.wantWire(t, item)
+
+			// Verify caller's input is unmutated
+			if tc.origMutable {
+				if tc.input.Status != origStatus {
+					t.Error("original input status was mutated")
+				}
+				if tc.input.ID != origID {
+					t.Error("original input ID was mutated")
+				}
+			} else {
+				// origMutable: false means we should NOT have mutated content blocks
+				if tc.input.Content != nil && len(tc.input.Content.ContentBlocks) > 0 {
+					for _, block := range tc.input.Content.ContentBlocks {
+						if block.Signature == nil {
+							t.Error("original content block signature was mutated (should not be nil)")
+						}
+					}
+				}
+			}
+		})
 	}
 }
 
