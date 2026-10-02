@@ -3,9 +3,11 @@ package oauth2
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -20,6 +22,18 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
 )
+
+// TestMain points the OAuth discovery/token-exchange HTTP client at an
+// unguarded dialer for the whole package. Every test here talks to a
+// loopback-bound httptest.Server standing in for a remote OAuth provider,
+// which the production SSRF guard (newOAuthDiscoveryHTTPClient) correctly
+// refuses to dial. TestNewOAuthDiscoveryHTTPClientBlocksLoopback clears this
+// override for its own scope to exercise the guard directly; the dialer itself
+// has its own unit coverage in core/network.
+func TestMain(m *testing.M) {
+	testDialContextOverride = (&net.Dialer{}).DialContext
+	os.Exit(m.Run())
+}
 
 // testConfigStore is a minimal in-memory implementation of configstore.ConfigStore
 // for use in oauth2 tests. Embeds the interface so unneeded methods panic if called.
