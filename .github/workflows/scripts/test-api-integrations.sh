@@ -50,6 +50,10 @@ if ! command -v newman >/dev/null 2>&1; then
   exit 1
 fi
 
+# Pin collection assertion behavior and provider/secret-field coverage before
+# spending time building the gateway or starting backing services.
+node "$REPO_ROOT/tests/e2e/api/collections/collection-scripts.test.mjs"
+
 source "$SCRIPT_DIR/setup-go-workspace.sh"
 
 TEMP_DIR=$(mktemp -d)
@@ -157,6 +161,10 @@ jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES
 # without it set-auth-config skips the auth pass and the MCP/vMCP tests run nowhere.
 export BIFROST_SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}"
 export BIFROST_E2E_SETUP_TOKEN="$BIFROST_SETUP_TOKEN"
+
+# Match the API management collection's synthetic canary, including local runs.
+# It must be exported before starting the gateway so env-backed fields resolve.
+export BIFROST_SECRET_REDACTION_CANARY="${BIFROST_SECRET_REDACTION_CANARY:-synthetic-secretvar-harness-canary-0123456789}"
 
 echo "🚀 Starting bifrost-http on port $PORT..."
 "$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &

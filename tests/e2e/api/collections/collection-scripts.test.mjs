@@ -418,5 +418,196 @@ test("the two cache probes are allowed a 405", () => {
   );
 });
 
+// ── Provider Secret Redaction ────────────────────────────────────────────────
+const redactionFolder = collection.item.find((item) => item.name === "Provider Secret Redaction");
+assert.ok(redactionFolder, "provider secret redaction coverage is missing");
+const redactionScript = redactionFolder.event.find((e) => e.listen === "test").script.exec.join("\n");
+function redactionFixture(item) {
+  let fixture;
+  const pm = { variables: { set(name, value) {
+    assert.strictEqual(name, "secret_redaction_fixture");
+    fixture = JSON.parse(value);
+  } } };
+  new Function("pm", item.event.find((e) => e.listen === "prerequest").script.exec.join("\n"))(pm);
+  return fixture;
+}
+const redactionFixtures = redactionFolder.item.map(redactionFixture);
+const schemaSource = readFileSync(join(here, "../../../../core/schemas/bifrost.go"), "utf8");
+const accountSource = readFileSync(join(here, "../../../../core/schemas/account.go"), "utf8");
+const providerConstants = new Map([...schemaSource.matchAll(/(\w+)\s+ModelProvider\s*=\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]));
+const standardBlock = schemaSource.match(/var StandardProviders = \[\]ModelProvider\{([\s\S]*?)\n\}/)[1];
+const standardProviders = [...standardBlock.matchAll(/^\s*(\w+),/gm)].map((m) => providerConstants.get(m[1]));
+const redactionRef = "env.BIFROST_SECRET_REDACTION_CANARY";
+const redactionCanary = "synthetic-secretvar-harness-canary-0123456789";
+const redactionMask = "synt" + "*".repeat(24) + "6789";
+
+test("redaction folder authenticates the initial request as well as callback requests", () => {
+  let header;
+  const pm = {
+    variables: { get: () => "Bearer synthetic-admin" },
+    request: { headers: { upsert: (value) => { header = value; } } },
+  };
+  const source = redactionFolder.event.find((e) => e.listen === "prerequest").script.exec.join("\n");
+  new Function("pm", source)(pm);
+  assert.deepStrictEqual(header, { key: "Authorization", value: "Bearer synthetic-admin" });
+});
+
+test("redaction matrix covers every standard provider exactly once", () => {
+  assert.deepStrictEqual(redactionFixtures.map((f) => f.provider).sort(), [...standardProviders].sort());
+  for (const fixture of redactionFixtures) {
+    assert.strictEqual(fixture.key.enabled, false);
+    assert.strictEqual(fixture.key.value, redactionRef);
+    assert.strictEqual(fixture.key.aliases.probe.region, redactionRef);
+    assert.strictEqual(fixture.key.aliases.probe.project_id, redactionRef);
+  }
+});
+
+function structBody(name) {
+  const match = accountSource.match(new RegExp("type " + name + " struct \\{([\\s\\S]*?)\\n\\}"));
+  assert.ok(match, `schema ${name} not found`);
+  return match[1];
+}
+function secretFields(name) {
+  return [...structBody(name).matchAll(/\w+\s+\*?SecretVar\s+`json:"([^",]+)[^"]*"`/g)]
+    .map((match) => match[1]).filter((field) => field !== "-");
+}
+
+test("redaction matrix covers every provider-specific SecretVar field", () => {
+  for (const match of structBody("Key").matchAll(/\w+\s+\*(\w+KeyConfig)\s+`json:"([^",]+)[^"]*"`/g)) {
+    const [, type, property] = match;
+    const fields = secretFields(type);
+    if (!fields.length) continue; // Replicate has no secret-bearing key config.
+    const fixture = redactionFixtures.find((f) => f.key[property]);
+    assert.ok(fixture, `no fixture covers ${type}`);
+    for (const field of fields) assert.strictEqual(fixture.key[property][field], redactionRef, `${type}.${field}`);
+    if (structBody(type).includes("*BedrockEndpoints")) {
+      for (const field of secretFields("BedrockEndpoints")) {
+        assert.strictEqual(fixture.key[property].endpoints[field], redactionRef, `${type}.endpoints.${field}`);
+      }
+    }
+  }
+  for (const [provider, type] of [["azure", "AzureAliasCfg"], ["vertex", "VertexAliasCfg"], ["bedrock", "BedrockAliasCfg"]]) {
+    const fixture = redactionFixtures.find((f) => f.provider === provider);
+    for (const field of secretFields(type)) assert.strictEqual(fixture.key.aliases.probe[field], redactionRef, `${type}.${field}`);
+  }
+});
+
+// Unlike the generic script sandbox above, these assertions must really fail:
+// otherwise a broken no-leak assertion could manufacture a passing regression.
+function redactionExpect(actual, message) {
+  function chain(negated = false) {
+    const c = {};
+    c.to = c.be = c;
+    Object.defineProperty(c, "not", { get: () => chain(!negated) });
+    c.equal = (expected) => negated ? assert.notStrictEqual(actual, expected, message) : assert.strictEqual(actual, expected, message);
+    c.include = (expected) => assert.strictEqual(actual.includes(expected), !negated, message);
+    c.an = (type) => assert.strictEqual(type === "array" ? Array.isArray(actual) : actual !== null && typeof actual === type, true, message);
+    return c;
+  }
+  return chain();
+}
+function simulateRedaction(fixture, mode = "masked", existing = false, auth = false) {
+  let savedKey = null;
+  let providerExists = existing;
+  const state = { failures: [], assertions: [], calls: [] };
+  const response = (body, code = 200) => ({ code, json: () => body, text: () => JSON.stringify(body) });
+  const providerResponse = () => ({ name: fixture.provider });
+  function wire(value) {
+    if (value === redactionRef || (value && value.ref === redactionRef)) {
+      return { ref: redactionRef, type: "env", value: redactionMask };
+    }
+    if (Array.isArray(value)) return value.map(wire);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, val]) => [key, wire(val)]));
+    return value;
+  }
+  function keyResponse() {
+    const body = wire(savedKey);
+    body.aliases.literal.region = { value: "us-east-1", type: "plain_text" };
+    body.aliases.literal.project_id = { value: "literal-project", type: "plain_text" };
+    return body;
+  }
+  const pm = {
+    variables: {
+      get: (name) => name === "secret_redaction_fixture" ? JSON.stringify(fixture) : name === "admin_auth_header" && auth ? "Bearer synthetic-admin" : undefined,
+      replaceIn: (value) => value === "{{$guid}}" ? "unique-test-id" : "http://local",
+    },
+    response: response({ providers: existing ? [providerResponse()] : [] }),
+    expect: redactionExpect,
+    test: (name, fn) => {
+      state.assertions.push(name);
+      try { fn(); } catch (err) { state.failures.push({ name, message: err.message }); }
+    },
+    sendRequest: (req, callback) => {
+      state.calls.push(req);
+      if (auth) assert.strictEqual(req.header.Authorization, "Bearer synthetic-admin");
+      const path = req.url.slice("http://local".length);
+      const providerPath = "/api/providers/" + fixture.provider;
+      if (req.method === "POST" && path === "/api/providers") {
+        providerExists = true;
+        callback(null, response(providerResponse()));
+      } else if (req.method === "POST" && path.endsWith("/keys")) {
+        savedKey = JSON.parse(req.body.raw);
+        callback(null, response(keyResponse()));
+      } else if (req.method === "PUT") {
+        const update = JSON.parse(req.body.raw);
+        assert.strictEqual(update.value.value, redactionMask, "update must echo the masked wire response");
+        assert.strictEqual(update.value.ref, redactionRef);
+        savedKey = update;
+        callback(null, response(keyResponse()));
+      } else if (req.method === "DELETE" && path.includes("/keys/")) {
+        if (mode === "cleanup-error") { callback(null, response({}, 500)); return; }
+        const deleted = keyResponse(); savedKey = null;
+        callback(null, response(deleted));
+      } else if (req.method === "DELETE") {
+        assert.strictEqual(existing, false, "must never delete an existing provider");
+        providerExists = false;
+        callback(null, response({}));
+      } else if (path.includes("/keys/")) {
+        if (!savedKey) { callback(null, response({}, 404)); return; }
+        if (mode === "http-error") { callback(null, response({}, 403)); return; }
+        if (mode === "transport-error") { callback(new Error("connection failed")); return; }
+        if (mode === "non-json") { callback(null, { code: 200, json() { throw new Error("invalid JSON"); }, text: () => SPA_FALLBACK }); return; }
+        const body = keyResponse();
+        if (mode === "leaked") body.aliases.probe.region.value = redactionCanary;
+        if (mode === "unset") body.aliases.probe.region.value = "";
+        if (mode === "missing") delete body.aliases.probe.region;
+        if (mode === "missing-ref") delete body.aliases.probe.region.ref;
+        callback(null, response(body));
+      } else if (path.endsWith("/keys")) {
+        callback(null, response({ keys: [keyResponse()] }));
+      } else if (path === "/api/providers") {
+        callback(null, response({ providers: [providerResponse()] }));
+      } else {
+        callback(null, response(providerExists ? providerResponse() : {}, providerExists ? 200 : 404));
+      }
+    },
+  };
+  new Function("pm", redactionScript)(pm);
+  assert.ok(state.calls.some((r) => r.method === "DELETE" && r.url.includes("/keys/")), "must attempt key cleanup");
+  if (mode !== "cleanup-error") assert.strictEqual(savedKey, null, "test key must be removed");
+  assert.strictEqual(providerExists, existing, "original provider state must be preserved");
+  return state;
+}
+
+for (const fixture of redactionFixtures) {
+  test(`${fixture.provider}: masked API responses pass with new and existing providers, with and without auth`, () => {
+    for (const existing of [false, true]) {
+      for (const auth of [false, true]) {
+        const state = simulateRedaction(fixture, "masked", existing, auth);
+        assert.deepStrictEqual(state.failures, []);
+        for (const operation of ["key create", "key get", "key list", "key update", "key delete", "provider get", "provider list"]) {
+          assert.ok(state.assertions.some((name) => name.includes(operation)), `missing ${operation} assertion`);
+        }
+      }
+    }
+  });
+}
+for (const mode of ["leaked", "unset", "missing", "missing-ref", "http-error", "transport-error", "non-json", "cleanup-error"]) {
+  test(`redaction assertions reject ${mode} and still attempt cleanup`, () => {
+    const state = simulateRedaction(redactionFixtures[0], mode);
+    assert.ok(state.failures.length > 0, `${mode} was falsely accepted`);
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

@@ -252,6 +252,31 @@ type AliasConfig struct {
 	*ReplicateAliasCfg
 }
 
+// Redacted copies the alias and its secret-bearing sub-configs, masking resolved
+// env/vault values while preserving literal identifiers and secret references.
+func (ac AliasConfig) Redacted() AliasConfig {
+	ac.Region = ac.Region.RedactedIfSecret()
+	ac.ProjectID = ac.ProjectID.RedactedIfSecret()
+	if ac.AzureAliasCfg != nil {
+		azure := *ac.AzureAliasCfg
+		azure.Endpoint = azure.Endpoint.RedactedIfSecret()
+		ac.AzureAliasCfg = &azure
+	}
+	if ac.VertexAliasCfg != nil {
+		vertex := *ac.VertexAliasCfg
+		// MarshalJSON promotes the deprecated ProjectID to the shared field.
+		vertex.ProjectID = vertex.ProjectID.RedactedIfSecret()
+		vertex.ProjectNumber = vertex.ProjectNumber.RedactedIfSecret()
+		ac.VertexAliasCfg = &vertex
+	}
+	if ac.BedrockAliasCfg != nil {
+		bedrock := *ac.BedrockAliasCfg
+		bedrock.InferenceProfileARN = bedrock.InferenceProfileARN.RedactedIfSecret()
+		ac.BedrockAliasCfg = &bedrock
+	}
+	return ac
+}
+
 // isLegacyShape reports whether this AliasConfig carries only ModelID and no
 // other fields. Used by MarshalJSON to emit the legacy string-valued wire
 // shape so older consumers that expect map[string]string keep working.
@@ -731,6 +756,21 @@ type BedrockEndpoints struct {
 	Mantle       *SecretVar `json:"mantle,omitempty"`        // com.amazonaws.{region}.bedrock-mantle — mantle-routed models
 	AgentRuntime *SecretVar `json:"agent_runtime,omitempty"` // com.amazonaws.{region}.bedrock-agent-runtime — rerank
 	S3           *SecretVar `json:"s3,omitempty"`            // com.amazonaws.{region}.s3 — batch file I/O, "bucket."-prefixed
+}
+
+// Redacted copies the endpoints, preserving literal hosts while masking resolved
+// env/vault values. A nil endpoint configuration stays nil.
+func (e *BedrockEndpoints) Redacted() *BedrockEndpoints {
+	if e == nil {
+		return nil
+	}
+	return &BedrockEndpoints{
+		Runtime:      e.Runtime.RedactedIfSecret(),
+		ControlPlane: e.ControlPlane.RedactedIfSecret(),
+		Mantle:       e.Mantle.RedactedIfSecret(),
+		AgentRuntime: e.AgentRuntime.RedactedIfSecret(),
+		S3:           e.S3.RedactedIfSecret(),
+	}
 }
 
 // NormalizeEndpointHost returns a configured endpoint value as a bare host, or "" when unset.
