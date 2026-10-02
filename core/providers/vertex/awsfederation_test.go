@@ -137,15 +137,23 @@ type fakeGCP struct {
 	stsCalls atomic.Int32
 	iamCalls atomic.Int32
 
-	mu           sync.Mutex
-	lastSubject  awsSignedRequest
-	lastAudience string
-	lastIAMAuth  string
+	mu                   sync.Mutex
+	lastSubject          awsSignedRequest
+	lastRawSubject       string
+	lastSubjectTokenType string
+	lastAudience         string
+	lastIAMAuth          string
 }
 
 func (f *fakeGCP) subject() awsSignedRequest { f.mu.Lock(); defer f.mu.Unlock(); return f.lastSubject }
 func (f *fakeGCP) audience() string          { f.mu.Lock(); defer f.mu.Unlock(); return f.lastAudience }
 func (f *fakeGCP) iamAuth() string           { f.mu.Lock(); defer f.mu.Unlock(); return f.lastIAMAuth }
+func (f *fakeGCP) rawSubject() string        { f.mu.Lock(); defer f.mu.Unlock(); return f.lastRawSubject }
+func (f *fakeGCP) subjectTokenType() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastSubjectTokenType
+}
 
 func newFakeGCP(t *testing.T) *fakeGCP {
 	t.Helper()
@@ -159,14 +167,16 @@ func newFakeGCP(t *testing.T) *fakeGCP {
 				return
 			}
 			f.stsCalls.Add(1)
-			assert.Equal(t, awsSubjectTokenType, r.PostForm.Get("subject_token_type"))
 			assert.Equal(t, "urn:ietf:params:oauth:grant-type:token-exchange", r.PostForm.Get("grant_type"))
+			rawSubject := r.PostForm.Get("subject_token")
 			var subject awsSignedRequest
-			if raw, err := url.QueryUnescape(r.PostForm.Get("subject_token")); assert.NoError(t, err) {
-				assert.NoError(t, json.Unmarshal([]byte(raw), &subject))
+			if raw, err := url.QueryUnescape(rawSubject); err == nil {
+				_ = json.Unmarshal([]byte(raw), &subject) // non-AWS subject tokens are opaque and simply do not decode
 			}
 			f.mu.Lock()
 			f.lastAudience = r.PostForm.Get("audience")
+			f.lastSubjectTokenType = r.PostForm.Get("subject_token_type")
+			f.lastRawSubject = rawSubject
 			f.lastSubject = subject
 			f.mu.Unlock()
 			fmt.Fprint(w, `{"access_token":"federated-token","issued_token_type":"urn:ietf:params:oauth:token-type:access_token","token_type":"Bearer","expires_in":3600}`)
@@ -326,6 +336,7 @@ func TestAWSFederatedTokenSource_IRSAChain(t *testing.T) {
 	assert.Equal(t, "arn:aws:iam::123456789012:role/BifrostVertex", awsSTS.form().Get("RoleArn"))
 
 	assert.Equal(t, testWIFAudience, gcp.audience())
+	assert.Equal(t, awsSubjectTokenType, gcp.subjectTokenType())
 	auth, ok := headerValue(gcp.subject(), "Authorization")
 	require.True(t, ok)
 	assert.Contains(t, auth, "Credential=ASIAIRSA/", "the signature must come from the IRSA-assumed role, not a static key")
@@ -462,57 +473,166 @@ func TestAWSSubjectTokenSupplier_CredentialError(t *testing.T) {
 	assert.Contains(t, err.Error(), "no identity available")
 }
 
-// TestGoogleLibraryAWSCredentialSourceIgnoresIRSA documents the gap this file closes. It feeds the
-// Google library the JSON that `gcloud iam workload-identity-pools create-cred-config --aws` emits,
-// under an IRSA-only environment (web identity token file + role ARN, no static keys). The library
-// consults only AWS_ACCESS_KEY_ID-style env vars and the instance metadata service, so it fails; the
-// aws_workload_identity path exercised in TestAWSFederatedTokenSource_IRSAChain succeeds under the
-// same environment. If this test ever starts passing, the library learned the SDK chain and the
-// interception may be simplified.
-func TestGoogleLibraryAWSCredentialSourceIgnoresIRSA(t *testing.T) {
-	isolateAWSEnvironment(t)
-	tokenFile := filepath.Join(t.TempDir(), "token")
-	require.NoError(t, os.WriteFile(tokenFile, []byte("fake-oidc-token"), 0o600))
-	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
-	t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/BifrostVertex")
-	t.Setenv("AWS_REGION", "us-east-1")
-	newFakeAWSSTS(t, "ASIAIRSA")
-	gcp := newFakeGCP(t)
-
-	// IMDS is unreachable inside a pod with a hop limit of 1; model that with a 404 endpoint.
-	imds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+// awsExternalAccountJSON returns the JSON gcloud emits for `create-cred-config --aws`, pointed at
+// the test fakes. The credential_source URLs target a dead IMDS endpoint so that, if the JSON were
+// handed to Google's library, it would fail: the tests below prove Bifrost routes it elsewhere.
+func awsExternalAccountJSON(t *testing.T, gcp *fakeGCP, saEmail string) string {
+	t.Helper()
+	deadIMDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 	}))
-	t.Cleanup(imds.Close)
-
-	credJSON := fmt.Sprintf(`{
+	t.Cleanup(deadIMDS.Close)
+	impersonation := ""
+	if saEmail != "" {
+		impersonation = fmt.Sprintf(`"service_account_impersonation_url": %q, "service_account_impersonation": {"token_lifetime_seconds": 1800},`,
+			gcp.server.URL+"/v1/projects/-/serviceAccounts/"+saEmail+":generateAccessToken")
+	}
+	return fmt.Sprintf(`{
 		"type": "external_account",
 		"audience": %q,
 		"subject_token_type": %q,
 		"token_url": %q,
+		%s
 		"credential_source": {
 			"environment_id": "aws1",
 			"region_url": %q,
 			"url": %q,
 			"regional_cred_verification_url": "https://sts.{region}.amazonaws.com?Action=GetCallerIdentity&Version=2011-06-15"
 		}
-	}`, testWIFAudience, awsSubjectTokenType, gcpSTSTokenURL, imds.URL+"/latest/meta-data/placement/availability-zone", imds.URL+"/latest/meta-data/iam/security-credentials")
+	}`, testWIFAudience, awsSubjectTokenType, gcp.server.URL+"/v1/token", impersonation,
+		deadIMDS.URL+"/latest/meta-data/placement/availability-zone", deadIMDS.URL+"/latest/meta-data/iam/security-credentials")
+}
 
-	key := schemas.Key{
-		ID: "raw-aws1-json",
-		VertexKeyConfig: &schemas.VertexKeyConfig{
-			ProjectID:       *schemas.NewSecretVar("my-project"),
-			Region:          *schemas.NewSecretVar("us-central1"),
-			AuthCredentials: *schemas.NewSecretVar(credJSON),
-		},
+func setIRSAEnvironment(t *testing.T) *fakeAWSSTS {
+	t.Helper()
+	isolateAWSEnvironment(t)
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("fake-oidc-token"), 0o600))
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
+	t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/BifrostVertex")
+	t.Setenv("AWS_REGION", "us-east-1")
+	return newFakeAWSSTS(t, "ASIAIRSA")
+}
+
+func TestIsAWSExternalAccountJSON(t *testing.T) {
+	cases := map[string]bool{
+		`{"type":"service_account"}`: false,
+		`{"type":"external_account","credential_source":{"file":"/var/run/token"}}`:                 false,
+		`{"type":"external_account","credential_source":{"environment_id":"aws1"}}`:                 true,
+		`{"type":"external_account","credential_source":{"environment_id":"aws2"}}`:                 true,
+		`{"type":"external_account_authorized_user","credential_source":{"environment_id":"aws1"}}`: false,
+		`not json`: false,
 	}
+	for input, want := range cases {
+		assert.Equal(t, want, isAWSExternalAccountJSON([]byte(input)), input)
+	}
+}
+
+// TestGetAuthTokenSource_AWSExternalAccountJSONUsesSDKChain pins the JSON route: the unchanged
+// gcloud-generated aws1 credential config, pasted into auth_credentials, now authenticates through
+// the SDK chain (IRSA here) instead of Google's env-var/IMDS lookup, which the dead IMDS in the
+// JSON would have made fail.
+func TestGetAuthTokenSource_AWSExternalAccountJSONUsesSDKChain(t *testing.T) {
+	awsSTS := setIRSAEnvironment(t)
+	gcp := newFakeGCP(t)
+	key := wifKey(nil, awsExternalAccountJSON(t, gcp, testWIFSAEmail))
 	t.Cleanup(func() { removeVertexClient(key) })
 
 	ts, err := getAuthTokenSource(key)
-	require.NoError(t, err, "the JSON itself is accepted")
-	_, err = ts.Token()
-	require.Error(t, err, "the library cannot see IRSA credentials")
-	assert.Equal(t, int32(0), gcp.stsCalls.Load(), "no exchange is attempted without AWS credentials")
+	require.NoError(t, err)
+	token, err := ts.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "sa-token", token.AccessToken)
+	assert.Equal(t, "AssumeRoleWithWebIdentity", awsSTS.form().Get("Action"))
+	auth, ok := headerValue(gcp.subject(), "Authorization")
+	require.True(t, ok)
+	assert.Contains(t, auth, "Credential=ASIAIRSA/")
+	assert.Equal(t, "Bearer federated-token", gcp.iamAuth())
+
+	// aws2 is rejected explicitly instead of being misread as aws1.
+	bad := wifKey(nil, strings.Replace(awsExternalAccountJSON(t, gcp, ""), `"aws1"`, `"aws2"`, 1))
+	t.Cleanup(func() { removeVertexClient(bad) })
+	_, err = getAuthTokenSource(bad)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "aws2")
+}
+
+// TestGetAuthTokenSource_ADCPointsAtAWSExternalAccount covers the other way the gcloud file is
+// deployed: GOOGLE_APPLICATION_CREDENTIALS naming it, with auth_credentials left empty.
+func TestGetAuthTokenSource_ADCPointsAtAWSExternalAccount(t *testing.T) {
+	setIRSAEnvironment(t)
+	gcp := newFakeGCP(t)
+	credFile := filepath.Join(t.TempDir(), "creds.json")
+	require.NoError(t, os.WriteFile(credFile, []byte(awsExternalAccountJSON(t, gcp, "")), 0o600))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credFile)
+
+	key := wifKey(nil, "")
+	t.Cleanup(func() { removeVertexClient(key) })
+	ts, err := getAuthTokenSource(key)
+	require.NoError(t, err)
+	token, err := ts.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "federated-token", token.AccessToken)
+	assert.Equal(t, testWIFAudience, gcp.audience())
+}
+
+// TestGetAuthTokenSource_FileExternalAccountUnchanged is the regression guard for every other
+// external_account shape: a projected-token file source still goes through Google's library.
+func TestGetAuthTokenSource_FileExternalAccountUnchanged(t *testing.T) {
+	isolateAWSEnvironment(t)
+	gcp := newFakeGCP(t)
+	tokenFile := filepath.Join(t.TempDir(), "gcp-token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("projected-k8s-jwt"), 0o600))
+	credJSON := fmt.Sprintf(`{
+		"type": "external_account",
+		"audience": %q,
+		"subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+		"token_url": %q,
+		"credential_source": {"file": %q}
+	}`, testWIFAudience, gcp.server.URL+"/v1/token", tokenFile)
+
+	key := wifKey(nil, credJSON)
+	t.Cleanup(func() { removeVertexClient(key) })
+	ts, err := getAuthTokenSource(key)
+	require.NoError(t, err)
+	token, err := ts.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "federated-token", token.AccessToken)
+	assert.Equal(t, "projected-k8s-jwt", gcp.rawSubject(), "the file contents are the subject token, untouched by Bifrost")
+	assert.Equal(t, "urn:ietf:params:oauth:token-type:jwt", gcp.subjectTokenType())
+}
+
+// TestNewAWSFederatedTokenSourceFromJSON_LifetimeParsing pins strict parsing of
+// service_account_impersonation.token_lifetime_seconds in the aws1 JSON. gjson's Int() silently
+// wraps or truncates malformed numbers (18446744073709555216 becomes 3600), so a corrupt credential
+// file must be rejected at configuration time instead of quietly requesting a different lifetime.
+func TestNewAWSFederatedTokenSourceFromJSON_LifetimeParsing(t *testing.T) {
+	isolateAWSEnvironment(t)
+	t.Setenv("AWS_REGION", "us-east-1")
+	build := func(lifetime string) string {
+		return fmt.Sprintf(`{
+			"type": "external_account",
+			"audience": %q,
+			"subject_token_type": %q,
+			"token_url": "https://sts.googleapis.com/v1/token",
+			"service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/%s:generateAccessToken",
+			"service_account_impersonation": {"token_lifetime_seconds": %s},
+			"credential_source": {"environment_id": "aws1"}
+		}`, testWIFAudience, awsSubjectTokenType, testWIFSAEmail, lifetime)
+	}
+	for _, lifetime := range []string{"18446744073709555216", "9223372036854779408", "1800.7", `"1800"`, "true"} {
+		_, err := newAWSFederatedTokenSourceFromJSON(context.Background(), []byte(build(lifetime)))
+		require.Error(t, err, "lifetime %s must be rejected", lifetime)
+		assert.Contains(t, err.Error(), "token_lifetime_seconds", lifetime)
+	}
+	for _, lifetime := range []string{"1800", "43200", "0"} {
+		_, err := newAWSFederatedTokenSourceFromJSON(context.Background(), []byte(build(lifetime)))
+		require.NoError(t, err, "lifetime %s is a valid integer", lifetime)
+	}
+	// Absent lifetime keeps the library default.
+	absent := strings.Replace(build("1800"), `"service_account_impersonation": {"token_lifetime_seconds": 1800},`, "", 1)
+	_, err := newAWSFederatedTokenSourceFromJSON(context.Background(), []byte(absent))
+	require.NoError(t, err)
 }
 
 // TestAWSSubjectTokenSupplier_AssumeRoleHopUsesConfiguredRegion covers a pod with aws_region and

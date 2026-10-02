@@ -60,13 +60,13 @@ Vertex AI requires Google Cloud project configuration and authentication credent
 Provide a credential JSON string in `auth_credentials`. The JSON must contain a `type` field. Supported types: `service_account` (most common), `impersonated_service_account`, `authorized_user`, `external_account`, `external_account_authorized_user`.
 
 <Note>
-  An `external_account` JSON (a Workload Identity Federation credential config) is passed to
-  Google's library as-is. That works when its `credential_source` is a file, URL or executable,
-  for example a projected Kubernetes ServiceAccount token. The AWS flavour
-  (`"environment_id": "aws1"`, produced by `gcloud ... create-cred-config --aws`) only reads
-  static `AWS_ACCESS_KEY_ID` env vars or EC2 instance metadata, so on EKS it cannot see IRSA or
-  Pod Identity. Use [AWS Workload Identity Federation](#4-aws-workload-identity-federation-eks)
-  there instead.
+  An `external_account` JSON (a Workload Identity Federation credential config) is accepted here
+  too. File, URL and executable `credential_source` shapes, for example a projected Kubernetes
+  ServiceAccount token, are handled by Google's library as-is. The AWS shape
+  (`"environment_id": "aws1"`, produced by `gcloud ... create-cred-config --aws`) is resolved by
+  Bifrost through the AWS SDK default chain, so it works on EKS with IRSA or Pod Identity exactly
+  like [AWS Workload Identity Federation](#4-aws-workload-identity-federation-eks); the structured
+  block is the recommended form because it needs no credential file.
 </Note>
 
 <Tabs>
@@ -874,7 +874,7 @@ Then send a request through Bifrost to a Vertex model (e.g., `vertex/gemini-2.5-
 | `The given credential is rejected by the attribute condition` | The AWS role name does not match the provider condition | Align `--attribute-condition` with the role attached to the pod |
 | `403 Permission 'iam.serviceAccounts.getAccessToken' denied` | Missing impersonation grant | Run the `add-iam-policy-binding ... roles/iam.workloadIdentityUser` command from [Step 3](#gcp-prerequisites-aws), Option B |
 | `403 Forbidden` from Vertex API | The principal or service account lacks Vertex permissions | Grant `roles/aiplatform.user` per [Step 3](#gcp-prerequisites-aws) |
-| Requests succeed but as the **node** role | An `external_account` JSON with `"environment_id": "aws1"` is configured in `auth_credentials` | Google's library reads instance metadata for that shape; switch the key to `aws_workload_identity` |
+| Requests succeed but as the **node** role (Bifrost older than this feature) | An `external_account` JSON with `"environment_id": "aws1"` was resolved by Google's library, which reads instance metadata | Upgrade; current Bifrost resolves that JSON through the AWS SDK chain, or switch the key to `aws_workload_identity` |
 
 ---
 

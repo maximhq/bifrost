@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +20,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"golang.org/x/oauth2/google/externalaccount"
 )
 
@@ -252,4 +256,101 @@ func (s *awsSubjectTokenSupplier) SubjectToken(ctx context.Context, _ externalac
 		return "", fmt.Errorf("vertex aws federation: sts signature: %w", err)
 	}
 	return url.QueryEscape(string(payload)), nil
+}
+
+// isAWSExternalAccountJSON reports whether a Google credentials JSON is an external_account whose
+// credential_source is AWS (environment_id "aws1"), the shape gcloud emits for
+// `iam workload-identity-pools create-cred-config --aws`.
+func isAWSExternalAccountJSON(jsonData []byte) bool {
+	if gjson.GetBytes(jsonData, "type").String() != string(google.ExternalAccount) {
+		return false
+	}
+	return strings.HasPrefix(gjson.GetBytes(jsonData, "credential_source.environment_id").String(), "aws")
+}
+
+// newAWSFederatedTokenSourceFromJSON builds the same federation flow as newAWSFederatedTokenSource
+// from a gcloud-generated AWS external_account JSON. Google's library would otherwise resolve the AWS
+// side itself from static env vars or instance metadata only; routing the JSON through Bifrost's
+// supplier makes IRSA and Pod Identity work without changing the credential file.
+func newAWSFederatedTokenSourceFromJSON(ctx context.Context, jsonData []byte) (oauth2.TokenSource, error) {
+	audience := gjson.GetBytes(jsonData, "audience").String()
+	if audience == "" {
+		return nil, fmt.Errorf("vertex aws federation: external_account json is missing audience")
+	}
+	if env := gjson.GetBytes(jsonData, "credential_source.environment_id").String(); env != "aws1" {
+		return nil, fmt.Errorf("vertex aws federation: unsupported aws credential source version %q", env)
+	}
+	lifetime, err := jsonImpersonationLifetimeSeconds(jsonData)
+	if err != nil {
+		return nil, err
+	}
+	supplier, err := newAWSSubjectTokenSupplier(ctx, &schemas.VertexAWSWorkloadIdentityConfig{Audience: *schemas.NewSecretVar(audience)})
+	if err != nil {
+		return nil, err
+	}
+	conf := externalaccount.Config{
+		Audience:                       audience,
+		SubjectTokenType:               gjson.GetBytes(jsonData, "subject_token_type").String(),
+		TokenURL:                       gjson.GetBytes(jsonData, "token_url").String(),
+		ServiceAccountImpersonationURL: gjson.GetBytes(jsonData, "service_account_impersonation_url").String(),
+		ServiceAccountImpersonationLifetimeSeconds: lifetime,
+		UniverseDomain:       gjson.GetBytes(jsonData, "universe_domain").String(),
+		Scopes:               []string{cloudPlatformScope},
+		SubjectTokenSupplier: supplier,
+	}
+	if conf.SubjectTokenType == "" {
+		conf.SubjectTokenType = awsSubjectTokenType
+	}
+	if conf.TokenURL == "" {
+		conf.TokenURL = gcpSTSTokenURL
+	}
+	ts, err := externalaccount.NewTokenSource(context.Background(), conf)
+	if err != nil {
+		return nil, fmt.Errorf("vertex aws federation: gcp token exchange setup: %w", err)
+	}
+	return ts, nil
+}
+
+// awsFederatedTokenSourceFromADCFile checks whether GOOGLE_APPLICATION_CREDENTIALS points at an AWS
+// external_account JSON and, if so, builds the federated source for it. ok is false when the variable
+// is unset, unreadable or names another credential type, so the caller falls back to the Google ADC
+// lookup, which reports those cases in its own words.
+func awsFederatedTokenSourceFromADCFile(ctx context.Context) (ts oauth2.TokenSource, ok bool, err error) {
+	path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	if path == "" {
+		return nil, false, nil
+	}
+	jsonData, readErr := os.ReadFile(path)
+	if readErr != nil || !isAWSExternalAccountJSON(jsonData) {
+		return nil, false, nil
+	}
+	ts, err = newAWSFederatedTokenSourceFromJSON(ctx, jsonData)
+	if err != nil {
+		return nil, false, err
+	}
+	return ts, true, nil
+}
+
+// jsonImpersonationLifetimeSeconds reads service_account_impersonation.token_lifetime_seconds from an
+// external_account JSON strictly. gjson's Int() wraps an overflowing integer and truncates fractions
+// or numeric strings (18446744073709555216 reads back as 3600), which would quietly request a
+// different lifetime from IAM than the file states, so anything but a plain JSON integer that fits
+// is a configuration error. An absent field keeps the library default.
+func jsonImpersonationLifetimeSeconds(jsonData []byte) (int, error) {
+	const field = "service_account_impersonation.token_lifetime_seconds"
+	r := gjson.GetBytes(jsonData, field)
+	if !r.Exists() {
+		return 0, nil
+	}
+	if r.Type != gjson.Number {
+		return 0, fmt.Errorf("vertex aws federation: %s must be a json integer, got %s", field, r.Raw)
+	}
+	n, err := strconv.ParseInt(r.Raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("vertex aws federation: %s must be a json integer that fits in 64 bits, got %s", field, r.Raw)
+	}
+	if int64(int(n)) != n {
+		return 0, fmt.Errorf("vertex aws federation: %s is out of range: %s", field, r.Raw)
+	}
+	return int(n), nil
 }
