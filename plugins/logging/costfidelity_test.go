@@ -959,7 +959,6 @@ func TestRecalculateCostsBackfillsRecoveredUsageSoSecondRunSkipsObjectStore(t *t
 // calculateBatchAggregateCost reprices per model_breakdown entry instead, the
 // same way settlement originally priced each result item.
 
-
 // repriceAggregate drives the production seam: RepriceLog asks whichever job kind
 // owns the row to recompute it. Returns the cost and the kind's re-serialized
 // debug blob, matching the shape the old plugin-local helper returned.

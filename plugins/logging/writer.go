@@ -56,10 +56,23 @@ type pendingInjectEntries struct {
 	drained bool
 }
 
+// pendingAgentInjectEntries is the Agent analogue of pendingInjectEntries: request
+// rows parked by PostA2AHook until Inject backfills authoritative latency
+// numbers from the completed trace.
+type pendingAgentInjectEntries struct {
+	mu        sync.Mutex
+	entries   []*logstore.AgentLog
+	createdAt time.Time
+	// drained is set by injectAgentEntries under mu once entries has been handed
+	// to the write queue; a late park writes directly instead.
+	drained bool
+}
+
 // writeQueueEntry is an entry pushed to the batch write queue.
 type writeQueueEntry struct {
 	log         *logstore.Log
 	mcpLog      *logstore.MCPToolLog
+	agentLog    *logstore.AgentLog
 	callback    func(entry *logstore.Log)
 	mcpCallback func(entry *logstore.MCPToolLog)
 }
@@ -152,12 +165,16 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 	// Collect all log entries for batch insert
 	logs := make([]*logstore.Log, 0, len(batch))
 	mcpLogs := make([]*logstore.MCPToolLog, 0, len(batch))
+	agentLogs := make([]*logstore.AgentLog, 0, len(batch))
 	for _, entry := range batch {
 		if entry.log != nil {
 			logs = append(logs, entry.log)
 		}
 		if entry.mcpLog != nil {
 			mcpLogs = append(mcpLogs, entry.mcpLog)
+		}
+		if entry.agentLog != nil {
+			agentLogs = append(agentLogs, entry.agentLog)
 		}
 	}
 
@@ -188,6 +205,28 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 					p.logger.Warn("individual insert failed for MCP tool log %s: %v", log.ID, err)
 					p.droppedRequests.Add(1)
 				}
+			}
+		}
+	}
+
+	if len(agentLogs) > 0 {
+		inserted := false
+		if _, err := p.store.BatchCreateAgentLogsIfNotExists(p.ctx, agentLogs); err != nil {
+			p.logger.Warn("batch insert failed for %d A2A logs, falling back to individual inserts: %v", len(agentLogs), err)
+			for _, log := range agentLogs {
+				if _, err := p.store.BatchCreateAgentLogsIfNotExists(p.ctx, []*logstore.AgentLog{log}); err != nil {
+					p.logger.Warn("individual insert failed for A2A log %s: %v", log.ID, err)
+					p.droppedRequests.Add(1)
+				} else {
+					inserted = true
+				}
+			}
+		} else {
+			inserted = true
+		}
+		if inserted {
+			if err := p.store.ReconcileAgentCorrelation(p.ctx, agentLogs); err != nil {
+				p.logger.Warn("A2A correlation reconciliation failed for %d logs: %v", len(agentLogs), err)
 			}
 		}
 	}
@@ -277,6 +316,20 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 		}
 		return true
 	})
+	p.pendingAgentLogs.Range(func(key, value any) bool {
+		if pending, ok := value.(*logstore.AgentLog); ok && pending.Timestamp.Before(cutoff) {
+			p.pendingAgentLogs.Delete(key)
+		}
+		return true
+	})
+	p.pendingAgentLogsToInject.Range(func(key, value any) bool {
+		if pending, ok := value.(*pendingAgentInjectEntries); ok {
+			if pending.createdAt.Before(cutoff) {
+				p.pendingAgentLogsToInject.Delete(key)
+			}
+		}
+		return true
+	})
 }
 
 // claimStaleMCPEntry takes a pending MCP entry away from PostMCPHook for the stale-entry reaper.
@@ -354,11 +407,41 @@ func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callba
 	}
 }
 
+func (p *LoggerPlugin) enqueueAgentLogEntry(entry *logstore.AgentLog) {
+	if entry == nil || p.closed.Load() {
+		return
+	}
+	defer func() {
+		if recover() != nil {
+			p.droppedRequests.Add(1)
+		}
+	}()
+	select {
+	case p.writeQueue <- &writeQueueEntry{agentLog: entry}:
+	default:
+		p.droppedRequests.Add(1)
+		p.logger.Warn("log write queue full, dropping A2A log entry %s", entry.ID)
+	}
+}
+
 // estimateWriteQueueEntrySize returns the estimated serialized payload size for
 // the log entry carried by a write queue item.
 func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 	if entry == nil {
 		return 0
+	}
+	if entry.agentLog != nil {
+		size := len(entry.agentLog.PluginLogs) + len(entry.agentLog.ErrorDetails) + 512
+		if entry.agentLog.RequestBody != nil {
+			size += len(*entry.agentLog.RequestBody)
+		}
+		if entry.agentLog.ResponseBody != nil {
+			size += len(*entry.agentLog.ResponseBody)
+		}
+		if entry.agentLog.EventBody != nil {
+			size += len(*entry.agentLog.EventBody)
+		}
+		return size
 	}
 	if entry.mcpLog != nil {
 		return estimateMCPToolLogEntrySize(entry.mcpLog)
@@ -477,6 +560,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 	}
 	applyUserAgent(entry, pending.InitialData.UserAgent)
 	applyApp(entry, pending.InitialData.App)
+	applyAgentCorrelationID(entry, pending.InitialData.AgentCorrelationID)
 	return entry
 }
 
@@ -516,7 +600,15 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 	}
 	applyUserAgent(entry, pending.InitialData.UserAgent)
 	applyApp(entry, pending.InitialData.App)
+	applyAgentCorrelationID(entry, pending.InitialData.AgentCorrelationID)
 	return entry
+}
+
+func applyAgentCorrelationID(entry *logstore.Log, agentCorrelationID string) {
+	if agentCorrelationID != "" {
+		agentCorrelationID = clampString(agentCorrelationID, maxPersistedAgentCorrelationIDLen)
+		entry.AgentCorrelationID = &agentCorrelationID
+	}
 }
 
 // User-Agent and App map to fixed-width DB columns (varchar(512) / varchar(128)).
@@ -524,8 +616,9 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 // persisting to avoid an insert that fails (and silently drops the log) when a
 // client sends an oversized header.
 const (
-	maxPersistedUserAgentLen = 512
-	maxPersistedAppLen       = 128
+	maxPersistedUserAgentLen          = 512
+	maxPersistedAppLen                = 128
+	maxPersistedAgentCorrelationIDLen = 255
 )
 
 // clampString truncates s to at most max bytes. The columns are sized in

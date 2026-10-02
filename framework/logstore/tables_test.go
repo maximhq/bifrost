@@ -296,6 +296,31 @@ func TestMCPToolLogGovernanceSetsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAgentLogGovernanceSetsRoundTrip(t *testing.T) {
+	entry := &AgentLog{
+		TeamIDsParsed: []string{"team1", "team2"}, TeamNamesParsed: []string{"Team One", "Team Two"},
+		CustomerIDsParsed: []string{"cust1"}, CustomerNamesParsed: []string{"Customer One"},
+		BusinessUnitIDsParsed: []string{"bu1"}, BusinessUnitNamesParsed: []string{"BU One"},
+		BudgetIDsParsed: []string{"budget1"}, RateLimitIDsParsed: []string{"rl1"},
+	}
+	require.NoError(t, entry.SerializeFields())
+	stored := &AgentLog{
+		TeamIDs: entry.TeamIDs, TeamNames: entry.TeamNames,
+		CustomerIDs: entry.CustomerIDs, CustomerNames: entry.CustomerNames,
+		BusinessUnitIDs: entry.BusinessUnitIDs, BusinessUnitNames: entry.BusinessUnitNames,
+		BudgetIDs: entry.BudgetIDs, RateLimitIDs: entry.RateLimitIDs,
+	}
+	require.NoError(t, stored.DeserializeFields())
+	assert.Equal(t, entry.TeamIDsParsed, stored.TeamIDsParsed)
+	assert.Equal(t, entry.TeamNamesParsed, stored.TeamNamesParsed)
+	assert.Equal(t, entry.CustomerIDsParsed, stored.CustomerIDsParsed)
+	assert.Equal(t, entry.CustomerNamesParsed, stored.CustomerNamesParsed)
+	assert.Equal(t, entry.BusinessUnitIDsParsed, stored.BusinessUnitIDsParsed)
+	assert.Equal(t, entry.BusinessUnitNamesParsed, stored.BusinessUnitNamesParsed)
+	assert.Equal(t, entry.BudgetIDsParsed, stored.BudgetIDsParsed)
+	assert.Equal(t, entry.RateLimitIDsParsed, stored.RateLimitIDsParsed)
+}
+
 // TestMCPToolLogGovernanceSetsTolerateCorruptJSON keeps one unreadable column
 // from failing the whole read: the row is still worth serving without it.
 func TestMCPToolLogGovernanceSetsTolerateCorruptJSON(t *testing.T) {
