@@ -42,3 +42,17 @@ export function getUnixRangeForPeriod(period: string): { start: number; end: num
 		end: Math.floor(to.getTime() / 1000),
 	};
 }
+
+/**
+ * URL state for flipping a page's Live toggle. Polling a fixed absolute range
+ * whose end is already in the past re-fetches the same rows forever, so turning
+ * Live on from an absolute range switches back to a sliding relative period.
+ */
+export function getLiveToggleState(
+	enabled: boolean,
+	currentPeriod: string,
+	defaultPeriod = "1h",
+): { polling: boolean; period?: string; offset?: number } {
+	if (!enabled || currentPeriod) return { polling: enabled };
+	return { polling: true, period: defaultPeriod, offset: 0 };
+}

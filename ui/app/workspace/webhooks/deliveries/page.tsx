@@ -13,6 +13,7 @@ import {
 import { dateUtils } from "@/lib/types/logs";
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
 import type { WebhookDeliveryFilters, WebhookDeliveryOutcome, WebhookDeliveryStatusClass, WebhookEvent } from "@/lib/types/webhooks";
+import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
@@ -249,7 +250,7 @@ export default function WebhookDeliveriesPage() {
 						period={urlState.period}
 						onPeriodChange={handlePeriodChange}
 						polling={polling}
-						onPollToggle={(enabled) => setUrlState({ polling: enabled })}
+						onPollToggle={(enabled) => setUrlState(getLiveToggleState(enabled, urlState.period, "24h"))}
 						onRefresh={refetch}
 						loading={isFetching}
 						columnEntries={columnEntries}

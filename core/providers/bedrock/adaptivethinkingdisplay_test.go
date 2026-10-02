@@ -1,8 +1,11 @@
 package bedrock
 
 import (
+	"context"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -238,5 +241,215 @@ func TestToBifrostResponsesRequest_LeavesSummaryUnsetForAnthropic(t *testing.T) 
 	}
 	if s := bifrostReq.Params.Reasoning.Summary; s != nil {
 		t.Errorf("reasoning.summary should stay unset for a non-OpenAI model, got %q", *s)
+	}
+}
+
+const betweenToolsModel = "global.anthropic.claude-sonnet-5-5"
+
+// thinking:{type:"between_tools"} is a thinking type independent of effort: it is
+// sent as-is on Sonnet 5.5 with the caller's effort, and never with display.
+func TestConvertChatParameters_BetweenToolsKeepsEffort(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: betweenToolsModel,
+		Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{
+			Type:   schemas.Ptr("between_tools"),
+			Effort: schemas.Ptr("medium"),
+		}},
+	}
+	bedrockReq := &BedrockConverseRequest{}
+	if err := convertChatParameters(nil, bifrostReq, bedrockReq, schemas.ResolveModelCaps(schemas.Bedrock, betweenToolsModel)); err != nil {
+		t.Fatalf("convertChatParameters failed: %v", err)
+	}
+	assertBetweenToolsFields(t, bedrockReq, "medium")
+}
+
+func TestToBedrockResponsesRequest_BetweenToolsKeepsEffort(t *testing.T) {
+	bedrockReq, err := ToBedrockResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Model: betweenToolsModel,
+		Params: &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{
+			Type:   schemas.Ptr("between_tools"),
+			Effort: schemas.Ptr("low"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+	}
+	assertBetweenToolsFields(t, bedrockReq, "low")
+}
+
+// The /bedrock drop-in collapsed thinking:{type:"between_tools"} into effort
+// "none", so Sonnet 5.5 ran full adaptive thinking and the effort was lost.
+func TestToBifrostResponsesRequest_BetweenToolsKeepsTypeAndEffort(t *testing.T) {
+	fields := schemas.NewOrderedMap()
+	fields.Set("thinking", map[string]any{"type": "between_tools"})
+	fields.Set("output_config", map[string]any{"effort": "medium"})
+	req := &BedrockConverseRequest{
+		ModelID:                      betweenToolsModel,
+		AdditionalModelRequestFields: fields,
+		Messages: []BedrockMessage{{
+			Role:    "user",
+			Content: []BedrockContentBlock{{Text: schemas.Ptr("hi")}},
+		}},
+	}
+	bifrostReq, err := req.ToBifrostResponsesRequest(nil)
+	if err != nil {
+		t.Fatalf("ToBifrostResponsesRequest failed: %v", err)
+	}
+	reasoning := bifrostReq.Params.Reasoning
+	if reasoning == nil || reasoning.Type == nil || *reasoning.Type != "between_tools" {
+		t.Fatalf("reasoning.type = %+v, want \"between_tools\"", reasoning)
+	}
+	if reasoning.Effort == nil || *reasoning.Effort != "medium" {
+		t.Errorf("reasoning.effort = %v, want \"medium\"", reasoning.Effort)
+	}
+}
+
+func assertBetweenToolsFields(t *testing.T, bedrockReq *BedrockConverseRequest, wantEffort string) {
+	t.Helper()
+	if bedrockReq.AdditionalModelRequestFields == nil {
+		t.Fatalf("expected AdditionalModelRequestFields to carry the thinking config, got nil")
+	}
+	raw, ok := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+	if !ok {
+		t.Fatalf("expected a `thinking` field, got none")
+	}
+	thinking, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected `thinking` to be a map, got %T: %+v", raw, raw)
+	}
+	if got := thinking["type"]; got != "between_tools" {
+		t.Errorf("thinking.type = %v, want \"between_tools\"", got)
+	}
+	if _, ok := thinking["display"]; ok {
+		t.Errorf("between_tools rejects display, got %+v", thinking)
+	}
+	outputConfig, ok := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+	if !ok {
+		t.Fatalf("output_config.effort was dropped")
+	}
+	oc, ok := outputConfig.(*schemas.OrderedMap)
+	if !ok {
+		t.Fatalf("expected output_config to be an OrderedMap, got %T", outputConfig)
+	}
+	if effort, _ := oc.Get("effort"); effort != wantEffort {
+		t.Errorf("output_config.effort = %v, want %q", effort, wantEffort)
+	}
+}
+
+// /anthropic/v1/messages -> bedrock/<claude> takes the typed Converse path (the
+// raw Claude Code body is not forwarded on Converse), so the ingress mapping and
+// the Converse egress must agree end to end.
+func TestAnthropicIngressToConverse_BetweenTools(t *testing.T) {
+	cases := []struct {
+		model    string
+		wantType string
+	}{
+		{betweenToolsModel, "between_tools"},
+		{"global.anthropic.claude-sonnet-5", "disabled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			in := &anthropic.AnthropicMessageRequest{
+				Model:     tc.model,
+				MaxTokens: 64,
+				Messages: []anthropic.AnthropicMessage{{
+					Role:    anthropic.AnthropicMessageRoleUser,
+					Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("hi")},
+				}},
+				Thinking:     &anthropic.AnthropicThinking{Type: "between_tools"},
+				OutputConfig: &anthropic.AnthropicOutputConfig{Effort: schemas.Ptr("medium")},
+			}
+			bifrostReq := in.ToBifrostResponsesRequest(ctx)
+			bifrostReq.Provider = schemas.Bedrock
+			bedrockReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+			}
+			raw, ok := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+			if !ok {
+				t.Fatalf("thinking dropped: the model runs full adaptive thinking")
+			}
+			if got := raw.(map[string]any)["type"]; got != tc.wantType {
+				t.Errorf("thinking.type = %v, want %q", got, tc.wantType)
+			}
+			oc, _ := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+			if om, ok := oc.(*schemas.OrderedMap); !ok {
+				t.Errorf("output_config.effort dropped, got %T", oc)
+			} else if effort, _ := om.Get("effort"); effort != "medium" {
+				t.Errorf("output_config.effort = %v, want \"medium\"", effort)
+			}
+		})
+	}
+}
+
+// InvokeModel (compaction, safeguards, tool search) builds the native Anthropic
+// body through the shared builder: typed from reasoning.type, or the caller's raw
+// body on Claude Code passthrough, sanitised for Bedrock.
+func TestInvokeBody_BetweenTools(t *testing.T) {
+	provider := &BedrockProvider{}
+	build := func(t *testing.T, model string, rawBody []byte, reasoning *schemas.ResponsesParametersReasoning) string {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+			Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(64), Reasoning: reasoning},
+		}
+		if rawBody != nil {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			req.RawRequestBody = rawBody
+		}
+		body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(model, false, true))
+		if bifrostErr != nil {
+			t.Fatalf("build invoke body failed: %v", bifrostErr.Error.Message)
+		}
+		return providerUtils.GetJSONField(body, "thinking.type").String()
+	}
+
+	t.Run("typed", func(t *testing.T) {
+		reasoning := &schemas.ResponsesParametersReasoning{Type: schemas.Ptr("between_tools"), Effort: schemas.Ptr("medium")}
+		if got := build(t, betweenToolsModel, nil, reasoning); got != "between_tools" {
+			t.Errorf("sonnet 5.5: thinking.type = %q, want \"between_tools\"", got)
+		}
+		if got := build(t, "global.anthropic.claude-sonnet-5", nil, reasoning); got != "disabled" {
+			t.Errorf("sonnet 5: thinking.type = %q, want \"disabled\"", got)
+		}
+	})
+
+	t.Run("raw_claude_code", func(t *testing.T) {
+		raw := func(model string) []byte {
+			return []byte(`{"model":"` + model + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"between_tools"}}`)
+		}
+		if got := build(t, betweenToolsModel, raw(betweenToolsModel), nil); got != "between_tools" {
+			t.Errorf("sonnet 5.5: thinking.type = %q, want \"between_tools\"", got)
+		}
+		if got := build(t, "global.anthropic.claude-sonnet-5", raw("global.anthropic.claude-sonnet-5"), nil); got != "disabled" {
+			t.Errorf("sonnet 5: thinking.type = %q, want \"disabled\"", got)
+		}
+	})
+}
+
+// Opus 5 rejects thinking:{type:"disabled"} above effort high, so the
+// between_tools downgrade must omit thinking there instead.
+func TestConvertChatParameters_BetweenToolsOpus5Xhigh(t *testing.T) {
+	model := "global.anthropic.claude-opus-5"
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: model,
+		Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{
+			Type:   schemas.Ptr("between_tools"),
+			Effort: schemas.Ptr("xhigh"),
+		}},
+	}
+	bedrockReq := &BedrockConverseRequest{}
+	if err := convertChatParameters(nil, bifrostReq, bedrockReq, schemas.ResolveModelCaps(schemas.Bedrock, model)); err != nil {
+		t.Fatalf("convertChatParameters failed: %v", err)
+	}
+	if raw, ok := bedrockReq.AdditionalModelRequestFields.Get("thinking"); ok {
+		t.Errorf("thinking = %+v, want omitted: Opus 5 rejects disabled at xhigh", raw)
 	}
 }

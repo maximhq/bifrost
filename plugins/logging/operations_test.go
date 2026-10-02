@@ -2075,6 +2075,43 @@ func TestPreLLMHookNotificationCarriesNoInputWhileKeyIsUnresolved(t *testing.T) 
 	}
 }
 
+// TestPreLLMHookNotificationCarriesNoEmbeddingInputWhileKeyIsUnresolved pins that embedding input,
+// captured provisionally because the presented key may turn content on, stays out of the notification.
+func TestPreLLMHookNotificationCarriesNoEmbeddingInputWhileKeyIsUnresolved(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{DisableContentLogging: new(true)}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	var notified []*logstore.Log
+	plugin.SetLogCallback(func(_ context.Context, logEntry *logstore.Log) { notified = append(notified, logEntry) })
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-notify-unresolved-embedding")
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
+	text := "secret embedding text"
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.EmbeddingRequest,
+		EmbeddingRequest: &schemas.BifrostEmbeddingRequest{
+			Provider: schemas.OpenAI,
+			Model:    "text-embedding-3-small",
+			Input: []schemas.EmbeddingInputItem{
+				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if len(notified) == 0 {
+		t.Fatal("expected the processing notification")
+	}
+	if input := notified[0].EmbeddingInputParsed; input != nil {
+		t.Fatalf("the notification went out before the key was stamped and must carry no embedding input, got %#v", input)
+	}
+}
+
 // TestKeyTurningContentOnOverClientFlagKeepsEarlyCapturedContent pins the other direction of the
 // hook ordering hole: with the client flag off, a key that turns content on is still unstamped when
 // PreLLMHook and PreMCPHook capture, so they must capture provisionally and let the final policy in

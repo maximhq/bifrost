@@ -13,6 +13,7 @@ import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { fiscalQuarterNote, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
+import { useGetCoreConfigQuery } from "@/lib/store";
 import { useRemoveVirtualKeyBudgetOverrideMutation, useSetVirtualKeyBudgetOverrideMutation } from "@/lib/store/apis/governanceApi";
 import { BudgetOverrideRequest, VirtualKey, VirtualKeyProviderConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
@@ -53,7 +54,11 @@ function UsageLine({ current, max, format }: { current: number; max: number; for
 					{pct}%
 				</span>
 			</div>
-			<Progress value={Math.min(pct, 100)} className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", usageBarClass(pct, exhausted))} />
+			<Progress
+				aria-label="Usage"
+				value={Math.min(pct, 100)}
+				className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", usageBarClass(pct, exhausted))}
+			/>
 		</div>
 	);
 }
@@ -75,6 +80,8 @@ export default function VirtualKeyDetailSheet({
 }: VirtualKeyDetailSheetProps) {
 	const { assignedUsers, isManagedByProfile, managingProfile, displayBudgets, displayRateLimit } = useVirtualKeyUsage(virtualKey);
 	const canUpdateVirtualKeys = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
+	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const deletesAfterExpire = virtualKey.delete_after_expire ?? coreConfig?.client_config?.delete_expired_virtual_keys ?? false;
 	const [setBudgetOverride] = useSetVirtualKeyBudgetOverrideMutation();
 	const [removeBudgetOverride] = useRemoveVirtualKeyBudgetOverrideMutation();
 	const saveBudgetOverride = async (budgetId: string, data: BudgetOverrideRequest) => {
@@ -192,6 +199,11 @@ export default function VirtualKeyDetailSheet({
 											addSuffix: true,
 										})}
 										<span className="text-muted-foreground ml-1 text-xs">({new Date(virtualKey.expires_at).toLocaleString()})</span>
+										{deletesAfterExpire && (
+											<span className="text-muted-foreground ml-1 text-xs" data-testid="vk-details-delete-after-expire">
+												· deleted automatically after expiry
+											</span>
+										)}
 									</div>
 								</div>
 							)}

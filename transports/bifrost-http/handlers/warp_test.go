@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -282,6 +283,44 @@ func TestWarpBackfillStatusWithoutIDFallsBackToLatestJob(t *testing.T) {
 	handler.backfillStatus(statusCtx)
 	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
 	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-new"`)
+}
+
+// A finished backfill describes the embedding space it ran under. After the
+// embedding model was changed and saved, the settings page still showed the
+// old run as "Completed" over a full progress bar, beside a space nothing has
+// been indexed into - and the Start button stayed disabled for that window as
+// "already fully indexed". A job frozen against another space is not the
+// current state of this one, so the id-less read answers idle instead. A job
+// that is still running is shown regardless: it needs its cancel action.
+func TestWarpBackfillStatusHidesJobFromAnotherEmbeddingSpace(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.latest = &tables.TableSidekiqJob{
+		ID: "job-old-space", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusCompleted,
+		Metadata: `{"config_signature":"6:openai|17:text-embedding-ada|4:1536|8:WarpLogs|","scanned":100,"total":100,"indexed":100}`,
+	}
+	statusCtx := adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"status":"idle"`)
+	require.NotContains(t, string(statusCtx.Response.Body()), "job-old-space")
+
+	// The same job under the space the deployment is configured with now.
+	metadata, err := handler.service.BuildBackfillJobMeta(context.Background(), time.Unix(1, 0), time.Unix(2, 0), false)
+	require.NoError(t, err)
+	jobs.latest.Metadata = metadata
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-old-space"`)
+
+	// A running job from another space is still the current job.
+	jobs.inFlight = &tables.TableSidekiqJob{
+		ID: "job-running", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning,
+		Metadata: `{"config_signature":"6:openai|17:text-embedding-ada|4:1536|8:WarpLogs|"}`,
+	}
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-running"`)
 }
 
 func TestWarpBackfillStatusWithoutAnyJobIsIdle(t *testing.T) {
@@ -807,4 +846,167 @@ func TestWarpRoutesAre404WhileFeatureFlagIsOff(t *testing.T) {
 	ctx := serve("POST", "/api/warp/chat", `{"messages":[{"role":"user","content":"hi"}]}`)
 	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(),
 		"with the flag on the request must reach the handler, which reports the missing log store")
+}
+
+type fakeVKModelConfigReader struct{ configs []tables.TableModelConfig }
+
+func (f fakeVKModelConfigReader) GetModelConfigsByScopeAndScopeIDs(context.Context, string, []string, ...*gorm.DB) ([]tables.TableModelConfig, error) {
+	return f.configs, nil
+}
+
+// The decorator Warp is handed is the same set of overlays the dashboard's key
+// pages apply: the external budget resolver for a managed key, then the
+// assignee. Its output names what governs the key so the answer can say
+// "access profile admin" rather than presenting the profile's budget as the
+// key's own, and it fails rather than serving a bare row when a resolver does.
+func TestWarpVirtualKeyDecoratorOverlaysTheDashboardResolvers(t *testing.T) {
+	external := func(_ context.Context, vk *tables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+		if vk.ID != "vk-managed" {
+			return nil, nil
+		}
+		return &ExternalQuotaBudgetResult{
+			Managed:     true,
+			UsageUserID: "u-vrinda",
+			Budgets: []SourcedBudget{
+				{TableBudget: tables.TableBudget{ID: "b-global", MaxLimit: 450}, SourceRef: tables.SourceRef{SourceType: "access_profile", SourceName: "admin"}},
+				{TableBudget: tables.TableBudget{ID: "b-provider", MaxLimit: 20}, SourceRef: tables.SourceRef{SourceType: "access_profile", SourceName: "admin"}},
+			},
+			RateLimit: &tables.TableRateLimit{ID: "rl-global", RequestMaxLimit: int64Ptr(1000)},
+		}, nil
+	}
+	assignees := func(_ context.Context, ids []string) (map[string]*tables.AssignedUser, error) {
+		return map[string]*tables.AssignedUser{"vk-managed": {ID: "u-vrinda", Name: "Vrinda", Email: "vrinda@example.com"}}, nil
+	}
+	decorate := warpVirtualKeyDecorator(fakeVKModelConfigReader{}, WarpResolvers{ExternalQuotaBudgets: external, VirtualKeyAssignees: assignees})
+
+	managed := &tables.TableVirtualKey{ID: "vk-managed"}
+	governedBy, err := decorate(context.Background(), managed)
+	require.NoError(t, err)
+	require.Equal(t, []string{"access profile admin"}, governedBy, "one source named once, however many budgets it contributed")
+	require.True(t, managed.IsAccessProfileManaged)
+	require.Len(t, managed.Budgets, 2)
+	require.NotNil(t, managed.RateLimit)
+	require.Equal(t, "Vrinda", managed.AssignedUser.Name)
+
+	// A key the resolver has nothing on keeps its own rows and names no source.
+	standalone := &tables.TableVirtualKey{ID: "vk-own", Budgets: []tables.TableBudget{{ID: "b-own", MaxLimit: 10}}}
+	governedBy, err = decorate(context.Background(), standalone)
+	require.NoError(t, err)
+	require.Empty(t, governedBy)
+	require.False(t, standalone.IsAccessProfileManaged)
+	require.Len(t, standalone.Budgets, 1)
+
+	// No resolvers at all is the OSS build: the row is read as is.
+	governedBy, err = warpVirtualKeyDecorator(fakeVKModelConfigReader{}, WarpResolvers{})(context.Background(), &tables.TableVirtualKey{ID: "vk-own"})
+	require.NoError(t, err)
+	require.Empty(t, governedBy)
+
+	// A failing resolver is an error, not a silently bare key.
+	broken := func(context.Context, *tables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+		return nil, errors.New("governance store down")
+	}
+	_, err = warpVirtualKeyDecorator(fakeVKModelConfigReader{}, WarpResolvers{ExternalQuotaBudgets: broken})(context.Background(), &tables.TableVirtualKey{ID: "vk-managed"})
+	require.ErrorContains(t, err, "governance store down")
+}
+
+func int64Ptr(v int64) *int64 { return &v }
+
+// warpModelsHandler serves chat over a config that exposes one model beside the
+// default, and records where each model call was addressed.
+func warpModelsHandler(calls *[]schemas.BifrostResponsesRequest) *WarpHandler {
+	additional := `[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-anthropic"}]`
+	store := &recordingWarpStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", AdditionalModels: &additional,
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small", EmbeddingDimension: 1536,
+		LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
+	}}
+	chat := func(_ context.Context, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		*calls = append(*calls, *request)
+		// The turn ends on this error; the test only needs to see the address.
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "scripted stop"}}
+	}
+	return &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat))}
+}
+
+// The models an operator exposes are part of the config wire shape in both
+// directions: the panel's switcher is built from the read, and the settings
+// page writes the list back whole.
+func TestWarpConfigRoundTripsAdditionalModels(t *testing.T) {
+	store := &recordingWarpStore{}
+	handler := &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}
+	ctx := adminCtx(`{"enabled":true,"provider":"openai","model":"gpt-4o","additional_models":[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-anthropic"},{"provider":"openai","model":"gpt-4o-mini"}],"embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`)
+	handler.putConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	ctx = &fasthttp.RequestCtx{}
+	handler.getConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	var body struct {
+		Provider         string              `json:"provider"`
+		Model            string              `json:"model"`
+		AdditionalModels []schemas.WarpModel `json:"additional_models"`
+	}
+	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body))
+	require.Equal(t, "gpt-4o", body.Model)
+	require.Equal(t, []schemas.WarpModel{
+		{Provider: schemas.Anthropic, Model: "claude-sonnet-5", APIKeyID: "key-anthropic"},
+		{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+	}, body.AdditionalModels)
+
+	// A repeated pair is a validation failure like any other: 400, nothing stored.
+	ctx = adminCtx(`{"enabled":true,"provider":"openai","model":"gpt-4o","additional_models":[{"provider":"openai","model":"gpt-4o"}],"embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`)
+	handler.putConfig(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), "already listed")
+	require.Len(t, store.upserted, 1)
+}
+
+// Adding or removing an exposed model is a config write, so it sits behind the
+// same admin gate as the rest: a caller with neither local admin nor an RBAC
+// role cannot change which models Warp offers.
+func TestWarpConfigPutRefusesModelChangesFromNonAdmins(t *testing.T) {
+	store := &recordingWarpStore{}
+	handler := &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"enabled":true,"provider":"openai","model":"gpt-4o","additional_models":[{"provider":"anthropic","model":"claude-sonnet-5"}],"embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`)
+	handler.putConfig(ctx)
+	require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
+	require.Empty(t, store.upserted)
+}
+
+// The chat body names the model to run on, and the handler addresses the turn
+// to it - or to the default when the body names none.
+func TestWarpChatRunsOnTheRequestedModel(t *testing.T) {
+	for name, test := range map[string]struct {
+		body         string
+		wantProvider schemas.ModelProvider
+		wantModel    string
+	}{
+		"default":    {`{"messages":[{"role":"user","content":"hi"}],"stream":false}`, schemas.OpenAI, "gpt-4o"},
+		"additional": {`{"messages":[{"role":"user","content":"hi"}],"provider":"anthropic","model":"claude-sonnet-5","stream":false}`, schemas.Anthropic, "claude-sonnet-5"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls []schemas.BifrostResponsesRequest
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBodyString(test.body)
+			warpModelsHandler(&calls).chat(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.NotEmpty(t, calls)
+			require.Equal(t, test.wantProvider, calls[0].Provider)
+			require.Equal(t, test.wantModel, calls[0].Model)
+		})
+	}
+}
+
+// The model in a chat body is client-sent. One the operator did not expose is
+// a 400 that reaches no model - the caller is not an admin here, which is the
+// point: using Warp never widens what it may run on.
+func TestWarpChatRefusesAModelThatIsNotExposed(t *testing.T) {
+	var calls []schemas.BifrostResponsesRequest
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"messages":[{"role":"user","content":"hi"}],"provider":"openai","model":"gpt-5","stream":false}`)
+	warpModelsHandler(&calls).chat(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), "model is not available for warp")
+	require.Empty(t, calls)
 }

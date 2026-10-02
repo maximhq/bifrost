@@ -271,6 +271,7 @@ type BifrostResponsesResponse struct {
 	Tools                []ResponsesTool                     `json:"tools"`                 // Tools to use
 	Truncation           *string                             `json:"truncation,omitempty"`
 	Usage                *ResponsesResponseUsage             `json:"usage"`
+	ToolUsage            *ToolUsage                          `json:"tool_usage,omitempty"` // Top-level like OpenAI; Usage.ToolUsage mirrors it for pricing and logging
 	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields"`
 	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
 
@@ -296,7 +297,8 @@ type CacheMissReason struct {
 	CacheMissedInputTokens *int   `json:"cache_missed_input_tokens,omitempty"`
 }
 
-// UnmarshalJSON handles providers that return created_at/completed_at as floats (e.g. Bedrock mantle).
+// UnmarshalJSON handles providers that return created_at/completed_at as floats (e.g. Bedrock mantle),
+// and mirrors the top-level tool_usage onto usage, where pricing and logging read it.
 func (r *BifrostResponsesResponse) UnmarshalJSON(data []byte) error {
 	type Alias BifrostResponsesResponse
 	aux := &struct {
@@ -314,7 +316,25 @@ func (r *BifrostResponsesResponse) UnmarshalJSON(data []byte) error {
 		v := int(*aux.CompletedAt)
 		r.CompletedAt = &v
 	}
+	if r.ToolUsage != nil && r.Usage != nil && r.Usage.ToolUsage == nil {
+		r.Usage.ToolUsage = r.ToolUsage
+	}
 	return nil
+}
+
+// MarshalJSON sends tool_usage top-level only, as OpenAI's Responses API does. r is a copy, so
+// clearing usage's copy leaves the caller's response intact.
+func (r BifrostResponsesResponse) MarshalJSON() ([]byte, error) {
+	type alias BifrostResponsesResponse
+	if r.Usage != nil && r.Usage.ToolUsage != nil {
+		if r.ToolUsage == nil {
+			r.ToolUsage = r.Usage.ToolUsage
+		}
+		usage := *r.Usage
+		usage.ToolUsage = nil
+		r.Usage = &usage
+	}
+	return Marshal(alias(r))
 }
 
 // BackfillParams populates response fields from the request that are needed
@@ -1255,6 +1275,7 @@ type ResponsesParametersReasoning struct {
 	Mode            *string `json:"mode,omitempty"`             // "standard" | "pro" (reasoning execution mode)
 	Summary         *string `json:"summary"`                    // "auto" | "concise" | "detailed"
 	MaxTokens       *int    `json:"max_tokens,omitempty"`       // Maximum number of tokens to generate for the reasoning output (required for anthropic)
+	Type            *string `json:"type,omitempty"`             // Anthropic thinking.type: "between_tools" (no up-front thinking); independent of effort
 }
 
 type ResponsesResponseConversationStruct struct {
@@ -1318,6 +1339,7 @@ type ResponsesResponseUsage struct {
 	AudioSeconds        *float64                       `json:"audio_seconds,omitempty"` // Duration-based audio usage when tokens are unavailable
 	Cost                *BifrostCost                   `json:"cost,omitempty"`          // Only for the providers which support cost calculation
 	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`    // iterations field is sent by anthropic
+	ToolUsage           *ToolUsage                     `json:"tool_usage,omitempty"`    // Server-side tool call counts; moved to the response's top-level tool_usage on the wire
 
 	// xAI-specific usage fields
 	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`
@@ -1430,7 +1452,8 @@ type ResponsesResponseOutputTokens struct {
 	ReasoningTokens          int  `json:"reasoning_tokens"` // Required for few OpenAI models
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
-	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
+	// Deprecated: use ResponsesResponseUsage.ToolUsage.WebSearch. Populated, will be removed in 3.0.0.
+	NumSearchQueries *int `json:"num_search_queries,omitempty"`
 }
 
 // =============================================================================
@@ -1481,6 +1504,10 @@ type ResponsesMessage struct {
 
 	Role    *ResponsesMessageRoleType `json:"role,omitempty"`
 	Content *ResponsesMessageContent  `json:"content,omitempty"`
+
+	// OutputConfig carries a per-message effort override on a system item (Anthropic's
+	// mid-conversation output_config); providers without the concept drop it.
+	OutputConfig *ResponsesMessageOutputConfig `json:"output_config,omitempty"`
 
 	// Author and Recipient are required on multi-agent collab_tool_call items.
 	// Preserved as raw JSON to survive bifrost round-trip without schema coupling.
@@ -1698,6 +1725,35 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	}
 
 	return MarshalSorted(aux)
+}
+
+// ResponsesMessageOutputConfig is the per-message generation override a system item can
+// carry. It mirrors Anthropic's mid-conversation output_config (beta
+// mid-conversation-output-config-2026-07-01): a role:"system" item with empty content and
+// an effort changes the effort level from that point on without invalidating the cached
+// prefix. Effort uses the same vocabulary as ResponsesParametersReasoning.Effort. Only
+// providers with a native equivalent forward it; the rest drop the item fail-soft.
+type ResponsesMessageOutputConfig struct {
+	Effort *string `json:"effort,omitempty"` // "low" | "medium" | "high" | "xhigh" | "max"
+}
+
+// IsEffortOnlySystemItem reports whether m is a system or developer item that exists solely
+// to carry a per-message effort override: it has an OutputConfig and no content. Providers
+// without a native equivalent drop such an item rather than forwarding an empty system turn.
+func (m *ResponsesMessage) IsEffortOnlySystemItem() bool {
+	if m == nil || m.OutputConfig == nil || m.Role == nil {
+		return false
+	}
+	if *m.Role != ResponsesInputMessageRoleSystem && *m.Role != ResponsesInputMessageRoleDeveloper {
+		return false
+	}
+	if m.Content == nil {
+		return true
+	}
+	if m.Content.ContentStr != nil && *m.Content.ContentStr != "" {
+		return false
+	}
+	return len(m.Content.ContentBlocks) == 0
 }
 
 type ResponsesMessageRoleType string

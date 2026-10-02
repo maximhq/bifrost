@@ -2,11 +2,14 @@ package warp
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/maximhq/bifrost/framework/logstore"
 )
@@ -83,8 +86,10 @@ var linkTitle = regexp.MustCompile(`\s+["'(].*$`)
 // link whose query a tool issued becomes the issued link; any other link to the
 // Logs page gets its path repaired and its query kept; a link into the
 // dashboard that no tool could have returned loses its target and keeps its
-// text. External links are left alone. issued may be nil, which skips only the
-// first of those.
+// text, and so does a link that cannot open at all - a placeholder such as
+// "https://.../", a bare scheme, an empty target. A link that cannot work must
+// not be clickable. External links to a real host are left alone. issued may
+// be nil, which skips only the first of those.
 func sanitizeAnswerLinks(answer string, issued issuedLinks) string {
 	answer = fencedIssueLink.ReplaceAllString(answer, "[Request this in Bifrost's issue tracker]($1)\n")
 	matches := markdownLink.FindAllStringSubmatchIndex(answer, -1)
@@ -126,9 +131,14 @@ const (
 // resolveLinkTarget decides what one link target becomes.
 //
 // "workspace" and "logs" as a host are the path's own segments, reinterpreted
-// by a model that wanted a domain, so those count as the dashboard. Any other
-// host is somebody else's site unless the query is one a tool issued: a
-// genuinely external "https://example.com/logs" is left alone.
+// by a model that wanted a domain, so those count as the dashboard, and so
+// does any host in front of the dashboard's own "/workspace/logs" path: a
+// model that will not write a root-relative link puts a domain it made up
+// there, and the link only opens once the domain is gone. A host that is not
+// a hostname at all - the "..." of a "https://.../" placeholder - is a link
+// that cannot open, and is unlinked. Any other host is somebody else's site
+// unless the query is one a tool issued: a genuinely external
+// "https://example.com/logs" is left alone.
 func resolveLinkTarget(target string, issued issuedLinks) (string, linkVerdict) {
 	raw := strings.TrimSpace(target)
 	raw = strings.TrimSuffix(strings.TrimPrefix(raw, "<"), ">")
@@ -137,20 +147,38 @@ func resolveLinkTarget(target string, issued issuedLinks) (string, linkVerdict) 
 	raw = strings.ReplaceAll(raw, "&amp;", "&")
 	// A space the model decoded back out of a search term.
 	raw = strings.ReplaceAll(raw, " ", "+")
-	if raw == "" || strings.HasPrefix(raw, "#") {
+	if raw == "" {
+		return "", linkInvented
+	}
+	if strings.HasPrefix(raw, "#") {
 		return "", linkUntouched
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || (parsed.Scheme != "" && parsed.Host == "") {
-		// Unparseable, or a scheme with no host (mailto:, tel:).
+	if err != nil {
+		return "", linkInvented
+	}
+	if parsed.Scheme != "" && parsed.Host == "" {
+		if parsed.Opaque == "" && parsed.Path == "" {
+			// "https://" with nothing after it.
+			return "", linkInvented
+		}
+		// A scheme with no host (mailto:, tel:).
 		return "", linkUntouched
 	}
 	host := strings.ToLower(parsed.Host)
 	foreign := host != "" && host != "workspace" && host != "logs"
+	if foreign && !openableHost(parsed.Hostname()) {
+		return "", linkInvented
+	}
 
 	segments := strings.FieldsFunc(parsed.Path, func(r rune) bool { return r == '/' })
 	if !foreign && host != "" {
 		segments = append([]string{host}, segments...)
+	}
+	if n := len(segments); foreign && n >= 2 && segments[n-2] == "workspace" && segments[n-1] == "logs" {
+		// The dashboard's own path behind an invented domain.
+		foreign = false
+		segments = segments[n-2:]
 	}
 	key, parseable := canonicalQuery(parsed.RawQuery)
 
@@ -181,6 +209,30 @@ func resolveLinkTarget(target string, issued issuedLinks) (string, linkVerdict) 
 		}
 	}
 	return logsViewPath + "?" + parsed.RawQuery, linkRewritten
+}
+
+// openableHost reports whether a host is one a browser could resolve: an IP
+// address, or dot-separated labels of letters, digits and hyphens. "..." and
+// "…" are what a model writes for a domain it does not have, and url.Parse
+// accepts both as a host.
+func openableHost(hostname string) bool {
+	if hostname == "" {
+		return false
+	}
+	if net.ParseIP(hostname) != nil {
+		return true
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(hostname, "."), ".") {
+		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if r != '-' && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // fencedIssueLink matches a fenced code block whose only content is the
@@ -412,11 +464,11 @@ type linkedDimensionRankingResult struct {
 // row gets no link rather than one that opens everyone's traffic.
 const unassignedRankingID = "unassigned"
 
-// narrowToDimension returns filters narrowed to one ranking row, or false for
+// narrowToDimension returns filters narrowed to ranking rows, or false for
 // a dimension the Logs page has no URL parameter for.
-func narrowToDimension(filters *logstore.SearchFilters, dimension logstore.RankingDimension, id string) (*logstore.SearchFilters, bool) {
+func narrowToDimension(filters *logstore.SearchFilters, dimension logstore.RankingDimension, ids ...string) (*logstore.SearchFilters, bool) {
 	narrowed := *filters
-	value := []string{id}
+	value := ids
 	switch dimension {
 	case logstore.RankingDimensionUser:
 		narrowed.UserIDs = value
@@ -470,4 +522,45 @@ func linkDimensionRankings(result *logstore.DimensionRankingResult, filters *log
 		}
 	}
 	return &linkedDimensionRankingResult{DimensionRankingResult: result, Rankings: rows}
+}
+
+// setRankingLogsLink puts logs_link on a ranking, opening the requests of the
+// rows it returned.
+//
+// The tool's own filters are the wrong link for a ranking. They select the
+// traffic that was ranked, not the entities it was ranked into, so "view all
+// users in Logs" under a ranking of every user opened the Logs page with a time
+// range and nothing else. logs_link_covers says what the link holds, since rows
+// past the limit and owner-less traffic are in the ranking's totals and not
+// behind the link. A dimension the page cannot filter on, or a ranking with no
+// linkable row, keeps the tool's filters.
+func setRankingLogsLink(out map[string]any, result *logstore.DimensionRankingResult, filters *logstore.SearchFilters, dimension logstore.RankingDimension) map[string]any {
+	var ids []string
+	unassigned := false
+	if result != nil {
+		for _, ranking := range result.Rankings {
+			switch ranking.ID {
+			case "":
+			case unassignedRankingID:
+				unassigned = true
+			default:
+				ids = append(ids, ranking.ID)
+			}
+		}
+	}
+	narrowed, ok := narrowToDimension(filters, dimension, ids...)
+	if !ok || len(ids) == 0 {
+		return setLogsLink(out, filters)
+	}
+	link := logsViewLink(narrowed)
+	if link == "" {
+		return out
+	}
+	out["logs_link"] = link
+	covers := fmt.Sprintf("the requests of the %d %s rows returned here, not every request in the window", len(ids), dimension)
+	if unassigned {
+		covers += "; Unassigned traffic has no Logs filter and is left out"
+	}
+	out["logs_link_covers"] = covers
+	return out
 }

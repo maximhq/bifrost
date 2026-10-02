@@ -207,6 +207,41 @@ export interface BifrostEmbedding {
 	embedding: string | number[] | number[][];
 }
 
+export interface EmbeddingMediaPart {
+	data?: string;
+	url?: string;
+	mime_type?: string;
+	filename?: string;
+}
+
+export interface EmbeddingContentPart {
+	type: "text" | "image" | "audio" | "file" | "video" | "tokens";
+	text?: string;
+	image?: EmbeddingMediaPart;
+	audio?: EmbeddingMediaPart;
+	file?: EmbeddingMediaPart;
+	video?: EmbeddingMediaPart;
+	video_config?: {
+		start_offset_sec?: number;
+		end_offset_sec?: number;
+		interval_sec?: number;
+	};
+	tokens?: number[];
+}
+
+export type EmbeddingContent = EmbeddingContentPart[];
+
+export interface EmbeddingInputItem {
+	content: EmbeddingContent;
+	params?: {
+		encoding_format?: string;
+		dimensions?: number;
+		task_type?: string;
+		title?: string;
+		auto_truncate?: boolean;
+	};
+}
+
 export interface RerankDocument {
 	text: string;
 	id?: string;
@@ -556,20 +591,17 @@ export interface GuardrailMetadata {
 }
 
 export interface RoutingCall {
+	request_type?: string;
 	provider_used?: string;
 	model_used?: string;
 	input_tokens?: number;
-	// Present only when this call was a chat completion (the llm classifier);
-	// absent for a semantic classification embed.
+	// Present for token-generating classifiers; request_type selects the pricing mode.
 	output_tokens?: number;
 	count_toward_budgets?: boolean;
 }
 
 export interface RoutingMetadata {
-	// One entry per billable routing-classification call this request made: a
-	// semantic classification embed, an llm classification completion, or
-	// both when semantic classification produced no tier and the llm fallback
-	// ran.
+	// One entry per billable semantic embed or classifier call, including Jev decisions.
 	calls?: RoutingCall[];
 }
 
@@ -699,7 +731,7 @@ export interface LogEntry {
 	routing_rule_id?: string;
 	routing_rule_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
-	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
+	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "jev", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
 	session_id?: string; // Raw opaque session ID resolved by Bifrost for key stickiness and request correlation
 	routing_engine_logs?: string; // Human-readable routing decision logs
@@ -712,6 +744,8 @@ export interface LogEntry {
 	content_summary?: string;
 	output_message?: ChatMessage;
 	responses_output?: ResponsesMessage[];
+	// Each entry is either a bare EmbeddingContent or an item carrying its own params.
+	embedding_input?: (EmbeddingContent | EmbeddingInputItem)[];
 	embedding_output?: BifrostEmbedding[];
 	rerank_output?: RerankResult[];
 	ocr_input?: OCRDocument;
@@ -805,7 +839,7 @@ export interface LogFilters {
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	tool_call_names?: string[]; // Requests whose response called any of these function names
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, jev, llm, session, skipped)
 	session_id?: string; // Exact session ID used for key stickiness and request correlation
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format

@@ -1797,3 +1797,22 @@ func TestNormalizedUsageDerivesTotalWhenReportedZero(t *testing.T) {
 		})
 	}
 }
+
+// reasoning.type must survive the chat<->responses conversion used when a
+// provider only implements one of the two APIs.
+func TestReasoningTypeSurvivesChatResponsesConversion(t *testing.T) {
+	chat := &BifrostChatRequest{
+		Model:  "claude-sonnet-5-5",
+		Params: &ChatParameters{Reasoning: &ChatReasoning{Type: Ptr("between_tools")}},
+	}
+	responses := chat.ToResponsesRequest()
+	if responses.Params == nil || responses.Params.Reasoning == nil || responses.Params.Reasoning.Type == nil ||
+		*responses.Params.Reasoning.Type != "between_tools" {
+		t.Fatalf("chat->responses dropped reasoning.type: %+v", responses.Params)
+	}
+	back := responses.ToChatRequest()
+	if back.Params == nil || back.Params.Reasoning == nil || back.Params.Reasoning.Type == nil ||
+		*back.Params.Reasoning.Type != "between_tools" {
+		t.Fatalf("responses->chat dropped reasoning.type: %+v", back.Params)
+	}
+}

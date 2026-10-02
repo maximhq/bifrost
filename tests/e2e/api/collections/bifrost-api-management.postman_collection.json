@@ -2382,6 +2382,164 @@
               ]
             }
           }
+        },
+        {
+          "name": "Enabled flag: create a disabled provider key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('pkenabled_id');",
+                  "var body = {\"weight\": 1, \"enabled\": false};",
+                  "body.name = 'disabled-key-' + Date.now();",
+                  "body.value = 'sk-disabled-key-' + Date.now();",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create disabled key returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (pm.response.code === 200) {",
+                  "  var json = pm.response.json();",
+                  "  var key = json.key || json;",
+                  "  if (key && key.id) pm.collectionVariables.set('pkenabled_id', key.id);",
+                  "  pm.test('The created key is disabled', function () { pm.expect(key.enabled, 'body: ' + pm.response.text()).to.equal(false); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/openai/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Enabled flag: GET /api/keys reports the key as disabled",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than search for nothing,",
+                  "// which would read as a different failure.",
+                  "if ((!pm.collectionVariables.get('pkenabled_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('List keys returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var id = pm.collectionVariables.get('pkenabled_id');",
+                  "var keys = pm.response.code === 200 ? pm.response.json() : [];",
+                  "var match = (Array.isArray(keys) ? keys : []).filter(function (k) { return k.key_id === id; })[0];",
+                  "pm.test('The disabled key is listed', function () { pm.expect(match, 'key ' + id + ' missing from: ' + pm.response.text()).to.be.an('object'); });",
+                  "// /api/keys once omitted enabled entirely, and clients read a missing flag as",
+                  "// enabled, so a disabled key looked live. It must say false explicitly.",
+                  "pm.test('/api/keys carries enabled=false for the disabled key', function () {",
+                  "  pm.expect(match && match.enabled, 'key: ' + JSON.stringify(match)).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "keys"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Enabled flag: delete the disabled key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ((!pm.collectionVariables.get('pkenabled_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete key returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/openai/keys/{{pkenabled_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "keys",
+                "{{pkenabled_id}}"
+              ]
+            }
+          },
+          "response": []
         }
       ]
     },
@@ -5210,6 +5368,74 @@
             "body": {
               "mode": "raw",
               "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Provider key: partial update keeps omitted fields",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ((!pm.collectionVariables.get('pkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The body names only models. value, weight and blacklisted_models must keep",
+                  "// what was stored rather than reset to empty values (issue #7572).",
+                  "pm.test('Partial update returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var key = {};",
+                  "try { key = pm.response.json() || {}; } catch (e) {}",
+                  "pm.test('The sent field is applied', function () { pm.expect(key.models, pm.response.text()).to.eql(['regex:^gpt-5.*']); });",
+                  "pm.test('Omitted weight is kept', function () { pm.expect(key.weight, pm.response.text()).to.equal(1); });",
+                  "pm.test('Omitted blacklisted_models are kept', function () { pm.expect(key.blacklisted_models || [], pm.response.text()).to.include('regex:.*-preview$'); });",
+                  "pm.test('Omitted value is kept', function () {",
+                  "  var value = key.value && typeof key.value === 'object' ? key.value.value : key.value;",
+                  "  pm.expect(value, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/openai/keys/{{pkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "keys",
+                "{{pkregex_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"models\": [\"regex:^gpt-5.*\"]}",
               "options": {
                 "raw": {
                   "language": "json"

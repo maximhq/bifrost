@@ -779,6 +779,22 @@ func TestConvertSingleBedrockMessageToBifrostMessages_ImageBlock(t *testing.T) {
 // BedrockContentBlock field to land on (only "cachePoint" is a recognized JSON key), so it must be
 // unmarshalled from real JSON — a struct literal can't reproduce the bug since there's no field to
 // set. Bedrock Converse expects a standalone trailing cachePoint entry instead.
+// TestBedrockInvokeRequest_UnmarshalJSON_TitanMultimodalFieldsNotExtraParams pins that typed Titan
+// embedding fields stay out of ExtraParams, so the raw copy cannot override the converted request.
+func TestBedrockInvokeRequest_UnmarshalJSON_TitanMultimodalFieldsNotExtraParams(t *testing.T) {
+	raw := `{"inputText":"a cat","inputImage":"aGVsbG8=","embeddingConfig":{"outputEmbeddingLength":256}}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+	assert.Equal(t, "aGVsbG8=", req.InputImage)
+	require.NotNil(t, req.EmbeddingConfig)
+	require.NotNil(t, req.EmbeddingConfig.OutputEmbeddingLength)
+	assert.Equal(t, 256, *req.EmbeddingConfig.OutputEmbeddingLength)
+	assert.NotContains(t, req.ExtraParams, "inputImage")
+	assert.NotContains(t, req.ExtraParams, "embeddingConfig")
+}
+
 func TestBedrockInvokeRequest_UnmarshalJSON_TextContentBlockCacheControlSurvives(t *testing.T) {
 	raw := `{
 		"anthropic_version": "bedrock-2023-05-31",
@@ -2066,4 +2082,55 @@ func TestToAnthropicInvokeStreamBytes_IncompleteEmitsTerminal(t *testing.T) {
 			assert.Equal(t, tc.want, delta["stop_reason"])
 		})
 	}
+}
+
+// A bare Claude id that governance routes to Bedrock can still land on InvokeModel (tool search,
+// compaction and context management all trigger it), and that body is built by the Anthropic
+// builder rather than the Converse one. The replayed turn must keep its signed thinking where
+// the client sent it there too (issue #7768).
+func TestInvokeBodyKeepsInterleavedThinkingOrderForBareClaudeID(t *testing.T) {
+	body := []byte(`{
+		"model": "claude-opus-5-5",
+		"max_tokens": 4096,
+		"thinking": {"type": "adaptive"},
+		"tools": [{"name": "get_weather", "description": "w", "input_schema": {"type": "object"}}],
+		"messages": [
+			{"role": "user", "content": "run the tool twice"},
+			{"role": "assistant", "content": [
+				{"type": "thinking", "thinking": "a", "signature": "sig-0"},
+				{"type": "tool_use", "id": "toolu_0", "name": "get_weather", "input": {}},
+				{"type": "redacted_thinking", "data": "red-1"},
+				{"type": "thinking", "thinking": "b", "signature": "sig-1"},
+				{"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "toolu_0", "content": "sunny"},
+				{"type": "tool_result", "tool_use_id": "toolu_1", "content": "windy"}
+			]}
+		]
+	}`)
+	var ingress anthropic.AnthropicMessageRequest
+	require.NoError(t, json.Unmarshal(body, &ingress))
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	req := ingress.ToBifrostResponsesRequest(ctx)
+	// governance picks the provider after conversion
+	req.Provider = schemas.Bedrock
+	req.Model = "global.anthropic.claude-opus-5-5"
+
+	provider := &BedrockProvider{}
+	out, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(req.Model, false, true))
+	require.Nil(t, bifrostErr)
+
+	var got []string
+	for _, block := range gjson.GetBytes(out, "messages.1.content").Array() {
+		switch block.Get("type").String() {
+		case "thinking":
+			got = append(got, "thinking:"+block.Get("signature").String())
+		case "redacted_thinking":
+			got = append(got, "redacted:"+block.Get("data").String())
+		case "tool_use":
+			got = append(got, "tool:"+block.Get("id").String())
+		}
+	}
+	require.Equal(t, []string{"thinking:sig-0", "tool:toolu_0", "redacted:red-1", "thinking:sig-1", "tool:toolu_1"}, got, "body: %s", out)
 }

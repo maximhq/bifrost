@@ -152,6 +152,7 @@ export default function ToolResultMessageView({
 					/>
 				) : (
 					<div
+						role="presentation"
 						className={!disabled ? "cursor-text" : undefined}
 						onClick={() => {
 							if (!disabled) setEditMode(true);

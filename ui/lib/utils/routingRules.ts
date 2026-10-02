@@ -151,3 +151,22 @@ export function detectCELOperators(expression: string): string[] {
 
 	return operators;
 }
+
+/** Upper bound for a rule's TTFT deadline, mirroring the API's validation. */
+export const MAX_TTFT_TIMEOUT_MS = 300000;
+
+/**
+ * Parses the TTFT deadline input. Empty means "off" (undefined); anything else must be a
+ * whole number of milliseconds in 1..MAX_TTFT_TIMEOUT_MS, or null is returned.
+ */
+export function parseTTFTTimeoutInput(raw: string): number | undefined | null {
+	const trimmed = (raw ?? "").trim();
+	if (trimmed === "") {
+		return undefined;
+	}
+	if (!/^\d+$/.test(trimmed)) {
+		return null;
+	}
+	const ms = Number(trimmed);
+	return ms >= 1 && ms <= MAX_TTFT_TIMEOUT_MS ? ms : null;
+}

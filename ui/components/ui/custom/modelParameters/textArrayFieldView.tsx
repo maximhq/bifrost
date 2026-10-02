@@ -97,7 +97,7 @@ const StringInput = (props: {
 	return (
 		<div className="relative w-full gap-1">
 			<Input
-				tabIndex={10}
+				tabIndex={0}
 				className="ml-auto h-8 w-full"
 				value={props.value}
 				placeholder=""

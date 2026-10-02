@@ -340,7 +340,9 @@ func IsOverheadBreakdownSpan(span *Span) bool {
 		}
 		return strings.HasPrefix(span.Name, "middleware.")
 	case SpanKindPlugin:
-		return strings.HasSuffix(span.Name, ".transportprehook") || strings.HasSuffix(span.Name, ".transportposthook")
+		return strings.HasSuffix(span.Name, ".transportprehook") ||
+			strings.HasSuffix(span.Name, ".transportposthook") ||
+			strings.HasSuffix(span.Name, ".transportresponseheadershook")
 	}
 	return false
 }
@@ -1187,8 +1189,8 @@ const (
 	AttrBifrostAlias               = "bifrost.alias"                // original requested model when it differs from the resolved model
 	AttrBifrostRoutingEngineUsed   = "bifrost.routing_engine_used"  // comma-joined routing engines that handled the request
 	AttrBifrostComplexityTier      = "bifrost.complexity_tier"      // complexity tier used for routing (SIMPLE/MEDIUM/COMPLEX); absent when no rule referenced complexity_tier
-	AttrBifrostComplexityMechanism = "bifrost.complexity_mechanism" // how the complexity tier was classified (semantic, llm, session, skipped)
-	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // numeric confidence score produced by complexity classification
+	AttrBifrostComplexityMechanism = "bifrost.complexity_mechanism" // how the complexity tier was classified (semantic, jev, llm, session, skipped)
+	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // semantic similarity used to classify the tier; Jev confidence is log-only
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
 
 	// AttrBifrostErrorType is the normalized ErrorType, so span-derived connectors

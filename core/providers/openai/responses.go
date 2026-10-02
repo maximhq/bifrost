@@ -423,6 +423,16 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			hoistedTools = append(hoistedTools, hoistAdditionalTools(message)...)
 			continue
 		}
+		// Anthropic's per-message effort override (a system item with empty content and
+		// output_config.effort) has no OpenAI equivalent: the key is unknown to OpenAI and an
+		// empty content array is rejected, so the effort-only item is dropped and any other
+		// item sheds the key. `message` is the range copy, so the caller's input is untouched.
+		if message.OutputConfig != nil {
+			if message.IsEffortOnlySystemItem() {
+				continue
+			}
+			message.OutputConfig = nil
+		}
 		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
 			needsRewrite := false

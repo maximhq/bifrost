@@ -3233,6 +3233,125 @@ func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
 	})
 }
 
+// modelRewritingPlugin rewrites the model in PreRequestHook the way a routing rule does, and
+// records what its PreLLMHook then reads for the caller's original route.
+type modelRewritingPlugin struct {
+	routedModel string
+
+	mu              sync.Mutex
+	sawProvider     schemas.ModelProvider
+	sawModel        string
+	sawRoutedModel  string
+	preLLMHookCalls int
+}
+
+func (p *modelRewritingPlugin) GetName() string { return "model-rewriting" }
+func (p *modelRewritingPlugin) Cleanup() error  { return nil }
+func (p *modelRewritingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	// The requested route is reserved, so a plugin cannot overwrite what the caller sent.
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "forged-by-plugin")
+	req.SetModel(p.routedModel)
+	return nil
+}
+func (p *modelRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.preLLMHookCalls++
+	p.sawProvider, _ = ctx.Value(schemas.BifrostContextKeyRequestedProvider).(schemas.ModelProvider)
+	p.sawModel, _ = ctx.Value(schemas.BifrostContextKeyRequestedModel).(string)
+	_, p.sawRoutedModel, _ = req.GetRequestFields()
+	return req, nil, nil
+}
+func (p *modelRewritingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestRequestedRouteSurvivesPreRequestRewrite pins that the provider/model the caller sent stay
+// readable after a PreRequestHook rewrites the model: on the context for a later plugin's
+// PreLLMHook, and on RoutingInfo next to the routed model, for JSON and streaming responses.
+func TestRequestedRouteSurvivesPreRequestRewrite(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			server, _ := openAICompatFallbackServer(t)
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+				{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+			})
+			plugin := &modelRewritingPlugin{routedModel: "gpt-4o"}
+			client, initErr := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewNoOpLogger(),
+				LLMPlugins: []schemas.LLMPlugin{plugin},
+			})
+			if initErr != nil {
+				t.Fatalf("Init failed: %v", initErr)
+			}
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			defer ctx.Cancel()
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+				},
+			}
+
+			var got schemas.RoutingInfo
+			if !stream {
+				resp, bifrostErr := client.ChatCompletionRequest(ctx, req)
+				if bifrostErr != nil {
+					t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+				}
+				got = resp.ExtraFields.RoutingInfo
+			} else {
+				ch, bifrostErr := client.ChatCompletionStreamRequest(ctx, req)
+				if bifrostErr != nil {
+					t.Fatalf("stream failed: %s", bifrostErr.Error.Message)
+				}
+				for chunk := range ch {
+					if chunk.BifrostError != nil && chunk.BifrostError.Error != nil {
+						t.Fatalf("stream emitted an error chunk: %s", chunk.BifrostError.Error.Message)
+					}
+					if chunk.BifrostChatResponse != nil {
+						got = chunk.BifrostChatResponse.ExtraFields.RoutingInfo
+					}
+				}
+				// The transport writes stream response headers from this snapshot before the
+				// first chunk, so it must carry the requested route too.
+				snapshot, ok := ctx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo)
+				if !ok {
+					t.Fatal("no RoutingInfo snapshot on the context after the stream")
+				}
+				if snapshot.RequestedProvider != schemas.OpenAI || snapshot.RequestedModel != "gpt-4o-mini" {
+					t.Errorf("snapshot requested route = (%q, %q), want (openai, gpt-4o-mini)", snapshot.RequestedProvider, snapshot.RequestedModel)
+				}
+			}
+
+			plugin.mu.Lock()
+			defer plugin.mu.Unlock()
+			if plugin.preLLMHookCalls == 0 {
+				t.Fatal("PreLLMHook never ran")
+			}
+			if plugin.sawProvider != schemas.OpenAI || plugin.sawModel != "gpt-4o-mini" {
+				t.Errorf("PreLLMHook read requested route (%q, %q), want (openai, gpt-4o-mini)", plugin.sawProvider, plugin.sawModel)
+			}
+			if plugin.sawRoutedModel != "gpt-4o" {
+				t.Errorf("PreLLMHook request model = %q, want the rewritten gpt-4o", plugin.sawRoutedModel)
+			}
+			if got.Model != "gpt-4o" {
+				t.Errorf("RoutingInfo.Model = %q, want the rewritten gpt-4o", got.Model)
+			}
+			if got.RequestedProvider != schemas.OpenAI || got.RequestedModel != "gpt-4o-mini" {
+				t.Errorf("RoutingInfo requested route = (%q, %q), want (openai, gpt-4o-mini)", got.RequestedProvider, got.RequestedModel)
+			}
+		})
+	}
+}
+
 // TestClearAnthropicPassthroughForNonNativeProvider verifies that Anthropic raw-body
 // passthrough flags are cleared only when an Anthropic-integration request resolves to a
 // provider/model pair that doesn't speak the Anthropic Messages API natively (e.g. Bedrock).

@@ -5,17 +5,19 @@ import { ScrollArea } from "@/components/ui/scrollArea";
 import { useWarpAutoScroll } from "@/components/warp/useWarpAutoScroll";
 import { useWarpStream } from "@/components/warp/useWarpStream";
 import WarpComposer from "@/components/warp/warpComposer";
+import { resolveWarpModel, warpModelForRequest, warpModelKey, warpModels } from "@/components/warp/warpComposer.utils";
 import WarpHistory from "@/components/warp/warpHistory";
 import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
 import WarpQuestionCard from "@/components/warp/warpQuestion";
 import { indexStatusLabel, pendingWarpQuestion, shouldDrainQueue, turnsFromStoredMessages } from "@/components/warp/warpStream.utils";
-import { useWarp, type WarpTurn } from "@/lib/contexts/warpContext";
+import { useWarp } from "@/lib/contexts/warpContext";
 import { useGetWarpConfigQuery, useGetWarpLogIndexStatusQuery, useLazyGetWarpConversationQuery } from "@/lib/store/apis/warpApi";
 import type { WarpConversation } from "@/lib/types/warp";
 import { cn } from "@/lib/utils";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { ArrowDown, Database, History, Loader2, SquarePen, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 const STARTERS = [
 	"What did I spend on each provider in the last 7 days?",
@@ -43,21 +45,17 @@ export default function WarpPanel() {
 		// Saving settings refetches config; without isFetching a stale `configured: false` shows "not set up".
 		isFetching: isConfigFetching,
 		isError: isConfigError,
-	} = useGetWarpConfigQuery();
+		refetch: refetchConfig,
+		// Refetched each time the dock opens, so models an administrator added or removed since show up.
+	} = useGetWarpConfigQuery(undefined, { refetchOnMountOrArgChange: true });
+	// Changing Warp's settings is Warp Update; everyone else gets the panel without the routes into them.
+	const canConfigure = useRbac(RbacResource.Warp, RbacOperation.Update);
 
 	// The launcher unmounts when the dock opens, so focus would otherwise fall back to the body.
 	const closeRef = useRef<HTMLButtonElement>(null);
 	useEffect(() => {
 		if (warp?.isOpen) closeRef.current?.focus();
 	}, [warp?.isOpen]);
-
-	const appendTurn = warp?.appendTurn;
-	const onTurnComplete = useCallback(
-		(turn: WarpTurn) => {
-			if (turn.content || turn.error) appendTurn?.(turn);
-		},
-		[appendTurn],
-	);
 
 	const {
 		streamingText,
@@ -71,7 +69,7 @@ export default function WarpPanel() {
 		discard,
 		resetConversation,
 		openConversation,
-	} = useWarpStream({ onTurnComplete });
+	} = useWarpStream();
 
 	const { containerRef, contentRef, isPinned, scrollToBottom } = useWarpAutoScroll();
 
@@ -80,6 +78,19 @@ export default function WarpPanel() {
 	const [loadConversation] = useLazyGetWarpConversationQuery();
 
 	const isConfigured = config?.configured ?? false;
+
+	const models = useMemo(() => warpModels(config), [config]);
+	const selectedModel = resolveWarpModel(models, warp?.selectedModelKey ?? null);
+	const requestModel = warpModelForRequest(models, selectedModel);
+	// A turn that named a model and failed may have named one an administrator
+	// just removed. Rereading the config drops the switcher back to what is
+	// still exposed, so the retry does not repeat the same refusal.
+	const sentModelRef = useRef(false);
+	useEffect(() => {
+		if (!error || !sentModelRef.current) return;
+		sentModelRef.current = false;
+		void refetchConfig();
+	}, [error, refetchConfig]);
 
 	const [indexPollMs, setIndexPollMs] = useState(30000);
 	const { data: indexStatus, isError: isIndexStatusError } = useGetWarpLogIndexStatusQuery(undefined, {
@@ -156,7 +167,8 @@ export default function WarpPanel() {
 		clearQuestion();
 		// Sending re-pins the transcript, or the new message lands off-screen.
 		scrollToBottom();
-		void send(history, text);
+		sentModelRef.current = !!requestModel;
+		void send(history, text, requestModel);
 	};
 	askRef.current = ask;
 
@@ -238,7 +250,9 @@ export default function WarpPanel() {
 				</div>
 			</header>
 
-			{isConfigLoading || isConfigFetching ? (
+			{/* A refetch only replaces the view while the cached config says "not set up": that is the
+			    stale answer worth hiding. A configured Warp keeps its transcript and composer on screen. */}
+			{isConfigLoading || (isConfigFetching && !isConfigured) ? (
 				// An undefined config reads as unconfigured, so without this the setup prompt flashes on open.
 				<div className="flex min-h-0 flex-1 items-center justify-center px-6" data-testid="warp-config-loading">
 					<p className="text-muted-foreground text-xs">Loading Warp...</p>
@@ -270,12 +284,20 @@ export default function WarpPanel() {
 						<WarpIcon className="size-5" />
 					</span>
 					<p className="text-sm font-medium">{isDisabledButComplete ? "Warp is turned off" : "Warp isn't set up yet"}</p>
-					<p className="text-muted-foreground text-xs">
-						{isDisabledButComplete ? "Switch Enable Warp on to start asking questions." : "Choose a model for Warp to run on."}
-					</p>
-					<Button asChild size="sm" className="mt-1" data-testid="warp-configure-link">
-						<Link to="/workspace/config/warp">{isDisabledButComplete ? "Open Warp settings" : "Configure Warp"}</Link>
-					</Button>
+					{canConfigure ? (
+						<>
+							<p className="text-muted-foreground text-xs">
+								{isDisabledButComplete ? "Switch Enable Warp on to start asking questions." : "Choose a model for Warp to run on."}
+							</p>
+							<Button asChild size="sm" className="mt-1" data-testid="warp-configure-link">
+								<Link to="/workspace/config/warp">{isDisabledButComplete ? "Open Warp settings" : "Configure Warp"}</Link>
+							</Button>
+						</>
+					) : (
+						<p className="text-muted-foreground text-xs" data-testid="warp-ask-admin">
+							Ask an administrator to {isDisabledButComplete ? "turn Warp on" : "set Warp up"}.
+						</p>
+					)}
 				</div>
 			) : (
 				<div className="relative flex min-h-0 flex-1 flex-col">
@@ -378,8 +400,10 @@ export default function WarpPanel() {
 									warp.clear();
 								}
 							}}
-							provider={config?.provider}
-							model={config?.model}
+							models={models}
+							selectedModel={selectedModel}
+							onSelectModel={(model) => warp.selectModel(warpModelKey(model))}
+							canConfigure={canConfigure}
 							onSend={ask}
 							onQueue={(text) => setQueue((current) => [...current, text])}
 							// Stopping also drops queued follow-ups so they don't fire right after the cut.

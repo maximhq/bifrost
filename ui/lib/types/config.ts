@@ -347,6 +347,7 @@ export interface ProxyConfig {
 // Request types matching Go's schemas.RequestType
 export type RequestType =
 	| "list_models"
+	| "model_retrieve"
 	| "text_completion"
 	| "text_completion_stream"
 	| "chat_completion"
@@ -428,6 +429,7 @@ export interface AllowedRequests {
 	ocr_stream?: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
+	model_retrieve?: boolean;
 	rerank: boolean;
 	video_generation: boolean;
 	video_edit: boolean;
@@ -672,6 +674,8 @@ export interface CompatConfig {
 }
 
 // Core Bifrost configuration types
+// How far an upstream MCP server's initialize `instructions` travel: dropped, forwarded on
+// the /mcp gateway handshake, or additionally injected into LLM requests.
 export interface CoreConfig {
 	drop_excess_requests: boolean;
 	initial_pool_size: number;
@@ -700,12 +704,17 @@ export interface CoreConfig {
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
 	mcp_disable_auto_tool_inject: boolean;
+	mcp_max_instructions_per_client: number;
+	mcp_max_instructions_total: number;
 	mcp_enable_temp_token_auth: boolean;
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];
 	whitelisted_routes: string[];
 	hide_deleted_virtual_keys_in_filters: boolean;
+	// Default for virtual keys without an explicit delete_after_expire: the daily
+	// cleanup job deletes them once expired.
+	delete_expired_virtual_keys: boolean;
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	routing_chain_max_depth: number;
@@ -750,6 +759,8 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_code_mode_binding_level: "server",
 	mcp_tool_sync_interval: 10,
 	mcp_disable_auto_tool_inject: false,
+	mcp_max_instructions_per_client: 0,
+	mcp_max_instructions_total: 0,
 	mcp_enable_temp_token_auth: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],
@@ -757,6 +768,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	logging_headers: [],
 	whitelisted_routes: [],
 	hide_deleted_virtual_keys_in_filters: false,
+	delete_expired_virtual_keys: false,
 	hidden_request_types: [],
 	routing_chain_max_depth: 10,
 };

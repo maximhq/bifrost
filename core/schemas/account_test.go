@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -722,4 +723,29 @@ func TestIsMoonshotModel(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestApplyRequestRouting pins that RoutingInfo picks up the caller's route core stamped on the
+// context, and that a context without one (an SDK caller, or a nil context) leaves it empty.
+func TestApplyRequestRouting(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	ctx.SetValue(BifrostContextKeyRequestedProvider, OpenAI)
+	ctx.SetValue(BifrostContextKeyRequestedModel, "gpt-4o-mini")
+
+	info := BuildRoutingInfo(ctx, OpenAI, "gpt-4o", Key{Name: "openai-key"})
+	if info.RequestedProvider != OpenAI || info.RequestedModel != "gpt-4o-mini" {
+		t.Fatalf("requested route = (%q, %q), want (openai, gpt-4o-mini)", info.RequestedProvider, info.RequestedModel)
+	}
+	if info.Model != "gpt-4o" {
+		t.Fatalf("Model = %q, want the attempt's gpt-4o", info.Model)
+	}
+
+	empty := BuildRoutingInfo(NewBifrostContext(context.Background(), NoDeadline), OpenAI, "gpt-4o", Key{})
+	if empty.RequestedProvider != "" || empty.RequestedModel != "" {
+		t.Fatalf("requested route without a stamp = (%q, %q), want empty", empty.RequestedProvider, empty.RequestedModel)
+	}
+
+	var nilInfo *RoutingInfo
+	nilInfo.ApplyRequestRouting(ctx)
+	(&RoutingInfo{}).ApplyRequestRouting(nil)
 }

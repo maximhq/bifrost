@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -145,5 +146,31 @@ func TestToGeminiStreamBifrostError_RetryInfo(t *testing.T) {
 	_, err = processGeminiStreamChunk([]byte(`{"error":{"code":429,"message":"Resource exhausted.","status":"RESOURCE_EXHAUSTED"}}`))
 	if got := toGeminiStreamBifrostError(err).ExtraFields.RetryAfter; got != 0 {
 		t.Errorf("expected no RetryAfter without RetryInfo, got %d", got)
+	}
+}
+
+// A typed error whose payload omitted "code" stores Code's int zero value, which is
+// indistinguishable from a real status. Normalization still answers 502 to the caller,
+// but ClassifyFailure reads the raw 0 and never retries, so the zero must be replaced.
+func TestToGeminiStreamBifrostError_ZeroCodeGetsGatewayStatus(t *testing.T) {
+	_, err := processGeminiStreamChunk([]byte(`{"error":{"message":"Resource exhausted."}}`))
+	bifrostErr := toGeminiStreamBifrostError(err)
+	if bifrostErr.StatusCode == nil {
+		t.Fatal("StatusCode is nil, want 502")
+	}
+	if *bifrostErr.StatusCode != fasthttp.StatusBadGateway {
+		t.Fatalf("StatusCode = %d, want %d", *bifrostErr.StatusCode, fasthttp.StatusBadGateway)
+	}
+}
+
+// A stream error whose payload does not parse as a typed API error carries no status.
+// Left nil it reached metrics as a caller 400 and the retry loop could not classify it.
+func TestToGeminiStreamBifrostError_UnparsedPayloadGetsGatewayStatus(t *testing.T) {
+	err := toGeminiStreamBifrostError(errors.New("malformed stream payload"))
+	if err.StatusCode == nil {
+		t.Fatal("StatusCode is nil, want 502")
+	}
+	if *err.StatusCode != fasthttp.StatusBadGateway {
+		t.Fatalf("StatusCode = %d, want %d", *err.StatusCode, fasthttp.StatusBadGateway)
 	}
 }

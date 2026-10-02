@@ -938,7 +938,7 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToCohereEmbeddingRequest(request), nil
+			return ToCohereEmbeddingRequest(request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1277,6 +1277,11 @@ func (provider *CohereProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	}
 
 	return bifrostResponse, nil
+}
+
+// ModelRetrieve is not supported by the Cohere provider.
+func (provider *CohereProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Cohere provider.

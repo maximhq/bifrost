@@ -40,6 +40,10 @@ func (m *testClientManager) GetToolPerClient(ctx context.Context) map[string][]s
 	return m.tools
 }
 
+func (m *testClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+	return nil
+}
+
 func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {
 	return nil
 }

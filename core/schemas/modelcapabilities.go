@@ -182,6 +182,9 @@ type ModelCapabilities struct {
 	// budget. False on models that reject it, which need the config omitted.
 	SupportsReasoningDisable *bool `json:"supports_reasoning_disable,omitempty"`
 
+	// Model accepts thinking:{type:"between_tools"} (no up-front thinking).
+	SupportsBetweenToolsThinking *bool `json:"supports_between_tools_thinking,omitempty"`
+
 	// Model accepts a self-managed thinking budget (Gemini thinkingBudget: -1).
 	SupportsDynamicReasoningBudget *bool `json:"supports_dynamic_reasoning_budget,omitempty"`
 

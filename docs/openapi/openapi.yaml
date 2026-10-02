@@ -160,6 +160,8 @@ tags:
     description: Webhook endpoint management and signed async-job delivery history
   - name: Notifications
     description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
+  - name: Background Jobs
+    description: Status, progress and cancellation of durable background jobs (cost recalculation, Warp log indexing, and others)
   - name: Warp
     description: Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry
 
@@ -1111,7 +1113,15 @@ paths:
   /api/audit-logs/{id}/verify:
     $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-verify"
 
-  # MCP Tool Groups
+  # Virtual MCPs
+  /api/mcp/virtual-mcps:
+    $ref: "./paths/management/virtualmcps.yaml#/virtual-mcps"
+  /api/mcp/virtual-mcps/{id}:
+    $ref: "./paths/management/virtualmcps.yaml#/virtual-mcps-by-id"
+  /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}:
+    $ref: "./paths/management/virtualmcps.yaml#/virtual-mcps-virtual-key"
+
+  # MCP Tool Groups (Enterprise; deprecated alias for /api/mcp/virtual-mcps)
   /api/mcp/tool-groups:
     $ref: "./paths/management/mcptoolgroups.yaml#/mcp-tool-groups"
   /api/mcp/tool-groups/{id}:
@@ -1318,6 +1328,12 @@ paths:
   # Notifications
   /api/notifications:
     $ref: "./paths/management/notifications.yaml#/notifications"
+
+  # Background jobs
+  /api/sidekiq/jobs:
+    $ref: "./paths/management/sidekiq.yaml#/sidekiq-jobs"
+  /api/sidekiq/jobs/{id}/cancel:
+    $ref: "./paths/management/sidekiq.yaml#/sidekiq-job-cancel"
 
   # Warp
   /api/warp/config:
@@ -2083,7 +2099,20 @@ components:
       $ref: "./schemas/management/notifications.yaml#/Notification"
     NotificationList:
       $ref: "./schemas/management/notifications.yaml#/NotificationList"
+    # Background jobs
+    SidekiqJobStatus:
+      $ref: "./schemas/management/sidekiq.yaml#/SidekiqJobStatus"
+    SidekiqJobProgress:
+      $ref: "./schemas/management/sidekiq.yaml#/SidekiqJobProgress"
+    SidekiqJob:
+      $ref: "./schemas/management/sidekiq.yaml#/SidekiqJob"
+    SidekiqJobList:
+      $ref: "./schemas/management/sidekiq.yaml#/SidekiqJobList"
+    SidekiqJobCancelResponse:
+      $ref: "./schemas/management/sidekiq.yaml#/SidekiqJobCancelResponse"
     # Warp
+    WarpModel:
+      $ref: "./schemas/management/warp.yaml#/WarpModel"
     WarpConfig:
       $ref: "./schemas/management/warp.yaml#/WarpConfig"
     WarpConfigInput:

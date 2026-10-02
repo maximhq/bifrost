@@ -1608,3 +1608,54 @@ func TestResponsesToolCallAsyncSurvives(t *testing.T) {
 		}
 	}
 }
+
+// The Responses API carries tool_usage at the top level; internally it rides on usage for pricing.
+func TestBifrostResponsesResponseToolUsageIsTopLevelOnTheWire(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","output":[],
+		"tool_usage":{"web_search":{"num_requests":2}},
+		"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`
+	var resp BifrostResponsesResponse
+	require.NoError(t, json.Unmarshal([]byte(body), &resp))
+	require.NotNil(t, resp.Usage.ToolUsage, "top-level tool_usage must reach usage for pricing")
+	assert.Equal(t, 2, resp.Usage.ToolUsage.WebSearch.NumRequests)
+	require.NotNil(t, resp.ToolUsage)
+	assert.Equal(t, 2, resp.ToolUsage.WebSearch.NumRequests)
+
+	// Marshal must not mutate the caller's response.
+	defer func() { assert.NotNil(t, resp.Usage.ToolUsage, "marshal cleared the caller's usage.tool_usage") }()
+
+	out, err := json.Marshal(resp)
+	require.NoError(t, err)
+	var wire map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(out, &wire))
+	assert.JSONEq(t, `{"web_search":{"num_requests":2}}`, string(wire["tool_usage"]))
+	assert.NotContains(t, string(wire["usage"]), "tool_usage", "usage must not carry tool_usage on the wire")
+
+	// Streamed response.completed nests the response; same shape inside it.
+	event := BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCompleted, Response: &resp}
+	out, err = json.Marshal(event)
+	require.NoError(t, err)
+	var streamed struct {
+		Response map[string]json.RawMessage `json:"response"`
+	}
+	require.NoError(t, json.Unmarshal(out, &streamed))
+	assert.JSONEq(t, `{"web_search":{"num_requests":2}}`, string(streamed.Response["tool_usage"]))
+	assert.NotContains(t, string(streamed.Response["usage"]), "tool_usage")
+
+	// Set only on usage (how providers fill it): still sent top-level only.
+	out, err = json.Marshal(BifrostResponsesResponse{Usage: &ResponsesResponseUsage{TotalTokens: 1, ToolUsage: &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 4}}}})
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(out, &wire))
+	assert.JSONEq(t, `{"web_search":{"num_requests":4}}`, string(wire["tool_usage"]))
+	assert.NotContains(t, string(wire["usage"]), "tool_usage")
+
+	// A response without tool usage emits no tool_usage key.
+	out, err = json.Marshal(BifrostResponsesResponse{Usage: &ResponsesResponseUsage{TotalTokens: 1}})
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "tool_usage")
+
+	// Round trip through the stream event parser too.
+	var parsed BifrostResponsesStreamResponse
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"response.completed","sequence_number":3,"response":`+body+`}`), &parsed))
+	assert.Equal(t, 2, parsed.Response.Usage.ToolUsage.WebSearch.NumRequests)
+}

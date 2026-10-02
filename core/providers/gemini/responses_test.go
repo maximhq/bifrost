@@ -11,6 +11,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -318,4 +319,129 @@ func TestGeminiResponsesStreamContentlessFinishReasonReachesTerminal(t *testing.
 	}
 	assertGeminiResponsesStatus(t, terminal.Response.Status, terminal.Response.IncompleteDetails,
 		schemas.ResponsesResponseStatusIncomplete, schemas.ResponsesResponseIncompleteReasonMaxOutputTokens)
+}
+
+// responsesToolOutputHasRefKey reports whether any object at any depth of raw has a "$ref"
+// key. Gemini reads {"$ref": "<displayName>"} inside function_response.response as a pointer
+// to a multimodal part (#7694).
+func responsesToolOutputHasRefKey(raw []byte) bool {
+	var found bool
+	var walk func(v gjson.Result)
+	walk = func(v gjson.Result) {
+		v.ForEach(func(key, value gjson.Result) bool {
+			if v.IsObject() && key.String() == "$ref" {
+				found = true
+				return false
+			}
+			if value.IsObject() || value.IsArray() {
+				walk(value)
+			}
+			return !found
+		})
+	}
+	walk(gjson.ParseBytes(raw))
+	return found
+}
+
+// TestConvertResponsesMessagesToGeminiContents_FunctionOutputRefKeyStaysOpaque pins the
+// Responses API twin of #7694: a function_call_output whose text is a JSON object holding a
+// "$ref" key anywhere must reach Gemini as an opaque string under "output", not embedded as
+// raw JSON, for both the string form and the content-block form of the output. Output without
+// "$ref" keeps the structured embedding.
+func TestConvertResponsesMessagesToGeminiContents_FunctionOutputRefKeyStaysOpaque(t *testing.T) {
+	const refOutput = `{"schema":{"$ref":"#/components/schemas/SOM_computer_post_response"}}`
+	const plainOutput = `{"temperature":22,"condition":"sunny"}`
+
+	build := func(output *schemas.ResponsesToolMessageOutputStruct) []schemas.ResponsesMessage {
+		return []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Fetch the spec, then reply ok.")},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("c1"),
+					Name:      schemas.Ptr("bash"),
+					Arguments: schemas.Ptr(`{"command":"cat spec.json"}`),
+				},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("c1"),
+					Name:   schemas.Ptr("bash"),
+					Output: output,
+				},
+			},
+		}
+	}
+
+	functionResponse := func(t *testing.T, msgs []schemas.ResponsesMessage) []byte {
+		t.Helper()
+		contents, _, err := convertResponsesMessagesToGeminiContents(msgs, "gemini-flash-latest", schemas.Gemini)
+		if err != nil {
+			t.Fatalf("convert: %v", err)
+		}
+		for _, c := range contents {
+			for _, p := range c.Parts {
+				if p.FunctionResponse != nil {
+					return p.FunctionResponse.Response
+				}
+			}
+		}
+		t.Fatal("no functionResponse part produced")
+		return nil
+	}
+
+	t.Run("string output with nested $ref is wrapped as opaque text", func(t *testing.T) {
+		resp := functionResponse(t, build(&schemas.ResponsesToolMessageOutputStruct{
+			ResponsesToolCallOutputStr: schemas.Ptr(refOutput),
+		}))
+		if responsesToolOutputHasRefKey(resp) {
+			t.Errorf("function_response.response must not carry a $ref key: %s", resp)
+		}
+		if got := gjson.GetBytes(resp, "output"); got.Type != gjson.String || got.String() != refOutput {
+			t.Errorf("tool text must survive verbatim as a string under \"output\", got %s", resp)
+		}
+	})
+
+	t.Run("text block output with nested $ref is wrapped as opaque text", func(t *testing.T) {
+		resp := functionResponse(t, build(&schemas.ResponsesToolMessageOutputStruct{
+			ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type: schemas.ResponsesInputMessageContentBlockTypeText,
+				Text: schemas.Ptr(refOutput),
+			}},
+		}))
+		if responsesToolOutputHasRefKey(resp) {
+			t.Errorf("function_response.response must not carry a $ref key: %s", resp)
+		}
+		if got := gjson.GetBytes(resp, "output"); got.Type != gjson.String || got.String() != refOutput {
+			t.Errorf("tool text must survive verbatim as a string under \"output\", got %s", resp)
+		}
+	})
+
+	t.Run("unicode-escaped $ref key is wrapped as opaque text", func(t *testing.T) {
+		// JSON allows any character of a key to be escaped; "$r\u0065f" decodes to "$ref".
+		escaped := `{"schema":{"$r\u0065f":"#/x"}}`
+		resp := functionResponse(t, build(&schemas.ResponsesToolMessageOutputStruct{
+			ResponsesToolCallOutputStr: schemas.Ptr(escaped),
+		}))
+		if responsesToolOutputHasRefKey(resp) {
+			t.Errorf("function_response.response must not carry a $ref key: %s", resp)
+		}
+		if got := gjson.GetBytes(resp, "output"); got.Type != gjson.String || got.String() != escaped {
+			t.Errorf("tool text must survive verbatim as a string under \"output\", got %s", resp)
+		}
+	})
+
+	t.Run("JSON output without $ref keeps the structured embedding", func(t *testing.T) {
+		resp := functionResponse(t, build(&schemas.ResponsesToolMessageOutputStruct{
+			ResponsesToolCallOutputStr: schemas.Ptr(plainOutput),
+		}))
+		if got := gjson.GetBytes(resp, "output"); !got.IsObject() || got.Get("temperature").Int() != 22 {
+			t.Errorf("plain JSON output must still be embedded as a structured object, got %s", resp)
+		}
+	})
 }

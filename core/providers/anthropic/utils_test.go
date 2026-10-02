@@ -4069,7 +4069,13 @@ func betaHeaderCorpus() map[string]string {
 		"both message signals at once":                                  `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"organization"}},{"type":"document","source":{"type":"file","file_id":"file_123"}}]}]}`,
 		"signals on a later message, not the first":                     `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"one"}]},{"role":"assistant","content":[{"type":"text","text":"two"}]},{"role":"user","content":[{"type":"document","source":{"type":"file","file_id":"file_9"}}]}]}`,
 		"string content messages are skipped":                           `{"model":"` + model + `","messages":[{"role":"user","content":"plain string"}]}`,
-		"no messages field at all":                                      `{"model":"` + model + `","max_tokens":64}`,
+		// Per-message effort is a sibling of content on the message itself, not a block
+		// field, so it is read before the content-array gate; the effort-only form has an
+		// empty content array and a string-content system message may carry it too.
+		"per-message output_config.effort on an effort-only system message":   `{"model":"claude-opus-5-5","output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":"low"}}]}`,
+		"per-message output_config.effort on a string-content system message": `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":"be brief","output_config":{"effort":"low"}}]}`,
+		"per-message output_config without effort (must NOT trigger)":         `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":null}}]}`,
+		"no messages field at all":                                            `{"model":"` + model + `","max_tokens":64}`,
 
 		// --- scope found elsewhere; the messages branch must not double-add or mask it ---
 		"scoped cache_control in system": `{"model":"` + model + `","system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","scope":"organization"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
@@ -4242,6 +4248,12 @@ func TestAccumulateResponsesUsage_BillsWebSearch(t *testing.T) {
 	if got := *billed.CompletionTokensDetails.NumSearchQueries; got != 2 {
 		t.Fatalf("billed usage NumSearchQueries = %d, want 2", got)
 	}
+	if got := usage.ToolUsage.WebSearch.NumRequests; got != 2 {
+		t.Fatalf("response usage ToolUsage web search = %d, want 2", got)
+	}
+	if got := billed.ToolUsage.WebSearch.NumRequests; got != 2 {
+		t.Fatalf("billed usage ToolUsage web search = %d, want 2", got)
+	}
 }
 
 // TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo verifies the chat
@@ -4278,6 +4290,9 @@ func TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo(t *testing.T) {
 	}
 	if got := *result.Usage.CompletionTokensDetails.NumSearchQueries; got != 3 {
 		t.Fatalf("chat usage NumSearchQueries = %d, want 3", got)
+	}
+	if result.Usage.ToolUsage == nil || result.Usage.ToolUsage.WebSearch == nil || result.Usage.ToolUsage.WebSearch.NumRequests != 3 {
+		t.Fatalf("chat usage ToolUsage = %+v, want web_search.num_requests 3", result.Usage.ToolUsage)
 	}
 	if result.InferenceGeo == nil || *result.InferenceGeo != "us" {
 		t.Fatalf("inference_geo not forwarded; got %v", result.InferenceGeo)
@@ -5207,5 +5222,86 @@ func TestBetaProbeNeverMutatesTheOutboundBody(t *testing.T) {
 	}
 	if got := providerUtils.GetJSONField(body, "tools.0.input_schema.properties.q.type").String(); got != "string" {
 		t.Errorf("the nested schema was altered: tools.0.input_schema.properties.q.type = %q, want \"string\"", got)
+	}
+}
+
+// TestAddMissingBetaHeaders_PerMessageEffortInjectsMidConversationOutputConfig: a
+// per-message output_config.effort (Pi's mid-conversation effort override) is gated by
+// beta mid-conversation-output-config-2026-07-01. Bifrost derives beta headers from the
+// request body on both the typed and the raw-body path, so the header must be injected
+// on both, and only when the per-message field is present.
+func TestAddMissingBetaHeaders_PerMessageEffortInjectsMidConversationOutputConfig(t *testing.T) {
+	const want = "mid-conversation-output-config-2026-07-01"
+	withoutOverride := `{"model":"claude-opus-5-5","max_tokens":128,"output_config":{"effort":"high"},` +
+		`"messages":[{"role":"user","content":"Say hello."}]}`
+
+	t.Run("typed path", func(t *testing.T) {
+		var req AnthropicMessageRequest
+		if err := schemas.Unmarshal([]byte(perMessageEffortPiBody), &req); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if err := AddMissingBetaHeadersToContext(ctx, &req, schemas.Anthropic); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+		}
+		merged := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic)
+		if !slices.Contains(merged, want) {
+			t.Fatalf("typed path did not inject %q for a per-message output_config.effort; got %v", want, merged)
+		}
+	})
+
+	t.Run("raw-body path", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(perMessageEffortPiBody), schemas.Anthropic); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+		}
+		merged := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic)
+		if !slices.Contains(merged, want) {
+			t.Fatalf("raw-body path did not inject %q for a per-message output_config.effort; got %v", want, merged)
+		}
+	})
+
+	t.Run("not injected without the per-message field", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(withoutOverride), schemas.Anthropic); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+		}
+		merged := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic)
+		if slices.Contains(merged, want) {
+			t.Fatalf("%q injected although no message carries output_config: %v", want, merged)
+		}
+	})
+}
+
+// TestDefaultSupportsMidConversationSystem_ModelList pins the documented model list for
+// mid-conversation system messages: Opus 4.8+, Sonnet 5.5 (not Sonnet 5), Fable/Mythos.
+// Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
+func TestDefaultSupportsMidConversationSystem_ModelList(t *testing.T) {
+	for _, tc := range []struct {
+		model string
+		want  bool
+	}{
+		{"claude-opus-4-8", true},
+		{"claude-opus-5", true},
+		{"claude-opus-5-5", true},
+		{"claude-sonnet-5-5", true},
+		{"claude-fable-5-1", true},
+		{"claude-sonnet-5", false},
+		{"claude-opus-4-7", false},
+		{"claude-haiku-4-5", false},
+	} {
+		if got := DefaultSupportsMidConversationSystem(schemas.Anthropic, tc.model); got != tc.want {
+			t.Errorf("DefaultSupportsMidConversationSystem(anthropic, %q) = %v, want %v", tc.model, got, tc.want)
+		}
+	}
+	if DefaultSupportsMidConversationSystem(schemas.Vertex, "claude-sonnet-5-5") {
+		t.Error("mid-conversation system messages are Anthropic-API only; Vertex must stay false")
+	}
+	// Per-message effort is the narrower gate: Opus 4.8 has system messages but no per-turn effort.
+	if DefaultSupportsMidConversationOutputConfig(schemas.Anthropic, "claude-opus-4-8") {
+		t.Error("Opus 4.8 must not report per-message effort support")
+	}
+	if !DefaultSupportsMidConversationOutputConfig(schemas.Anthropic, "claude-sonnet-5-5") {
+		t.Error("Sonnet 5.5 must report per-message effort support")
 	}
 }

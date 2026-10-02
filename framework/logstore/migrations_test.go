@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -528,6 +530,26 @@ func TestPerformanceIndexesCoverProjectIDs(t *testing.T) {
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_project_id"])
 }
 
+// TestPerformanceIndexesHaveNoDuplicateColumns keeps the background builder from building the
+// same index twice under two names: a second index on the same columns costs a full build on
+// every upgraded deployment and a write on every insert, and the planner still picks one. A
+// partial index counts as a duplicate of a full one on the same columns, since an equality
+// filter on the column already implies its IS NOT NULL predicate.
+func TestPerformanceIndexesHaveNoDuplicateColumns(t *testing.T) {
+	onColumns := regexp.MustCompile(`(?i)\bON\s+(\w+)\s*(USING\s+\w+\s*)?\(([^)]*)\)`)
+	seen := map[string]string{}
+	for _, idx := range performanceIndexes {
+		match := onColumns.FindStringSubmatch(idx.sql)
+		require.NotNil(t, match, "cannot read the columns of %s from %q", idx.name, idx.sql)
+		key := strings.ToLower(strings.TrimSpace(match[1]+" "+strings.TrimSpace(match[2])) + "(" + strings.Join(strings.Fields(match[3]), " ") + ")")
+		if other, ok := seen[key]; ok {
+			t.Errorf("%s and %s both index %s", other, idx.name, key)
+			continue
+		}
+		seen[key] = idx.name
+	}
+}
+
 // TestMigrationAddMCPGovernanceSnapshots verifies the attribution columns are
 // additive, idempotent, and leave rows written before them intact — those rows
 // keep their bare ids, which is the accepted cost of not rewriting history.
@@ -728,4 +750,48 @@ func TestWarpRollbackLocksTablesInWriterOrder(t *testing.T) {
 	require.NotEqual(t, -1, messagesLock, "rollback must lock warp_messages")
 	require.Less(t, conversationsLock, messagesLock,
 		"locks must follow writer order (conversation first), or a concurrent append can deadlock the rollback")
+}
+
+// ========== Embedding Input Column Migration Tests ==========
+
+// runEmbeddingInputColumnCases pins that the migration only adds the column and leaves existing rows NULL.
+func runEmbeddingInputColumnCases(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	db.Exec("DROP TABLE IF EXISTS logs")
+	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
+	db.Exec("DELETE FROM migrations WHERE id = 'logs_add_embedding_input_column'")
+	require.NoError(t, db.Exec(`CREATE TABLE logs (id VARCHAR(255) PRIMARY KEY, object_type VARCHAR(255) NOT NULL, input_history TEXT)`).Error)
+	t.Cleanup(func() {
+		db.Exec("DROP TABLE IF EXISTS logs")
+		db.Exec("DELETE FROM migrations WHERE id = 'logs_add_embedding_input_column'")
+	})
+
+	history := `[{"role":"user","content":[{"type":"text","text":"hello"}]}]`
+	require.NoError(t, db.Exec("INSERT INTO logs (id, object_type, input_history) VALUES (?, ?, ?)", "emb-1", "embedding", history).Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddEmbeddingInputColumn(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&Log{}, "embedding_input"))
+
+	var result struct {
+		EmbeddingInput *string `gorm:"column:embedding_input"`
+	}
+	require.NoError(t, db.Table("logs").Select("embedding_input").Where("id = ?", "emb-1").Scan(&result).Error)
+	assert.Nil(t, result.EmbeddingInput, "historical rows are not backfilled; the UI falls back to input_history")
+
+	require.NoError(t, migrationAddEmbeddingInputColumn(ctx, db, testLogger{}), "re-run should be a no-op")
+}
+
+func TestMigrationAddEmbeddingInputColumn_Postgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	runEmbeddingInputColumnCases(t, db)
+}
+
+func TestMigrationAddEmbeddingInputColumn_SQLite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	runEmbeddingInputColumnCases(t, db)
 }
