@@ -1204,6 +1204,9 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			url := string(ctx.Request.URI().PathOriginal())
 			// We skip authorization for the login route
 			if shouldSkip(authConfig, url) {
+				// No credential was checked, so handlers that gate on genuine auth
+				// must not mistake a whitelisted request for an authenticated admin.
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
 				next(ctx)
 				return
 			}
