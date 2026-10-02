@@ -184948,6 +184948,192 @@
           }]
         }
       ]
+    },
+    {
+      "name": "137. Catalog URL scheme over the API (catalog-url-scheme)",
+      "description": "The pricing, model-parameters, and MCP library catalog URLs accept the file:// scheme only when set in config.json (air-gapped deployments). Over PUT /api/config a file:// value is refused with 400 before any state is touched, for every one of the three fields and regardless of whether the path exists. The openai keyword is only a harness filter label; no provider calls are made and nothing is persisted.",
+      "item": [
+        {
+          "name": "openai catalog-url-scheme: PUT /api/config rejects file:// pricing_url",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The datasheet and catalog URL fields are validated before PUT /api/config touches any state,",
+                  "// so a rejected request leaves the running configuration exactly as it was.",
+                  "pm.test('catalog-url-scheme pricing_url: PUT /api/config answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('catalog-url-scheme pricing_url: the error names where file:// belongs', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.include('config.json');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7}, \"framework_config\": {\"pricing_url\": \"file:///etc/hostname\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai catalog-url-scheme: PUT /api/config rejects file:// model_parameters_url",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The datasheet and catalog URL fields are validated before PUT /api/config touches any state,",
+                  "// so a rejected request leaves the running configuration exactly as it was.",
+                  "pm.test('catalog-url-scheme model_parameters_url: PUT /api/config answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('catalog-url-scheme model_parameters_url: the error names where file:// belongs', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.include('config.json');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7}, \"framework_config\": {\"model_parameters_url\": \"file:///etc/hostname\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai catalog-url-scheme: PUT /api/config rejects file:// mcp_library_url",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The datasheet and catalog URL fields are validated before PUT /api/config touches any state,",
+                  "// so a rejected request leaves the running configuration exactly as it was.",
+                  "pm.test('catalog-url-scheme mcp_library_url: PUT /api/config answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('catalog-url-scheme mcp_library_url: the error names where file:// belongs', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.include('config.json');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7}, \"framework_config\": {\"mcp_library_url\": \"file:///etc/hostname\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai catalog-url-scheme: PUT /api/config rejects relative file:// pricing_url even for a missing path",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The datasheet and catalog URL fields are validated before PUT /api/config touches any state,",
+                  "// so a rejected request leaves the running configuration exactly as it was.",
+                  "pm.test('catalog-url-scheme pricing_url: PUT /api/config answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('catalog-url-scheme pricing_url: the error names where file:// belongs', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.include('config.json');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7}, \"framework_config\": {\"pricing_url\": \"file://./does-not-exist.json\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

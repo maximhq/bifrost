@@ -402,6 +402,19 @@ func (h *WebhookHandler) testWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Webhook endpoint is disabled")
 		return
 	}
+	// An endpoint registered with allow_private_network may point at a
+	// loopback or private-network receiver, and this response reports that
+	// receiver's status. For a caller let through only because dashboard auth
+	// is unconfigured (BifrostContextKeyAuthBypassed) that is a probe of the
+	// gateway's own network, so the test fire requires a real credential - the
+	// same scoping rejectPrivateMCPTargetIfAuthBypassed applies to MCP
+	// clients. Public endpoints and scheduled deliveries are unaffected.
+	if endpoint.AllowPrivateNetwork {
+		if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed {
+			SendError(ctx, fasthttp.StatusForbidden, "unauthenticated callers cannot test webhook endpoints that allow private-network delivery; set an admin password to allow this")
+			return
+		}
+	}
 	// The event to sample is optional; it defaults to the endpoint's first
 	// subscription and must be one the endpoint would actually receive.
 	event := endpoint.Events[0]

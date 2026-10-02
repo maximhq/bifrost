@@ -94147,6 +94147,16 @@
               }
             }
           },
+          "403": {
+            "description": "The endpoint allows private-network delivery and the caller is not authenticated (dashboard auth unconfigured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Resource not found",
             "content": {

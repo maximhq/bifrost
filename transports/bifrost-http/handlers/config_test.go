@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -268,15 +267,19 @@ func TestGetPasswordPolicyFailures(t *testing.T) {
 // The custom pricing page sends "" when the user clears the field; an empty
 // pricing_url or model_parameters_url means "use the built-in datasheet URL".
 func TestUpdateConfig_EmptyDatasheetURLsResetToDefaults(t *testing.T) {
+	// The datasheet server below is loopback-bound; the accessibility check refuses loopback
+	// by default, so route its dial through a plain dialer for this test only.
+	prevDial := checkURLAccessibilityDialContext
+	checkURLAccessibilityDialContext = (&net.Dialer{}).DialContext
+	t.Cleanup(func() { checkURLAccessibilityDialContext = prevDial })
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
 	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
 
-	// A file:// URL passes the accessibility check without network access.
-	custom := filepath.Join(t.TempDir(), "datasheet.json")
-	require.NoError(t, os.WriteFile(custom, []byte("{}"), 0o600))
-	customURL := "file://" + custom
+	// A loopback datasheet server passes the accessibility check; file:// URLs
+	// are refused over the API (TestUpdateConfig_RejectsFileURLsOverAPI).
+	customURL := newDatasheetServer(t).URL
 
 	save := func(t *testing.T, pricingURL, modelParamsURL string) {
 		t.Helper()
@@ -317,16 +320,18 @@ func (failingFrameworkConfigStore) UpdateFrameworkConfig(context.Context, *confi
 // published to runtime, so a failed store write does not leave the in-memory
 // config pointing at URLs the database never saved.
 func TestUpdateConfig_FrameworkConfigStoreFailureLeavesRuntimeUnchanged(t *testing.T) {
+	// The datasheet server below is loopback-bound; the accessibility check refuses loopback
+	// by default, so route its dial through a plain dialer for this test only.
+	prevDial := checkURLAccessibilityDialContext
+	checkURLAccessibilityDialContext = (&net.Dialer{}).DialContext
+	t.Cleanup(func() { checkURLAccessibilityDialContext = prevDial })
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(failingFrameworkConfigStore{store}, configtables.MCPServerAuthModeHeaders, false)
 	before := cfg.FrameworkConfig
 	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
 
-	custom := filepath.Join(t.TempDir(), "datasheet.json")
-	require.NoError(t, os.WriteFile(custom, []byte("{}"), 0o600))
-
-	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_url":"file://` + custom + `"}}`)
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_url":"` + newDatasheetServer(t).URL + `"}}`)
 	h.updateConfig(ctx)
 	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	assert.Same(t, before, cfg.FrameworkConfig, "runtime framework config must not change when the store write fails")
@@ -394,4 +399,100 @@ func TestValidateMCPInstructionCaps(t *testing.T) {
 	err := validateMCPInstructionCaps(20000, 16384)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "must not exceed")
+}
+
+// newDatasheetServer serves an empty JSON datasheet on loopback.
+func newDatasheetServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestCheckURLAccessibility_RejectsFileURLs: file:// datasheet and catalog
+// URLs are an operator feature of config.json (air-gapped deployments) and are
+// refused when they arrive over the HTTP API, whatever the path points at.
+func TestCheckURLAccessibility_RejectsFileURLs(t *testing.T) {
+	for _, raw := range []string{"file:///etc/hostname", "file://./pricing.json", "file:pricing.json", "FILE:///etc/hostname"} {
+		err := checkURLAccessibility(raw)
+		require.Error(t, err, raw)
+		assert.Contains(t, err.Error(), "config.json", raw)
+	}
+}
+
+// TestCheckURLAccessibility_RefusesRedirectToLinkLocal: the entry host is a
+// reachable loopback server whose 302 points at the cloud metadata address.
+// The hop must be refused, and the caller-facing error must not name the
+// target or carry the transport detail.
+func TestCheckURLAccessibility_RefusesRedirectToLinkLocal(t *testing.T) {
+	SetLogger(&mockLogger{})
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	err := checkURLAccessibility(redirect.URL)
+	require.Error(t, err)
+	assert.Equal(t, "url is not reachable", err.Error())
+}
+
+// TestCheckURLAccessibility_DoesNotReflectTransportErrors: a non-HTTP service
+// greets with a banner that net/http folds into its parse error. That detail
+// is for the debug log, never for the response body.
+func TestCheckURLAccessibility_DoesNotReflectTransportErrors(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Write([]byte("SSH-2.0-OpenSSH_9.6 Ubuntu-3ubuntu0.1\r\n"))
+			conn.Close()
+		}
+	}()
+
+	err = checkURLAccessibility("http://" + ln.Addr().String() + "/")
+	require.Error(t, err)
+	assert.Equal(t, "url is not reachable", err.Error())
+	assert.NotContains(t, strings.ToLower(err.Error()), "openssh")
+
+	// A refused port reads the same as a banner: no open/closed oracle.
+	ln.Close()
+	err = checkURLAccessibility("http://" + ln.Addr().String() + "/")
+	require.Error(t, err)
+	assert.Equal(t, "url is not reachable", err.Error())
+}
+
+// TestUpdateConfig_RejectsFileURLsOverAPI pins the API-side rule for all three
+// catalog URLs: PUT /api/config answers 400 and persists nothing.
+func TestUpdateConfig_RejectsFileURLsOverAPI(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	for _, field := range []string{"pricing_url", "model_parameters_url", "mcp_library_url"} {
+		t.Run(field, func(t *testing.T) {
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"` + field + `":"file:///etc/hostname"}}`)
+			h.updateConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), "config.json")
+		})
+	}
+	persisted, err := store.GetFrameworkConfig(bgCtx())
+	require.NoError(t, err)
+	if persisted != nil {
+		for _, got := range []*string{persisted.PricingURL, persisted.ModelParametersURL, persisted.MCPLibraryURL} {
+			if got != nil {
+				assert.NotContains(t, *got, "file://")
+			}
+		}
+	}
 }
