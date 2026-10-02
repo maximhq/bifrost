@@ -1562,6 +1562,128 @@ func TestValidateConfigSchema_VertexKeyConfig_MissingRegion(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity(t *testing.T) {
+	// A federation block with only an audience is the minimal valid shape.
+	validConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"aws_workload_identity": {
+								"audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/eks/providers/aws",
+								"service_account_email": "vertex@my-gcp-project.iam.gserviceaccount.com",
+								"token_lifetime_seconds": 1800,
+								"aws_region": "us-east-1",
+								"aws_role_arn": "env.VERTEX_AWS_ROLE_ARN"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected Vertex key with aws_workload_identity to pass validation, got: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity_MissingAudience(t *testing.T) {
+	invalidConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"aws_workload_identity": {
+								"service_account_email": "vertex@my-gcp-project.iam.gserviceaccount.com"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Error("expected aws_workload_identity without 'audience' to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity_UnknownField(t *testing.T) {
+	invalidConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"aws_workload_identity": {
+								"audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/eks/providers/aws",
+								"pool_id": "eks"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Error("expected unknown field inside aws_workload_identity to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity_ExcludesAuthCredentials(t *testing.T) {
+	// Federation and a credentials JSON are two different identities; the schema must refuse both at once.
+	invalidConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"auth_credentials": "{\"type\":\"service_account\"}",
+							"aws_workload_identity": {
+								"audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/eks/providers/aws"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Error("expected auth_credentials alongside aws_workload_identity to fail validation")
+	}
+
+	// An empty auth_credentials string, as written by the UI when it clears the JSON tab, is fine.
+	emptyCredentials := strings.Replace(invalidConfig, `"auth_credentials": "{\"type\":\"service_account\"}"`, `"auth_credentials": ""`, 1)
+	if err := ValidateConfigSchema([]byte(emptyCredentials), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected empty auth_credentials alongside aws_workload_identity to pass validation, got: %v", err)
+	}
+}
+
 // =============================================================================
 // Bedrock Key Config Required Fields Tests
 // Note: Bedrock provider uses a special key schema that extends base_key
