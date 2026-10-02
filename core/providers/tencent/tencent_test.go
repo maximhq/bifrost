@@ -154,7 +154,9 @@ func TestChatCompletion_UsesOpenAIEndpoint(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, newOpenAIChatResponse())
+		if _, err := fmt.Fprint(w, newOpenAIChatResponse()); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer server.Close()
 
@@ -222,7 +224,9 @@ func TestChatCompletion_UsesAnthropicEndpoint(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, newAnthropicResponse())
+		if _, err := fmt.Fprint(w, newAnthropicResponse()); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer server.Close()
 

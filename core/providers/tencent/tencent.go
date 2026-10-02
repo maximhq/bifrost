@@ -153,8 +153,8 @@ func (provider *TencentProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.Tencent,
-				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-				ShouldSendBackRawResponse: provider.sendBackRawResponse,
+				ShouldSendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+				ShouldSendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			},
 			provider.anthropicHeaders(key),
 			provider.networkConfig.ExtraHeaders,
@@ -193,8 +193,8 @@ func (provider *TencentProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Tencent,
 			IsStreaming:               true,
-			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			ShouldSendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+			ShouldSendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -259,8 +259,8 @@ func (provider *TencentProvider) Responses(ctx *schemas.BifrostContext, key sche
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.Tencent,
-				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-				ShouldSendBackRawResponse: provider.sendBackRawResponse,
+				ShouldSendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+				ShouldSendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			},
 			provider.anthropicHeaders(key),
 			provider.networkConfig.ExtraHeaders,
@@ -290,8 +290,8 @@ func (provider *TencentProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Tencent,
 			IsStreaming:               true,
-			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			ShouldSendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+			ShouldSendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -340,8 +340,8 @@ func (provider *TencentProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 		request,
 		anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Tencent,
-			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+			ShouldSendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+			ShouldSendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		},
 		provider.anthropicHeaders(key),
 		provider.networkConfig.ExtraHeaders,
