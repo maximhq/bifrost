@@ -2190,6 +2190,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.9.2",
               {
                 "group": "September 2026",
                 "pages": [
