@@ -543,6 +543,9 @@ func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
 // runs on a child context that the abort cancels, so a missed deadline ends
 // both the header wait and the body read without cancelling the request.
 func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	if err := applyRequestBodyRewriterHTTP(req); err != nil {
+		return nil, err
+	}
 	if abort := AttemptAbortFromContext(req.Context()); abort != nil {
 		if abort.Fired() {
 			return nil, ErrStreamFirstTokenTimeout

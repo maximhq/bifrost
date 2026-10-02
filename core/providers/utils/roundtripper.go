@@ -111,7 +111,10 @@ var testHookBeforeConnRelease func()
 // (network.StaleConnectionRetryIfErr) walks past such sockets. The same failure
 // on a socket dialed for this request is the upstream failing, so it is
 // reported without a fasthttp-level retry and counts against Bifrost's own
-// max_retries (maximhq/bifrost#7035). ErrBodyTooLarge never retries.
+// max_retries (maximhq/bifrost#7035). ErrBodyTooLarge never retries, and
+// neither does an ErrRequestBodyRewrite abort: it wraps the embedder's own read
+// error (io.ErrUnexpectedEOF, say), which the stale-connection walk would
+// otherwise mistake for an idle socket closed by the upstream.
 func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Request, resp *fasthttp.Response) (retry bool, err error) {
 	ctx := lookupRequestContext(req)
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -136,7 +139,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	// pool, so a zero value means this socket was dialed for this request.
 	reused := !cc.LastUseTime().IsZero()
 	retryOn := func(err error) bool {
-		return reused && !errors.Is(err, fasthttp.ErrBodyTooLarge)
+		return reused && !errors.Is(err, fasthttp.ErrBodyTooLarge) && !errors.Is(err, ErrRequestBodyRewrite)
 	}
 
 	watcher := startCancelWatcher(ctx, abort, conn)
@@ -154,7 +157,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	}
 
 	bw := hc.AcquireWriter(conn)
-	err = req.Write(bw)
+	err = writeRequestWithRewriter(ctx, req, bw)
 	if resetConnection {
 		req.Header.ResetConnectionClose()
 	}
