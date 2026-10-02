@@ -400,7 +400,7 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("enforce_auth_on_inference", checked)}
 					/>
 				</div>
-				{(authConfig.is_enabled || authType?.type === "sso") && !localConfig.enforce_auth_on_inference && (
+				{(authConfig.is_enabled || authType?.type === "sso") && !config?.enforce_auth_on_inference && (
 					<Alert variant="destructive" data-testid="inference-auth-off-warning">
 						<AlertTriangle className="h-4 w-4" />
 						<AlertDescription>
