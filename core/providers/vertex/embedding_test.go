@@ -1,13 +1,31 @@
 package vertex
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+type embeddingTestLogger struct{}
+
+func (embeddingTestLogger) Debug(string, ...any)                   {}
+func (embeddingTestLogger) Info(string, ...any)                    {}
+func (embeddingTestLogger) Warn(string, ...any)                    {}
+func (embeddingTestLogger) Error(string, ...any)                   {}
+func (embeddingTestLogger) Fatal(string, ...any)                   {}
+func (embeddingTestLogger) SetLevel(schemas.LogLevel)              {}
+func (embeddingTestLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (embeddingTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
 
 func TestCanonicalVertexModelID(t *testing.T) {
 	t.Parallel()
@@ -355,5 +373,42 @@ func TestVertexGeminiEmbedContentResponse_RejectsBatchShape(t *testing.T) {
 	}
 	if bifrostEmbeddingFromVertexGeminiEmbedContent(&embedResp, "m", 0) != nil {
 		t.Fatal("batch-shaped body must not convert")
+	}
+}
+
+func TestEmbeddingGeminiEmbedContent_ErrorKeepsUpstreamStatusCode(t *testing.T) {
+	// The error status must be read before the pooled fasthttp response is
+	// released; reading it afterwards reports the reset default (200).
+	for _, status := range []int{http.StatusInternalServerError, http.StatusTooManyRequests} {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream failure"}}`))
+		}))
+		defer server.Close()
+
+		provider, err := NewVertexProvider(&schemas.ProviderConfig{}, embeddingTestLogger{})
+		if err != nil {
+			t.Fatalf("NewVertexProvider: %v", err)
+		}
+		// Route every dial (the request targets a googleapis host) to the test server.
+		provider.client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", server.Listener.Addr().String()) }
+		provider.client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+
+		text := "hello"
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		key := schemas.Key{Value: *schemas.NewSecretVar("test-api-key")}
+		req := &schemas.BifrostEmbeddingRequest{
+			Model: "gemini-embedding-2",
+			Input: &schemas.EmbeddingInput{Text: &text},
+		}
+
+		resp, bifrostErr := provider.embeddingGeminiEmbedContent(ctx, key, req, "proj", "us-central1", "gemini-embedding-2")
+		if resp != nil || bifrostErr == nil {
+			t.Fatalf("status %d: expected error, got resp=%v err=%v", status, resp, bifrostErr)
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != status {
+			t.Fatalf("status %d: error StatusCode = %v, want %d", status, bifrostErr.StatusCode, status)
+		}
 	}
 }

@@ -1828,9 +1828,10 @@ func (provider *VertexProvider) embeddingGeminiEmbedContent(
 		lastHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, lastHeaders)
 
-		if resp.StatusCode() != fasthttp.StatusOK {
+		statusCode := resp.StatusCode()
+		if statusCode != fasthttp.StatusOK {
 			providerUtils.MaterializeStreamErrorBody(ctx, resp)
-			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			if statusCode == fasthttp.StatusUnauthorized || statusCode == fasthttp.StatusForbidden {
 				removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 			}
 			errBody := append([]byte(nil), resp.Body()...)
@@ -1849,13 +1850,13 @@ func (provider *VertexProvider) embeddingGeminiEmbedContent(
 					}
 				} else if errBody[0] == '<' {
 					// HTML 404 body from missing Vertex endpoints (e.g. batchEmbedContents).
-					errorMessage = fmt.Sprintf("provider returned HTTP %d (non-JSON body)", resp.StatusCode())
+					errorMessage = fmt.Sprintf("provider returned HTTP %d (non-JSON body)", statusCode)
 				}
 			}
 			wait()
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), nil, nil), jsonBody, errBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorMessage, nil, statusCode, nil, nil), jsonBody, errBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		// Embeddings are small fixed-size float arrays — never hand off a large
