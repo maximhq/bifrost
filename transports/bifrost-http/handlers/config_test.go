@@ -306,6 +306,29 @@ func TestUpdateConfig_EmptyDatasheetURLsResetToDefaults(t *testing.T) {
 	assert.Equal(t, modelcatalog.DefaultModelParametersURL, *cfg.FrameworkConfig.Pricing.ModelParametersURL)
 }
 
+// TestUpdateConfig_MCPLibrarySyncIntervalZeroDisablesSync pins that
+// mcp_library_sync_interval=0, the documented way to turn off background
+// catalog syncing, is accepted and persisted, while negatives are rejected.
+func TestUpdateConfig_MCPLibrarySyncIntervalZeroDisablesSync(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"mcp_library_sync_interval":0}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	persisted, err := store.GetFrameworkConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted)
+	require.NotNil(t, persisted.MCPLibrarySyncInterval)
+	assert.Equal(t, modelcatalog.MCPLibrarySyncDisabled, *persisted.MCPLibrarySyncInterval)
+
+	ctx = putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"mcp_library_sync_interval":-1}}`)
+	h.updateConfig(ctx)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+}
+
 // failingFrameworkConfigStore makes the framework config write fail while every
 // other store call goes through to the real store.
 type failingFrameworkConfigStore struct {
