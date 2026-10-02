@@ -246,11 +246,12 @@ type BifrostHTTPServer struct {
 	// from it.
 	ShellRewriter handlers.ShellRewriter
 
-	WebSocketHandler    *handlers.WebSocketHandler
-	NotificationService *handlers.NotificationService
-	MCPServerHandler    *handlers.MCPServerHandler
-	devPprofHandler     *handlers.DevPprofHandler
-	IntegrationHandler  *handlers.IntegrationHandler
+	WebSocketHandler     *handlers.WebSocketHandler
+	NotificationService  *handlers.NotificationService
+	MCPServerHandler     *handlers.MCPServerHandler
+	devPprofHandler      *handlers.DevPprofHandler
+	skillsServingHandler *handlers.SkillsServingHandler
+	IntegrationHandler   *handlers.IntegrationHandler
 
 	AuthMiddleware       *handlers.AuthMiddleware
 	CORSMiddleware       *handlers.CorsMiddleware
@@ -2517,6 +2518,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if skillsServingHandler != nil {
 		skillsServingHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+	s.skillsServingHandler = skillsServingHandler
 	cacheHandler.RegisterRoutes(s.Router, middlewares...)
 	if featureFlagsHandler != nil {
 		featureFlagsHandler.RegisterRoutes(s.Router, middlewares...)
@@ -3217,6 +3219,9 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping dev pprof handler...")
 				s.devPprofHandler.Cleanup()
 			}
+			if s.skillsServingHandler != nil {
+				s.skillsServingHandler.Close()
+			}
 			if s.wsPool != nil {
 				logger.Info("closing websocket connection pool...")
 				s.wsPool.Close()
@@ -3235,13 +3240,25 @@ func (s *BifrostHTTPServer) Start() error {
 		}
 
 	case err := <-errChan:
-		if s.IntegrationHandler != nil {
-			s.IntegrationHandler.Close()
-		}
-		if s.wsPool != nil {
-			s.wsPool.Close()
-		}
+		s.cleanupAfterServeError()
 		return err
 	}
 	return nil
+}
+
+// cleanupAfterServeError releases what Start had set up when Serve itself
+// fails: open realtime sessions, the websocket pool, and the skills serving
+// cache, whose exported bare repositories live in temp directories that only
+// Close removes. The graceful-shutdown path above does the same as part of
+// its full teardown.
+func (s *BifrostHTTPServer) cleanupAfterServeError() {
+	if s.IntegrationHandler != nil {
+		s.IntegrationHandler.Close()
+	}
+	if s.wsPool != nil {
+		s.wsPool.Close()
+	}
+	if s.skillsServingHandler != nil {
+		s.skillsServingHandler.Close()
+	}
 }
