@@ -1293,6 +1293,19 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	} else if cd > configstore.MaxVKRotationCooldown {
 		return fmt.Errorf("vk_rotation_cooldown %s exceeds the maximum of %s (30 days)", cd, configstore.MaxVKRotationCooldown)
 	}
+	// When OAuth discovery is enabled, every issuer reference (the discovery
+	// documents' issuer/token_endpoint/jwks_uri, the authorize redirect, JWT
+	// iss/aud) must come from a fixed, operator-set value rather than the
+	// per-request Host header, which is reachable pre-auth via the always-public
+	// /.well-known/ routes. Same fail-fast-at-load philosophy as the auth_code_ttl
+	// check above: a config.json or pre-existing DB row that predates this
+	// requirement must not silently run with a Host-derived issuer.
+	if cc.IsMCPOAuthDiscoveryEnabled() {
+		oc := cc.OAuth2ServerConfig
+		if oc == nil || !oc.IssuerURL.IsSet() {
+			return fmt.Errorf("oauth2_server_config.issuer_url must be set when mcp_server_auth_mode is oauth or both")
+		}
+	}
 	return nil
 }
 
