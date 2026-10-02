@@ -262,6 +262,46 @@ The default run loads no extra collections. Downstream repos pass their own
 collections at run time, so the shared management requests live here while
 assertions specific to those repos stay with them.
 
+### Request guard tests
+
+`collections/bifrost-v1-request-guards.postman_collection.json` pins what the
+management and gateway surface refuses over the API, and that nothing was
+persisted as a side effect: `file://` and unreachable catalog URLs on
+`PUT /api/config`, MCP client registrations with an unsupported
+`connection_type` or a loopback/unresolvable target, proxy / provider /
+provider-key endpoint changes that need an admin session, the OAuth2 issuance
+endpoints while `mcp_server_auth_mode` is `headers`, malformed passthrough
+paths and unknown `x-model-provider` values, a zstd body declaring an oversized
+window (`fixtures/zstd-window-512mib.zst`), the on-demand test delivery of a
+private-network webhook, and `auth_config` updates that must prove the stored
+admin password. It is hermetic (no provider is contacted) and has no
+collection-level 2xx gate: every request asserts its exact status.
+
+`runners/run-newman-api-tests.sh` runs it as its own newman invocation after
+auth is restored to disabled and before the governance suites; set
+`BIFROST_E2E_SKIP_REQUEST_GUARDS=1` to skip it. To run it standalone against a
+gateway with dashboard auth disabled (from this directory, so newman finds the
+zstd fixture):
+
+```bash
+BIFROST_BASE_URL=http://localhost:8080 ./runners/individual/run-newman-request-guards-tests.sh
+
+# With a stored admin account whose password you know: also runs the
+# "Dashboard auth update" folder, which re-enables auth with that password and
+# disables it again. Create the account first if needed:
+#   BIFROST_E2E_SETUP_TOKEN=<token> node runners/set-auth-config.mjs enable
+#   BIFROST_E2E_AUTH_HEADER="Bearer $(printf 'admin:<password>' | base64)" node runners/set-auth-config.mjs disable
+BIFROST_BASE_URL=http://localhost:8080 BIFROST_E2E_ADMIN_EXISTS=1 \
+  BIFROST_E2E_ADMIN_USERNAME=admin BIFROST_E2E_ADMIN_PASSWORD='<password>' \
+  ./runners/individual/run-newman-request-guards-tests.sh --json
+```
+
+Without `BIFROST_E2E_ADMIN_EXISTS=1` that folder reports a single named
+"skipped" test and sends nothing. The "Provider endpoint changes" folder's
+key-endpoint case targets the `azure` provider (part of the shared
+`tests/config.json` profile); on a gateway without it the request asserts the
+404 from the provider lookup instead, as recorded by the preceding check.
+
 **Retry logic (CI)**
 When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the V1 collection is retried up to 3 times before moving to the next request. This helps with flaky tests in CI. The runner passes the value through to Newman when the environment variable is set (e.g. `CI=1 ./runners/run-newman-inference-tests.sh --env openai` or `CI=true ./runners/run-newman-inference-tests.sh --env openai`). Retry attempts are logged to the console as `[RETRY] Request "..." failed (attempt n/3). Retrying...`.
 

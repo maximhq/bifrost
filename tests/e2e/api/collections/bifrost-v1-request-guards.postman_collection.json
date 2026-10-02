@@ -1,0 +1,2264 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Request Guards",
+    "description": "Hermetic wire-contract tests for the management and gateway surface's request guards, run against the shared e2e gateway with dashboard auth disabled and no live provider. Each folder pins what the server refuses over the API and that nothing was persisted as a side effect: file:// and unreachable catalog URLs on PUT /api/config, MCP client registrations with an unsupported connection_type or a loopback/unresolvable target, proxy / provider / provider-key endpoint changes that need an admin session, the OAuth2 issuance endpoints while mcp_server_auth_mode is headers, malformed passthrough paths and unknown x-model-provider values, a zstd body declaring an oversized window, the on-demand test delivery of a private-network webhook, and auth_config updates that must prove the stored admin password. The last folder only runs when the runner sets admin_exists=1 (a stored admin account whose password is admin_password); it re-enables auth and disables it again, so the gateway ends in the state the following suites expect. There is no collection-level 2xx gate: every request asserts its exact status with the response body in the message.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "admin_auth_header",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "admin_username",
+      "value": "admin",
+      "type": "string"
+    },
+    {
+      "key": "admin_password",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "admin_exists",
+      "value": "0",
+      "type": "string"
+    },
+    {
+      "key": "rg_pricing_url",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_model_parameters_url",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_mcp_library_url",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_mcp_id_streamable",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_mcp_id_unresolvable",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_mcp_id_loopback",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_proxy_before",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_custom_provider",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_azure_exists",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_azure_key_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_mcp_server_auth_mode",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_webhook_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_client_config",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rg_framework_config",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Catalog URL validation",
+      "description": "PUT /api/config refuses file:// values for pricing_url, model_parameters_url and mcp_library_url (those are config.json-only), reports an unreachable http URL with one fixed message, and persists none of them.",
+      "item": [
+        {
+          "name": "Read the stored catalog URLs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('Read config: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var json = pm.response.json();",
+                  "var fw = json.framework_config || {};",
+                  "pm.test('Read config: framework_config carries the three catalog URLs', function () {",
+                  "  pm.expect(fw.pricing_url, 'framework_config: ' + JSON.stringify(fw)).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(fw.model_parameters_url, 'framework_config: ' + JSON.stringify(fw)).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(fw.mcp_library_url, 'framework_config: ' + JSON.stringify(fw)).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "pm.collectionVariables.set('rg_pricing_url', fw.pricing_url || '');",
+                  "pm.collectionVariables.set('rg_model_parameters_url', fw.model_parameters_url || '');",
+                  "pm.collectionVariables.set('rg_mcp_library_url', fw.mcp_library_url || '');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A file:// pricing_url is rejected",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"framework_config\": {\"pricing_url\": \"file:///etc/hostname\"}}"
+            },
+            "description": "Only the rejected field is sent: the handler validates catalog URLs before it applies or persists anything, so a 400 leaves the rest of the config untouched."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('file:// pricing_url: responds 400', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
+                  "});",
+                  "pm.test('file:// pricing_url: message mentions \"config.json\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"config.json\");",
+                  "});",
+                  "pm.test('file:// pricing_url: message mentions \"pricing URL\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"pricing URL\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A file:// model_parameters_url is rejected",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"framework_config\": {\"model_parameters_url\": \"file:///etc/hostname\"}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('file:// model_parameters_url: responds 400', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
+                  "});",
+                  "pm.test('file:// model_parameters_url: message mentions \"config.json\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"config.json\");",
+                  "});",
+                  "pm.test('file:// model_parameters_url: message mentions \"model parameters URL\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"model parameters URL\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A file:// mcp_library_url is rejected",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"framework_config\": {\"mcp_library_url\": \"file:///etc/hostname\"}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('file:// mcp_library_url: responds 400', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
+                  "});",
+                  "pm.test('file:// mcp_library_url: message mentions \"config.json\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"config.json\");",
+                  "});",
+                  "pm.test('file:// mcp_library_url: message mentions \"MCP library URL\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"MCP library URL\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "An unreachable pricing_url reports only the generic message",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"framework_config\": {\"pricing_url\": \"http://127.0.0.1:1/x\"}}"
+            },
+            "description": "Port 1 on loopback is never listening. The response must carry the fixed wording and nothing from the transport error (no dialed address, no connection detail)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('unreachable pricing_url: responds 400', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
+                  "});",
+                  "pm.test('unreachable pricing_url: message is exactly the generic wording', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.eql('failed to check the accessibility of the pricing URL: url is not reachable');",
+                  "});",
+                  "pm.test('unreachable pricing_url: message carries no transport detail', function () {",
+                  "  var lower = msg.toLowerCase();",
+                  "  pm.expect(lower, 'body: ' + txt).to.not.include('refused');",
+                  "  pm.expect(lower, 'body: ' + txt).to.not.include('connection');",
+                  "  pm.expect(lower, 'body: ' + txt).to.not.include('dial');",
+                  "  pm.expect(lower, 'body: ' + txt).to.not.include('127.0.0.1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The stored catalog URLs are unchanged",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('Config after rejected URLs: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var fw = pm.response.json().framework_config || {};",
+                  "pm.test('Config after rejected URLs: every catalog URL still holds its earlier value', function () {",
+                  "  pm.expect(fw.pricing_url, 'framework_config: ' + JSON.stringify(fw)).to.eql(pm.collectionVariables.get('rg_pricing_url'));",
+                  "  pm.expect(fw.model_parameters_url, 'framework_config: ' + JSON.stringify(fw)).to.eql(pm.collectionVariables.get('rg_model_parameters_url'));",
+                  "  pm.expect(fw.mcp_library_url, 'framework_config: ' + JSON.stringify(fw)).to.eql(pm.collectionVariables.get('rg_mcp_library_url'));",
+                  "});",
+                  "pm.test('Config after rejected URLs: no file:// or loopback catalog URL was persisted', function () {",
+                  "  [fw.pricing_url, fw.model_parameters_url, fw.mcp_library_url].forEach(function (u) {",
+                  "    pm.expect(String(u || '').toLowerCase(), 'framework_config: ' + JSON.stringify(fw)).to.not.match(/^file:/);",
+                  "    pm.expect(String(u || ''), 'framework_config: ' + JSON.stringify(fw)).to.not.include('127.0.0.1:1');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "MCP client registration",
+      "description": "POST /api/mcp/client refuses an unsupported connection_type (400) and, for a caller without an admin session, targets that resolve to loopback/private addresses or do not resolve at all (403). None of them is stored.",
+      "item": [
+        {
+          "name": "An unsupported connection_type is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_id\": \"{{rg_mcp_id_streamable}}\", \"name\": \"{{rg_mcp_id_streamable}}\", \"connection_type\": \"streamable\", \"connection_string\": {\"value\": \"http://127.0.0.1:3001/\"}, \"auth_type\": \"none\", \"is_ping_available\": false}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ts = Date.now();",
+                  "pm.collectionVariables.set('rg_mcp_id_streamable', 'rg-streamable-' + ts);",
+                  "pm.collectionVariables.set('rg_mcp_id_unresolvable', 'rg-unresolvable-' + ts);",
+                  "pm.collectionVariables.set('rg_mcp_id_loopback', 'rg-loopback-' + ts);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('connection_type streamable: responds 400', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
+                  "});",
+                  "pm.test('connection_type streamable: message mentions \"connection_type\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"connection_type\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A target host that does not resolve is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_id\": \"{{rg_mcp_id_unresolvable}}\", \"name\": \"{{rg_mcp_id_unresolvable}}\", \"connection_type\": \"http\", \"connection_string\": {\"value\": \"http://nope.invalid/\"}, \"auth_type\": \"none\", \"is_ping_available\": false}"
+            },
+            "description": ".invalid is reserved (RFC 2606) and never resolves, so the pre-check has no address to classify and fails closed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('unresolvable MCP target: responds 403', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "});",
+                  "pm.test('unresolvable MCP target: message mentions \"nope.invalid\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"nope.invalid\");",
+                  "});",
+                  "pm.test('unresolvable MCP target: message mentions \"public address\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"public address\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A loopback target is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_id\": \"{{rg_mcp_id_loopback}}\", \"name\": \"{{rg_mcp_id_loopback}}\", \"connection_type\": \"http\", \"connection_string\": {\"value\": \"http://127.0.0.1:3001/\"}, \"auth_type\": \"none\", \"is_ping_available\": false}"
+            },
+            "description": "Port 3001 is where the management suite's test MCP server listens; a real server behind the address does not change the outcome, the request is refused before any connection is attempted."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('loopback MCP target: responds 403', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "});",
+                  "pm.test('loopback MCP target: message mentions \"loopback\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"loopback\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "None of the rejected clients are listed",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/clients?limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('MCP client list: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var json = pm.response.json();",
+                  "var clients = Array.isArray(json) ? json : (json.clients || []);",
+                  "var listed = JSON.stringify(clients);",
+                  "pm.test('MCP client list: no rejected client was stored', function () {",
+                  "  ['rg_mcp_id_streamable', 'rg_mcp_id_unresolvable', 'rg_mcp_id_loopback'].forEach(function (k) {",
+                  "    var id = pm.collectionVariables.get(k);",
+                  "    pm.expect(id, k).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(listed, 'clients: ' + listed.slice(0, 2000)).to.not.include(id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Provider endpoint changes",
+      "description": "Pointing the global proxy, a custom provider's base URL or a provider key's endpoint somewhere new requires an admin session; the refusals leave the stored config untouched.",
+      "item": [
+        {
+          "name": "Read the stored proxy config",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('Read proxy config: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var json = pm.response.json();",
+                  "pm.collectionVariables.set('rg_proxy_before', JSON.stringify({enabled: !!json.enabled, type: json.type || '', url: json.url || ''}));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Changing the proxy URL is rejected",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"type\": \"http\", \"url\": \"http://proxy.example.com:3128\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('new proxy URL: responds 403', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "});",
+                  "pm.test('new proxy URL: message mentions \"requires an authenticated admin session\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"requires an authenticated admin session\");",
+                  "});",
+                  "pm.test('new proxy URL: message mentions \"url\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"url\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A link-local proxy URL is rejected",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"type\": \"http\", \"url\": \"http://169.254.169.254:80\"}"
+            },
+            "description": "For a caller without an admin session the URL-change gate answers first (403). The link-local address check itself (400) is pinned in the Dashboard auth update folder, where the same PUT is sent with an admin session."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('link-local proxy URL: responds 403', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "});",
+                  "pm.test('link-local proxy URL: message mentions \"requires an authenticated admin session\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"requires an authenticated admin session\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The proxy config is unchanged",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('Proxy config after rejected updates: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var json = pm.response.json();",
+                  "var before = JSON.parse(pm.collectionVariables.get('rg_proxy_before') || '{}');",
+                  "pm.test('Proxy config after rejected updates: enabled, type and url still hold their earlier values', function () {",
+                  "  pm.expect(!!json.enabled, 'body: ' + txt).to.eql(before.enabled);",
+                  "  pm.expect(json.type || '', 'body: ' + txt).to.eql(before.type);",
+                  "  pm.expect(json.url || '', 'body: ' + txt).to.eql(before.url);",
+                  "});",
+                  "pm.test('Proxy config after rejected updates: neither rejected URL was persisted', function () {",
+                  "  pm.expect(json.url || '', 'body: ' + txt).to.not.eql(\"http://proxy.example.com:3128\");",
+                  "  pm.expect(json.url || '', 'body: ' + txt).to.not.eql(\"http://169.254.169.254:80\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A custom provider with a base URL is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\": \"{{rg_custom_provider}}\", \"custom_provider_config\": {\"base_provider_type\": \"openai\", \"is_key_less\": true}, \"network_config\": {\"base_url\": \"http://127.0.0.1:1/\", \"default_request_timeout_in_seconds\": 30, \"max_retries\": 0}, \"keys\": []}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('rg_custom_provider', 'rg-custom-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('custom provider with base_url: responds 403', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "});",
+                  "pm.test('custom provider with base_url: message mentions \"base URL\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"base URL\");",
+                  "});",
+                  "pm.test('custom provider with base_url: message mentions \"requires an authenticated admin session\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"requires an authenticated admin session\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The rejected custom provider does not exist",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/{{rg_custom_provider}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{rg_custom_provider}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('rejected custom provider lookup: responds 404', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Check whether the azure provider is configured",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/azure",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "azure"
+              ]
+            },
+            "description": "The key-endpoint case below needs a provider that takes a key-level endpoint. azure is part of the shared e2e profile (tests/config.json); on a gateway without it the provider lookup answers 404 before the endpoint gate, and the next two requests assert that 404 instead. The outcome is recorded here so each later assertion is exact rather than either/or."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('azure provider lookup: responds 200 (configured) or 404 (not configured)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.be.oneOf([200, 404]);",
+                  "});",
+                  "pm.collectionVariables.set('rg_azure_exists', pm.response.code === 200 ? '1' : '0');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A provider key carrying an endpoint is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/azure/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "azure",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"{{rg_azure_key_name}}\", \"value\": \"rg-azure-key-value\", \"weight\": 1, \"azure_key_config\": {\"endpoint\": \"http://127.0.0.1:1\", \"api_version\": \"2024-02-01\"}}"
+            },
+            "description": "403 when azure is configured (the endpoint gate), 404 when it is not (provider lookup runs first). Which one applies was recorded by the previous request."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('rg_azure_key_name', 'rg-azure-key-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "var configured = pm.collectionVariables.get('rg_azure_exists') === '1';",
+                  "if (configured) {",
+                  "  pm.test('key with azure_key_config.endpoint: responds 403', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(403); });",
+                  "  pm.test('key with azure_key_config.endpoint: message names the endpoint field', function () {",
+                  "    pm.expect(msg, 'body: ' + txt).to.include('azure_key_config.endpoint');",
+                  "    pm.expect(msg, 'body: ' + txt).to.include(\"requires an authenticated admin session\");",
+                  "  });",
+                  "} else {",
+                  "  pm.test('key with azure_key_config.endpoint (azure not configured): responds 404', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(404); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The rejected provider key is not stored",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/azure/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "azure",
+                "keys"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "var configured = pm.collectionVariables.get('rg_azure_exists') === '1';",
+                  "if (!configured) {",
+                  "  pm.test('azure key list (azure not configured): responds 404', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(404); });",
+                  "  return;",
+                  "}",
+                  "pm.test('azure key list: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var json = pm.response.json();",
+                  "var keys = Array.isArray(json) ? json : (json.keys || []);",
+                  "var name = pm.collectionVariables.get('rg_azure_key_name');",
+                  "pm.test('azure key list: the rejected key is absent', function () {",
+                  "  pm.expect(name, 'rg_azure_key_name').to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(keys.some(function (k) { return k && k.name === name; }), 'keys: ' + JSON.stringify(keys).slice(0, 2000)).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "OAuth2 issuance availability",
+      "description": "While mcp_server_auth_mode is headers the OAuth2 issuance endpoints (/oauth2/register, /oauth2/authorize, /oauth2/token) do not exist (404). The folder reports a named skip when the gateway runs in both/oauth mode.",
+      "item": [
+        {
+          "name": "Read mcp_server_auth_mode",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('Read config: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
+                  "var mode = '';",
+                  "if (pm.response.code === 200) { mode = String((pm.response.json().client_config || {}).mcp_server_auth_mode || 'headers'); }",
+                  "pm.collectionVariables.set('rg_mcp_server_auth_mode', mode);",
+                  "if (mode === 'headers') {",
+                  "  pm.test('mcp_server_auth_mode is headers: the issuance endpoints must be absent', function () { pm.expect(mode).to.eql('headers'); });",
+                  "} else {",
+                  "  pm.test('OAuth2 issuance checks skipped: mcp_server_auth_mode is \"' + mode + '\", so issuance is enabled by configuration', function () { pm.expect(mode).to.not.eql(''); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Dynamic client registration is absent",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/oauth2/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "oauth2",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_name\": \"rg-client\", \"redirect_uris\": [\"http://127.0.0.1:1/cb\"]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Issuance is enabled by configuration when mcp_server_auth_mode is both/oauth; the",
+                  "// first request in this folder records the mode and reports the skip as a named test.",
+                  "if (pm.collectionVariables.get('rg_mcp_server_auth_mode') !== 'headers') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('POST /oauth2/register in headers mode: responds 404', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The authorization endpoint is absent",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/oauth2/authorize?response_type=code&client_id=rg-client&redirect_uri=http%3A%2F%2F127.0.0.1%3A1%2Fcb&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "oauth2",
+                "authorize"
+              ],
+              "query": [
+                {
+                  "key": "response_type",
+                  "value": "code"
+                },
+                {
+                  "key": "client_id",
+                  "value": "rg-client"
+                },
+                {
+                  "key": "redirect_uri",
+                  "value": "http%3A%2F%2F127.0.0.1%3A1%2Fcb"
+                },
+                {
+                  "key": "code_challenge",
+                  "value": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+                },
+                {
+                  "key": "code_challenge_method",
+                  "value": "S256"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Issuance is enabled by configuration when mcp_server_auth_mode is both/oauth; the",
+                  "// first request in this folder records the mode and reports the skip as a named test.",
+                  "if (pm.collectionVariables.get('rg_mcp_server_auth_mode') !== 'headers') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('GET /oauth2/authorize in headers mode: responds 404', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The token endpoint is absent",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/oauth2/token",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "oauth2",
+                "token"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grant_type\": \"authorization_code\", \"code\": \"rg-code\", \"client_id\": \"rg-client\", \"code_verifier\": \"rg-verifier\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Issuance is enabled by configuration when mcp_server_auth_mode is both/oauth; the",
+                  "// first request in this folder records the mode and reports the skip as a named test.",
+                  "if (pm.collectionVariables.get('rg_mcp_server_auth_mode') !== 'headers') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('POST /oauth2/token in headers mode: responds 404', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Passthrough path validation",
+      "description": "The passthrough routers refuse path remainders that could change the upstream authority and unknown x-model-provider values, before any provider is contacted.",
+      "item": [
+        {
+          "name": "An @ in the first path segment is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "anthropic"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/genai_passthrough/v1@127.0.0.1:1/x",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1@127.0.0.1:1",
+                "x"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "The request is refused before key selection or any provider lookup, so the provider named in x-model-provider is never contacted."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('passthrough path with @: responds 400', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
+                  "});",
+                  "pm.test('passthrough path with @: message mentions \"invalid passthrough path\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"invalid passthrough path\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A percent-encoded @ in the first path segment is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "anthropic"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/genai_passthrough/v1%40127.0.0.1:1/x",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1%40127.0.0.1:1",
+                "x"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('passthrough path with %40: responds 400', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
+                  "});",
+                  "pm.test('passthrough path with %40: message mentions \"invalid passthrough path\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"invalid passthrough path\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A double slash after the prefix is answered by the gateway",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "sgl"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/genai_passthrough//127.0.0.1:1/x",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "",
+                "127.0.0.1:1",
+                "x"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "fasthttp collapses duplicate slashes before routing, so the handler sees a rooted remainder (/127.0.0.1:1/x) and the explicit double-slash rule is a second layer. What this case pins is that the request is still answered 400 by the gateway, either by the path rule or by the provider lookup, and never forwarded: sgl is a known provider that no e2e profile configures (it takes a key-level URL), so there is no upstream to reach."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('passthrough path with //: responds 400', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
+                  "});",
+                  "pm.test('passthrough path with //: answered by the gateway, not an upstream', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.match(/invalid passthrough path|failed to get config for provider/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "An unknown x-model-provider is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "not-a-provider"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/genai_passthrough/v1beta/models/gemini-2.0-flash:generateContent",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-2.0-flash:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('unknown x-model-provider: responds 400', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
+                  "});",
+                  "pm.test('unknown x-model-provider: message mentions \"unknown provider\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"unknown provider\");",
+                  "});",
+                  "pm.test('unknown x-model-provider: message mentions \"not-a-provider\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"not-a-provider\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Request body limits",
+      "description": "A compressed body whose zstd frame declares a window beyond the decoder bound is refused with 413 before the window is allocated, and the gateway stays healthy.",
+      "item": [
+        {
+          "name": "A zstd body declaring an oversized window is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Encoding",
+                "value": "zstd"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "fixtures/zstd-window-512mib.zst"
+              }
+            },
+            "description": "The 9-byte fixture is a zstd frame header that declares a 512 MiB window. The path is relative to tests/e2e/api, which is where the runner executes newman (the provider harness references the same fixture from the repo root)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('zstd oversized window: responds 413', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(413);",
+                  "});",
+                  "pm.test('zstd oversized window: message names the window bound', function () {",
+                  "  pm.expect(msg.toLowerCase(), 'body: ' + txt).to.include('window size exceeded');",
+                  "});",
+                  "pm.test('zstd oversized window: answered quickly, no large reservation', function () {",
+                  "  pm.expect(pm.response.responseTime, 'response took ' + pm.response.responseTime + 'ms').to.be.below(2000);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The gateway is healthy afterwards",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('health after rejected body: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(200);",
+                  "});",
+                  "pm.test('health after rejected body: status is ok', function () {",
+                  "  pm.expect(pm.response.json().status, 'body: ' + txt).to.eql('ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Webhook delivery test gate",
+      "description": "An endpoint registered with allow_private_network can be created and deleted, but its on-demand test delivery requires an admin session.",
+      "item": [
+        {
+          "name": "Create a webhook endpoint that allows private-network delivery",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "Registering the endpoint is allowed (allow_private_network is an explicit opt-in); only the on-demand test delivery below needs an admin session. Nothing listens on 39199, and no delivery is ever attempted."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('rg_webhook_id');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'rg-webhook-' + Date.now(),",
+                  "  url: 'http://127.0.0.1:39199/x',",
+                  "  events: ['async_job.completed'],",
+                  "  allow_private_network: true,",
+                  "  include_response: false,",
+                  "  max_retries: 1,",
+                  "  attempt_timeout_seconds: 5",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('create private-network webhook: responds 201', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(201);",
+                  "});",
+                  "if (pm.response.code !== 201) { return; }",
+                  "var json = pm.response.json();",
+                  "var endpoint = json.endpoint || json;",
+                  "pm.test('create private-network webhook: response carries the endpoint id', function () {",
+                  "  pm.expect(endpoint.id, 'body: ' + txt).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (endpoint.id) { pm.collectionVariables.set('rg_webhook_id', endpoint.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A test delivery is rejected without an admin session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks/{{rg_webhook_id}}/test",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "{{rg_webhook_id}}",
+                "test"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('webhook test delivery: responds 403', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "});",
+                  "pm.test('webhook test delivery: message mentions \"private-network\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"private-network\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete the webhook endpoint",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks/{{rg_webhook_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "{{rg_webhook_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('delete webhook: responds 2xx', function () { pm.expect(pm.response.code, 'body: ' + txt).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Dashboard auth update",
+      "description": "With an admin account stored and auth disabled, re-enabling auth over PUT /api/config requires current_password (the stored admin password); a wrong or missing one is refused. The folder then disables auth again with the admin session and verifies the final state. Runs only when admin_exists is 1.",
+      "item": [
+        {
+          "name": "Read config and check for a stored admin account",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "description": "Runs unconditionally so a skipped folder still shows up as a named passing test. With admin_exists=1 the runner guarantees a stored admin account whose password is admin_password and that auth is currently disabled."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('Read config: responds 200', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var json = pm.response.json();",
+                  "if (pm.variables.get('admin_exists') !== '1') {",
+                  "  pm.test('Dashboard auth update checks skipped: admin_exists is not \"1\" (no stored admin account whose password this run knows)', function () { pm.expect(true).to.eql(true); });",
+                  "  return;",
+                  "}",
+                  "pm.test('Precondition: an admin account is stored and auth is currently disabled', function () {",
+                  "  pm.expect(json.auth_config, 'auth_config in: ' + txt.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(json.auth_config.is_enabled, 'auth_config: ' + JSON.stringify(json.auth_config)).to.eql(false);",
+                  "});",
+                  "var cc = json.client_config || {};",
+                  "// The server reports log_retention_days 0 by default but rejects it on write (must be >= 1).",
+                  "if (!(cc.log_retention_days >= 1)) { cc.log_retention_days = 1; }",
+                  "pm.collectionVariables.set('rg_client_config', JSON.stringify(cc));",
+                  "pm.collectionVariables.set('rg_framework_config', JSON.stringify(json.framework_config || {}));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Re-enabling auth without proof of the stored password is rejected",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The whole folder needs a stored admin account whose password the runner knows",
+                  "// (admin_exists=1, admin_password). Without one there is nothing to prove control",
+                  "// of; the first request in this folder reports the skip as a named test.",
+                  "if (pm.variables.get('admin_exists') !== '1') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}",
+                  "var cc = JSON.parse(pm.collectionVariables.get('rg_client_config') || '{}');",
+                  "var fw = JSON.parse(pm.collectionVariables.get('rg_framework_config') || '{}');",
+                  "var authConfig = {is_enabled: true, admin_username: pm.variables.get('admin_username'), admin_password: pm.variables.get('admin_password')};",
+                  "pm.request.body.raw = JSON.stringify({client_config: cc, framework_config: fw, auth_config: authConfig});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('re-enable auth without proof: responds 403', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "});",
+                  "pm.test('re-enable auth without proof: message mentions \"current_password\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"current_password\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Re-enabling auth with a wrong current_password is rejected",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The whole folder needs a stored admin account whose password the runner knows",
+                  "// (admin_exists=1, admin_password). Without one there is nothing to prove control",
+                  "// of; the first request in this folder reports the skip as a named test.",
+                  "if (pm.variables.get('admin_exists') !== '1') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}",
+                  "var cc = JSON.parse(pm.collectionVariables.get('rg_client_config') || '{}');",
+                  "var fw = JSON.parse(pm.collectionVariables.get('rg_framework_config') || '{}');",
+                  "var authConfig = {is_enabled: true, admin_username: pm.variables.get('admin_username'), admin_password: pm.variables.get('admin_password'), current_password: 'not-the-stored-password-' + Date.now()};",
+                  "pm.request.body.raw = JSON.stringify({client_config: cc, framework_config: fw, auth_config: authConfig});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('re-enable auth with wrong current_password: responds 403', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "});",
+                  "pm.test('re-enable auth with wrong current_password: message mentions \"current_password\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"current_password\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Re-enabling auth with the stored admin password succeeds",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The whole folder needs a stored admin account whose password the runner knows",
+                  "// (admin_exists=1, admin_password). Without one there is nothing to prove control",
+                  "// of; the first request in this folder reports the skip as a named test.",
+                  "if (pm.variables.get('admin_exists') !== '1') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}",
+                  "var cc = JSON.parse(pm.collectionVariables.get('rg_client_config') || '{}');",
+                  "var fw = JSON.parse(pm.collectionVariables.get('rg_framework_config') || '{}');",
+                  "var authConfig = {is_enabled: true, admin_username: pm.variables.get('admin_username'), admin_password: pm.variables.get('admin_password'), current_password: pm.variables.get('admin_password')};",
+                  "pm.request.body.raw = JSON.stringify({client_config: cc, framework_config: fw, auth_config: authConfig});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('re-enable auth with the stored password: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Config reports auth enabled",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{admin_auth_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The whole folder needs a stored admin account whose password the runner knows",
+                  "// (admin_exists=1, admin_password). Without one there is nothing to prove control",
+                  "// of; the first request in this folder reports the skip as a named test.",
+                  "if (pm.variables.get('admin_exists') !== '1') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('config with admin session: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('config with admin session: auth_config.is_enabled is true', function () {",
+                  "  var ac = pm.response.json().auth_config || {};",
+                  "  pm.expect(ac.is_enabled, 'auth_config: ' + JSON.stringify(ac)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A link-local proxy URL is rejected for an admin session",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{admin_auth_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"type\": \"http\", \"url\": \"http://169.254.169.254:80\"}"
+            },
+            "description": "With a real admin session the URL-change gate no longer applies, so this reaches the address check itself."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The whole folder needs a stored admin account whose password the runner knows",
+                  "// (admin_exists=1, admin_password). Without one there is nothing to prove control",
+                  "// of; the first request in this folder reports the skip as a named test.",
+                  "if (pm.variables.get('admin_exists') !== '1') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('link-local proxy URL with admin session: responds 400', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
+                  "});",
+                  "pm.test('link-local proxy URL with admin session: message mentions \"link-local\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include(\"link-local\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Disabling auth with an admin session succeeds",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{admin_auth_header}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "description": "Leaves dashboard auth disabled, which is the state the shared runner expects for the suites that follow."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The whole folder needs a stored admin account whose password the runner knows",
+                  "// (admin_exists=1, admin_password). Without one there is nothing to prove control",
+                  "// of; the first request in this folder reports the skip as a named test.",
+                  "if (pm.variables.get('admin_exists') !== '1') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}",
+                  "var cc = JSON.parse(pm.collectionVariables.get('rg_client_config') || '{}');",
+                  "var fw = JSON.parse(pm.collectionVariables.get('rg_framework_config') || '{}');",
+                  "var authConfig = {is_enabled: false, admin_username: pm.variables.get('admin_username'), admin_password: '<redacted>'};",
+                  "pm.request.body.raw = JSON.stringify({client_config: cc, framework_config: fw, auth_config: authConfig});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('disable auth with admin session: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Config reports auth disabled",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The whole folder needs a stored admin account whose password the runner knows",
+                  "// (admin_exists=1, admin_password). Without one there is nothing to prove control",
+                  "// of; the first request in this folder reports the skip as a named test.",
+                  "if (pm.variables.get('admin_exists') !== '1') {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var msg = '';",
+                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
+                  "pm.test('config after disabling auth: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('config after disabling auth: auth_config.is_enabled is false', function () {",
+                  "  var ac = pm.response.json().auth_config || {};",
+                  "  pm.expect(ac.is_enabled, 'auth_config: ' + JSON.stringify(ac)).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
