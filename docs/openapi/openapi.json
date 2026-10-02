@@ -39313,7 +39313,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Settings:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update proxy configuration",
-        "description": "Updates the global proxy configuration.\n\nEnabling the proxy with a URL requires a genuinely authenticated admin session - it is\nrefused with 403 if dashboard authentication is disabled or unconfigured, even though\nother management endpoints remain reachable in that state. Disabling the proxy is not\nrestricted.\n",
+        "description": "Updates the global proxy configuration.\nSetting a new proxy url or turning on skip_tls_verify requires a genuinely\nauthenticated admin session - it is refused with 403 if dashboard authentication is\ndisabled or unconfigured, even though other management endpoints remain reachable in\nthat state. Saving other fields with the stored url, disabling the proxy, or turning\nskip_tls_verify off is allowed.\n",
         "tags": [
           "Configuration"
         ],
@@ -39399,7 +39399,7 @@
             }
           },
           "403": {
-            "description": "The proxy was enabled with a URL and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
+            "description": "A new proxy url was supplied or skip_tls_verify was turned on, and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "500": {
             "description": "Internal server error",
@@ -42402,7 +42402,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Add a new provider",
-        "description": "Adds a new provider with the specified configuration.\n",
+        "description": "Adds a new provider with the specified configuration.\nSetting network_config.base_url or network_config.allow_private_network requires a\ngenuinely authenticated admin session - it is refused with 403 if dashboard\nauthentication is disabled or unconfigured, even though other management endpoints\nremain reachable in that state. allow_private_network is guarded even without a base\nURL, because it also governs which addresses key-level URLs (Ollama/SGL/VLLM) may reach.\nThe same applies to settings that let a third party read credentials in flight:\nproxy_config.url, proxy_config.ca_cert_pem, network_config.ca_cert_pem,\nnetwork_config.insecure_skip_verify, and any absolute (scheme and host)\ncustom_provider_config.request_path_overrides value.\n",
         "tags": [
           "Providers"
         ],
@@ -42444,6 +42444,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "network_config.base_url, allow_private_network, a proxy URL, a CA certificate, insecure_skip_verify, or an absolute request path override was supplied and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "409": {
             "description": "Provider already exists",
@@ -42547,7 +42550,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update a provider",
-        "description": "Updates a provider's configuration. Expects ALL fields to be provided,\nincluding both edited and non-edited fields. Partial updates are not supported.\n",
+        "description": "Updates a provider's configuration. Expects ALL fields to be provided,\nincluding both edited and non-edited fields. Partial updates are not supported.\nChanging network_config.base_url, or turning on network_config.allow_private_network\n(with or without a base URL), requires a genuinely authenticated admin session - it is\nrefused with 403 if dashboard authentication is disabled or unconfigured, even though\nother management endpoints remain reachable in that state. The same applies to setting\nor changing proxy_config.url, proxy_config.ca_cert_pem, network_config.ca_cert_pem, or\nan absolute (scheme and host) custom_provider_config.request_path_overrides value, and\nto turning on network_config.insecure_skip_verify. Sending the stored values back\nunchanged (including redacted placeholders), clearing the base URL, proxy or an\noverride, path-only overrides, or turning allow_private_network or\ninsecure_skip_verify off is allowed.\n",
         "tags": [
           "Providers"
         ],
@@ -42600,6 +42603,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "network_config.base_url, a proxy URL, a CA certificate, or an absolute request path override was changed, or allow_private_network or insecure_skip_verify was turned on, and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "500": {
             "description": "Internal server error",
@@ -42765,7 +42771,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Create a key for a provider",
-        "description": "Creates a new API key for the specified provider. The key `id` is auto-generated\nif omitted. `enabled` defaults to `true` if omitted. `value` is required and must\nnot be empty. Keys cannot be created on keyless providers.\n",
+        "description": "Creates a new API key for the specified provider. The key `id` is auto-generated\nif omitted. `enabled` defaults to `true` if omitted. `value` is required and must\nnot be empty. Keys cannot be created on keyless providers.\nSetting any field that chooses the host Bifrost sends this key's credentials to\nrequires a genuinely authenticated admin session - it is refused with 403 if dashboard\nauthentication is disabled or unconfigured, even though other management endpoints\nremain reachable in that state.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\ngithub_copilot_key_config.github_domain,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and\naliases.<name>.endpoint.\n",
         "tags": [
           "Providers"
         ],
@@ -42818,6 +42824,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "A key endpoint field was set, changed, or removed and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "404": {
             "description": "Provider not found",
@@ -42940,7 +42949,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update a key for a provider",
-        "description": "Updates an existing key. Send the full key object. Redacted values sent back\nunchanged are automatically preserved (the server merges them with the stored\nraw values).\n",
+        "description": "Updates an existing key. Send the full key object. Redacted values sent back\nunchanged are automatically preserved (the server merges them with the stored\nraw values).\nSetting, changing, or removing any field that chooses the host Bifrost sends this\nkey's credentials to requires a genuinely authenticated admin session - it is refused\nwith 403 if dashboard authentication is disabled or unconfigured, even though other\nmanagement endpoints remain reachable in that state. Sending the stored values back\nunchanged is allowed.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\ngithub_copilot_key_config.github_domain,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and\naliases.<name>.endpoint.\n",
         "tags": [
           "Providers"
         ],
@@ -43002,6 +43011,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "A key endpoint field was set, changed, or removed and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "404": {
             "description": "Provider or key not found",
