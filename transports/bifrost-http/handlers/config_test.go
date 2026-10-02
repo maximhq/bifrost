@@ -20,6 +20,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -552,6 +553,189 @@ func TestUpdateProxyConfig_UnchangedURLDoesNotNeedDNS(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, storedURL, stored.URL)
 			assert.Equal(t, tc.wantTimeout, stored.Timeout)
+		})
+	}
+}
+
+// authConfigTestManager persists auth config to the real store and matches setup tokens
+// against one fixed value, so updateConfig's credential gates can be exercised end to end.
+type authConfigTestManager struct {
+	stubConfigManager
+	store      configstore.ConfigStore
+	setupToken string
+}
+
+func (m authConfigTestManager) UpdateAuthConfig(ctx context.Context, c *configstore.AuthConfig) error {
+	return m.store.UpdateAuthConfig(ctx, c)
+}
+
+func (m authConfigTestManager) ValidateSetupToken(token string) bool {
+	return m.setupToken != "" && token == m.setupToken
+}
+
+func (m authConfigTestManager) ValidateConfiguredSetupToken(token string) bool {
+	return m.setupToken != "" && token == m.setupToken
+}
+
+// TestUpdateConfig_StoredCredentialsRequireProofWhenAuthBypassed pins that an admin account
+// which exists but has dashboard auth switched off cannot be taken over through the open
+// management API: a caller admitted without a credential check may switch auth back on, or
+// replace the stored credentials, only by presenting the current admin password
+// (current_password) or the operator-configured setup token. A genuinely authenticated
+// session needs no extra proof, and a disabled-state save that resubmits nothing keeps the
+// stored credentials as before.
+func TestUpdateConfig_StoredCredentialsRequireProofWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const (
+		storedUser = "admin"
+		storedPass = "Current-Pass-1234!"
+		newPass    = "Replacement-Pass-5678!"
+		setupToken = "operator-setup-token"
+	)
+	body := func(enabled, extra string) string {
+		return `{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":` + enabled +
+			`,"admin_username":"` + storedUser + `","admin_password":"` + newPass + `"` + extra + `}}`
+	}
+	cases := []struct {
+		name        string
+		body        string
+		bypassed    bool
+		wantStatus  int
+		wantEnabled bool
+		wantPass    string
+	}{
+		{name: "anonymous re-enable with new password", body: body("true", ""), bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPass: storedPass},
+		{name: "anonymous re-enable with wrong current_password", body: body("true", `,"current_password":"not-it"`), bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPass: storedPass},
+		{name: "anonymous re-enable with wrong setup token", body: body("true", `,"setup_token":"wrong"`), bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPass: storedPass},
+		{name: "anonymous re-enable with correct current_password", body: body("true", `,"current_password":"`+storedPass+`"`), bypassed: true, wantStatus: fasthttp.StatusOK, wantEnabled: true, wantPass: newPass},
+		{name: "anonymous re-enable with valid setup token", body: body("true", `,"setup_token":"`+setupToken+`"`), bypassed: true, wantStatus: fasthttp.StatusOK, wantEnabled: true, wantPass: newPass},
+		{name: "authenticated re-enable needs no extra proof", body: body("true", ""), bypassed: false, wantStatus: fasthttp.StatusOK, wantEnabled: true, wantPass: newPass},
+		{name: "anonymous credential change while auth stays disabled", body: body("false", ""), bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPass: storedPass},
+		{name: "anonymous credential change while disabled with current_password", body: body("false", `,"current_password":"`+storedPass+`"`), bypassed: true, wantStatus: fasthttp.StatusOK, wantPass: newPass},
+		{name: "anonymous disabled save without credentials keeps the stored ones", body: `{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":false}}`, bypassed: true, wantStatus: fasthttp.StatusOK, wantPass: storedPass},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			hash, err := encrypt.Hash(storedPass)
+			require.NoError(t, err)
+			require.NoError(t, store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{
+				AdminUserName: schemas.NewSecretVar(storedUser),
+				AdminPassword: schemas.NewSecretVar(hash),
+				IsEnabled:     false,
+			}))
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store, setupToken: setupToken}}
+
+			ctx := putConfigCtx(tc.body)
+			if tc.bypassed {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+			h.updateConfig(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+			stored, err := store.GetAuthConfig(context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			assert.Equal(t, tc.wantEnabled, stored.IsEnabled)
+			assert.Equal(t, storedUser, stored.AdminUserName.GetValue())
+			ok, _ := encrypt.CompareHash(stored.AdminPassword.GetValue(), tc.wantPass)
+			assert.True(t, ok, "stored password must verify against %q", tc.wantPass)
+		})
+	}
+}
+
+// TestUpdateConfig_FirstAdminStillRequiresSetupToken pins that the first-admin gate is
+// unchanged by the stored-credential proof: with no admin account, only the setup token
+// creates one. A current_password cannot stand in for it - there is nothing to compare it to.
+func TestUpdateConfig_FirstAdminStillRequiresSetupToken(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const setupToken = "operator-setup-token"
+	body := func(extra string) string {
+		return `{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"First-Admin-Pass-1!"` + extra + `}}`
+	}
+	cases := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{name: "no setup token", body: body(""), wantStatus: fasthttp.StatusForbidden},
+		{name: "wrong setup token", body: body(`,"setup_token":"wrong"`), wantStatus: fasthttp.StatusForbidden},
+		{name: "current_password instead of setup token", body: body(`,"current_password":"First-Admin-Pass-1!"`), wantStatus: fasthttp.StatusForbidden},
+		{name: "valid setup token", body: body(`,"setup_token":"` + setupToken + `"`), wantStatus: fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store, setupToken: setupToken}}
+
+			ctx := putConfigCtx(tc.body)
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			h.updateConfig(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+			stored, err := store.GetAuthConfig(context.Background())
+			if tc.wantStatus == fasthttp.StatusOK {
+				require.NoError(t, err)
+				require.NotNil(t, stored)
+				assert.True(t, stored.IsEnabled)
+				return
+			}
+			if err != nil {
+				require.ErrorIs(t, err, configstore.ErrNotFound)
+				return
+			}
+			assert.Nil(t, stored, "no admin account may be created without the setup token")
+		})
+	}
+}
+
+// TestUpdateConfig_RejectedProofLeavesOtherSettingsUntouched pins the ordering of the
+// proof-of-control check: a bypassed request that is refused with 403 for missing or wrong
+// proof must not have persisted or applied anything else it carried. The check therefore
+// runs in the up-front validation block, before the client config is written.
+func TestUpdateConfig_RejectedProofLeavesOtherSettingsUntouched(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const (
+		storedUser = "admin"
+		storedPass = "Current-Pass-1234!"
+	)
+	cases := []struct {
+		name string
+		auth string
+	}{
+		{name: "re-enable without proof", auth: `{"is_enabled":true,"admin_username":"admin","admin_password":"Replacement-Pass-5678!"}`},
+		{name: "re-enable with wrong current_password", auth: `{"is_enabled":true,"admin_username":"admin","admin_password":"<redacted>","current_password":"not-it"}`},
+		{name: "credential change while disabled without proof", auth: `{"is_enabled":false,"admin_username":"admin","admin_password":"Replacement-Pass-5678!"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			hash, err := encrypt.Hash(storedPass)
+			require.NoError(t, err)
+			require.NoError(t, store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{
+				AdminUserName: schemas.NewSecretVar(storedUser),
+				AdminPassword: schemas.NewSecretVar(hash),
+				IsEnabled:     false,
+			}))
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			before := cfg.ClientConfig.LogRetentionDays
+			require.NotEqual(t, 42, before)
+			h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store, setupToken: "operator-setup-token"}}
+
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":42},"auth_config":` + tc.auth + `}`)
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			h.updateConfig(ctx)
+
+			require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+			assert.Equal(t, before, cfg.ClientConfig.LogRetentionDays, "a refused request must not change the live client config")
+			persisted, err := store.GetClientConfig(context.Background())
+			if err == nil && persisted != nil {
+				assert.NotEqual(t, 42, persisted.LogRetentionDays, "a refused request must not persist its client config")
+			} else if err != nil {
+				require.ErrorIs(t, err, configstore.ErrNotFound)
+			}
 		})
 	}
 }

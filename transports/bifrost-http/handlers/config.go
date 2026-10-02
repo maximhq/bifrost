@@ -88,6 +88,9 @@ type ConfigManager interface {
 	// ValidateSetupToken checks the one-time bootstrap token required to create the
 	// first admin account. Returns true once an admin account already exists.
 	ValidateSetupToken(token string) bool
+	// ValidateConfiguredSetupToken checks a token against the operator-configured setup
+	// token regardless of whether an admin account exists; false when none is configured.
+	ValidateConfiguredSetupToken(token string) bool
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	UpdateSyncConfig(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
@@ -286,10 +289,11 @@ func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
 // risk of it ever being written to storage or echoed back by GET /api/config.
 type authConfigWithSetupToken struct {
 	configstore.AuthConfig
-	// SetupToken is the one-time bootstrap token (see AuthMiddleware.bootstrapToken)
-	// required only when this request is creating the very first admin account.
-	// It is never persisted.
-	SetupToken string `json:"setup_token,omitempty"`
+	// SetupToken is the operator-configured bootstrap token (see AuthMiddleware.bootstrapToken):
+	// required to create the very first admin account, and accepted as proof of control for
+	// changes made while dashboard auth is disabled. It is never persisted.
+	SetupToken      string `json:"setup_token,omitempty"`
+	CurrentPassword string `json:"current_password,omitempty"` // stored admin password, proves control while auth is disabled; never persisted
 }
 
 // updateConfig updates the core configuration settings.
@@ -404,6 +408,19 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
 			return
+		}
+		// Stored credentials with auth switched off: the caller was admitted without any
+		// credential check, so switching auth back on, or replacing the stored credentials
+		// while it stays off, must prove control of the instance. Checked here, before any
+		// live mutation or persistence below, so a refused request changes nothing else.
+		if existingAuthConfig != nil && isAuthBypassed(ctx) {
+			passwordReplaced := payload.AuthConfig.AdminPassword != nil && !payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+			usernameReplaced := payload.AuthConfig.AdminUserName != nil && payload.AuthConfig.AdminUserName.GetValue() != "" &&
+				!payload.AuthConfig.AdminUserName.Equals(existingAuthConfig.AdminUserName)
+			if (payload.AuthConfig.IsEnabled || passwordReplaced || usernameReplaced) &&
+				!h.verifyStoredAdminCredential(ctx, existingAuthConfig, payload.AuthConfig) {
+				return
+			}
 		}
 		if existingAuthConfig == nil && payload.AuthConfig.IsEnabled {
 			if !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
@@ -978,6 +995,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in this request")
 				return
 			}
+			// Stored credentials with auth switched off: the caller was admitted without any
+			// credential check, so switching auth back on (or replacing the credentials in
+			// the same request) must first prove control of the instance.
+			if authConfig != nil && isAuthBypassed(ctx) && !h.verifyStoredAdminCredential(ctx, authConfig, payload.AuthConfig) {
+				return
+			}
 			// Fetching current Auth config
 			if payload.AuthConfig.AdminUserName.GetValue() != "" {
 				if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
@@ -988,30 +1011,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 					// Assuming that password hasn't been changed
 					payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 				} else {
-					// Password has been changed
-					passwordPolicyFailures := getPasswordPolicyFailures(payload.AuthConfig.AdminPassword.GetValue())
-					if len(passwordPolicyFailures) > 0 {
-						SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(passwordPolicyFailures, ", ")))
+					hashed, ok := h.hashAdminPassword(ctx, payload.AuthConfig.AdminPassword)
+					if !ok {
 						return
 					}
-					// We will hash the password
-					hashedPassword := initialPasswordHash
-					if hashedPassword == "" {
-						hashedPassword, err = encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
+					// First-time setup pre-hashed the password while validating the request
+					// (initialPasswordHash); reuse that hash rather than computing a second one.
+					if initialPasswordHash != "" {
+						hashed.Val = initialPasswordHash
 					}
-					if err != nil {
-						logger.Warn("failed to hash password: %v", err)
-						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-						return
-					}
-					// Preserve env/vault reference metadata when storing hashed password
-					if payload.AuthConfig.AdminPassword.IsFromSecret() {
-						sv := *payload.AuthConfig.AdminPassword
-						sv.Val = hashedPassword
-						payload.AuthConfig.AdminPassword = &sv
-					} else {
-						payload.AuthConfig.AdminPassword = &schemas.SecretVar{Val: hashedPassword}
-					}
+					payload.AuthConfig.AdminPassword = hashed
 				}
 			}
 			// Save auth config - this handles both first-time creation and updates
@@ -1022,12 +1031,27 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				return
 			}
 		} else if authConfig != nil {
-			// Auth is being disabled but there's an existing config - preserve credentials and update disabled state
-			if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+			// Auth is being disabled (or kept disabled) over an existing config - preserve the
+			// credentials that were not resubmitted and update the disabled state.
+			passwordReplaced := !payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+			if !passwordReplaced {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 			}
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" {
 				payload.AuthConfig.AdminUserName = authConfig.AdminUserName
+			}
+			// Replacing the stored credentials while auth stays off is the same exposure as
+			// re-enabling with new ones, so it needs the same proof of control.
+			credentialsReplaced := passwordReplaced || !payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
+			if credentialsReplaced && isAuthBypassed(ctx) && !h.verifyStoredAdminCredential(ctx, authConfig, payload.AuthConfig) {
+				return
+			}
+			if passwordReplaced {
+				hashed, ok := h.hashAdminPassword(ctx, payload.AuthConfig.AdminPassword)
+				if !ok {
+					return
+				}
+				payload.AuthConfig.AdminPassword = hashed
 			}
 			err = h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig)
 			if err != nil {
@@ -1428,6 +1452,49 @@ func validateGlobalToolSyncIntervalMinutes(minutes int) error {
 		return fmt.Errorf("mcp_tool_sync_interval must be at most %d minutes", maxToolSyncIntervalMinutes)
 	}
 	return nil
+}
+
+// hashAdminPassword applies the password policy to a newly submitted admin password and
+// returns its hash, keeping env/vault reference metadata so the stored value still records
+// where the password came from. On failure it sends the response and returns false.
+func (h *ConfigHandler) hashAdminPassword(ctx *fasthttp.RequestCtx, password *schemas.SecretVar) (*schemas.SecretVar, bool) {
+	if failures := getPasswordPolicyFailures(password.GetValue()); len(failures) > 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(failures, ", ")))
+		return nil, false
+	}
+	hashed, err := encrypt.Hash(password.GetValue())
+	if err != nil {
+		logger.Warn("failed to hash password: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
+		return nil, false
+	}
+	if password.IsFromSecret() {
+		sv := *password
+		sv.Val = hashed
+		return &sv, true
+	}
+	return &schemas.SecretVar{Val: hashed}, true
+}
+
+// verifyStoredAdminCredential authorizes an auth_config change made while dashboard auth is
+// disabled but admin credentials are stored. Such a request reached the handler without any
+// credential check (BifrostContextKeyAuthBypassed), so switching auth back on or replacing
+// the stored credentials must prove control of the instance: either current_password matches
+// the stored admin password, or setup_token matches the operator-configured setup token
+// (which, unlike the first-admin gate, stays valid for the life of the process). Without that
+// proof anyone who can reach the port could install their own admin account. On failure it
+// sends the 403 and returns false.
+func (h *ConfigHandler) verifyStoredAdminCredential(ctx *fasthttp.RequestCtx, stored *configstore.AuthConfig, payload *authConfigWithSetupToken) bool {
+	if payload.CurrentPassword != "" && stored.AdminPassword != nil {
+		if ok, err := encrypt.CompareHash(stored.AdminPassword.GetValue(), payload.CurrentPassword); err == nil && ok {
+			return true
+		}
+	}
+	if payload.SetupToken != "" && h.configManager.ValidateConfiguredSetupToken(payload.SetupToken) {
+		return true
+	}
+	SendError(ctx, fasthttp.StatusForbidden, "dashboard auth is disabled but an admin account exists; re-enabling it or changing the admin credentials requires current_password (the stored admin password) or a valid setup_token")
+	return false
 }
 
 // globalProxyInterceptionChanges returns the global proxy settings next adds or changes,

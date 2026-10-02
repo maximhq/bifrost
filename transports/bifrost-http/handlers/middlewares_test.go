@@ -3184,3 +3184,49 @@ func TestAuthBypassedMiddleware_MarksRequest(t *testing.T) {
 		t.Fatalf("expected request to be marked local admin as well")
 	}
 }
+
+// TestAuthMiddleware_ConfiguredSetupToken_OutlivesFirstAdmin pins the second use of the
+// operator-configured setup token: proving control when auth_config is changed while
+// dashboard auth is disabled. Unlike the first-admin bootstrap gate it must keep matching
+// only the exact configured value after an admin account exists and after
+// ClearBootstrapToken, and it must never match when no token is configured.
+func TestAuthMiddleware_ConfiguredSetupToken_OutlivesFirstAdmin(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const token = "test-setup-token"
+	am, err := InitAuthMiddleware(newRealOAuth2Store(t), nil, nil, token)
+	if err != nil {
+		t.Fatalf("InitAuthMiddleware: %v", err)
+	}
+
+	if !am.CheckConfiguredSetupToken(token) {
+		t.Error("the configured token must match before any admin exists")
+	}
+	if am.CheckConfiguredSetupToken("wrong") || am.CheckConfiguredSetupToken("") {
+		t.Error("a wrong or empty token must not match")
+	}
+
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
+		IsEnabled:     true,
+	})
+	am.ClearBootstrapToken()
+
+	if !am.CheckBootstrapToken("anything") {
+		t.Error("the first-admin gate must still open once an admin account exists")
+	}
+	if !am.CheckConfiguredSetupToken(token) {
+		t.Error("the configured token must keep matching after the first admin is created")
+	}
+	if am.CheckConfiguredSetupToken("anything") {
+		t.Error("an admin account must not make every token match the configured one")
+	}
+
+	none, err := InitAuthMiddleware(newRealOAuth2Store(t), nil, nil, "")
+	if err != nil {
+		t.Fatalf("InitAuthMiddleware: %v", err)
+	}
+	if none.CheckConfiguredSetupToken("") || none.CheckConfiguredSetupToken("anything") {
+		t.Error("with no token configured nothing may match")
+	}
+}
