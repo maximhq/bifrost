@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"github.com/maximhq/bifrost/core/jsonx"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -300,7 +301,7 @@ func normalizeAnthropicToolResultContent(raw json.RawMessage) ([]BedrockContentB
 // without full deserialization, keeping detection logic colocated with conversion methods.
 func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 	// Messages → chat/responses path
-	if node, _ := sonic.Get(body, "messages"); node.Exists() {
+	if node, _ := jsonx.Get(body, "messages"); node.Exists() {
 		if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
 			return schemas.ResponsesRequest
 		}
@@ -308,7 +309,7 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 
 	// Titan uses "inputText" for both embeddings and text generation.
 	// Use the model ID to disambiguate: embedding models contain "embed".
-	if node, _ := sonic.Get(body, "inputText"); node.Exists() {
+	if node, _ := jsonx.Get(body, "inputText"); node.Exists() {
 		if strings.Contains(strings.ToLower(modelID), "embed") {
 			return schemas.EmbeddingRequest
 		}
@@ -319,7 +320,7 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 	// Use model ID to identify embed models, then check for any non-empty payload field.
 	if strings.Contains(strings.ToLower(modelID), "embed") {
 		for _, field := range []string{"texts", "images", "inputs"} {
-			if node, _ := sonic.Get(body, field); node.Exists() {
+			if node, _ := jsonx.Get(body, field); node.Exists() {
 				if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
 					return schemas.EmbeddingRequest
 				}
@@ -328,7 +329,7 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 	}
 
 	// taskType-based image routing
-	if taskNode, _ := sonic.Get(body, "taskType"); taskNode.Exists() {
+	if taskNode, _ := jsonx.Get(body, "taskType"); taskNode.Exists() {
 		taskType, _ := taskNode.String()
 		switch taskType {
 		case TaskTypeTextImage:
@@ -348,14 +349,14 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 
 	// Stability AI: supports both generation (prompt-only) and edit (image+prompt)
 	if isStabilityAIModel(decodedModelID) {
-		if node, _ := sonic.Get(body, "image"); node.Exists() {
+		if node, _ := jsonx.Get(body, "image"); node.Exists() {
 			return schemas.ImageEditRequest
 		}
 		return schemas.ImageGenerationRequest
 	}
 
 	// explicit image field -> edit request
-	if node, _ := sonic.Get(body, "image"); node.Exists() {
+	if node, _ := jsonx.Get(body, "image"); node.Exists() {
 		return schemas.ImageEditRequest
 	}
 
