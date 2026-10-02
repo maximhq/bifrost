@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"context"
 	"math"
 	"reflect"
 	"strings"
@@ -241,5 +242,77 @@ func TestEmulateDecisionRejectsAnswerOutsideStructuredOptions(t *testing.T) {
 	_, bifrostErr := b.emulateDecisionViaResponses(nil, provider, schemas.Key{}, structuredDecisionRequest())
 	if bifrostErr == nil || bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "not an allowed option") {
 		t.Fatalf("expected out-of-options rejection, got %+v", bifrostErr)
+	}
+}
+
+// Bedrock Mantle's OpenAI-compatible surface rejects tool_choice "required" for
+// gpt-oss ("Supported options: [auto]"), so emulation there must send "auto";
+// every other surface, Claude on Mantle included, keeps the forced call.
+func TestEmulateDecisionToolChoicePerSurface(t *testing.T) {
+	args := `{
+		"approve":  {"value": 0.9, "confidence": 0.8},
+		"category": {"choice": "billing", "confidence": 0.7, "probabilities": {"billing": 0.7, "bug": 0.1, "support": 0.1, "other": 0.1}},
+		"urgency":  {"value": 2, "confidence": 0.6, "probabilities": {"0": 0.1, "1": 0.1, "2": 0.8}}
+	}`
+	cases := []struct {
+		provider schemas.ModelProvider
+		model    string
+		want     schemas.ResponsesToolChoiceType
+	}{
+		{schemas.BedrockMantle, "openai.gpt-oss-120b", schemas.ResponsesToolChoiceTypeAuto},
+		{schemas.BedrockMantle, "openai.gpt-oss-20b", schemas.ResponsesToolChoiceTypeAuto},
+		{schemas.BedrockMantle, "anthropic.claude-opus-4-8", schemas.ResponsesToolChoiceTypeRequired},
+		{schemas.OpenAI, "gpt-4o-mini", schemas.ResponsesToolChoiceTypeRequired},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			provider := &decisionEmulationProvider{response: emulationFunctionCallResponse(args)}
+			req := structuredDecisionRequest()
+			req.Provider, req.Model = tc.provider, tc.model
+
+			var b Bifrost
+			if _, bifrostErr := b.emulateDecisionViaResponses(nil, provider, schemas.Key{}, req); bifrostErr != nil {
+				t.Fatalf("unexpected error: %v", bifrostErr)
+			}
+			choice := provider.lastRequest.Params.ToolChoice
+			if choice == nil || choice.ResponsesToolChoiceStr == nil || *choice.ResponsesToolChoiceStr != string(tc.want) {
+				t.Errorf("tool_choice = %+v, want %q", choice, tc.want)
+			}
+		})
+	}
+}
+
+// TestEmulateDecisionRefusesPassthroughExtensions pins #7599's "never text-only"
+// rule: when native extensions (e.g. images) were asked to reach the wire, an
+// emulating chat model refuses instead of silently answering without them.
+func TestEmulateDecisionRefusesPassthroughExtensions(t *testing.T) {
+	provider := &decisionEmulationProvider{response: emulationFunctionCallResponse(`{"approve": {"value": 0.9, "confidence": 0.8}}`)}
+	req := &schemas.BifrostDecisionRequest{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		State:       "Describe this photo.",
+		Questions:   map[string]schemas.DecisionQuestion{"approve": {Kind: schemas.DecisionKindNoul, Instructions: "Approve?"}},
+		ExtraParams: map[string]interface{}{"images": []string{"data:image/png;base64,iVBORw0KGgo="}},
+	}
+
+	var b Bifrost
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	_, bifrostErr := b.emulateDecisionViaResponses(ctx, provider, schemas.Key{}, req)
+	if bifrostErr == nil {
+		t.Fatal("expected refusal when extensions must reach the wire")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 || !strings.Contains(bifrostErr.Error.Message, "images") {
+		t.Errorf("unexpected refusal: %+v", bifrostErr)
+	}
+	if provider.lastRequest != nil {
+		t.Error("the emulating model must not be called")
+	}
+
+	// Without the passthrough flag the extras were never promised to the wire;
+	// emulation proceeds as before.
+	plain := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := b.emulateDecisionViaResponses(plain, provider, schemas.Key{}, req); bifrostErr != nil {
+		t.Fatalf("unexpected error without passthrough: %v", bifrostErr)
 	}
 }

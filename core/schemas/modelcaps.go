@@ -131,6 +131,9 @@ func (c ModelCaps) SupportsSafeguards(fallback bool) bool {
 // compile instead of silently reading as "supported".
 const (
 	FieldTopP                 = "top_p"
+	FieldTemperature          = "temperature"
+	FieldTopLogprobs          = "top_logprobs"
+	FieldLogprobs             = "logprobs"
 	FieldPresencePenalty      = "presence_penalty"
 	FieldFrequencyPenalty     = "frequency_penalty"
 	FieldStop                 = "stop"
@@ -271,6 +274,24 @@ func (c ModelCaps) SupportsAssistantPrefill(fallback bool) bool {
 func (c ModelCaps) SupportsCachePoint(fallback bool) bool {
 	if c.record != nil && c.record.SupportsCachePoint != nil {
 		return *c.record.SupportsCachePoint
+	}
+	return fallback
+}
+
+// SupportsPromptCacheBreakpoint reports whether the model accepts OpenAI's
+// per-block prompt_cache_breakpoint and request-level prompt_cache_options.
+func (c ModelCaps) SupportsPromptCacheBreakpoint(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCacheBreakpoint != nil {
+		return *c.record.SupportsPromptCacheBreakpoint
+	}
+	return fallback
+}
+
+// SupportsAsyncTools reports whether the model accepts OpenAI's async flag on tool
+// definitions and on replayed function/custom call items.
+func (c ModelCaps) SupportsAsyncTools(fallback bool) bool {
+	if c.record != nil && c.record.SupportsAsyncTools != nil {
+		return *c.record.SupportsAsyncTools
 	}
 	return fallback
 }

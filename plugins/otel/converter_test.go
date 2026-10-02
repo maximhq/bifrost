@@ -67,6 +67,101 @@ func TestConvertTraceToResourceSpan_PluginSpanFilter(t *testing.T) {
 	}
 }
 
+// TestConvertTraceToResourceSpan_VirtualKeyContentLoggingOff asserts that a request whose virtual
+// key turned content logging off (AttrBifrostContentLoggingDisabled on the root span) is exported
+// without content on every span and without raw payloads, exactly as the profile's own
+// disable_content_logging would do, while the profile flag itself stays untouched for other traces.
+// The key can only tighten: the attribute is never false, and a profile that already disables
+// content stays disabled whatever the key says.
+func TestConvertTraceToResourceSpan_VirtualKeyContentLoggingOff(t *testing.T) {
+	p := &OtelPlugin{pluginSpanFilter: &PluginSpanFilter{}}
+
+	makeTrace := func(keyDisabled bool) *schemas.Trace {
+		root := makeSpan("aaaa", "", "request", schemas.SpanKindInternal)
+		root.Attributes = map[string]any{
+			schemas.AttrInputMessages:  "hello",
+			schemas.AttrOutputMessages: "hi there",
+			schemas.AttrRequestModel:   "gpt-4o-mini",
+		}
+		if keyDisabled {
+			root.Attributes[schemas.AttrBifrostContentLoggingDisabled] = true
+		}
+		child := makeSpan("bbbb", "aaaa", "chat", schemas.SpanKindLLMCall)
+		child.Attributes = map[string]any{
+			schemas.AttrInputMessages:  `[{"role":"user","content":"hello"}]`,
+			schemas.AttrOutputMessages: `[{"role":"assistant","content":"hi there"}]`,
+			// Text-completion suffix is caller-supplied prompt text; stop sequences are a parameter.
+			schemas.AttrSuffix:        "and they lived happily",
+			schemas.AttrStopSequences: []string{"END"},
+		}
+		child.LLM = &schemas.LLMSpanData{RawRequest: `{"raw":"request"}`, RawResponse: `{"raw":"response"}`}
+		return &schemas.Trace{
+			TraceID:  "00000000000000000000000000000003",
+			RootSpan: root,
+			Spans:    []*schemas.Span{root, child},
+		}
+	}
+	childSpan := func(spans []*Span) *Span {
+		for _, s := range spans {
+			if bytes.Equal(s.SpanId, hexToBytes("bbbb", 8)) {
+				return s
+			}
+		}
+		return nil
+	}
+
+	// Profile exports content and raw payloads; the key turned content off: nothing content-shaped
+	// leaves, on the root or the child, and the raw payloads stay home too.
+	off := p.convertTraceToResourceSpan("svc", makeTrace(true), nil, false, true, false, false)
+	root := findRoot(off.ScopeSpans[0].Spans)
+	child := childSpan(off.ScopeSpans[0].Spans)
+	if got := attrString(root, schemas.AttrInputMessages); got != "" {
+		t.Errorf("root input content = %q, want empty when the key disabled content", got)
+	}
+	if got := attrString(child, schemas.AttrInputMessages); got != "" {
+		t.Errorf("child input content = %q, want empty when the key disabled content", got)
+	}
+	if got := attrString(child, schemas.AttrOutputMessages); got != "" {
+		t.Errorf("child output content = %q, want empty when the key disabled content", got)
+	}
+	if got := attrString(child, schemas.AttrBifrostRawRequest); got != "" {
+		t.Errorf("raw request = %q, want empty when the key disabled content", got)
+	}
+	if got := attrString(child, schemas.AttrBifrostRawResponse); got != "" {
+		t.Errorf("raw response = %q, want empty when the key disabled content", got)
+	}
+	if got := attrString(child, schemas.AttrSuffix); got != "" {
+		t.Errorf("suffix = %q, want empty when the key disabled content (it is prompt text)", got)
+	}
+	if !hasAttr(child, schemas.AttrStopSequences) {
+		t.Error("stop sequences are a request parameter and must still export when the key disabled content")
+	}
+	if got := attrString(root, schemas.AttrRequestModel); got != "gpt-4o-mini" {
+		t.Errorf("root request model = %q, want retained (not content)", got)
+	}
+
+	// Same profile, a trace whose key said nothing: content and raw payloads export as configured.
+	on := p.convertTraceToResourceSpan("svc", makeTrace(false), nil, false, true, false, false)
+	child = childSpan(on.ScopeSpans[0].Spans)
+	if got := attrString(child, schemas.AttrInputMessages); got == "" {
+		t.Error("without the key attribute, child content should export as the profile allows")
+	}
+	if got := attrString(child, schemas.AttrBifrostRawRequest); got == "" {
+		t.Error("without the key attribute, raw payloads should export as the profile allows")
+	}
+	if got := attrString(child, schemas.AttrSuffix); got == "" {
+		t.Error("without the key attribute, the suffix should export as the profile allows")
+	}
+
+	// A profile that disables content stays disabled with or without the key attribute.
+	for _, keyDisabled := range []bool{true, false} {
+		strict := p.convertTraceToResourceSpan("svc", makeTrace(keyDisabled), nil, true, true, false, false)
+		if got := attrString(childSpan(strict.ScopeSpans[0].Spans), schemas.AttrInputMessages); got != "" {
+			t.Errorf("profile disable_content_logging with keyDisabled=%v: child content = %q, want empty", keyDisabled, got)
+		}
+	}
+}
+
 // TestConvertTraceToResourceSpan_DisableRootSpanContent asserts that the disableRootSpanContent
 // flag drops content attributes from the root span only, leaving child (llm.call) spans with
 // their full input/output content intact. This is the storage-saving knob that stops the
@@ -152,6 +247,19 @@ func TestSessionDerivedIDsAreDeterministicAndValid(t *testing.T) {
 }
 
 // attrString returns the string value of the named attribute on a span, or "" if absent.
+// hasAttr reports whether the span carries key at all, whatever its value type.
+func hasAttr(s *Span, key string) bool {
+	if s == nil {
+		return false
+	}
+	for _, kv := range s.Attributes {
+		if kv.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 func attrString(s *Span, key string) string {
 	for _, kv := range s.Attributes {
 		if kv.Key == key {

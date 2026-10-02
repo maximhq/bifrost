@@ -179,10 +179,9 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	}
 }
 
-// TestAddProvider_RejectsBaseURLWhenAuthBypassed covers the second route the advisory
-// (GHSA-vj9g-7rqh-x2p4) flags: a custom provider's network_config.base_url + explicit
-// allow_private_network:true is "another route to the same SSRF primitive" as the
-// Ollama key case, since an unauthenticated caller could set both fields together and
+// TestAddProvider_RejectsBaseURLWhenAuthBypassed covers the second route to the same
+// outcome as the Ollama key case: a custom provider's network_config.base_url + explicit
+// allow_private_network:true, which an unauthenticated caller could set together to
 // self-authorize its own destination past ValidateExternalURL's private-IP check.
 func TestAddProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -270,7 +269,7 @@ func TestProviderInterceptionGuardWhenAuthBypassed(t *testing.T) {
 	lib.SetLogger(&mockLogger{})
 
 	const storedProxyURL = "http://10.0.0.5:3128"
-	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIBattacker\n-----END CERTIFICATE-----\n"
+	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIBexample\n-----END CERTIFICATE-----\n"
 	cases := []struct {
 		name      string
 		create    bool

@@ -264,12 +264,8 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	p.pendingMCPLogsToInject.Range(func(key, value any) bool {
 		if pending, ok := value.(*logstore.MCPToolLog); ok {
 			if pending.CreatedAt.Before(cutoff) {
-				actual, loaded := p.pendingMCPLogsToInject.LoadAndDelete(key)
-				if !loaded {
-					return true
-				}
-				stalePending, ok := actual.(*logstore.MCPToolLog)
-				if !ok || stalePending == nil {
+				stalePending, ok := p.claimStaleMCPEntry(key)
+				if !ok {
 					return true
 				}
 
@@ -281,6 +277,24 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 		}
 		return true
 	})
+}
+
+// claimStaleMCPEntry takes a pending MCP entry away from PostMCPHook for the stale-entry reaper.
+// It reports false when the entry is already gone, which means PostMCPHook claimed it first.
+func (p *LoggerPlugin) claimStaleMCPEntry(key any) (*logstore.MCPToolLog, bool) {
+	actual, loaded := p.pendingMCPLogsToInject.LoadAndDelete(key)
+	if !loaded {
+		// PostMCPHook claimed it first and still needs the held arguments.
+		return nil, false
+	}
+	// Arguments held back for an unresolved key go with the entry: a stale entry never
+	// learns its final content decision, so it never gets them.
+	p.provisionalMCPArguments.Delete(key)
+	entry, ok := actual.(*logstore.MCPToolLog)
+	if !ok || entry == nil {
+		return nil, false
+	}
+	return entry, true
 }
 
 // enqueueLogEntry pushes a complete log entry to the write queue.
@@ -370,6 +384,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 	// baseline below.
 	n := len(log.InputHistory) +
 		len(log.ResponsesInputHistory) +
+		len(log.EmbeddingInput) +
 		len(log.OutputMessage) +
 		len(log.ResponsesOutput) +
 		len(log.EmbeddingOutput) +
@@ -448,6 +463,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 		CreatedAt:                   pending.Timestamp,
 		InputHistoryParsed:          pending.InitialData.InputHistory,
 		ResponsesInputHistoryParsed: pending.InitialData.ResponsesInputHistory,
+		EmbeddingInputParsed:        pending.InitialData.EmbeddingInput,
 		ParamsParsed:                pending.InitialData.Params,
 		ToolsParsed:                 pending.InitialData.Tools,
 		MetadataParsed:              pending.InitialData.Metadata,
@@ -479,6 +495,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		// Set parsed fields for serialization via GORM hooks
 		InputHistoryParsed:          pending.InitialData.InputHistory,
 		ResponsesInputHistoryParsed: pending.InitialData.ResponsesInputHistory,
+		EmbeddingInputParsed:        pending.InitialData.EmbeddingInput,
 		ParamsParsed:                pending.InitialData.Params,
 		ToolsParsed:                 pending.InitialData.Tools,
 		SpeechInputParsed:           pending.InitialData.SpeechInput,

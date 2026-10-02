@@ -87,12 +87,14 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		CustomLabels             []string            `json:"custom_labels,omitempty"`
 		MetricsEnabled           *bool               `json:"metrics_enabled,omitempty"`
 		OverheadBreakdownEnabled *bool               `json:"overhead_breakdown_enabled,omitempty"`
+		UserLabelsEnabled        *bool               `json:"user_labels_enabled,omitempty"`
 		PushGateway              *pushGatewayStorage `json:"push_gateway,omitempty"`
 	}
 	storage := configStorage{
 		CustomLabels:             c.CustomLabels,
 		MetricsEnabled:           c.MetricsEnabled,
 		OverheadBreakdownEnabled: c.OverheadBreakdownEnabled,
+		UserLabelsEnabled:        c.UserLabelsEnabled,
 	}
 	if c.PushGateway != nil {
 		pgw := &pushGatewayStorage{
@@ -390,6 +392,16 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		}
 	}
 
+	// bifrostLabels returns a freshly allocated base+extra+custom label set. Fresh
+	// every call: appending to a shared base writes into its spare capacity, so two
+	// metrics built from it would overwrite each other's names.
+	bifrostLabels := func(extra ...string) []string {
+		out := make([]string, 0, len(defaultBifrostLabels)+len(extra)+len(filteredCustomLabels))
+		out = append(out, defaultBifrostLabels...)
+		out = append(out, extra...)
+		return append(out, filteredCustomLabels...)
+	}
+
 	factory := promauto.With(registry)
 
 	httpRequestsTotal := factory.NewCounterVec(
@@ -436,7 +448,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_upstream_requests_total",
 			Help: "Total number of requests forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostUpstreamLatencySeconds := factory.NewHistogramVec(
@@ -445,7 +457,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency of requests forwarded to upstream providers by Bifrost.",
 			Buckets: upstreamLatencyBuckets, // Extended range for AI model inference times
 		},
-		append(append(defaultBifrostLabels, "is_success"), filteredCustomLabels...),
+		bifrostLabels("is_success"),
 	)
 
 	// Labelled without is_success: unlike upstream latency, overhead is dominated by
@@ -457,7 +469,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency added by Bifrost itself, in microseconds: total request time minus time blocked on upstream providers.",
 			Buckets: overheadLatencyBuckets,
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	// Same overhead as above, split by overhead_component (the UI's categories; see
@@ -482,18 +494,19 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_success_requests_total",
 			Help: "Total number of successful requests forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
-	// error_type is the normalized reason, status_code the raw fact it came from.
+	// status_code is the status the failure resolves to, not always the wire status:
+	// an error sent inside a committed stream reached the caller as a 200.
 	// Cardinality is bounded: error_type is near-determined by status_code for
 	// upstream failures, so it splits few series that were not already split.
 	bifrostErrorRequestsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_error_requests_total",
-			Help: "Total number of failed requests, by raw status_code and normalized error_type.",
+			Help: "Total number of failed requests, by effective status_code and normalized error_type.",
 		},
-		append(append(defaultBifrostLabels, "status_code", "error_type"), filteredCustomLabels...),
+		bifrostLabels("status_code", "error_type"),
 	)
 
 	bifrostInputTokensTotal := factory.NewCounterVec(
@@ -501,7 +514,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_input_tokens_total",
 			Help: "Total number of input tokens forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostOutputTokensTotal := factory.NewCounterVec(
@@ -509,7 +522,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_output_tokens_total",
 			Help: "Total number of output tokens forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheHitsTotal := factory.NewCounterVec(
@@ -517,7 +530,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_hits_total",
 			Help: "Total number of cache hits forwarded to upstream providers by Bifrost, separated by cache type (direct/semantic).",
 		},
-		append(append(defaultBifrostLabels, "cache_type"), filteredCustomLabels...),
+		bifrostLabels("cache_type"),
 	)
 
 	// Provider-side prompt cache tokens (Anthropic/OpenAI/Gemini prompt caching). Distinct
@@ -527,7 +540,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_read_input_tokens_total",
 			Help: "Total provider-side prompt-cache read (cached) input tokens. Billed at a reduced rate by the provider.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheWriteInputTokensTotal := factory.NewCounterVec(
@@ -535,7 +548,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_write_input_tokens_total",
 			Help: "Total provider-side prompt-cache creation (write) input tokens.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheWriteInputTokens5mTotal := factory.NewCounterVec(
@@ -543,7 +556,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_write_input_tokens_5m_total",
 			Help: "Provider-side prompt-cache write input tokens with a 5-minute TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheWriteInputTokens1hTotal := factory.NewCounterVec(
@@ -551,7 +564,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_write_input_tokens_1h_total",
 			Help: "Provider-side prompt-cache write input tokens with a 1-hour TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCostTotal := factory.NewCounterVec(
@@ -559,7 +572,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cost_total",
 			Help: "Total cost in USD for requests to upstream providers.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	// Routing-classification overhead (semantic complexity router embeddings).
@@ -612,7 +625,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency of the intermediate tokens of a stream response.",
 			Buckets: interTokenLatencyBuckets,
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostStreamFirstTokenLatencySeconds := factory.NewHistogramVec(
@@ -621,7 +634,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency of the first token of a stream response.",
 			Buckets: firstTokenLatencyBuckets,
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostRequestRetries := factory.NewHistogramVec(
@@ -630,7 +643,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Number of retries used per request (observed once per request).",
 			Buckets: []float64{0, 1, 2, 3, 5, 10},
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	// bifrostKeyRotationEventsTotal counts key-swap events from the attempt trail.
@@ -641,7 +654,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	bifrostKeyRotationEventsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_key_rotation_events_total",
-			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per per-key failure (rate-limit/auth/billing/permission) that triggered a switch to a different key on the next retry.",
+			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per per-key failure (rate limit, rejected credential, exhausted quota, model access, retired model, region block) that triggered a switch to a different key on the next retry.",
 		},
 		[]string{"provider", "requested_model", "key_id", "key_name", "fail_reason"},
 	)
@@ -926,6 +939,11 @@ func (p *PrometheusPlugin) sweepPendingOverheadLabels() {
 			return
 		}
 	}
+}
+
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *PrometheusPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
 }
 
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
@@ -1280,15 +1298,18 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 
 		// Emit one rotation counter increment per attempt that actually caused a key swap on the
-		// next try (per-key failure — rate-limit/auth/billing/permission — with retries remaining).
-		// Mark the key unhealthy on any failure, since key health is per-failure not per-rotation.
+		// next try (a per-key failure with a key left to move to). Mark the key unhealthy on any
+		// failure, since key health is per-failure not per-rotation, except when the failure says
+		// nothing about the key's health: a request for a model this key cannot reach, or a
+		// region block that may be the gateway's own location. The walk past those would
+		// otherwise mark every key in the pool down on one caller's typo or one blocked egress.
 		for _, record := range attemptTrail {
 			if record.TriggeredRotation && record.FailReason != nil {
 				p.KeyRotationEventsTotal.WithLabelValues(
 					string(provider), model, record.KeyID, record.KeyName, *record.FailReason,
 				).Inc()
 			}
-			if record.FailReason != nil {
+			if record.FailReason != nil && record.FailureClass != schemas.FailureClassModelAccess && record.FailureClass != schemas.FailureClassModelGone && record.FailureClass != schemas.FailureClassRegionBlocked {
 				p.ProviderKeyUp.WithLabelValues(string(provider), record.KeyID, record.KeyName).Set(0)
 			}
 		}
@@ -1323,11 +1344,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		// Record error and success counts
 		if bifrostErr != nil {
-			// Add status_code to label values (create new slice to avoid modifying original)
-			statusCode := "unknown"
-			if bifrostErr.StatusCode != nil {
-				statusCode = strconv.Itoa(*bifrostErr.StatusCode)
-			}
+			// Effective, not raw: an internal error has no StatusCode but still returns 500.
+			statusCode := strconv.Itoa(bifrostErr.EffectiveHTTPStatus())
 			// Same requestType that fills the `method` label, so verdict and labels
 			// cannot disagree. Never empty: bifrostErr is non-nil in this branch.
 			errorType := schemas.ClassifyErrorType(bifrostErr, requestType)

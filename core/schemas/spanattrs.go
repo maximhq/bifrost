@@ -1,7 +1,7 @@
 package schemas
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -176,17 +176,21 @@ func (d *LLMSpanData) appendEmbeddingRequest(attrs map[string]any) {
 	if in == nil {
 		return
 	}
-	switch {
-	case in.Text != nil:
-		attrs[AttrInputText] = *in.Text
-	case in.Texts != nil:
-		attrs[AttrInputText] = strings.Join(in.Texts, ",")
-	case in.Embedding != nil:
-		parts := make([]string, len(in.Embedding))
-		for i, v := range in.Embedding {
-			parts[i] = fmt.Sprintf("%v", v)
+	// Text wins over token IDs, matching the one-of the old flat input expressed.
+	if texts := in.Texts(); len(texts) > 0 {
+		attrs[AttrInputText] = strings.Join(texts, ",")
+		return
+	}
+	if ids := in.TokenIDs(); len(ids) > 0 {
+		var groups []string
+		for _, group := range ids {
+			parts := make([]string, len(group))
+			for i, v := range group {
+				parts[i] = strconv.Itoa(v)
+			}
+			groups = append(groups, strings.Join(parts, ","))
 		}
-		attrs[AttrInputEmbedding] = strings.Join(parts, ",")
+		attrs[AttrInputEmbedding] = strings.Join(groups, ",")
 	}
 }
 

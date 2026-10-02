@@ -5,6 +5,8 @@ import {
 	encodeTurnError,
 	errorMessage,
 	historyForRequest,
+	formatWarpChartValue,
+	formatWarpChartX,
 	formatWarpUsage,
 	indexStatusLabel,
 	isEncodedTurnError,
@@ -13,10 +15,12 @@ import {
 	isPlainLeftClick,
 	isTypingInto,
 	isWarpQuestionFinish,
+	parseWarpChartSpec,
 	parseWarpFrame,
 	pendingWarpQuestion,
 	shouldDrainQueue,
 	splitWarpAnswer,
+	splitWarpCharts,
 	splitWarpFrames,
 	turnsFromStoredMessages,
 	warpErrorDetail,
@@ -33,9 +37,6 @@ describe("splitWarpFrames", () => {
 		expect(rest).toBe("event: done\ndata: {");
 	});
 
-	// A chunk boundary can land mid-frame. Dropping the remainder instead of
-	// carrying it forward loses whatever token was being written at that moment,
-	// which reads as a corrupted answer rather than an error.
 	it("reassembles a frame split across two reads", () => {
 		const first = splitWarpFrames('event: delta\ndata: {"type":"delta","del');
 		expect(first.frames).toHaveLength(0);
@@ -53,17 +54,13 @@ describe("splitWarpFrames", () => {
 
 describe("parseWarpFrame", () => {
 	it("parses an event from the data payload", () => {
-		// tool_id is part of the payload: the agent always sends it (it is how
-		// applyEvent matches the end frame to its start), and isUsableWarpEvent
-		// drops a tool_call_end without one.
+		// tool_id is required: isUsableWarpEvent drops a tool_call_end without one.
 		const event = parseWarpFrame(
 			'event: tool_call_end\ndata: {"type":"tool_call_end","tool_id":"t1","tool_name":"query_metrics","duration_ms":42}',
 		);
 		expect(event).toMatchObject({ type: "tool_call_end", tool_id: "t1", tool_name: "query_metrics", duration_ms: 42 });
 	});
 
-	// Heartbeats keep the connection honest but carry no data. Treating one as a
-	// parse failure would tear down a healthy stream.
 	it("returns null for a heartbeat comment", () => {
 		expect(parseWarpFrame(": heartbeat")).toBeNull();
 	});
@@ -86,9 +83,6 @@ describe("warpToolLabel", () => {
 		expect(warpToolLabel("query_metrics")).toBe("Queried metrics");
 	});
 
-	// A running row shimmers and a finished one is ticked, so the same past-tense
-	// label cannot serve both: "Queried metrics" beside a spinner reads as already
-	// done, which is exactly the wait these rows exist to explain.
 	it("uses the present tense while a step is running", () => {
 		expect(warpToolLabel("query_metrics", true)).toBe("Querying metrics");
 		expect(warpToolLabel("count_logs", true)).toBe("Checking log volume");
@@ -97,8 +91,6 @@ describe("warpToolLabel", () => {
 		expect(warpToolLabel("semantic_search_logs")).toBe("Performed vector search");
 	});
 
-	// Every tool the agent can call needs a label. A raw name like "count_logs"
-	// leaking into the transcript is the symptom this guards against.
 	it("labels every tool the agent exposes", () => {
 		const tools = [
 			"semantic_search_logs",
@@ -109,6 +101,7 @@ describe("warpToolLabel", () => {
 			"query_metrics",
 			"query_usage_by",
 			"query_model_performance",
+			"render_chart",
 			"describe_filter_space",
 			"describe_virtual_key",
 			"ask_user",
@@ -119,7 +112,6 @@ describe("warpToolLabel", () => {
 		}
 	});
 
-	// A tool added server-side should still render legibly instead of blank.
 	it("falls back to the raw name for unknown tools", () => {
 		expect(warpToolLabel("query_something_new")).toBe("query_something_new");
 		expect(warpToolLabel("query_something_new", true)).toBe("query_something_new");
@@ -127,9 +119,6 @@ describe("warpToolLabel", () => {
 });
 
 describe("errorMessage", () => {
-	// The advice lives in the detail rather than the summary: the summary is one
-	// line in a transcript, and a line long enough to carry guidance is too long
-	// to scan.
 	it("offers concrete steps for max_iterations", () => {
 		const detail = warpErrorDetail("max_iterations", "");
 		expect(detail.summary).toContain("could not settle");
@@ -144,8 +133,6 @@ describe("errorMessage", () => {
 		expect(detail.suggestions.join(" ")).toContain("Request Timeout");
 	});
 
-	// The server's own words are the only part worth pasting into a bug report,
-	// so they must survive rather than be paraphrased away.
 	it("keeps the raw server message", () => {
 		expect(warpErrorDetail("upstream_error", "provider exploded").raw).toBe("provider exploded");
 	});
@@ -167,10 +154,7 @@ describe("errorMessage", () => {
 		expect(errorMessage(undefined, undefined)).toBe("Something went wrong.");
 	});
 });
-// The SSE spec allows CRLF line endings and makes the space after `data:`
-// optional. A stream from a proxy that normalises to CRLF, or a server that
-// omits the space, parsed to nothing at all - so the chat completed with an
-// empty answer and no error to explain it.
+// The SSE spec allows CRLF line endings and an optional space after `data:`.
 describe("SSE wire tolerance", () => {
 	it("splits frames delimited by CRLF", () => {
 		const { frames, rest } = splitWarpFrames('event: delta\r\ndata: {"type":"delta","delta":"hi"}\r\n\r\nevent: done\r\ndata: {');
@@ -196,10 +180,6 @@ describe("SSE wire tolerance", () => {
 	});
 });
 
-// The turn error is an encoded `code:message` pair. Producers that emitted a
-// bare message with no colon had the whole message read back as a code, which
-// matched nothing and rendered the generic "Something went wrong." - losing the
-// status line, the network error, and every other detail worth showing.
 describe("turn error encoding", () => {
 	it("round-trips a coded error", () => {
 		const { code, message } = decodeTurnError(encodeTurnError("not_configured", ""));
@@ -228,17 +208,9 @@ describe("turn error encoding", () => {
 		expect(errorMessage(code, message)).toBe("Warp returned no response body");
 	});
 });
-// A chunk boundary can land between the CR and the LF of a single CRLF.
-// Normalising the trailing CR to a newline immediately makes the next chunk's
-// LF look like a second newline, so the buffer reads as a frame boundary and
-// the half-written event is parsed - and discarded - as though it were whole.
+// A chunk can split a CRLF, so a trailing CR must wait for the next read.
 describe("splitWarpFrames CR boundaries", () => {
 	it("holds back a trailing CR until the next read decides what it is", () => {
-		// One frame whose data spans two lines, split by the network exactly
-		// between the CR and the LF of the separator between them. Converting
-		// that lone CR to a newline immediately makes the incoming LF look like a
-		// second newline, and the single frame is torn into two - each half
-		// unparseable, so the delta is dropped with no error.
 		const first = splitWarpFrames('data: {"type":"delta",\r');
 		expect(first.frames).toHaveLength(0);
 
@@ -254,10 +226,6 @@ describe("splitWarpFrames CR boundaries", () => {
 	});
 });
 
-// Every producer of a turn error has to go through the same encoding, or the
-// decoder reads whatever sits before the first colon as a code. A server error
-// frame with a message like "connect: connection refused" and no code would
-// otherwise lose the "connect:" half and render under an unknown code.
 describe("isEncodedTurnError", () => {
 	it("recognises what encodeTurnError produces", () => {
 		expect(isEncodedTurnError(encodeTurnError(undefined, "Warp request failed (500)"))).toBe(true);
@@ -279,29 +247,23 @@ describe("isEncodedTurnError", () => {
 });
 describe("splitWarpFrames lone-CR delimiters", () => {
 	it("emits a frame that a CR already terminated", () => {
-		// "\r\r" and "\n\r" are both complete delimiters. Holding the final CR back
-		// stranded the finished frame in `rest` until a chunk that may never come.
+		// "\r\r" and "\n\r" are both complete delimiters.
 		expect(splitWarpFrames('data: {"type":"delta"}\r\r').frames).toEqual(['data: {"type":"delta"}']);
 		expect(splitWarpFrames('data: {"type":"delta"}\n\r').frames).toEqual(['data: {"type":"delta"}']);
 	});
 
 	it("still holds back a CR that could be half of a CRLF", () => {
-		// Here the CR follows ordinary text, so only the next read says whether it
-		// is "\r\n" (one newline) or "\r\r" (a delimiter).
+		// A CR after text may be half of "\r\n", so only the next read decides.
 		const first = splitWarpFrames('data: {"type":"delta"}\r');
 		expect(first.frames).toEqual([]);
 		expect(first.rest.endsWith("\r")).toBe(true);
-		// A buffer that is only a CR has no preceding character, so it stays held.
 		expect(splitWarpFrames("\r").rest).toBe("\r");
-		// And the pair resolves once the LF arrives.
 		expect(splitWarpFrames(first.rest + '\ndata: {"type":"done"}\n\n').frames).toEqual(['data: {"type":"delta"}\ndata: {"type":"done"}']);
 	});
 });
 
 describe("warpToolStatusLabel", () => {
-	// The icons alone carry the tool-call state only through shape and color,
-	// which a screen reader cannot see - this label is what the sr-only span
-	// beside them announces.
+	// Announced by the sr-only span beside the status icons.
 	it("names each tool-call state", () => {
 		expect(warpToolStatusLabel({})).toBe("In progress");
 		expect(warpToolStatusLabel({ durationMs: undefined, failed: true })).toBe("In progress");
@@ -313,9 +275,7 @@ describe("warpToolStatusLabel", () => {
 
 describe("historyForRequest", () => {
 	it("drops turns that carry no content", () => {
-		// A failed turn is stored with empty content so the transcript can show the
-		// error, but the wire format is role and content only - replaying it told
-		// the model it had once answered with nothing.
+		// Failed turns have empty content; replaying one tells the model it answered nothing.
 		expect(
 			historyForRequest([
 				{ role: "user", content: "what failed?" },
@@ -327,8 +287,7 @@ describe("historyForRequest", () => {
 			{ role: "user", content: "what failed?" },
 			{ role: "user", content: "try again" },
 		]);
-		// Extra fields survive: the caller maps the question marker onto the turns
-		// this returns, so filtering must not flatten them away.
+		// Extra fields survive: the caller maps the question marker onto these turns.
 		expect(historyForRequest([{ role: "assistant", content: "pick one", question: true }])).toEqual([
 			{ role: "assistant", content: "pick one", question: true },
 		]);
@@ -348,8 +307,6 @@ describe("question events", () => {
 		expect(event?.question?.allow_other).toBe(true);
 	});
 
-	// A question ends the turn, so the client has to tell it apart from a
-	// finished answer or it will render the thread as complete.
 	it("marks the done frame that follows a question", () => {
 		const event = parseWarpFrame('data: {"type":"done","finish_reason":"question","iterations":1}');
 		expect(event?.finish_reason).toBe("question");
@@ -371,15 +328,11 @@ describe("splitWarpAnswer", () => {
 		expect(provenance).toBeUndefined();
 	});
 
-	// A fence anywhere but the end is part of the answer. Lifting it would leave
-	// the prose after it stranded with no context.
 	it("only lifts a trailing block", () => {
 		const content = "```warp-scope\nWindow: x\n```\n\nAnd then some prose.";
 		expect(splitWarpAnswer(content).provenance).toBeUndefined();
 	});
 
-	// A partially streamed fence must not be treated as complete, or the answer
-	// appears to lose its ending mid-stream.
 	it("ignores an unterminated block", () => {
 		const content = "Answer.\n\n```warp-scope\nWindow: 2026";
 		expect(splitWarpAnswer(content).provenance).toBeUndefined();
@@ -390,7 +343,6 @@ describe("splitWarpAnswer", () => {
 		expect(splitWarpAnswer("Answer.\n\n```warp-scope\n```").provenance).toBeUndefined();
 	});
 
-	// Ordinary code blocks are part of the answer.
 	it("leaves other fenced blocks alone", () => {
 		const content = 'Here:\n\n```json\n{"a":1}\n```';
 		expect(splitWarpAnswer(content).provenance).toBeUndefined();
@@ -401,8 +353,6 @@ describe("formatWarpUsage", () => {
 		expect(formatWarpUsage({ total_tokens: 12345, cost: { total_cost: 0.42 } })).toBe("12,345 tokens · $0.42");
 	});
 
-	// Sub-cent answers are the common case. Two decimals would render "$0.00"
-	// and read as free.
 	it("keeps a sub-cent cost visible", () => {
 		expect(formatWarpUsage({ total_tokens: 100, cost: { total_cost: 0.0012 } })).toBe("100 tokens · $0.0012");
 	});
@@ -411,16 +361,12 @@ describe("formatWarpUsage", () => {
 		expect(formatWarpUsage({ prompt_tokens: 300, completion_tokens: 200 })).toBe("500 tokens");
 	});
 
-	// A "0 tokens" label is worse than none.
 	it("returns null when there is nothing to report", () => {
 		expect(formatWarpUsage(undefined)).toBeNull();
 		expect(formatWarpUsage({})).toBeNull();
 		expect(formatWarpUsage({ total_tokens: 0, cost: { total_cost: 0 } })).toBeNull();
 	});
 });
-// A real but tiny cost must not print as $0.0000, which reads as free. The
-// figure is the only place Warp's own spend is reported, so rounding it away is
-// worse than an approximate marker.
 describe("formatWarpUsage sub-cent costs", () => {
 	it("marks a positive cost below the display threshold", () => {
 		const label = formatWarpUsage({ total_tokens: 10, cost: { total_cost: 0.00001 } });
@@ -429,15 +375,12 @@ describe("formatWarpUsage sub-cent costs", () => {
 	});
 
 	it("still shows costs the format can express", () => {
-		// Below a cent gets four places, at or above it gets two - unchanged.
 		expect(formatWarpUsage({ total_tokens: 10, cost: { total_cost: 0.0012 } })).toContain("$0.0012");
 		expect(formatWarpUsage({ total_tokens: 10, cost: { total_cost: 0.0123 } })).toContain("$0.01");
 		expect(formatWarpUsage({ total_tokens: 10, cost: { total_cost: 1.5 } })).toContain("$1.50");
 	});
 });
 
-// The server marks an answer given on its last research step as "partial". The
-// transcript has to show that, or a half-checked figure reads as a settled one.
 describe("isPartialAnswer", () => {
 	it("recognises the partial finish reason and nothing else", () => {
 		expect(isPartialAnswer("partial")).toBe(true);
@@ -452,8 +395,6 @@ describe("isPartialAnswer", () => {
 	});
 });
 
-// Warp's answers link into the dashboard with root-relative paths. Those must
-// navigate in-app, keeping the tray open; anything else is a real external link.
 describe("isInternalWarpLink", () => {
 	it("accepts root-relative dashboard paths only", () => {
 		expect(isInternalWarpLink("/workspace/logs?selected_log=abc")).toBe(true);
@@ -465,8 +406,6 @@ describe("isInternalWarpLink", () => {
 	});
 });
 
-// A reopened thread must look like it did live: the same tool rows, the same
-// error card, the same partial note and the same cost line.
 describe("turnsFromStoredMessages", () => {
 	it("maps stored messages onto transcript turns", () => {
 		const turns = turnsFromStoredMessages([
@@ -498,10 +437,6 @@ describe("turnsFromStoredMessages", () => {
 		expect(turns[2].partial).toBeUndefined();
 	});
 
-	// A reopened question turn must carry the same selectable card the live
-	// turn showed. The stored structured question restores the options with
-	// their hints; without one, the bare content is still shown as a question
-	// so the reply is not misfiled as an answer.
 	it("restores a stored question's options and hints", () => {
 		const turns = turnsFromStoredMessages([
 			{
@@ -529,11 +464,11 @@ describe("turnsFromStoredMessages", () => {
 	});
 });
 
-// The tray's index chip is one glance: is semantic search usable right now.
 describe("indexStatusLabel", () => {
 	it("names each state and shows progress while indexing", () => {
 		expect(indexStatusLabel({ state: "ready", vector_store_connected: true, embedding_configured: true })).toEqual({
 			label: "Index ready",
+			shortLabel: "Ready",
 			tone: "ok",
 		});
 		expect(indexStatusLabel({ state: "unavailable", vector_store_connected: false, embedding_configured: true })).toEqual({
@@ -580,9 +515,7 @@ describe("indexStatusLabel", () => {
 	});
 
 	it("does not read the idle response as a job", () => {
-		// The idle body is zeroed, not absent: total 0 and scanned 0 with no id.
-		// Read as a job it renders a 0% progress chip for a run that never
-		// started, and hides the fact that indexing simply has not been asked for.
+		// The idle body is zeroed, not absent, and must not render as a 0% job.
 		expect(
 			indexStatusLabel({
 				state: "indexing",
@@ -594,10 +527,7 @@ describe("indexStatusLabel", () => {
 	});
 });
 
-// The question card's shortcuts are document-level because the composer has
-// focus when the card appears. They must still work in that state - an empty
-// composer is not "typing" - and must yield the moment someone starts writing
-// their own answer.
+// Shortcuts are document-level because the composer has focus when the question card appears.
 describe("isTypingInto", () => {
 	const composer = (value: string) => ({ tagName: "TEXTAREA", value, dataset: { testid: WARP_COMPOSER_TESTID } });
 
@@ -610,9 +540,6 @@ describe("isTypingInto", () => {
 		expect(isTypingInto({ tagName: "INPUT", value: "" })).toBe(true);
 		expect(isTypingInto({ tagName: "INPUT", value: "x" })).toBe(true);
 	});
-	// Another textarea on the page belongs to someone else. Treating it as a
-	// shortcut target let the question card swallow a character that matched an
-	// option letter while they were writing into an unrelated field.
 	it("treats any other textarea as typing, even when empty", () => {
 		expect(isTypingInto({ tagName: "TEXTAREA", value: "" })).toBe(true);
 		expect(isTypingInto({ tagName: "TEXTAREA", value: "", dataset: { testid: "some-other-field" } })).toBe(true);
@@ -623,8 +550,6 @@ describe("isTypingInto", () => {
 	});
 });
 
-// Messages typed while Warp is thinking wait their turn. One goes out per
-// finished turn, never two at once.
 describe("shouldDrainQueue", () => {
 	it("sends only on the streaming-to-idle transition", () => {
 		expect(shouldDrainQueue(true, false, 2, false)).toBe(true);
@@ -633,21 +558,13 @@ describe("shouldDrainQueue", () => {
 		expect(shouldDrainQueue(true, false, 0, false)).toBe(false);
 	});
 
-	// A queued follow-up was written expecting the turn ahead of it to have
-	// actually answered. Auto-firing it the instant a *failed* turn finishes
-	// showed "Thinking" directly under an error card, for a request sent
-	// against a conversation whose last turn never actually completed.
 	it("holds the queue back when the turn that just finished failed", () => {
 		expect(shouldDrainQueue(true, false, 2, false, true)).toBe(false);
 		expect(shouldDrainQueue(true, false, 0, false, true)).toBe(false);
 	});
 });
 
-// isInternalWarpLink decides whether a link Warp produced is followed with the
-// router (same tab) or opened as an external link. WHATWG URL parsing folds a
-// backslash into a forward slash for special schemes, so "/\host" resolves the
-// same way "//host" does - and treating it as internal handed the router a
-// value that navigates the current tab to another origin.
+// URL parsing folds a backslash into a slash, so "/\host" resolves like "//host".
 describe("isInternalWarpLink", () => {
 	it("accepts root-relative paths", () => {
 		expect(isInternalWarpLink("/workspace/logs")).toBe(true);
@@ -667,10 +584,7 @@ describe("isInternalWarpLink", () => {
 	});
 });
 describe("isTypingInto contenteditable", () => {
-	// A rich-text editor is a DIV, so tagName alone says nothing. This was
-	// covered by the inline check the helper replaced, and losing it meant the
-	// question shortcuts ate keystrokes in exactly the field where it is hardest
-	// to spot.
+	// A rich-text editor is a DIV, so tagName alone says nothing.
 	it("treats a contenteditable element as typing", () => {
 		expect(isTypingInto({ tagName: "DIV", isContentEditable: true })).toBe(true);
 	});
@@ -680,7 +594,6 @@ describe("isTypingInto contenteditable", () => {
 		expect(isTypingInto({ tagName: "DIV", isContentEditable: false })).toBe(false);
 	});
 
-	// Warp's own composer keeps its exemption: empty means the shortcuts apply.
 	it("keeps the composer exemption", () => {
 		expect(isTypingInto({ tagName: "TEXTAREA", value: "", dataset: { testid: WARP_COMPOSER_TESTID } })).toBe(false);
 		expect(isTypingInto({ tagName: "TEXTAREA", value: "draft", dataset: { testid: WARP_COMPOSER_TESTID } })).toBe(true);
@@ -688,8 +601,7 @@ describe("isTypingInto contenteditable", () => {
 });
 describe("isPlainLeftClick", () => {
 	it("leaves modified and non-primary clicks to the browser", () => {
-		// Intercepting these took away the only way to open a cited link in a new
-		// tab without losing the answer being read.
+		// Modified clicks are how users open a cited link in a new tab.
 		expect(isPlainLeftClick({ button: 0 })).toBe(true);
 		expect(isPlainLeftClick({})).toBe(true);
 		expect(isPlainLeftClick({ button: 1 })).toBe(false);
@@ -702,8 +614,7 @@ describe("isPlainLeftClick", () => {
 
 describe("shouldDrainQueue with a pending question", () => {
 	it("holds the queue until the clarification is resolved", () => {
-		// A question ends streaming too, so without the gate the next queued
-		// follow-up became the answer to a question it has nothing to do with.
+		// A question also ends streaming; without the gate a queued follow-up would answer it.
 		expect(shouldDrainQueue(true, false, 1)).toBe(true);
 		expect(shouldDrainQueue(true, false, 1, true)).toBe(false);
 		expect(shouldDrainQueue(true, false, 0, false)).toBe(false);
@@ -720,17 +631,12 @@ describe("turnsFromStoredMessages question markers", () => {
 			{ role: "user", content: "which provider?", created_at: "2026-09-16T09:00:00Z" },
 			{ role: "assistant", content: "Which provider did you mean?", finish_reason: "question", created_at: "2026-09-16T09:00:01Z" },
 		]);
-		// send() serialises turn.question as `question: true`. Without the marker
-		// the server reads a replayed clarification as an answer.
+		// Without the marker the server reads a replayed clarification as an answer.
 		expect(turns[1].question?.question).toBe("Which provider did you mean?");
 		expect(turns[0].question).toBeUndefined();
 	});
 });
 
-// A thread that ended on a question came back from history with the question as
-// plain text and no options: turnsFromStoredMessages rebuilt turn.question, and
-// nothing handed it to the card. The pending question is the last turn's, and
-// only while it is still unanswered and has something to click.
 describe("pendingWarpQuestion", () => {
 	const asked = {
 		role: "assistant" as const,
@@ -756,8 +662,7 @@ describe("pendingWarpQuestion", () => {
 	it("restores nothing once the question was answered, or when it has no options", () => {
 		const answered = turnsFromStoredMessages([asked, { role: "user", content: "all", created_at: "2026-09-21T12:31:05Z" }]);
 		expect(pendingWarpQuestion(answered)).toBeNull();
-		// A row saved before options were stored: a card with nothing to pick is
-		// worse than the question as text, which the composer can still answer.
+		// A card with nothing to pick is worse than the question as text.
 		const bare = turnsFromStoredMessages([
 			{ role: "assistant", content: "Which provider?", finish_reason: "question", created_at: "2026-09-16T09:00:01Z" },
 		]);
@@ -766,10 +671,6 @@ describe("pendingWarpQuestion", () => {
 	});
 });
 
-// A turn that narrated between lookups rendered as thirteen tool rows stacked
-// above four paragraphs run together, which reads as a stuck state: nothing
-// says which lookups followed which thought. The timeline puts each group of
-// calls where it fell in the text.
 describe("warpTimeline", () => {
 	const call = (id: string, textOffset?: number) => ({ id, name: "get_request_trace", durationMs: 5, textOffset });
 
@@ -798,7 +699,7 @@ describe("warpTimeline", () => {
 			{ kind: "tools", calls: [call("c1"), call("c2")] },
 			{ kind: "text", text: "The answer.", final: true },
 		]);
-		// Past the end (content trimmed since) or out of order: clamped, never lost.
+		// Past the end or out of order: clamped, never lost.
 		expect(warpTimeline("Short.", [call("c1", 900), call("c2", 3)])).toEqual([
 			{ kind: "text", text: "Short.", final: false },
 			{ kind: "tools", calls: [call("c1", 900), call("c2", 3)] },
@@ -817,5 +718,149 @@ describe("warpTimeline", () => {
 			},
 		]);
 		expect(turns[0].toolCalls?.[0].textOffset).toBe(9);
+	});
+});
+const chartSpec = {
+	id: "chart-1",
+	kind: "line",
+	title: "Errors per day",
+	metric: "errors",
+	unit: "count",
+	interval: "day",
+	points: [
+		{ x: "2026-09-22T00:00:00Z", y: 5 },
+		{ x: "2026-09-23T00:00:00Z", y: 30 },
+	],
+	window: { start: "2026-09-17T00:00:00Z", end: "2026-09-24T00:00:00Z" },
+	link: "/workspace/logs?status=error",
+};
+
+describe("splitWarpCharts", () => {
+	it("lifts chart blocks out of the text, in order", () => {
+		const text = "Errors spiked on the 23rd.\n\n```warp-chart\n" + JSON.stringify(chartSpec) + "\n```\n\nMost were overloads.";
+		const segments = splitWarpCharts(text, false);
+		expect(segments.map((segment) => segment.kind)).toEqual(["text", "chart", "text"]);
+		expect(segments[1]).toEqual({ kind: "chart", spec: chartSpec });
+	});
+
+	it("shows a pending chart while its block is still streaming", () => {
+		expect(splitWarpCharts('Here it is:\n\n```warp-chart\n{"id":"chart-1","ki', true)).toEqual([
+			{ kind: "text", text: "Here it is:\n\n" },
+			{ kind: "chart-pending" },
+		]);
+	});
+
+	// A finished text will never close its block, so a placeholder would spin forever.
+	it("marks an unclosed block invalid once the text is finished", () => {
+		expect(splitWarpCharts("Here it is:\n\n```warp-chart", false)).toEqual([
+			{ kind: "text", text: "Here it is:\n\n" },
+			{ kind: "chart-invalid" },
+		]);
+	});
+
+	it("keeps the text after an unclosed fence once the text is finished", () => {
+		expect(splitWarpCharts("Here it is:\n\n```warp-chart\nErrors spiked on the 23rd.", false)).toEqual([
+			{ kind: "text", text: "Here it is:\n\n" },
+			{ kind: "chart-invalid" },
+			{ kind: "text", text: "Errors spiked on the 23rd." },
+		]);
+	});
+
+	it("marks a closed block it cannot draw as invalid rather than failing", () => {
+		expect(splitWarpCharts("```warp-chart\nnot json\n```", false)).toEqual([{ kind: "chart-invalid" }]);
+	});
+
+	// Serialized JSON leaves backticks unescaped, so a fenced title must not close the block.
+	it("keeps triple backticks inside a chart title", () => {
+		const spec = { ...chartSpec, title: "Requests using ```code``` fences" };
+		expect(parseWarpChartSpec(JSON.stringify(spec))).toEqual(spec);
+		const text = "Here:\n\n```warp-chart\n" + JSON.stringify(spec) + "\n```\n\nDone.";
+		expect(splitWarpCharts(text, false)).toEqual([
+			{ kind: "text", text: "Here:\n\n" },
+			{ kind: "chart", spec },
+			{ kind: "text", text: "\n\nDone." },
+		]);
+	});
+
+	it("leaves text without charts as one segment", () => {
+		expect(splitWarpCharts("Just prose.", false)).toEqual([{ kind: "text", text: "Just prose." }]);
+	});
+});
+
+describe("parseWarpChartSpec", () => {
+	it("accepts a spec render_chart produced", () => {
+		expect(parseWarpChartSpec(JSON.stringify(chartSpec))).toEqual(chartSpec);
+	});
+
+	it("keeps a bar label only when there is one", () => {
+		const bar = {
+			...chartSpec,
+			kind: "bar",
+			interval: undefined,
+			group: "team",
+			points: [{ x: "team-platform", label: "Platform Engineering", y: 15 }],
+		};
+		expect(parseWarpChartSpec(JSON.stringify(bar))?.points).toEqual([{ x: "team-platform", label: "Platform Engineering", y: 15 }]);
+	});
+
+	it.each([
+		["a kind it cannot draw", { ...chartSpec, kind: "pie" }],
+		["an unknown unit", { ...chartSpec, unit: "furlongs" }],
+		["a non-numeric point", { ...chartSpec, points: [{ x: "a", y: "5" }] }],
+		["missing points", { ...chartSpec, points: undefined }],
+	])("rejects %s", (_, spec) => {
+		expect(parseWarpChartSpec(JSON.stringify(spec))).toBeNull();
+	});
+});
+
+describe("formatWarpChartValue", () => {
+	it.each([
+		["usd", 2.58, "$2.58"],
+		["usd", 0.0004, "$0.0004"],
+		// Below what four places show, a real cost is not rounded down to "$0.0000".
+		["usd", 0.00004, "<$0.0001"],
+		["usd", 0.0001, "$0.0001"],
+		["usd", 0, "$0"],
+		["ms", 45000, "45.00s"],
+		["ms", 320.4, "320ms"],
+		["tokens", 956229, "956.2K"],
+		["count", 30, "30"],
+	] as const)("formats %s %s as %s", (unit, value, want) => {
+		expect(formatWarpChartValue(unit, value)).toBe(want);
+	});
+});
+
+describe("formatWarpChartX", () => {
+	// Buckets are UTC; a local-time label would file traffic under the wrong day.
+	it("labels line points by their UTC bucket", () => {
+		expect(formatWarpChartX({ kind: "line", interval: "day" }, { x: "2026-09-23T00:00:00Z", y: 1 })).toBe("Sep 23");
+		expect(formatWarpChartX({ kind: "line", interval: "hour" }, { x: "2026-09-23T14:00:00Z", y: 1 })).toBe("Sep 23, 14:00");
+	});
+
+	it("labels bars by display name, falling back to the id", () => {
+		expect(formatWarpChartX({ kind: "bar" }, { x: "team-platform", label: "Platform Engineering", y: 1 })).toBe("Platform Engineering");
+		expect(formatWarpChartX({ kind: "bar" }, { x: "anthropic", y: 1 })).toBe("anthropic");
+	});
+});
+describe("weekly and rate charts", () => {
+	it("accepts a weekly error-rate bar chart", () => {
+		const spec = {
+			...chartSpec,
+			kind: "bar",
+			metric: "error_rate",
+			unit: "percent",
+			interval: "week",
+			points: [{ x: "2026-09-14T00:00:00Z", y: 3 }],
+		};
+		expect(parseWarpChartSpec(JSON.stringify(spec))).toEqual(spec);
+	});
+
+	it("formats a rate as a percent", () => {
+		expect(formatWarpChartValue("percent", 2.987)).toBe("2.99%");
+	});
+
+	it("labels weekly points and time bars by date, not as category names", () => {
+		expect(formatWarpChartX({ kind: "bar", interval: "week" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Wk of Sep 14");
+		expect(formatWarpChartX({ kind: "bar", interval: "day" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Sep 14");
 	});
 });

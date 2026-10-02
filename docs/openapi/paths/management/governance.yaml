@@ -3,8 +3,18 @@
 virtual-keys:
   get:
     operationId: listVirtualKeys
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List virtual keys
-    description: Returns a list of all virtual keys with their configurations.
+    description: |
+      Returns a list of all virtual keys with their configurations.
     tags:
       - Governance
     parameters:
@@ -95,8 +105,18 @@ virtual-keys:
 
   post:
     operationId: createVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create virtual key
-    description: Creates a new virtual key with the specified configuration.
+    description: |
+      Creates a new virtual key with the specified configuration.
     tags:
       - Governance
     requestBody:
@@ -123,6 +143,15 @@ virtual-keys:
 virtual-keys-quota:
   get:
     operationId: getVirtualKeyQuota
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Not RBAC-gated - authorized by the credential below |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get virtual key quota
     description: |
       Returns the overall budget and rate limit quota for the authenticated virtual key,
@@ -178,8 +207,18 @@ virtual-keys-quota:
 virtual-keys-by-id:
   get:
     operationId: getVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get virtual key
-    description: Returns a specific virtual key by ID.
+    description: |
+      Returns a specific virtual key by ID.
     tags:
       - Governance
     parameters:
@@ -221,8 +260,18 @@ virtual-keys-by-id:
 
   put:
     operationId: updateVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update virtual key
-    description: Updates an existing virtual key's configuration.
+    description: |
+      Updates an existing virtual key's configuration.
     tags:
       - Governance
     parameters:
@@ -261,8 +310,18 @@ virtual-keys-by-id:
 
   delete:
     operationId: deleteVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete virtual key
-    description: Deletes a virtual key.
+    description: |
+      Deletes a virtual key.
     tags:
       - Governance
     parameters:
@@ -294,6 +353,15 @@ virtual-keys-by-id:
 virtual-keys-rotate-by-id:
   post:
     operationId: rotateVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Rotate virtual key
     description: |
       Generates a new credential value for the virtual key while leaving its configuration,
@@ -337,6 +405,15 @@ virtual-keys-rotate-by-id:
 virtual-keys-budget-override:
   put:
     operationId: updateVirtualKeyBudgetOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Set virtual key budget override
     description: |
       Sets or replaces the spending override on one of a virtual key's budgets. The override is additive —
@@ -391,6 +468,15 @@ virtual-keys-budget-override:
 
   delete:
     operationId: deleteVirtualKeyBudgetOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Remove virtual key budget override
     description: |
       Removes any active override from the budget, so it is enforced against its base `max_limit` again.
@@ -433,8 +519,18 @@ virtual-keys-budget-override:
 virtual-keys-rotate:
   post:
     operationId: bulkRotateVirtualKeys
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Rotate multiple virtual keys
-    description: Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
+    description: |
+      Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
     tags:
       - Governance
     security:
@@ -509,8 +605,18 @@ virtual-keys-rotate:
 virtual-keys-by-id-rotate:
   post:
     operationId: rotateVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Rotate virtual key
-    description: Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
+    description: |
+      Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
     tags:
       - Governance
     parameters:
@@ -551,8 +657,18 @@ virtual-keys-by-id-rotate:
 teams:
   get:
     operationId: listTeams
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List teams
-    description: Returns a list of all teams.
+    description: |
+      Returns a list of all teams.
     tags:
       - Governance
     parameters:
@@ -582,8 +698,18 @@ teams:
 
   post:
     operationId: createTeam
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create team
-    description: Creates a new team.
+    description: |
+      Creates a new team.
     tags:
       - Governance
     requestBody:
@@ -610,8 +736,18 @@ teams:
 teams-by-id:
   get:
     operationId: getTeam
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get team
-    description: Returns a specific team by ID.
+    description: |
+      Returns a specific team by ID.
     tags:
       - Governance
     parameters:
@@ -651,8 +787,18 @@ teams-by-id:
 
   put:
     operationId: updateTeam
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update team
-    description: Updates an existing team.
+    description: |
+      Updates an existing team.
     tags:
       - Governance
     parameters:
@@ -691,8 +837,18 @@ teams-by-id:
 
   delete:
     operationId: deleteTeam
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Teams:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete team
-    description: Deletes a team.
+    description: |
+      Deletes a team.
     tags:
       - Governance
     parameters:
@@ -726,8 +882,18 @@ teams-by-id:
 customers:
   get:
     operationId: listCustomers
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List customers
-    description: Returns a list of all customers.
+    description: |
+      Returns a list of all customers.
     tags:
       - Governance
     parameters:
@@ -752,8 +918,18 @@ customers:
 
   post:
     operationId: createCustomer
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create customer
-    description: Creates a new customer.
+    description: |
+      Creates a new customer.
     tags:
       - Governance
     requestBody:
@@ -780,8 +956,18 @@ customers:
 customers-by-id:
   get:
     operationId: getCustomer
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get customer
-    description: Returns a specific customer by ID.
+    description: |
+      Returns a specific customer by ID.
     tags:
       - Governance
     parameters:
@@ -821,8 +1007,18 @@ customers-by-id:
 
   put:
     operationId: updateCustomer
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update customer
-    description: Updates an existing customer.
+    description: |
+      Updates an existing customer.
     tags:
       - Governance
     parameters:
@@ -861,8 +1057,18 @@ customers-by-id:
 
   delete:
     operationId: deleteCustomer
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Customers:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete customer
-    description: Deletes a customer.
+    description: |
+      Deletes a customer.
     tags:
       - Governance
     parameters:
@@ -896,8 +1102,18 @@ customers-by-id:
 budgets:
   get:
     operationId: listBudgets
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List budgets
-    description: Returns a list of all budgets. Use the `from_memory` query parameter to get data from in-memory cache.
+    description: |
+      Returns a list of all budgets. Use the `from_memory` query parameter to get data from in-memory cache.
     tags:
       - Governance
     parameters:
@@ -923,8 +1139,18 @@ budgets:
 rate-limits:
   get:
     operationId: listRateLimits
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List rate limits
-    description: Returns a list of all rate limits. Use the `from_memory` query parameter to get data from in-memory cache.
+    description: |
+      Returns a list of all rate limits. Use the `from_memory` query parameter to get data from in-memory cache.
     tags:
       - Governance
     parameters:
@@ -952,8 +1178,18 @@ rate-limits:
 model-configs:
   get:
     operationId: listModelConfigs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List model limits
-    description: Returns a paginated list of model limits with their budget and rate limit settings.
+    description: |
+      Returns a paginated list of model limits with their budget and rate limit settings.
     tags:
       - Governance
     security:
@@ -1014,6 +1250,15 @@ model-configs:
 
   post:
     operationId: createModelConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create model config
     description: |
       Creates a new model configuration with budget and rate limit settings.
@@ -1056,8 +1301,18 @@ model-configs:
 model-configs-by-id:
   get:
     operationId: getModelConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get model config
-    description: Returns a specific model configuration by ID.
+    description: |
+      Returns a specific model configuration by ID.
     tags:
       - Governance
     parameters:
@@ -1091,8 +1346,18 @@ model-configs-by-id:
 
   put:
     operationId: updateModelConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update model config
-    description: Updates an existing model configuration's budget and rate limit settings.
+    description: |
+      Updates an existing model configuration's budget and rate limit settings.
     tags:
       - Governance
     parameters:
@@ -1131,8 +1396,18 @@ model-configs-by-id:
 
   delete:
     operationId: deleteModelConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete model config
-    description: Deletes a model configuration.
+    description: |
+      Deletes a model configuration.
     tags:
       - Governance
     parameters:
@@ -1166,8 +1441,18 @@ model-configs-by-id:
 provider-governance:
   get:
     operationId: listProviderGovernance
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List provider governance
-    description: Returns a list of all providers with their governance settings (budget and rate limits).
+    description: |
+      Returns a list of all providers with their governance settings (budget and rate limits).
     tags:
       - Governance
     security:
@@ -1186,8 +1471,18 @@ provider-governance:
 provider-governance-by-name:
   put:
     operationId: updateProviderGovernance
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update provider governance
-    description: Updates governance settings (budget and rate limits) for a specific provider.
+    description: |
+      Updates governance settings (budget and rate limits) for a specific provider.
     tags:
       - Governance
     parameters:
@@ -1226,8 +1521,18 @@ provider-governance-by-name:
 
   delete:
     operationId: deleteProviderGovernance
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete provider governance
-    description: Removes governance settings (budget and rate limits) for a specific provider.
+    description: |
+      Removes governance settings (budget and rate limits) for a specific provider.
     tags:
       - Governance
     parameters:
@@ -1260,8 +1565,18 @@ provider-governance-by-name:
 pricing-overrides:
   get:
     operationId: listPricingOverrides
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List pricing overrides
-    description: Returns all pricing overrides, optionally filtered by scope.
+    description: |
+      Returns all pricing overrides, optionally filtered by scope.
     tags:
       - Governance
     parameters:
@@ -1322,8 +1637,18 @@ pricing-overrides:
 
   post:
     operationId: createPricingOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create pricing override
-    description: Creates a new pricing override. The most specific matching scope always wins during cost resolution.
+    description: |
+      Creates a new pricing override. The most specific matching scope always wins during cost resolution.
     tags:
       - Governance
     requestBody:
@@ -1350,8 +1675,18 @@ pricing-overrides:
 pricing-overrides-by-id:
   put:
     operationId: updatePricingOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update pricing override
-    description: Updates an existing pricing override. Omitted fields are merged from the existing record. The `patch` field is always replaced in full when provided.
+    description: |
+      Updates an existing pricing override. Omitted fields are merged from the existing record. The `patch` field is always replaced in full when provided.
     tags:
       - Governance
     parameters:
@@ -1390,8 +1725,18 @@ pricing-overrides-by-id:
 
   delete:
     operationId: deletePricingOverride
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete pricing override
-    description: Deletes a pricing override by ID.
+    description: |
+      Deletes a pricing override by ID.
     tags:
       - Governance
     parameters:

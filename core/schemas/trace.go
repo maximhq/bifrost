@@ -43,6 +43,23 @@ func GetStringAttr(attrs map[string]any, key string) string {
 	return v
 }
 
+// GetBoolAttr returns a bool attribute, or false when absent or another type.
+func GetBoolAttr(attrs map[string]any, key string) bool {
+	v, _ := attrs[key].(bool)
+	return v
+}
+
+// ContentLoggingDisabledForTrace reports whether the request behind this trace was made with a
+// virtual key that turned content logging off (AttrBifrostContentLoggingDisabled on the root
+// span). Every connector ORs this into its own disable_content_logging: the key can only tighten
+// what a connector exports, never loosen it. Nil-safe, so a connector can call it on any trace.
+func ContentLoggingDisabledForTrace(t *Trace) bool {
+	if t == nil || t.RootSpan == nil {
+		return false
+	}
+	return GetBoolAttr(t.RootSpan.Attributes, AttrBifrostContentLoggingDisabled)
+}
+
 // GetInt64Attr returns an integer attribute, widening int and float64.
 func GetInt64Attr(attrs map[string]any, key string) int64 {
 	switch v := attrs[key].(type) {
@@ -323,7 +340,9 @@ func IsOverheadBreakdownSpan(span *Span) bool {
 		}
 		return strings.HasPrefix(span.Name, "middleware.")
 	case SpanKindPlugin:
-		return strings.HasSuffix(span.Name, ".transportprehook") || strings.HasSuffix(span.Name, ".transportposthook")
+		return strings.HasSuffix(span.Name, ".transportprehook") ||
+			strings.HasSuffix(span.Name, ".transportposthook") ||
+			strings.HasSuffix(span.Name, ".transportresponseheadershook")
 	}
 	return false
 }
@@ -503,7 +522,7 @@ func traceRedactionReplacementsForAttribute(key string, inputReplacements map[st
 func traceContentAttributeScopeForKey(key string) traceContentAttributeScope {
 	switch key {
 	case AttrInputMessages, AttrInputText, AttrInputSpeech, AttrInputEmbedding,
-		AttrPrompt, AttrInstructions,
+		AttrPrompt, AttrInstructions, AttrSuffix,
 		AttrTools, AttrToolChoiceType, AttrToolChoiceName,
 		AttrRespTools, AttrRespToolChoiceType, AttrRespToolChoiceName,
 		AttrBifrostRawRequest:
@@ -1131,6 +1150,12 @@ const (
 	// reverse hop (enqueue->dequeue) is already the "queue-wait" span.
 	AttrBifrostWorkerHandoffMs = "bifrost.worker.handoff_ms"
 
+	// AttrBifrostContentLoggingDisabled is set to true on the root span when the request's virtual
+	// key turned content logging off. Connectors read it through ContentLoggingDisabledForTrace and
+	// strip content the way their own disable_content_logging would; it is never set to false, so a
+	// key that keeps content on cannot loosen a connector's own setting.
+	AttrBifrostContentLoggingDisabled = "bifrost.content_logging.disabled"
+
 	AttrBifrostProviderName        = "bifrost.provider.name"
 	AttrBifrostRequestID           = "bifrost.request.id"
 	AttrBifrostVirtualKeyID        = "bifrost.virtual_key.id"
@@ -1164,8 +1189,8 @@ const (
 	AttrBifrostAlias               = "bifrost.alias"                // original requested model when it differs from the resolved model
 	AttrBifrostRoutingEngineUsed   = "bifrost.routing_engine_used"  // comma-joined routing engines that handled the request
 	AttrBifrostComplexityTier      = "bifrost.complexity_tier"      // complexity tier used for routing (SIMPLE/MEDIUM/COMPLEX); absent when no rule referenced complexity_tier
-	AttrBifrostComplexityMechanism = "bifrost.complexity_mechanism" // how the complexity tier was classified (semantic, llm, session, skipped)
-	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // numeric confidence score produced by complexity classification
+	AttrBifrostComplexityMechanism = "bifrost.complexity_mechanism" // how the complexity tier was classified (semantic, jev, llm, session, skipped)
+	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // semantic similarity used to classify the tier; Jev confidence is log-only
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
 
 	// AttrBifrostErrorType is the normalized ErrorType, so span-derived connectors

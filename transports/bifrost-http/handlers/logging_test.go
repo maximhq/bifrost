@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -739,6 +741,8 @@ type dashboardLogManager struct {
 	lastMCPFilters         logstore.MCPToolLogSearchFilters
 	lastRecalculateFilters logstore.SearchFilters
 	lastRecalculateContext chan context.Context
+	// rankings, when set, supplies the rows GetDimensionRankings returns per dimension.
+	rankings map[logstore.RankingDimension][]logstore.DimensionRankingWithTrend
 }
 
 // GetLog implements the test double used by logging handler tests.
@@ -832,7 +836,8 @@ func (m *dashboardLogManager) GetModelRankings(ctx context.Context, filters *log
 
 // GetDimensionRankings implements the test double used by logging handler tests.
 func (m *dashboardLogManager) GetDimensionRankings(ctx context.Context, filters *logstore.SearchFilters, dimension logstore.RankingDimension) (*logstore.DimensionRankingResult, error) {
-	return &logstore.DimensionRankingResult{Dimension: dimension}, nil
+	rows := append([]logstore.DimensionRankingWithTrend(nil), m.rankings[dimension]...)
+	return &logstore.DimensionRankingResult{Dimension: dimension, Rankings: rows}, nil
 }
 
 // GetDroppedRequests implements the test double used by logging handler tests.
@@ -1161,5 +1166,219 @@ func TestMCPAttributionFilterParsing(t *testing.T) {
 		if !reflect.DeepEqual(filters.UserIDs, []string{"u1", "u2"}) || !reflect.DeepEqual(filters.TeamIDs, []string{"t1"}) || !reflect.DeepEqual(filters.CustomerIDs, []string{"c1"}) || !reflect.DeepEqual(filters.BusinessUnitIDs, []string{"b1"}) || !reflect.DeepEqual(filters.ProjectIDs, []string{"p1"}) || !reflect.DeepEqual(filters.DeviceIDs, []string{"d1"}) {
 			t.Fatalf("lost attribution filters: %+v", filters)
 		}
+	}
+}
+
+// namedRedactedKeys is a redaction lookup holding a fixed name per id, which
+// records every id list it was asked for.
+type namedRedactedKeys struct {
+	keys, vks, rules map[string]string
+	calls            *[][]string
+}
+
+// record notes the id list of one lookup.
+func (n namedRedactedKeys) record(ids []string) {
+	if n.calls != nil {
+		*n.calls = append(*n.calls, append([]string(nil), ids...))
+	}
+}
+
+// GetAllRedactedKeys returns the known provider keys among ids.
+func (n namedRedactedKeys) GetAllRedactedKeys(ctx context.Context, ids []string) []schemas.Key {
+	n.record(ids)
+	var out []schemas.Key
+	for _, id := range ids {
+		if name, ok := n.keys[id]; ok {
+			out = append(out, schemas.Key{ID: id, Name: name})
+		}
+	}
+	return out
+}
+
+// GetAllRedactedVirtualKeys returns the known virtual keys among ids.
+func (n namedRedactedKeys) GetAllRedactedVirtualKeys(ctx context.Context, ids []string) []tables.TableVirtualKey {
+	n.record(ids)
+	var out []tables.TableVirtualKey
+	for _, id := range ids {
+		if name, ok := n.vks[id]; ok {
+			out = append(out, tables.TableVirtualKey{ID: id, Name: name})
+		}
+	}
+	return out
+}
+
+// GetAllRedactedRoutingRules returns the known routing rules among ids.
+func (n namedRedactedKeys) GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule {
+	n.record(ids)
+	var out []tables.TableRoutingRule
+	for _, id := range ids {
+		if name, ok := n.rules[id]; ok {
+			out = append(out, tables.TableRoutingRule{ID: id, Name: name})
+		}
+	}
+	return out
+}
+
+// rankingNameStore serves team and customer names by id, the way RDBConfigStore does.
+type rankingNameStore struct {
+	configstore.ConfigStore
+	teams, customers map[string]string
+}
+
+// GetRedactedTeams returns the known teams among ids.
+func (s rankingNameStore) GetRedactedTeams(ctx context.Context, ids []string) ([]tables.TableTeam, error) {
+	var out []tables.TableTeam
+	for _, id := range ids {
+		if name, ok := s.teams[id]; ok {
+			out = append(out, tables.TableTeam{ID: id, Name: name})
+		}
+	}
+	return out, nil
+}
+
+// GetRedactedCustomers returns the known customers among ids.
+func (s rankingNameStore) GetRedactedCustomers(ctx context.Context, ids []string) ([]tables.TableCustomer, error) {
+	var out []tables.TableCustomer
+	for _, id := range ids {
+		if name, ok := s.customers[id]; ok {
+			out = append(out, tables.TableCustomer{ID: id, Name: name})
+		}
+	}
+	return out, nil
+}
+
+// rankingRows builds ranking rows from alternating id, name pairs.
+func rankingRows(pairs ...string) []logstore.DimensionRankingWithTrend {
+	var rows []logstore.DimensionRankingWithTrend
+	for i := 0; i+1 < len(pairs); i += 2 {
+		rows = append(rows, logstore.DimensionRankingWithTrend{DimensionRankingEntry: logstore.DimensionRankingEntry{ID: pairs[i], Name: pairs[i+1]}})
+	}
+	return rows
+}
+
+// rankingNames maps each row's id to its name.
+func rankingNames(res *logstore.DimensionRankingResult) map[string]string {
+	out := map[string]string{}
+	for _, r := range res.Rankings {
+		out[r.ID] = r.Name
+	}
+	return out
+}
+
+// TestApplyCurrentRankingNames pins that ranked entities show their current
+// config name (a rename shows at once), that a deleted entity keeps the name
+// the log store found, that the Unassigned bucket and id-is-name dimensions are
+// untouched, that an enterprise-registered resolver is used for its dimension,
+// and that no lookup is ever made with an empty list or the Unassigned id.
+func TestApplyCurrentRankingNames(t *testing.T) {
+	SetLogger(&mockLogger{})
+	var calls [][]string
+	h := &LoggingHandler{
+		redactedKeysManager: namedRedactedKeys{
+			keys:  map[string]string{"key-1": "Key Now"},
+			vks:   map[string]string{"vk-1": "VK Now"},
+			rules: map[string]string{"rr-1": "Rule Now"},
+			calls: &calls,
+		},
+		config: &lib.Config{ConfigStore: rankingNameStore{
+			teams:     map[string]string{"team-1": "Team Now"},
+			customers: map[string]string{"cust-1": "Customer Now"},
+		}},
+	}
+	RegisterRankingNameResolver(logstore.RankingDimensionUser, func(ctx context.Context, ids []string) (map[string]string, error) {
+		return map[string]string{"user-1": "Alice"}, nil
+	})
+	t.Cleanup(func() { RegisterRankingNameResolver(logstore.RankingDimensionUser, nil) })
+
+	cases := []struct {
+		dim  logstore.RankingDimension
+		rows []logstore.DimensionRankingWithTrend
+		want map[string]string
+	}{
+		{logstore.RankingDimensionVirtualKey, rankingRows("vk-1", "VK Old", "vk-gone", "VK Deleted", "unassigned", "Unassigned"),
+			map[string]string{"vk-1": "VK Now", "vk-gone": "VK Deleted", "unassigned": "Unassigned"}},
+		{logstore.RankingDimensionTeam, rankingRows("team-1", "Team Old", "team-gone", "Team Deleted"),
+			map[string]string{"team-1": "Team Now", "team-gone": "Team Deleted"}},
+		{logstore.RankingDimensionCustomer, rankingRows("cust-1", "Customer Old"), map[string]string{"cust-1": "Customer Now"}},
+		{logstore.RankingDimensionRoutingRule, rankingRows("rr-1", "Rule Old"), map[string]string{"rr-1": "Rule Now"}},
+		{logstore.RankingDimensionSelectedKey, rankingRows("key-1", "Key Old"), map[string]string{"key-1": "Key Now"}},
+		{logstore.RankingDimensionUser, rankingRows("user-1", "alice-old"), map[string]string{"user-1": "Alice"}},
+		{logstore.RankingDimensionProject, rankingRows("proj-1", "Project From Logs"), map[string]string{"proj-1": "Project From Logs"}},
+		{logstore.RankingDimensionApp, rankingRows("claude-code", "claude-code"), map[string]string{"claude-code": "claude-code"}},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.dim), func(t *testing.T) {
+			res := &logstore.DimensionRankingResult{Dimension: tc.dim, Rankings: tc.rows}
+			h.applyCurrentRankingNames(context.Background(), res)
+			require.Equal(t, tc.want, rankingNames(res))
+		})
+	}
+	for _, ids := range calls {
+		require.NotEmpty(t, ids, "a lookup with an empty id list returns every row")
+		require.NotContains(t, ids, "unassigned", "the Unassigned bucket is not an entity")
+	}
+}
+
+// TestRankingEndpointsShowCurrentNames pins the wiring: both the rankings
+// endpoint and the dashboard return the current config name for a renamed key.
+func TestRankingEndpointsShowCurrentNames(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, route := range []struct {
+		uri  string
+		call func(h *LoggingHandler, ctx *fasthttp.RequestCtx)
+	}{
+		{"/api/logs/rankings/by-dimension?dimension=virtual_key", (*LoggingHandler).getDimensionRankings},
+		{"/api/logs/dashboard", (*LoggingHandler).getDashboard},
+	} {
+		t.Run(route.uri, func(t *testing.T) {
+			mgr := &dashboardLogManager{rankings: map[logstore.RankingDimension][]logstore.DimensionRankingWithTrend{
+				logstore.RankingDimensionVirtualKey: rankingRows("vk-1", "VK Old"),
+			}}
+			h := &LoggingHandler{logManager: mgr, redactedKeysManager: namedRedactedKeys{vks: map[string]string{"vk-1": "VK Now"}}}
+			var req fasthttp.Request
+			req.SetRequestURI(route.uri)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+			route.call(h, ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Contains(t, string(ctx.Response.Body()), `"VK Now"`)
+			require.NotContains(t, string(ctx.Response.Body()), `"VK Old"`)
+		})
+	}
+}
+
+// TestApplyCurrentRankingNamesBatchesLookups pins that an uncapped ranking
+// (all=true) resolves names in bounded batches: the provider-key and
+// routing-rule lookups bind one parameter per id, so one call over every
+// ranked id could exceed the database's bind-parameter limit and silently
+// leave every row on its logged name.
+func TestApplyCurrentRankingNamesBatchesLookups(t *testing.T) {
+	SetLogger(&mockLogger{})
+	var batches []int
+	RegisterRankingNameResolver(logstore.RankingDimensionVirtualKey, func(ctx context.Context, ids []string) (map[string]string, error) {
+		batches = append(batches, len(ids))
+		names := make(map[string]string, len(ids))
+		for _, id := range ids {
+			names[id] = "now-" + id
+		}
+		return names, nil
+	})
+	t.Cleanup(func() { RegisterRankingNameResolver(logstore.RankingDimensionVirtualKey, nil) })
+
+	const n = 2500
+	pairs := make([]string, 0, 2*n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("vk-%04d", i)
+		pairs = append(pairs, id, "old-"+id)
+	}
+	res := &logstore.DimensionRankingResult{Dimension: logstore.RankingDimensionVirtualKey, Rankings: rankingRows(pairs...)}
+	(&LoggingHandler{}).applyCurrentRankingNames(context.Background(), res)
+
+	require.Len(t, batches, 3, "2,500 ids must be resolved in three batches")
+	for _, size := range batches {
+		require.LessOrEqual(t, size, 1000)
+	}
+	for _, row := range res.Rankings {
+		require.Equal(t, "now-"+row.ID, row.Name)
 	}
 }

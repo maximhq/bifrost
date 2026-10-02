@@ -176,3 +176,20 @@ func TestUpdateProxyConfig_InterceptionGuardWhenAuthBypassed(t *testing.T) {
 		})
 	}
 }
+
+// A per-server cap larger than the total it must fit inside can never be satisfied, so it is
+// rejected rather than stored and silently clamped later.
+func TestValidateMCPInstructionCaps(t *testing.T) {
+	assert.NoError(t, validateMCPInstructionCaps(0, 0), "0/0 means use the built-in defaults")
+	assert.NoError(t, validateMCPInstructionCaps(4096, 16384))
+	assert.NoError(t, validateMCPInstructionCaps(0, 2048), "a total alone is fine")
+	assert.NoError(t, validateMCPInstructionCaps(2048, 0), "a per-client cap alone is fine")
+
+	assert.Error(t, validateMCPInstructionCaps(-1, 0))
+	assert.Error(t, validateMCPInstructionCaps(0, -1))
+	assert.Error(t, validateMCPInstructionCaps(1<<21, 0), "a cap in the megabytes is a typo")
+	assert.Error(t, validateMCPInstructionCaps(0, 1<<21))
+	err := validateMCPInstructionCaps(20000, 16384)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "must not exceed")
+}

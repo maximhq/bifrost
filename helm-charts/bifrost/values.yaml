@@ -595,6 +595,12 @@ bifrost:
       maxAgentDepth: 10
       # codeModeBindingLevel: "server"  # Code mode binding level (server or tool)
       # disableAutoToolInject: false    # Disable automatic MCP tool injection
+      # How far an upstream MCP server's initialize instructions travel:
+      # off (default, dropped), gateway (/mcp handshake only), all (also injected into LLM requests)
+      # bifrost.mcp.toolManagerConfig.maxInstructionsPerClient -- byte bound per MCP server; 0 = default (4096)
+      # maxInstructionsPerClient: 0
+      # bifrost.mcp.toolManagerConfig.maxInstructionsTotal -- byte bound on the whole aggregate; 0 = default (16384)
+      # maxInstructionsTotal: 0
 
   # Plugins configuration
   plugins:
@@ -693,6 +699,8 @@ bifrost:
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
         #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
+        #     excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
+        #     export_raw_payloads: false  # Raw provider request/response bodies on spans; needs raw storage on the provider
         #     overhead_breakdown_enabled: false # Export the per-component overhead histogram bifrost_overhead_component_microseconds (requires metrics_enabled and an active trace)
         #
         # Single-profile shape:
@@ -728,6 +736,7 @@ bifrost:
         # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
         # Note: "*" captures all headers including sensitive ones like Authorization.
         # request_headers: []
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # Export the per-component overhead histogram bifrost_overhead_component_microseconds
         # (overhead latency split by the overhead_component attribute). Requires metrics_enabled
         # and an active trace, since the breakdown is computed from completed spans (default: false)
@@ -764,6 +773,7 @@ bifrost:
         # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
         # disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # Agentless mode (direct to Datadog API, no local agent):
         # agentless: true
         # api_key: "env.DD_API_KEY"   # Required for agentless mode (supports env.VAR_NAME)
@@ -787,6 +797,8 @@ bifrost:
         custom_labels: {}
         disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Column names to omit, matched exactly (e.g. "tools"); trace_id and timestamp cannot be excluded
+        # export_raw_payloads: false  # Store raw provider request/response bodies; needs raw storage on the provider
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
@@ -809,6 +821,7 @@ bifrost:
         auto_create_topic: false
         disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
@@ -822,6 +835,7 @@ bifrost:
         auto_create_topic: false
         disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
@@ -836,6 +850,7 @@ bifrost:
         enable_events: true
         enable_metrics: true
         disable_content_logging: false # events include prompt/response content by default; set true for metadata only
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # source: "bifrost"            # HEC source field (default: bifrost)
         # sourcetype: "bifrost:llm"    # HEC sourcetype for events (metrics use bifrost:metric; default: bifrost:llm)
         # host: ""                     # HEC host field (defaults to the server hostname)
@@ -1021,7 +1036,16 @@ bifrost:
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     complexityAnalyzerConfig: null
-      # semantic:                          # Semantic (embedding-based) complexity classification — the only mechanism; without it no complexity_tier is published
+      # classifier: "jev"                  # Primary classifier: semantic (default) or jev
+      # jev:                               # Uses the configured Typesafe provider and its enabled key
+      #   previous_message_count: 1        # Earlier user messages sent with the current request (0-5)
+      #   timeout: "1.5s"                  # Maximum wait for one Jev decision; usage counts toward request cost and budgets
+      #   criteria:                        # Optional: per-tier overrides; tiers are SIMPLE, MEDIUM, COMPLEX
+      #     COMPLEX:
+      #       definition: "..."            # Replaces the shipped definition of this tier (max 500 chars)
+      #       signals: ["..."]             # Replaces the shipped signals (max 12 items, 300 chars each)
+      #       examples: ["..."]            # Replaces the shipped examples (same limits)
+      # semantic:                          # Semantic (embedding-based) complexity classification
       #   provider: "openai"               # Embedding provider (must have an enabled key in bifrost.providers)
       #   embedding_model: "text-embedding-3-small"
       #                                      # Bifrost detects the embedding dimension during warmup
@@ -1037,7 +1061,7 @@ bifrost:
       #                                      #                   storage_mode on /api/routing/complexity-analyzer-status, and logged).
       #                                      #                   Qdrant, Weaviate, Redis and Pinecone are all supported here; chromem is
       #                                      #                   node-local even with a path, so it is private per pod.
-      #   fallback: "none"                 # none (default, records skipped) | llm (asks the llm block below when semantic produces no tier; requires llm to be set)
+      #   fallback: "none"                 # none (default) | llm (requires llm below) | jev (uses Typesafe); runs when semantic produces no tier
       # llm:                                # Chat-completion fallback classifier — inert unless semantic.fallback is "llm"
       #   provider: "openai"               # Provider used for the classification chat completion (must have an enabled key in bifrost.providers)
       #   model: "gpt-4o-mini"             # Small, fast chat model — every fallback classification waits on one completion from it
@@ -1045,9 +1069,9 @@ bifrost:
       #   prompt: ""                       # Replaces the shipped classification guidance (max 4000 chars); empty uses the shipped guidance
       #   message_history_count: 1         # Recent user messages sent to the classifier, oldest first (1 = latest only)
       #   count_toward_budgets: false      # Count classification completion cost toward virtual-key budgets (record-only, never enforced)
-      # session:                            # Optional session-aware routing; requires semantic configuration above
+      # session:                            # Optional session-aware routing; works with semantic or Jev primary
       #   enabled: true                     # Retain the highest tier across sequential turns for 24 hours; overlapping requests are best-effort
-      # keywords:                          # Required when complexityAnalyzerConfig is non-null; in split mode these phrases merge with stored defaults
+      # keywords:                          # Required when complexityAnalyzerConfig is non-null; Jev does not read these phrases
       #   simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
       #   medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
       #   complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
@@ -1493,6 +1517,7 @@ bifrost:
   auditLogs:
     disabled: false
     hmacKey: ""
+    # omitIpAddresses: false  # Don't record client IPs (e.g. for works council requirements); IPs already stored are hidden, not deleted
     # Object storage archival for audit events (optional). A background job copies events to
     # object storage one closed time window at a time as JSONL parts plus a manifest:
     #   {prefix}/audit-logs/YYYY/MM/DD/<start>-<end>/part-00000.jsonl[.gz] (+ manifest.json[.gz])

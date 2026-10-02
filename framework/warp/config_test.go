@@ -237,44 +237,18 @@ func TestWarpValidateConfigInputRejectsNilInput(t *testing.T) {
 	require.Empty(t, store.upserted, "a rejected write must not reach the store")
 }
 
-// BaseURL overrides the provider's default endpoint and is handed to the Warp
-// client's ProviderConfig verbatim, so a value that is not an absolute http(s)
-// URL is otherwise only discovered on the first outbound call - long after the
-// operator has left the settings page.
-//
-// Built from validWarpConfigInput so the only thing under test is the URL: a
-// bare literal would now fail on the required embedding fields instead, and
-// pass for the wrong reason.
-func TestWarpValidateConfigInputRejectsMalformedBaseURL(t *testing.T) {
-	for name, baseURL := range map[string]string{
-		"not a url":     "notaurl",
-		"wrong scheme":  "ftp://models.example.com",
-		"no host":       "http://",
-		"scheme only":   "https://",
-		"relative path": "/v1/chat/completions",
-		// Userinfo is a credential, and this field is stored unencrypted and
-		// returned unredacted - the whole point of api_key_id is that Warp keeps
-		// no secret of its own, which a password in the URL would undo.
-		"password in url": "https://user:hunter2@models.example.com",
-		"user in url":     "https://token@models.example.com",
-	} {
-		input := validWarpConfigInput()
-		input.BaseURL = baseURL
-		require.ErrorIs(t, ValidateConfigInput(input), ErrInvalidConfig, name)
-	}
+// Warp has no base URL any more: it calls the gateway client in-process, so
+// there is no endpoint to configure. The settings view must not offer one, and
+// a write from an older dashboard that still sends base_url must neither fail
+// nor have it stick.
+func TestWarpConfigHasNoBaseURL(t *testing.T) {
+	encoded, err := sonic.Marshal(ConfigView{Configured: true, Provider: schemas.OpenAI, Model: "gpt-5.5"})
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "base_url")
 
-	// Empty stays valid: it means "use the provider's own default endpoint",
-	// which is the common case for a hosted provider.
-	for name, baseURL := range map[string]string{
-		"empty":          "",
-		"https host":     "https://models.internal.example.com",
-		"http with port": "http://localhost:11434",
-		"with path":      "https://gateway.example.com/openai/v1",
-	} {
-		input := validWarpConfigInput()
-		input.BaseURL = baseURL
-		require.NoError(t, ValidateConfigInput(input), name)
-	}
+	var input ConfigInput
+	require.NoError(t, sonic.Unmarshal([]byte(`{"enabled":true,"provider":"openai","model":"gpt-5.5","base_url":"https://gw.example.com/openai"}`), &input))
+	require.Equal(t, "gpt-5.5", input.Model)
 }
 
 func TestWarpValidateConfigInputAcceptsRegisteredCustomProvider(t *testing.T) {
@@ -715,4 +689,106 @@ func TestWarpEffectiveMaxIterationsLiftsAStoredOne(t *testing.T) {
 		"a stored 1 would otherwise answer nothing at all")
 	require.Equal(t, schemas.WarpDefaultMaxIterations, (&schemas.WarpConfig{}).EffectiveMaxIterations())
 	require.Equal(t, 5, (&schemas.WarpConfig{MaxIterations: 5}).EffectiveMaxIterations())
+}
+
+// The models an operator exposes beside the default round-trip through a save
+// and come back on the view, normalized, in the order they were given.
+func TestWarpSaveConfigRoundTripsAdditionalModels(t *testing.T) {
+	store := &recordingStore{}
+	input := validWarpConfigInput()
+	input.AdditionalModels = []schemas.WarpModel{
+		{Provider: " anthropic ", Model: " claude-sonnet-5 ", APIKeyID: " key-anthropic "},
+		{Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	want := []schemas.WarpModel{
+		{Provider: schemas.Anthropic, Model: "claude-sonnet-5", APIKeyID: "key-anthropic"},
+		{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+	}
+	service := newTestService(store)
+	view, err := service.SaveConfig(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, want, view.AdditionalModels)
+	require.Equal(t, "gpt-4o", view.Model, "the default is still the top-level pair")
+
+	// Read back from what was stored, not from the input the save was handed.
+	require.Len(t, store.upserted, 1)
+	require.NotNil(t, store.upserted[0].AdditionalModels)
+	view, err = service.ConfigView(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, want, view.AdditionalModels)
+	config, err := service.Config(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, want, config.AdditionalModels)
+}
+
+// The list is replaced whole on every write, the same as the default model it
+// sits beside: a save that leaves it out clears it, and the column goes back
+// to NULL rather than holding an empty array.
+func TestWarpSaveConfigClearsOmittedAdditionalModels(t *testing.T) {
+	row := validWarpConfigRow()
+	stored := `[{"provider":"anthropic","model":"claude-sonnet-5"}]`
+	row.AdditionalModels = &stored
+	store := &recordingStore{row: row}
+	view, err := newTestService(store).SaveConfig(context.Background(), validWarpConfigInput())
+	require.NoError(t, err)
+	require.Empty(t, view.AdditionalModels)
+	require.Len(t, store.upserted, 1)
+	require.Nil(t, store.upserted[0].AdditionalModels)
+}
+
+func TestWarpValidateConfigInputRejectsBadAdditionalModels(t *testing.T) {
+	tooMany := make([]schemas.WarpModel, schemas.WarpMaxAdditionalModels+1)
+	for i := range tooMany {
+		tooMany[i] = schemas.WarpModel{Provider: schemas.OpenAI, Model: "gpt-" + string(rune('a'+i))}
+	}
+	for name, test := range map[string]struct {
+		models []schemas.WarpModel
+		want   string
+	}{
+		"no provider":      {[]schemas.WarpModel{{Model: "gpt-4o-mini"}}, "additional_models[0]: provider is required"},
+		"unknown provider": {[]schemas.WarpModel{{Provider: "not-a-provider", Model: "x"}}, "additional_models[0]: unknown provider"},
+		"no model":         {[]schemas.WarpModel{{Provider: schemas.OpenAI, Model: "  "}}, "additional_models[0]: model is required"},
+		// The pair is how a chat request names its model, so a repeat is ambiguous.
+		"repeats the default": {[]schemas.WarpModel{{Provider: schemas.OpenAI, Model: "gpt-4o", APIKeyID: "other-key"}}, "additional_models[0]: openai/gpt-4o is already listed"},
+		"repeats an entry": {[]schemas.WarpModel{
+			{Provider: schemas.Anthropic, Model: "claude-sonnet-5"},
+			{Provider: schemas.Anthropic, Model: " claude-sonnet-5 "},
+		}, "additional_models[1]: anthropic/claude-sonnet-5 is already listed"},
+		"too many": {tooMany, "additional_models must not list more than"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := validWarpConfigInput()
+			input.AdditionalModels = test.models
+			store := &recordingStore{}
+			_, err := newTestService(store).SaveConfig(context.Background(), input)
+			require.ErrorIs(t, err, ErrInvalidConfig)
+			require.ErrorContains(t, err, test.want)
+			require.Empty(t, store.upserted)
+		})
+	}
+}
+
+// A disabled draft may leave the default blank, but a list entry is never a
+// draft: stored half-filled it would be a switcher row that fails when picked.
+func TestWarpValidateConfigInputChecksAdditionalModelsOnADisabledDraft(t *testing.T) {
+	err := ValidateConfigInput(&ConfigInput{AdditionalModels: []schemas.WarpModel{{Provider: schemas.OpenAI}}})
+	require.ErrorIs(t, err, ErrInvalidConfig)
+
+	// Complete entries are fine on a draft, and the same model under two
+	// providers is two different choices.
+	require.NoError(t, ValidateConfigInput(&ConfigInput{AdditionalModels: []schemas.WarpModel{
+		{Provider: schemas.OpenAI, Model: "gpt-4o"},
+		{Provider: schemas.Azure, Model: "gpt-4o"},
+	}}))
+}
+
+// A column that does not parse must cost the extra choices, not the feature.
+func TestWarpConfigIgnoresUnreadableAdditionalModels(t *testing.T) {
+	row := validWarpConfigRow()
+	damaged := `{not json`
+	row.AdditionalModels = &damaged
+	config, err := newTestService(&recordingStore{row: row}).Config(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, config.AdditionalModels)
+	require.Equal(t, "gpt-4o", config.Model)
 }

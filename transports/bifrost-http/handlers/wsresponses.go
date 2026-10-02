@@ -375,13 +375,8 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		}
 		llmSpanEnded = true
 		tracer.PopulateLLMResponseAttributes(ctx, llmSpanHandle, resp, bifrostErr)
+		// Error attributes are stamped by PopulateLLMResponseAttributes above.
 		if bifrostErr != nil {
-			if bifrostErr.Error != nil {
-				tracer.SetAttribute(llmSpanHandle, "error", bifrostErr.Error.Message)
-			}
-			if bifrostErr.StatusCode != nil {
-				tracer.SetAttribute(llmSpanHandle, "status_code", *bifrostErr.StatusCode)
-			}
 			tracer.EndSpan(llmSpanHandle, schemas.SpanStatusError, "request failed")
 			return
 		}

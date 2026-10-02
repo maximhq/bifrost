@@ -641,6 +641,26 @@ func TestParseDecisionAnswersRecoversFlattenedParameterTags(t *testing.T) {
 	}
 }
 
+// The same model sometimes pads the leaked tag with whitespace, as in
+// `{"category": "  <parameter name=...` (seen 2026-09-24 on
+// openrouter/anthropic/claude-opus-4.1).
+func TestParseDecisionAnswersRecoversWhitespacePaddedParameterTags(t *testing.T) {
+	args := `{"category": "  <parameter name=\"choice\">billing", "confidence": 1.0, "probabilities": {"billing":1,"bug":0,"other":0}, "is_frustrated": "\n<parameter name=\"value\">0.9", "confidence": 0.8, "urgency": "\t <parameter name=\"value\">2", "confidence": 0.6, "probabilities": {"0":0.1,"1":0.1,"2":0.8}}`
+	answers, err := ParseDecisionAnswers([]byte(args), mixedQuestions())
+	if err != nil {
+		t.Fatalf("whitespace-padded answers must be recovered: %v", err)
+	}
+	if answers["category"].Value != "billing" || *answers["category"].Confidence != 1.0 {
+		t.Errorf("category = %+v", answers["category"])
+	}
+	if answers["is_frustrated"].Value != 0.9 || *answers["is_frustrated"].Confidence != 0.8 {
+		t.Errorf("is_frustrated = %+v", answers["is_frustrated"])
+	}
+	if *answers["urgency"].Confidence != 0.6 {
+		t.Errorf("urgency = %+v", answers["urgency"])
+	}
+}
+
 func TestParseDecisionAnswersFlattenedRejections(t *testing.T) {
 	q := mixedQuestions()
 	cases := map[string]struct {

@@ -105,6 +105,10 @@ const (
 	FinishReasonMalformedResponse FinishReason = "MALFORMED_RESPONSE"
 )
 
+// googleRetryInfoType is the @type of the error detail Google APIs use to say how long to
+// wait before retrying.
+const googleRetryInfoType = "type.googleapis.com/google.rpc.RetryInfo"
+
 type GeminiGenerationRequest struct {
 	Model             string                   `json:"model,omitempty"`    // Model field for explicit model specification
 	Contents          []Content                `json:"contents,omitempty"` // For chat completion requests
@@ -1571,6 +1575,7 @@ func (tc *GenerationConfigThinkingConfig) UnmarshalJSON(data []byte) error {
 }
 
 type GeminiBatchEmbeddingRequest struct {
+	Model       string                   `json:"-"` // populated from URL path by Bifrost; not part of wire format
 	Requests    []GeminiEmbeddingRequest `json:"requests,omitempty"`
 	ExtraParams map[string]interface{}   `json:"-"` // Optional: Extra parameters
 }
@@ -1583,6 +1588,8 @@ func (r *GeminiBatchEmbeddingRequest) GetExtraParams() map[string]interface{} {
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
 	Content              *Content               `json:"content,omitempty"`
+	DocumentOCR          *bool                  `json:"documentOcr,omitempty"`
+	AudioTrackExtraction *bool                  `json:"audioTrackExtraction,omitempty"`
 	TaskType             *string                `json:"taskType,omitempty"`
 	Title                *string                `json:"title,omitempty"`
 	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
@@ -2117,8 +2124,10 @@ type FunctionResponse struct {
 
 // GeminiEmbeddingResponse represents a Google GenAI embedding response.
 type GeminiEmbeddingResponse struct {
-	Embeddings []GeminiEmbedding     `json:"embeddings"`
-	Metadata   *EmbedContentMetadata `json:"metadata,omitempty"`
+	Embedding     *GeminiEmbedding                      `json:"embedding,omitempty"`
+	Embeddings    []GeminiEmbedding                     `json:"embeddings,omitempty"`
+	Metadata      *EmbedContentMetadata                 `json:"metadata,omitempty"`
+	UsageMetadata *GenerateContentResponseUsageMetadata `json:"usageMetadata,omitempty"` // Vertex :embedContent reports token usage here
 }
 
 // GeminiEmbedContentResponse is the wire format for a single :embedContent response.
@@ -2654,6 +2663,7 @@ type GeminiGenerationErrorStruct struct {
 
 type GeminiGenerationErrorDetails struct {
 	Type            string `json:"@type"`
+	RetryDelay      string `json:"retryDelay,omitempty"` // google.rpc.RetryInfo only, as a protobuf duration such as "39s"
 	FieldViolations []struct {
 		Description string `json:"description"`
 	} `json:"fieldViolations"`

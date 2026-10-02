@@ -40,8 +40,8 @@
   },
   "overrides": {
     "ast-v8-to-istanbul": "1.0.0",
-    "brace-expansion@1": "1.1.18",
-    "brace-expansion@2": "2.1.4",
+    "brace-expansion@1": "1.1.21",
+    "brace-expansion@2": "2.1.7",
     "esbuild": "0.28.1",
     "js-yaml": "4.3.2",
     "nanoid": "3.3.18",

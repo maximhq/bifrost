@@ -518,6 +518,7 @@ func buildRealtimeResponsesUsage(usage *schemas.BifrostLLMUsage) *schemas.Respon
 			NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
 		}
 	}
+	result.ToolUsage = usage.ToolUsage.DeepCopy()
 	return result
 }
 

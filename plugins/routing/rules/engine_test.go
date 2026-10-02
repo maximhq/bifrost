@@ -807,6 +807,77 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 	assert.Equal(t, "chain-b", decision.MatchedRuleID)
 }
 
+// TestEvaluateRoutingRules_TTFTTimeoutFollowsSelectedTarget: the decision
+// carries the selected target's ttft_timeout_ms, and in a chain it comes from
+// the last matched rule's selected target.
+func TestEvaluateRoutingRules_TTFTTimeoutFollowsSelectedTarget(t *testing.T) {
+	newRule := func(id, expr, model string, priority int, chain bool, ttftMs *int) *configstoreTables.TableRoutingRule {
+		return &configstoreTables.TableRoutingRule{
+			ID:            id,
+			Name:          id,
+			CelExpression: expr,
+			Targets: []configstoreTables.TableRoutingTarget{
+				{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr(model), Weight: 1.0, TTFTTimeoutMs: ttftMs},
+			},
+			ParsedFallbacks: []configstoreTables.RoutingFallback{{Fallback: schemas.Fallback{Provider: "anthropic"}}},
+			Enabled:         bifrost.Ptr(true),
+			Scope:           "global",
+			Priority:        priority,
+			ChainRule:       chain,
+		}
+	}
+	evaluate := func(t *testing.T, rules ...*configstoreTables.TableRoutingRule) *Decision {
+		t.Helper()
+		store, err := newTestRuleStore()
+		require.NoError(t, err)
+		for _, rule := range rules {
+			require.NoError(t, store.UpsertRule(context.Background(), rule))
+		}
+		engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+		require.NoError(t, err)
+		decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), &EvaluationContext{
+			Provider: schemas.OpenAI, Model: "gpt-4o", Headers: map[string]string{}, QueryParams: map[string]string{},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, decision)
+		return decision
+	}
+
+	t.Run("single rule", func(t *testing.T) {
+		decision := evaluate(t, newRule("ttft", "model == 'gpt-4o'", "gpt-4o", 0, false, new(1500)))
+		assert.Equal(t, 1500*time.Millisecond, decision.TTFTTimeout)
+	})
+	t.Run("only the selected target's deadline applies", func(t *testing.T) {
+		rule := newRule("two-targets", "model == 'gpt-4o'", "gpt-4o", 0, false, new(1500))
+		rule.Targets = append(rule.Targets, configstoreTables.TableRoutingTarget{
+			Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o-mini"), Weight: 0, TTFTTimeoutMs: new(9000),
+		})
+		decision := evaluate(t, rule)
+		assert.Equal(t, "gpt-4o", decision.Model)
+		assert.Equal(t, 1500*time.Millisecond, decision.TTFTTimeout)
+	})
+	t.Run("unset", func(t *testing.T) {
+		decision := evaluate(t, newRule("no-ttft", "model == 'gpt-4o'", "gpt-4o", 0, false, nil))
+		assert.Zero(t, decision.TTFTTimeout)
+	})
+	t.Run("chain takes the last matched rule", func(t *testing.T) {
+		decision := evaluate(t,
+			newRule("chain-a", "model == 'gpt-4o'", "gpt-4-turbo", 0, true, new(1500)),
+			newRule("chain-b", "model == 'gpt-4-turbo'", "gpt-4", 1, false, new(700)),
+		)
+		assert.Equal(t, "chain-b", decision.MatchedRuleID)
+		assert.Equal(t, 700*time.Millisecond, decision.TTFTTimeout)
+	})
+	t.Run("chain end without a deadline clears it", func(t *testing.T) {
+		decision := evaluate(t,
+			newRule("chain-a", "model == 'gpt-4o'", "gpt-4-turbo", 0, true, new(1500)),
+			newRule("chain-b", "model == 'gpt-4-turbo'", "gpt-4", 1, false, nil),
+		)
+		assert.Equal(t, "chain-b", decision.MatchedRuleID)
+		assert.Zero(t, decision.TTFTTimeout)
+	})
+}
+
 // TestEvaluateRoutingRules_TerminalRuleStopsChain tests that a terminal rule (chain_rule=false)
 // halts the chaining loop immediately without re-evaluation.
 func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
@@ -2131,4 +2202,98 @@ func TestBuildScopeChain_DirectCustomerWinsOverTheTeams(t *testing.T) {
 	assert.Equal(t, "cust-direct", customerScope,
 		"the customer the request is charged to is the one its rules must match at")
 	assert.Equal(t, "team-1", chain[1].ScopeID, "and the team is still in the chain")
+}
+
+// resolvedFallbacks renders a decision's fallback chain the way the routing plugin routes on it.
+func resolvedFallbacks(fallbacks []configstoreTables.RoutingFallback) []schemas.Fallback {
+	out := make([]schemas.Fallback, 0, len(fallbacks))
+	for _, fb := range fallbacks {
+		out = append(out, fb.Resolved())
+	}
+	return out
+}
+
+// TestEvaluateRoutingRules_FallbacksReachDecision pins that a matched rule hands its whole stored
+// fallback chain to the decision, in order, for standard and custom providers and both forms.
+func TestEvaluateRoutingRules_FallbacksReachDecision(t *testing.T) {
+	const custom = schemas.ModelProvider("custom-engine-fb")
+	schemas.RegisterKnownProvider(custom)
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(custom) })
+
+	store, err := newTestRuleStore()
+	require.NoError(t, err)
+	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:            "fb-decision",
+		Name:          "Fallbacks Reach Decision",
+		CelExpression: "model == 'gpt-4o'",
+		Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Weight: 1.0}},
+		Fallbacks: bifrost.Ptr(`["anthropic/claude-sonnet-4",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-std"},` +
+			`"` + string(custom) + `/m",{"provider":"` + string(custom) + `","key_id":"k-custom"},"azure/"]`),
+		Enabled: bifrost.Ptr(true),
+		Scope:   "global",
+	}
+	require.NoError(t, rule.AfterFind(nil))
+	require.NoError(t, store.UpsertRule(context.Background(), rule))
+
+	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), &EvaluationContext{
+		Provider: schemas.OpenAI, Model: "gpt-4o", Headers: map[string]string{}, QueryParams: map[string]string{},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, []schemas.Fallback{
+		{Provider: schemas.Anthropic, Model: "claude-sonnet-4"},
+		{Provider: schemas.Vertex, Model: "gemini-2.5-pro", KeyID: "k-std"},
+		{Provider: custom, Model: "m"},
+		{Provider: custom, KeyID: "k-custom"},
+		{Provider: schemas.Azure},
+	}, resolvedFallbacks(decision.Fallbacks))
+}
+
+// TestEvaluateRoutingRules_ChainRuleUsesLastMatchedRuleFallbacks pins that a chain resolves to the
+// fallbacks of the last rule it matched, replacing earlier ones even when that rule has none.
+func TestEvaluateRoutingRules_ChainRuleUsesLastMatchedRuleFallbacks(t *testing.T) {
+	cases := []struct {
+		name       string
+		aFallbacks *string
+		bFallbacks *string
+		want       []schemas.Fallback
+	}{
+		{name: "only the chained rule has fallbacks", aFallbacks: bifrost.Ptr(`["anthropic/a"]`), bFallbacks: nil, want: []schemas.Fallback{}},
+		{name: "only the terminal rule has fallbacks", aFallbacks: nil, bFallbacks: bifrost.Ptr(`[{"provider":"vertex","model":"b","key_id":"k-b"}]`), want: []schemas.Fallback{{Provider: schemas.Vertex, Model: "b", KeyID: "k-b"}}},
+		{name: "both have fallbacks", aFallbacks: bifrost.Ptr(`["anthropic/a"]`), bFallbacks: bifrost.Ptr(`["groq/b"]`), want: []schemas.Fallback{{Provider: schemas.Groq, Model: "b"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := newTestRuleStore()
+			require.NoError(t, err)
+			engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+			require.NoError(t, err)
+
+			ruleA := &configstoreTables.TableRoutingRule{
+				ID: "chain-fb-a", Name: "Chain A", CelExpression: "model == 'gpt-4o'",
+				Targets:   []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0}},
+				Fallbacks: tc.aFallbacks, Enabled: bifrost.Ptr(true), Scope: "global", Priority: 0, ChainRule: true,
+			}
+			ruleB := &configstoreTables.TableRoutingRule{
+				ID: "chain-fb-b", Name: "Chain B", CelExpression: "model == 'gpt-4-turbo'",
+				Targets:   []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4"), Weight: 1.0}},
+				Fallbacks: tc.bFallbacks, Enabled: bifrost.Ptr(true), Scope: "global", Priority: 1,
+			}
+			for _, r := range []*configstoreTables.TableRoutingRule{ruleA, ruleB} {
+				require.NoError(t, r.AfterFind(nil))
+				require.NoError(t, store.UpsertRule(context.Background(), r))
+			}
+
+			decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), &EvaluationContext{
+				Provider: schemas.OpenAI, Model: "gpt-4o", Headers: map[string]string{}, QueryParams: map[string]string{},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, decision)
+			assert.Equal(t, "chain-fb-b", decision.MatchedRuleID)
+			assert.Equal(t, tc.want, resolvedFallbacks(decision.Fallbacks))
+		})
+	}
 }

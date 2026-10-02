@@ -1178,6 +1178,7 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 		schemas.BifrostContextKeyUserAgent,
 		schemas.BifrostContextKeyGovernanceVirtualKeyID,
 		schemas.BifrostContextKeyGovernanceVirtualKeyName,
+		schemas.BifrostContextKeyGovernanceDisableContentLogging,
 		schemas.BifrostContextKeyGovernanceRoutingRuleID,
 		schemas.BifrostContextKeyGovernanceRoutingRuleName,
 		schemas.BifrostContextKeyGovernanceCustomerID,

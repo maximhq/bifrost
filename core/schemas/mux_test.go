@@ -1797,3 +1797,53 @@ func TestNormalizedUsageDerivesTotalWhenReportedZero(t *testing.T) {
 		})
 	}
 }
+
+// reasoning.type must survive the chat<->responses conversion used when a
+// provider only implements one of the two APIs.
+func TestReasoningTypeSurvivesChatResponsesConversion(t *testing.T) {
+	chat := &BifrostChatRequest{
+		Model:  "claude-sonnet-5-5",
+		Params: &ChatParameters{Reasoning: &ChatReasoning{Type: Ptr("between_tools")}},
+	}
+	responses := chat.ToResponsesRequest()
+	if responses.Params == nil || responses.Params.Reasoning == nil || responses.Params.Reasoning.Type == nil ||
+		*responses.Params.Reasoning.Type != "between_tools" {
+		t.Fatalf("chat->responses dropped reasoning.type: %+v", responses.Params)
+	}
+	back := responses.ToChatRequest()
+	if back.Params == nil || back.Params.Reasoning == nil || back.Params.Reasoning.Type == nil ||
+		*back.Params.Reasoning.Type != "between_tools" {
+		t.Fatalf("responses->chat dropped reasoning.type: %+v", back.Params)
+	}
+}
+
+// TestGuardContentMarkerSurvivesChatResponsesMux: the Bedrock guard marker crosses the
+// chat <-> responses bridge in both directions, like cache_control does.
+func TestGuardContentMarkerSurvivesChatResponsesMux(t *testing.T) {
+	marker := &GuardContent{Qualifiers: []string{"query"}}
+	chat := ChatMessage{
+		Role: ChatMessageRoleUser,
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{
+			{Type: ChatContentBlockTypeText, Text: Ptr("context")},
+			{Type: ChatContentBlockTypeText, Text: Ptr("question"), GuardContent: marker},
+		}},
+	}
+	responses := chat.ToResponsesMessages()
+	if len(responses) != 1 || responses[0].Content == nil || len(responses[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("unexpected responses shape: %+v", responses)
+	}
+	if responses[0].Content.ContentBlocks[0].GuardContent != nil {
+		t.Error("unmarked block gained a guard marker")
+	}
+	if responses[0].Content.ContentBlocks[1].GuardContent != marker {
+		t.Fatal("guard marker dropped on chat -> responses")
+	}
+
+	back := ToChatMessages(responses)
+	if len(back) != 1 || back[0].Content == nil || len(back[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("unexpected chat shape: %+v", back)
+	}
+	if back[0].Content.ContentBlocks[1].GuardContent != marker {
+		t.Fatal("guard marker dropped on responses -> chat")
+	}
+}

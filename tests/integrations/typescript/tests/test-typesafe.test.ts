@@ -10,7 +10,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BadRequestError, choice, noul, score, TypeSafeClient } from "@typesafe-ai/sdk";
+import { APIError, BadRequestError, choice, noul, score, TypeSafeClient, UnprocessableEntityError } from "@typesafe-ai/sdk";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getVirtualKey, isVirtualKeyConfigured } from "../src/utils/config-loader";
 
@@ -142,6 +142,105 @@ describe("Typesafe SDK errors", () => {
 				questions: { category: choice("Pick one", {}) },
 			}),
 		).rejects.toBeInstanceOf(BadRequestError);
+	}, 30000);
+});
+
+// #7599: what the official SDK sends must reach the endpoint unchanged, and the
+// endpoint's own verdict (status, native error detail, request id) must come
+// back unchanged. Bifrost's local validation is never stricter than the SDK types.
+describe("Typesafe SDK fidelity (#7599)", () => {
+	it("forwards state null and relays the endpoint's 422 instead of a local 400", async () => {
+		// EntryType allows null, and api.typesafe.ai answers 422 "Field required"
+		// for body.state (typesafe-ai/typesafe-sdk-js#6). Pre-fix Bifrost rejected
+		// the request locally with 400 "failed to convert request to Bifrost format".
+		const err = await client
+			.systemOne({ state: null, model: "jev-1.13.0", questions: { q: noul("Evaluate this state.") } })
+			.then(() => null, (e: unknown) => e);
+		expect(err, "expected the endpoint's validation error").toBeInstanceOf(UnprocessableEntityError);
+		const apiErr = err as UnprocessableEntityError;
+		expect(apiErr.status).toBe(422);
+		expect(apiErr.message).not.toContain("failed to convert");
+		expect(JSON.stringify(apiErr.body)).toContain("state");
+		expect(apiErr.requestId, "x-typesafe-request-id must be forwarded on errors").toBeTruthy();
+	}, 30000);
+
+	it("accepts a noul with null instructions when criteria describes a side", async () => {
+		// Live-verified shape (typesafe-ai/typesafe-sdk-js#6); descriptions may be
+		// null. Pre-fix Bifrost rejected it locally with 'has no instructions'.
+		const { answers } = await client.systemOne({
+			state: STATE,
+			model: "jev-1.13.0",
+			questions: { is_complaint: noul(null, { true: "the customer is complaining", false: null }) },
+		});
+		expect(answers.is_complaint.type).toBe("noul");
+		expect(answers.is_complaint.noul).toBeGreaterThanOrEqual(0);
+		expect(answers.is_complaint.noul).toBeLessThanOrEqual(1);
+	}, 30000);
+
+	it("carries the upstream request id on success", async () => {
+		const { requestId } = await client
+			.systemOne({ state: STATE, model: "jev-1.13.0", questions: { is_billing: noul("Is this about billing?") } })
+			.withResponse();
+		expect(requestId, "x-typesafe-request-id must be forwarded").toBeTruthy();
+	}, 30000);
+
+	it("relays the endpoint's 400 for a bare noul with its native detail", async () => {
+		// noul() with no instructions or criteria is SDK-valid but the endpoint refuses
+		// it: api.typesafe.ai answers 400 "Noul question must have criteria or
+		// instructions: q" (typesafe-ai/typesafe-sdk-js#6). Pre-fix Bifrost replaced
+		// that with its own local 400 ('has no instructions') and no request id.
+		const err = await client
+			.systemOne({ state: STATE, model: "jev-1.13.0", questions: { q: noul() } })
+			.then(() => null, (e: unknown) => e);
+		expect(err).toBeInstanceOf(BadRequestError);
+		const apiErr = err as BadRequestError;
+		expect(apiErr.status).toBe(400);
+		expect(apiErr.message).toContain("must have criteria or instructions");
+		expect(apiErr.message).not.toContain("has no instructions");
+		expect(JSON.stringify(apiErr.body)).not.toContain('"api_error"');
+		expect(apiErr.requestId, "x-typesafe-request-id must be forwarded on errors").toBeTruthy();
+	}, 30000);
+
+	it("forwards extra top-level request fields to the wire", async () => {
+		// The SDK spreads additional request properties into the body. Whether the
+		// endpoint honours them is its call; Bifrost must not drop them. Observed
+		// through Bifrost's raw_request capture on /v1/decisions (the shared
+		// profile enables send_back_raw_request) under the passthrough header.
+		const baseUrl = process.env.BIFROST_BASE_URL || "http://localhost:8080";
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+			"x-bf-passthrough-extra-params": "true",
+		};
+		if (isVirtualKeyConfigured()) headers["x-bf-vk"] = getVirtualKey();
+		const response = await fetch(`${baseUrl}/v1/decisions`, {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				model: "typesafe/jev-1.13.0",
+				state: STATE,
+				sdk_marker_7599: "forwarded",
+				questions: { is_billing: { kind: "noul", instructions: "Is this about billing?" } },
+			}),
+		});
+		// api.typesafe.ai currently refuses unknown top-level fields with 400
+		// {"detail":{"error_type":"api_usage_error",...}}; a compatible endpoint may
+		// accept them. Either way the field must have reached the wire and the
+		// endpoint's own verdict must come back, never a local drop-and-200.
+		const body = (await response.json()) as any;
+		expect([200, 400], JSON.stringify(body)).toContain(response.status);
+		if (response.status === 400) expect(body.error?.type, JSON.stringify(body)).toBe("api_usage_error");
+		expect(body.extra_fields?.raw_request, JSON.stringify(body.extra_fields)).toBeTruthy();
+		expect(JSON.stringify(body.extra_fields.raw_request)).toContain("sdk_marker_7599");
+	}, 60000);
+
+	it("lists the live catalog with release dates", async () => {
+		const listing = await client.models.list();
+		expect(listing.length).toBeGreaterThan(0);
+		for (const m of listing) {
+			expect(m.name).not.toContain("typesafe/");
+			expect(m.release_date, `model ${m.name}`).toBeTruthy();
+		}
+		expect(listing.map((m) => m.name)).toContain("jev-latest");
 	}, 30000);
 });
 

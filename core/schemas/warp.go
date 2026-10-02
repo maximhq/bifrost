@@ -52,8 +52,12 @@ const (
 	// log window or logs are kept for as long as anyone might want a chat back.
 	WarpDefaultHistoryRetentionDays = 30
 	// WarpDefaultSemanticSearchThreshold is the minimum similarity accepted by
-	// semantic log search when an operator has not supplied one.
-	WarpDefaultSemanticSearchThreshold = 0.80
+	// semantic log search when an operator has not supplied one. It is a
+	// Weaviate certainty, (1 + cosine) / 2, and a question matched against a
+	// logged conversation scores well below a near-duplicate: 0.80 (cosine 0.6)
+	// cut off clearly relevant rows with text-embedding-3-small, so search came
+	// back empty for ordinary questions. 0.70 is cosine 0.4.
+	WarpDefaultSemanticSearchThreshold = 0.70
 
 	// WarpDefaultSemanticSearchLimit is the default number of semantic matches.
 	WarpDefaultSemanticSearchLimit = 10
@@ -72,7 +76,22 @@ const (
 	// silently clamping a number the operator typed to something else.
 	WarpMinTemperature = 0.0
 	WarpMaxTemperature = 2.0
+
+	// WarpMaxAdditionalModels bounds how many models an operator may expose
+	// beside the default. The list is offered whole in the panel's model
+	// switcher, so the ceiling is about a menu somebody can still read rather
+	// than anything the server struggles with.
+	WarpMaxAdditionalModels = 20
 )
+
+// WarpModel is one provider and model pair Warp may run on, with the provider
+// key it is pinned to. APIKeyID follows WarpConfig.APIKeyID: a reference, not a
+// credential, and empty for a provider that needs no key.
+type WarpModel struct {
+	Provider ModelProvider `json:"provider"`
+	Model    string        `json:"model"`
+	APIKeyID string        `json:"api_key_id,omitempty"`
+}
 
 // WarpReasoningEfforts is every value ReasoningEffort accepts, in the order
 // the settings page lists them. It mirrors ResponsesParametersReasoning.Effort
@@ -102,15 +121,15 @@ type WarpConfig struct {
 	// Empty is valid and common: a provider on a trusted network, or one using
 	// ambient IAM credentials, needs no key at all.
 	APIKeyID string `json:"api_key_id,omitempty"`
-	// BaseURL overrides the provider's default endpoint. Required for
-	// self-hosted and proxied deployments, empty otherwise.
-	BaseURL string `json:"base_url,omitempty"`
+	// AdditionalModels are the other models an operator has exposed. Provider
+	// and Model above stay the default; see ForModel.
+	AdditionalModels []WarpModel `json:"additional_models,omitempty"`
 	// MaxIterations bounds the agent loop. Zero means WarpDefaultMaxIterations.
 	MaxIterations int `json:"max_iterations,omitempty"`
 	// RequestTimeoutSeconds bounds a single upstream call. Zero means
-	// WarpDefaultRequestTimeoutSeconds. This feeds the dedicated Warp client's
-	// NetworkConfig, which is why it is stored rather than hardcoded: a local
-	// model behind BaseURL can be far slower than a hosted frontier model.
+	// WarpDefaultRequestTimeoutSeconds. It is a deadline on Warp's own call, on
+	// top of the provider's network timeout, and is stored rather than hardcoded
+	// because a self-hosted model can be far slower than a hosted frontier one.
 	RequestTimeoutSeconds int `json:"request_timeout_seconds,omitempty"`
 	// HistoryRetentionDays is how long a saved chat is kept after its last turn.
 	// Zero means WarpDefaultHistoryRetentionDays.
@@ -154,6 +173,44 @@ type WarpConfig struct {
 	RetiredLogVectorStoreNamespaces []string `json:"-"`
 
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+// Models returns every model a turn may run on, the default first.
+func (c *WarpConfig) Models() []WarpModel {
+	if c == nil {
+		return nil
+	}
+	models := make([]WarpModel, 0, 1+len(c.AdditionalModels))
+	if c.Provider != "" && c.Model != "" {
+		models = append(models, WarpModel{Provider: c.Provider, Model: c.Model, APIKeyID: c.APIKeyID})
+	}
+	return append(models, c.AdditionalModels...)
+}
+
+// ForModel returns the config a turn on the named model runs under: a copy
+// with Provider, Model and APIKeyID pointed at that entry, so everything
+// downstream keeps reading the same three fields. An empty pair means the
+// default and returns the receiver.
+//
+// The second result is false when the pair is not one the operator exposed.
+// The pair is client-sent, so this lookup is what keeps a dashboard user from
+// running Warp on a model nobody approved; the key is always the entry's own
+// and never something the request can name.
+func (c *WarpConfig) ForModel(provider ModelProvider, model string) (*WarpConfig, bool) {
+	if c == nil {
+		return nil, false
+	}
+	if provider == "" && model == "" {
+		return c, true
+	}
+	for _, candidate := range c.Models() {
+		if candidate.Provider == provider && candidate.Model == model {
+			selected := *c
+			selected.Provider, selected.Model, selected.APIKeyID = candidate.Provider, candidate.Model, candidate.APIKeyID
+			return &selected, true
+		}
+	}
+	return nil, false
 }
 
 // EffectiveMaxIterations resolves the configured loop bound, substituting the

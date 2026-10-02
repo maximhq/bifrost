@@ -20,12 +20,14 @@ type TableWarpConfig struct {
 
 	Provider string `gorm:"type:varchar(64)" json:"provider"`
 	Model    string `gorm:"type:varchar(255)" json:"model"`
-	BaseURL  string `gorm:"type:varchar(2048)" json:"base_url,omitempty"`
 
 	// APIKeyID names one of the provider's configured keys. It is a reference,
 	// not a credential, which is why this table needs no encryption hooks: there
 	// is nothing here worth encrypting.
 	APIKeyID string `gorm:"type:varchar(255)" json:"api_key_id,omitempty"`
+
+	// AdditionalModels is a JSON array of schemas.WarpModel, nil when there are none.
+	AdditionalModels *string `gorm:"type:text" json:"additional_models,omitempty"`
 
 	MaxIterations         int `gorm:"default:0" json:"max_iterations,omitempty"`
 	RequestTimeoutSeconds int `gorm:"default:0" json:"request_timeout_seconds,omitempty"`

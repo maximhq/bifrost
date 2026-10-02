@@ -1,5 +1,32 @@
 # Warp Agent Configuration Schemas
 
+WarpModel:
+  type: object
+  description: |
+    One provider and model pair Warp may run on, with the provider key it is
+    pinned to. The pair is what identifies an entry: a chat request names the
+    model it wants by `provider` and `model`, so no two entries may share both.
+  properties:
+    provider:
+      type: string
+      description: A provider registered in this Bifrost deployment.
+      minLength: 1
+      pattern: '\S'
+      example: anthropic
+    model:
+      type: string
+      minLength: 1
+      pattern: '\S'
+      example: claude-sonnet-5
+    api_key_id:
+      type: string
+      description: |
+        Which of the provider's configured keys this model uses. A reference,
+        not a credential. Omitted when the provider's whole key pool is used.
+  required:
+    - provider
+    - model
+
 WarpConfig:
   type: object
   description: |
@@ -17,37 +44,37 @@ WarpConfig:
         Whether Warp has everything it needs to answer a question: enabled, with
         a provider and a model, and an embedding space - embedding provider,
         embedding model, a positive embedding dimension and a namespace - since
-        semantic search over the logs is part of answering. A credential is
-        deliberately not part of this test, since a provider reached over a
-        trusted network through `base_url` legitimately needs none.
+        semantic search over the logs is part of answering. A key is
+        deliberately not part of this test, since a provider using ambient
+        credentials legitimately needs none.
     enabled:
       type: boolean
       description: Whether the operator has switched Warp on.
     provider:
       type: string
-      description: The model provider that runs the agent loop, e.g. `openai`.
+      description: |
+        The provider of Warp's default model, e.g. `openai`. The default answers
+        every chat request that names no model.
       example: openai
     model:
       type: string
+      description: Warp's default model.
       example: gpt-4o
-    base_url:
-      type: string
-      description: |
-        Where Warp reaches its model. Overrides the provider's default endpoint,
-        which is what an empty value means. Required for self-hosted and proxied
-        deployments, empty otherwise.
-
-        Must not contain URL userinfo. This value is stored and returned
-        unredacted, so a credential embedded in it would be readable by anyone
-        who can read the configuration; a URL carrying one is rejected with
-        `400`. Name a configured provider key with `api_key_id` instead.
-      example: https://bifrost.internal.example.com
     api_key_id:
       type: string
       description: |
-        Which of the provider's configured keys Warp uses. A reference, not a
-        credential, so it round-trips in the clear - there is nothing here worth
-        redacting. Empty when the provider needs no key.
+        Which of the provider's configured keys the default model uses. A
+        reference, not a credential, so it round-trips in the clear - there is
+        nothing here worth redacting. Empty when the provider needs no key.
+    additional_models:
+      type: array
+      description: |
+        The other models an operator has exposed. A chat request may name any of
+        them, or the default, by `provider` and `model`; nothing else is
+        accepted. Omitted when only the default is configured.
+      maxItems: 20
+      items:
+        $ref: '#/WarpModel'
     max_iterations:
       type: integer
       description: |
@@ -198,29 +225,25 @@ WarpConfigInput:
       type: string
       description: Required when `enabled` is true.
       example: gpt-4o
-    base_url:
-      type: string
-      # Empty is valid and means "the provider's default endpoint". A non-empty
-      # value must be an absolute http(s) URL whose authority carries no
-      # userinfo, which is what ValidateConfigInput enforces - so a client can
-      # check the payload here instead of learning it from a 400.
-      # No whitespace anywhere: url.Parse rejects a space in the authority, so a
-      # character class that allowed it described something the server refuses.
-      pattern: '^$|^https?://[^/?#@\s]+([/?#]\S*)?$'
-      # A pattern cannot express "parses as a URI" - url.Parse also rejects a
-      # malformed percent escape such as "https://%", which the character class
-      # happily admits. format carries that half of the rule.
-      format: uri-reference
-      description: |
-        Must not contain URL userinfo: this value is stored and returned
-        unredacted, so a URL carrying a credential is rejected with `400`. Use
-        `api_key_id` to name a configured provider key.
     api_key_id:
       type: string
       description: |
         Which of the provider's configured keys Warp should use. Empty is valid
         and common: a provider on a trusted network, or one using ambient IAM
         credentials, needs no key at all.
+    additional_models:
+      type: array
+      description: |
+        The models to expose beside the default (`provider` and `model` above).
+        Replaced whole on every write, like the default itself: leaving the
+        field out clears the list.
+
+        Every entry must be complete whether or not `enabled` is true, must name
+        a registered provider, and must not repeat the `provider` and `model` of
+        the default or of another entry. Any of those is rejected with `400`.
+      maxItems: 20
+      items:
+        $ref: '#/WarpModel'
     max_iterations:
       type: integer
       minimum: 0
@@ -324,6 +347,16 @@ WarpBackfillStatus:
     indexed: { type: integer, format: int64 }
     skipped: { type: integer, format: int64 }
     failed: { type: integer, format: int64 }
+    embedding_tokens:
+      type: integer
+      format: int64
+      description: Tokens consumed by the job's embedding calls so far, across resumes of the same checkpoint.
+    embedding_cost:
+      type: number
+      format: double
+      description: >-
+        USD cost of the job's embedding calls so far, across resumes of the same
+        checkpoint. Omitted when the deployment has no model catalog to price it.
     last_error: { type: string }
     message: { type: string }
     created_at: { type: string, format: date-time }
@@ -331,7 +364,7 @@ WarpBackfillStatus:
     completed_at: { type: string, format: date-time }
   required: [status, total, scanned, indexed, skipped, failed]
 
-WarpChatRequest:
+WarpSessionRequest:
   type: object
   properties:
     messages:
@@ -354,6 +387,26 @@ WarpChatRequest:
           content:
             type: string
         required: [role, content]
+    conversation_id:
+      type: string
+      maxLength: 36
+      description: |
+        Continues an existing thread in the caller's history. Omit it to start a
+        new one; the new thread's id comes back on the `done` event or in the
+        JSON body.
+    provider:
+      type: string
+      description: |
+        With `model`, names which of Warp's configured models answers this turn:
+        the default, or one of `additional_models`. Omit both to use the
+        default. A pair the operator has not exposed is rejected with `400`, so
+        a request can only ever choose among the configured models, and the
+        provider key is always the configured entry's own.
+      example: anthropic
+    model:
+      type: string
+      description: See `provider`. The two are given together or not at all.
+      example: claude-sonnet-5
     stream:
       type: boolean
       default: true
@@ -363,7 +416,7 @@ WarpChatRequest:
   required:
     - messages
 
-WarpChatResponse:
+WarpSessionResponse:
   type: object
   description: The non-streaming body - the same events, assembled.
   properties:
@@ -394,6 +447,9 @@ WarpChatResponse:
     iterations:
       type: integer
       description: How many model round trips the answer took.
+    conversation_id:
+      type: string
+      description: The thread this turn was filed under. Absent when Warp history is unavailable.
     finish_reason:
       type: string
     usage:
@@ -431,3 +487,126 @@ WarpChatResponse:
     - answer
     - tool_calls
     - iterations
+
+WarpLogIndexStatus:
+  type: object
+  properties:
+    state:
+      type: string
+      description: |
+        `unavailable`: no vector store is connected. `not_configured`: no
+        embedding model is set. `indexing`: a backfill is in flight. `failed`:
+        the last backfill failed. `ready`: semantic search is usable.
+      enum: [unavailable, not_configured, indexing, failed, ready]
+    vector_store_connected:
+      type: boolean
+    embedding_configured:
+      type: boolean
+    backfill:
+      allOf:
+        - $ref: '#/WarpBackfillStatus'
+      description: The in-flight or latest backfill for the current namespace, when one exists.
+  required: [state, vector_store_connected, embedding_configured]
+
+WarpConversation:
+  type: object
+  description: One thread, without its messages.
+  properties:
+    id: { type: string }
+    title:
+      type: string
+      description: The opening question, trimmed.
+    message_count:
+      type: integer
+    total_tokens:
+      type: integer
+      description: Tokens spent on the thread's answers so far.
+    total_cost:
+      type: number
+      description: Cost of the thread's answers so far.
+    created_at: { type: string, format: date-time }
+    updated_at: { type: string, format: date-time }
+  required: [id, title, message_count, total_tokens, total_cost, created_at, updated_at]
+
+WarpConversationList:
+  type: object
+  properties:
+    conversations:
+      type: array
+      items:
+        $ref: '#/WarpConversation'
+  required: [conversations]
+
+WarpConversationDetail:
+  allOf:
+    - $ref: '#/WarpConversation'
+    - type: object
+      properties:
+        messages:
+          type: array
+          description: The newest messages, oldest first.
+          items:
+            $ref: '#/WarpStoredMessage'
+        truncated:
+          type: boolean
+          description: |
+            True when older messages were cut to the transcript bound.
+            `message_count` still reports the thread's real size.
+      required: [messages]
+
+WarpStoredMessage:
+  type: object
+  description: One persisted turn.
+  properties:
+    role:
+      type: string
+      enum: [user, assistant]
+    content: { type: string }
+    tool_calls:
+      type: array
+      items:
+        $ref: '#/WarpStoredToolCall'
+    error: { type: string }
+    finish_reason:
+      type: string
+      description: '`partial` when the answer was given on the last research step without settling.'
+    total_tokens:
+      type: integer
+      description: Tokens spent producing this answer. Absent on user turns.
+    cost:
+      type: number
+      description: Cost of producing this answer. Absent on user turns.
+    created_at: { type: string, format: date-time }
+    question:
+      $ref: '#/WarpStoredQuestion'
+  required: [role, content, created_at]
+
+WarpStoredToolCall:
+  type: object
+  properties:
+    name: { type: string }
+    duration_ms: { type: integer, format: int64 }
+    failed: { type: boolean }
+    text_offset:
+      type: integer
+      description: Unicode code points of the answer that preceded this call.
+  required: [name]
+
+WarpStoredQuestion:
+  type: object
+  description: The clarifying question a turn ended with, when it ended by asking.
+  properties:
+    question: { type: string }
+    options:
+      type: array
+      items:
+        type: object
+        properties:
+          label: { type: string }
+          hint:
+            type: string
+            description: The shorter form sent back to Warp when this option is picked.
+        required: [label]
+    allow_other: { type: boolean }
+    kind: { type: string }
+  required: [question, options, allow_other]

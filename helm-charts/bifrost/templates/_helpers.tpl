@@ -1351,6 +1351,9 @@ false
 {{- if hasKey $client "toolExecutionTimeout" }}
 {{- $_ := set $cc "tool_execution_timeout" $client.toolExecutionTimeout }}
 {{- end }}
+{{- if hasKey $client "maxInstructionsLength" }}
+{{- $_ := set $cc "max_instructions_length" $client.maxInstructionsLength }}
+{{- end }}
 {{- if $client.toolPricing }}
 {{- $_ := set $cc "tool_pricing" $client.toolPricing }}
 {{- end }}
@@ -1405,6 +1408,12 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp.toolManagerConfig "disableAutoToolInject" }}
 {{- $_ := set $tmConfig "disable_auto_tool_inject" .Values.bifrost.mcp.toolManagerConfig.disableAutoToolInject }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.maxInstructionsPerClient }}
+{{- $_ := set $tmConfig "max_instructions_per_client" .Values.bifrost.mcp.toolManagerConfig.maxInstructionsPerClient }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
+{{- $_ := set $tmConfig "max_instructions_total" .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
 {{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
@@ -1620,6 +1629,12 @@ false
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $otelConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $otelConfig "excluded_attributes" $inputConfig.excluded_attributes }}
+{{- end }}
+{{- if hasKey $inputConfig "export_raw_payloads" }}
+{{- $_ := set $otelConfig "export_raw_payloads" $inputConfig.export_raw_payloads }}
+{{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
@@ -1703,6 +1718,9 @@ false
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $datadogConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $datadogConfig "excluded_attributes" $inputConfig.excluded_attributes }}
+{{- end }}
 {{- if hasKey $inputConfig "metric_dimensions" }}
 {{- $_ := set $datadogConfig "metric_dimensions" $inputConfig.metric_dimensions }}
 {{- end }}
@@ -1748,6 +1766,12 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $bigqueryConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $bigqueryConfig "excluded_attributes" $inputConfig.excluded_attributes }}
+{{- end }}
+{{- if hasKey $inputConfig "export_raw_payloads" }}
+{{- $_ := set $bigqueryConfig "export_raw_payloads" $inputConfig.export_raw_payloads }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $bigqueryConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
@@ -1795,6 +1819,9 @@ false
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $kafkaConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $kafkaConfig "excluded_attributes" $inputConfig.excluded_attributes }}
+{{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $kafkaConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
@@ -1822,6 +1849,9 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $pubsubConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $pubsubConfig "excluded_attributes" $inputConfig.excluded_attributes }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $pubsubConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
@@ -1875,6 +1905,9 @@ false
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $splunkConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $splunkConfig "excluded_attributes" $inputConfig.excluded_attributes }}
+{{- end }}
 {{- if $inputConfig.batch_max_bytes }}
 {{- $_ := set $splunkConfig "batch_max_bytes" (int $inputConfig.batch_max_bytes) }}
 {{- end }}
@@ -1925,6 +1958,9 @@ false
 {{- end }}
 {{- if .Values.bifrost.auditLogs.hmacKey }}
 {{- $_ := set $auditLogs "hmac_key" .Values.bifrost.auditLogs.hmacKey }}
+{{- end }}
+{{- if .Values.bifrost.auditLogs.omitIpAddresses }}
+{{- $_ := set $auditLogs "omit_ip_addresses" true }}
 {{- end }}
 {{- if .Values.bifrost.auditLogs.archiveInterval }}
 {{- $_ := set $auditLogs "archive_interval" .Values.bifrost.auditLogs.archiveInterval }}

@@ -101,6 +101,7 @@ Full example with an explicit service account key and content filtering:
 | `service_account_key` | `string \| SecretVar` | ❌ | — | Service account JSON key used to authenticate. Omit to use Application Default Credentials. Supports `env.VAR_NAME`. |
 | `auto_create_topic` | `boolean` | ❌ | `false` | Create the topic at startup if it does not exist. Requires the `pubsub.topics.create` permission. |
 | `disable_content_logging` | `boolean` | ❌ | `false` | Strip input/output message content from traces before publishing. |
+| `excluded_attributes` | `string[]` | ❌ | — | Span attribute names to leave out of published traces. See [Excluding attributes](#excluding-attributes). |
 | `request_headers` | `string[]` | ❌ | — | Request-header name patterns to capture and embed in traces. Supports wildcards (e.g. `x-custom-*`). |
 | `plugin_span_filter` | `object` | ❌ | — | Controls which plugin spans are included in published payloads. See [Filtering plugin spans](#filtering-plugin-spans). |
 
@@ -165,9 +166,25 @@ Patterns support exact names and wildcards: `x-custom-*` captures all headers wi
 
 Captured headers appear under `RequestHeaders` in the published JSON.
 
+### Excluding attributes
+
+Some span attributes are large and not needed downstream. Tool definitions are a common example. List the attribute names you want left out:
+
+```json
+{
+  "excluded_attributes": ["gen_ai.request.tools"]
+}
+```
+
+Names are matched exactly, as they appear in the exported payload. A name that does not match any attribute is ignored, so a typo silently has no effect. Check the spelling against a payload you have already received.
+
+<Note>
+This is different from [`plugin_span_filter`](#filtering-plugin-spans), which chooses which plugin **spans** to publish. Use `excluded_attributes` to drop individual attributes from the spans you do publish.
+</Note>
+
 ### Filtering plugin spans
 
-By default every plugin hook generates a span in the trace, which can add significant noise (e.g. 8 built-in plugins × 2 hooks = 16 spans per request). Use `plugin_span_filter` to control which plugin spans are published:
+By default every plugin hook generates a span in the trace, which can add significant noise (e.g. 8 built-in plugins × 2 hooks = 16 spans per request). Use `plugin_span_filter` to control which plugin spans are published. It selects whole spans by plugin name, not individual attributes. To drop an attribute, see [Excluding attributes](#excluding-attributes):
 
 ```json
 {
@@ -216,6 +233,12 @@ The `RootSpan` is the inbound HTTP request span. The `Spans` array contains ever
     "Status": "ok",
     "StatusMsg": "",
     "Attributes": {
+      "http.request.method": "POST",
+      "http.route": "/v1/chat/completions",
+      "http.response.status_code": 200,
+      "url.scheme": "http",
+      "url.path": "/v1/chat/completions",
+      "user_agent.original": "bruno-runtime/3.5.0",
       "http.method": "POST",
       "http.url": "/v1/chat/completions",
       "http.status_code": 200,

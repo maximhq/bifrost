@@ -612,7 +612,7 @@ Override the logging plugin's global `disable_content_logging` config for a sing
 This is useful when you need to suppress sensitive data (e.g. PII, credentials) for specific requests while keeping content logging enabled globally - or, conversely, to opt a single request into full content+raw capture while content logging is globally disabled.
 
 <Warning>
-Per-request overrides are **disabled by default**. You must first enable `allow_per_request_content_storage_override` in your logging configuration (or in the UI under **Logs Settings**) before this header or context key has any effect. When the toggle is off, the global `disable_content_logging` setting is authoritative and this value is ignored.
+Per-request overrides are **disabled by default**. You must first enable `allow_per_request_content_storage_override` in your logging configuration (or in the UI under **Logs Settings**) before this header or context key has any effect. When the toggle is off, this value is ignored and the client `disable_content_logging` setting, overridden by the virtual key's own `disable_content_logging` when it has one, is authoritative.
 </Warning>
 
 <Tabs>
@@ -649,7 +649,7 @@ Input: messages,
 
 **Prerequisite:** `allow_per_request_content_storage_override` must be `true` in the logging plugin config (set in `config.json` or via the UI).
 
-**Precedence (when override is enabled):** The per-request value takes precedence over the global `disable_content_logging` setting. A value of `true` suppresses content; `false` forces content on.
+**Precedence (when override is enabled):** The per-request value takes precedence over both the global `disable_content_logging` setting and the virtual key's own `disable_content_logging` (see [Content Logging](/features/observability/content-logging)). A value of `true` suppresses content; `false` forces content on.
 
 <Note>
 This flag affects only what is written to the log record (messages, params, tool results, raw request/response). Token counts, latency, cost, status, and routing metadata are always logged regardless of this setting.

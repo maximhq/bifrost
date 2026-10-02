@@ -52,6 +52,66 @@ func NewWarpLogReader(manager logging.LogManager) warp.LogReader {
 	return warpLogReader{manager}
 }
 
+// WarpResolvers are the governance overlays the server may have, handed to Warp
+// so describe_virtual_key sees a key the way the dashboard's key pages do and
+// describe_user_limits has something to answer with. All optional: an OSS
+// build passes the zero value and Warp reads key rows as they are.
+type WarpResolvers struct {
+	// ExternalQuotaBudgets overlays access-profile budgets and rate limits onto
+	// a managed key, the same resolver the governance handler uses.
+	ExternalQuotaBudgets ExternalQuotaBudgetResolver
+	// VirtualKeyAssignees names the user a key is assigned to.
+	VirtualKeyAssignees VirtualKeyAssigneeResolver
+	// UserGovernance answers what governs one person's spend. Nil leaves
+	// describe_user_limits out of Warp's tool set.
+	UserGovernance warp.UserGovernanceReader
+}
+
+// warpVirtualKeyDecorator builds the overlay describe_virtual_key applies to a
+// key row: the standalone-key rehydration from key-scoped model configs that
+// every dashboard read path does, then the external budget resolver for a
+// managed key, then the assignee. Read raw, a standalone key with a budget
+// reported none, and a managed key reported none while the dashboard showed
+// $450 at 85% - both because the row is not where the cap lives.
+func warpVirtualKeyDecorator(store vkModelConfigReader, resolvers WarpResolvers) warp.VirtualKeyDecorator {
+	return func(ctx context.Context, vk *tables.TableVirtualKey) ([]string, error) {
+		if store != nil {
+			if err := hydrateVKGovernanceFromStoreErr(ctx, store, vk); err != nil {
+				return nil, err
+			}
+		}
+		var governedBy []string
+		ext, err := applyExternalQuotaBudgets(ctx, resolvers.ExternalQuotaBudgets, vk)
+		if err != nil {
+			return nil, err
+		}
+		if ext != nil {
+			seen := map[string]bool{}
+			for _, budget := range ext.Budgets {
+				name := strings.TrimSpace(budget.SourceName)
+				if name == "" || seen[name] {
+					continue
+				}
+				seen[name] = true
+				governedBy = append(governedBy, strings.TrimSpace(strings.ReplaceAll(budget.SourceType, "_", " ")+" "+name))
+			}
+			if vk.AssignedUser == nil && ext.UsageUserID != "" {
+				vk.AssignedUser = &tables.AssignedUser{ID: ext.UsageUserID}
+			}
+		}
+		if resolvers.VirtualKeyAssignees != nil {
+			assignees, err := resolvers.VirtualKeyAssignees(ctx, []string{vk.ID})
+			if err != nil {
+				return nil, err
+			}
+			if assignee := assignees[vk.ID]; assignee != nil {
+				vk.AssignedUser = assignee
+			}
+		}
+		return governedBy, nil
+	}
+}
+
 // NewWarpHandler builds the handler and the service behind it.
 //
 // A nil loggerPlugin is a supported deployment (logging disabled): Warp then
@@ -66,10 +126,16 @@ func NewWarpLogReader(manager logging.LogManager) warp.LogReader {
 // because the flag can be switched on at runtime and routes are only
 // registered once; what the flag withholds is every route and the indexing of
 // new logs.
-func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool) *WarpHandler {
+func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool, resolvers WarpResolvers) *WarpHandler {
 	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors)}
+	if store != nil {
+		opts = append(opts, warp.WithVirtualKeyDecorator(warpVirtualKeyDecorator(store, resolvers)))
+	}
+	if resolvers.UserGovernance != nil {
+		opts = append(opts, warp.WithUserGovernanceReader(resolvers.UserGovernance))
+	}
 	if client != nil {
-		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest))
+		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest), warp.WithResponsesExecutor(client.ResponsesRequest))
 	}
 	if loggerPlugin != nil {
 		opts = append(opts, warp.WithLogReader(warpLogReader{loggerPlugin.GetPluginLogManager()}))
@@ -91,7 +157,7 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 	return handler
 }
 
-// Shutdown releases the service's model client.
+// Shutdown stops the service's background work and log subscription.
 func (h *WarpHandler) Shutdown() {
 	if h.unsubscribeLogs != nil {
 		h.unsubscribeLogs()
@@ -190,22 +256,26 @@ type warpBackfillStatus struct {
 	// struct, never "empty" to the encoder - so the idle and pending responses
 	// shipped 0001-01-01 for timestamps they simply do not have. These are
 	// optional properties in the schema, and a year-1 date reads as real.
-	StartTime   *time.Time `json:"start_time,omitempty"`
-	EndTime     *time.Time `json:"end_time,omitempty"`
-	Total       int64      `json:"total"`
-	Scanned     int        `json:"scanned"`
-	Indexed     int        `json:"indexed"`
-	Skipped     int        `json:"skipped"`
-	Failed      int        `json:"failed"`
-	LastError   string     `json:"last_error,omitempty"`
-	Message     string     `json:"message,omitempty"`
-	CreatedAt   *time.Time `json:"created_at,omitempty"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	StartTime *time.Time `json:"start_time,omitempty"`
+	EndTime   *time.Time `json:"end_time,omitempty"`
+	Total     int64      `json:"total"`
+	Scanned   int        `json:"scanned"`
+	Indexed   int        `json:"indexed"`
+	Skipped   int        `json:"skipped"`
+	Failed    int        `json:"failed"`
+	// EmbeddingTokens/EmbeddingCost are what the job's embedding calls have
+	// consumed so far. Cost is omitted when the deployment cannot price it.
+	EmbeddingTokens int64      `json:"embedding_tokens,omitempty"`
+	EmbeddingCost   *float64   `json:"embedding_cost,omitempty"`
+	LastError       string     `json:"last_error,omitempty"`
+	Message         string     `json:"message,omitempty"`
+	CreatedAt       *time.Time `json:"created_at,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
 }
 
 func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
-	if !warpLocalAdmin(ctx) {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can backfill Warp embeddings")
 		return
 	}
@@ -269,7 +339,7 @@ func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
 const warpBackfillUnavailable = "Background job runner or backfill store is not available"
 
 func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
-	if !warpLocalAdmin(ctx) {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can inspect Warp backfills")
 		return
 	}
@@ -289,8 +359,14 @@ func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
 		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind)
 		if err == nil && job == nil {
 			// Nothing running. A reloaded page still wants to see how the last
-			// backfill ended, so fall back to the newest job of any status.
+			// backfill ended, so fall back to the newest job of any status -
+			// unless it ran under an embedding space that is no longer the
+			// configured one, in which case it says nothing about this space
+			// and the page shows its empty default instead.
 			job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, warp.BackfillJobKind)
+			if err == nil && job != nil && !h.service.BackfillMatchesConfig(ctx, job.Metadata) {
+				job = nil
+			}
 		}
 	}
 	if err != nil {
@@ -315,7 +391,7 @@ func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
 }
 
 func (h *WarpHandler) cancelBackfill(ctx *fasthttp.RequestCtx) {
-	if !warpLocalAdmin(ctx) {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can cancel Warp backfills")
 		return
 	}
@@ -449,6 +525,7 @@ func (h *WarpHandler) logIndexStatus(ctx *fasthttp.RequestCtx) {
 		// endpoints, models and internal detail. An administrator debugging a
 		// stalled index needs exactly that text; an ordinary dashboard user needs
 		// the state and the counts, and gets those without the provider's words.
+		// Local admin only: this route needs just WarpSession View, so a role ID proves nothing here.
 		if !warpLocalAdmin(ctx) {
 			backfill.LastError = ""
 		}
@@ -489,6 +566,7 @@ func warpBackfillStatusFromRow(job *tables.TableSidekiqJob) warpBackfillStatus {
 		status.StartTime, status.EndTime, status.Total = &meta.StartTime, &meta.EndTime, meta.Total
 		status.Scanned, status.Indexed, status.Skipped, status.Failed = meta.Scanned, meta.Indexed, meta.Skipped, meta.Failed
 		status.Message = meta.Message
+		status.EmbeddingTokens, status.EmbeddingCost = meta.EmbeddingTokens, meta.EmbeddingCost
 		if status.LastError == "" {
 			status.LastError = meta.LastError
 		}
@@ -496,9 +574,20 @@ func warpBackfillStatusFromRow(job *tables.TableSidekiqJob) warpBackfillStatus {
 	return status
 }
 
+// warpLocalAdmin reports whether the caller is the local admin: the password
+// login, or any caller while dashboard auth is off.
 func warpLocalAdmin(ctx *fasthttp.RequestCtx) bool {
 	admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
 	return admin
+}
+
+// warpAdmin admits the local admin, or a caller enterprise RBAC already authorized for Warp Update (the only place a role ID is set).
+func warpAdmin(ctx *fasthttp.RequestCtx) bool {
+	if warpLocalAdmin(ctx) {
+		return true
+	}
+	roleID, _ := ctx.UserValue(schemas.BifrostContextKeyUserRoleID).(uint)
+	return roleID != 0
 }
 
 // getConfig serves the settings page. It is safe for any authenticated caller
@@ -523,7 +612,7 @@ func (h *WarpHandler) getConfig(ctx *fasthttp.RequestCtx) {
 // the server will then use to make outbound calls, which is not something an
 // ordinary dashboard user should be able to do.
 func (h *WarpHandler) putConfig(ctx *fasthttp.RequestCtx) {
-	if localAdmin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool); !localAdmin {
+	if !warpAdmin(ctx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can configure Warp")
 		return
 	}

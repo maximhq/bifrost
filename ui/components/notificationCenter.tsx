@@ -1,8 +1,17 @@
-import { isNotificationsUnavailable, shouldHideNotificationTrigger } from "@/components/notificationCenter.utils";
+import {
+	countActiveSidekiqJobs,
+	isNotificationsUnavailable,
+	isSidekiqJobsUnavailable,
+	shouldHideNotificationTrigger,
+	sidekiqPollInterval,
+	visibleSidekiqJobs,
+} from "@/components/notificationCenter.utils";
+import SidekiqJobsSection from "@/components/sidekiqJobsSection";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import {
 	clearAllNotifications,
+	getErrorMessage,
 	markAllNotificationsRead,
 	markNotificationRead,
 	removeNotification,
@@ -11,14 +20,17 @@ import {
 	selectVisibleNotifications,
 	useAppDispatch,
 	useAppSelector,
+	useCancelSidekiqJobMutation,
 	useGetNotificationsQuery,
+	useGetSidekiqJobsQuery,
 } from "@/lib/store";
 import type { NotificationSeverity } from "@/lib/types/notifications";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
 import { Check, CheckCircle2, CircleAlert, Inbox, Info, RefreshCw, TriangleAlert, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 const severityStyles: Record<NotificationSeverity, string> = {
 	info: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
@@ -40,8 +52,24 @@ export default function NotificationCenter() {
 	const [open, setOpen] = useState(false);
 	const notifications = useAppSelector(selectVisibleNotifications);
 	const unreadCount = useAppSelector(selectUnreadNotificationsCount);
-	const { readIds } = useAppSelector(selectNotificationPreferences);
+	const { readIds, dismissedIds } = useAppSelector(selectNotificationPreferences);
 	const { isLoading, isFetching, isError, error, refetch } = useGetNotificationsQuery({ limit: 50 });
+
+	// Poll quickly while the tray is open or a job is active, slowly otherwise so a job started
+	// elsewhere still lights up the badge. The interval follows the data, hence the effect.
+	const [pollMs, setPollMs] = useState(() => sidekiqPollInterval({ open: false, activeCount: 0 }));
+	const { data: jobsData, error: jobsError } = useGetSidekiqJobsQuery(undefined, { pollingInterval: pollMs });
+	const [cancelJob, { originalArgs: cancellingId, isLoading: isCancelling }] = useCancelSidekiqJobMutation();
+	// A 403/503 means this caller never gets jobs; drop the section rather than show an error.
+	const jobs = useMemo(
+		() => (isSidekiqJobsUnavailable(jobsError) ? [] : visibleSidekiqJobs(jobsData?.jobs ?? [], dismissedIds)),
+		[jobsData, jobsError, dismissedIds],
+	);
+	const activeJobCount = countActiveSidekiqJobs(jobs);
+	useEffect(() => {
+		setPollMs(sidekiqPollInterval({ open, activeCount: activeJobCount }));
+	}, [open, activeJobCount]);
+	const badgeCount = unreadCount + activeJobCount;
 
 	const openNotification = (id: string, actionPath?: string) => {
 		dispatch(markNotificationRead(id));
@@ -62,7 +90,11 @@ export default function NotificationCenter() {
 			<PopoverTrigger asChild>
 				<button
 					type="button"
-					aria-label={unreadCount ? `Notifications, ${unreadCount} unread` : "Notifications"}
+					aria-label={
+						unreadCount || activeJobCount
+							? `Notifications, ${[unreadCount && `${unreadCount} unread`, activeJobCount && `${activeJobCount} running`].filter(Boolean).join(", ")}`
+							: "Notifications"
+					}
 					data-testid="topbar-notifications-btn"
 					// size-8 matches the theme toggle and the menu/user-pill trigger. Every topbar trigger has to
 					// share one box: Radix anchors sideOffset to the trigger's bounding box, so a shorter trigger
@@ -74,23 +106,18 @@ export default function NotificationCenter() {
 					    the count into the corner. */}
 					<span className="relative flex items-center justify-center">
 						<Inbox className="size-4" strokeWidth={2} />
-						{unreadCount > 0 && (
+						{badgeCount > 0 && (
 							<span
 								data-testid="topbar-notifications-badge"
 								className="absolute -top-1.5 -right-2 flex min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[9px] leading-4 font-semibold text-white dark:bg-red-700"
 							>
-								{unreadCount > 99 ? "99+" : unreadCount}
+								{badgeCount > 99 ? "99+" : badgeCount}
 							</span>
 						)}
 					</span>
 				</button>
 			</PopoverTrigger>
-			<PopoverContent
-				align="end"
-				sideOffset={2}
-				className="w-[min(24rem,calc(100vw-1rem))] overflow-hidden p-0"
-				data-testid="notification-tray"
-			>
+			<PopoverContent align="end" sideOffset={2} className="w-[min(24rem,calc(100vw-1rem))] p-0" data-testid="notification-tray">
 				<div className="flex h-12 items-center justify-between border-b px-4">
 					<div className="flex items-center gap-2">
 						<h2 className="text-sm font-semibold">Notifications</h2>
@@ -107,6 +134,20 @@ export default function NotificationCenter() {
 						</button>
 					)}
 				</div>
+
+				<SidekiqJobsSection
+					jobs={jobs}
+					cancellingId={isCancelling ? cancellingId : undefined}
+					onCancel={async (id) => {
+						try {
+							const result = await cancelJob(id).unwrap();
+							if (!result.cancelled) toast.info("That job had already finished");
+						} catch (error) {
+							toast.error("Couldn't cancel the job", { description: getErrorMessage(error) });
+						}
+					}}
+					onDismiss={(ids) => ids.forEach((id) => dispatch(removeNotification(id)))}
+				/>
 
 				{isLoading ? (
 					<div className="text-muted-foreground flex h-44 items-center justify-center gap-2 text-sm">

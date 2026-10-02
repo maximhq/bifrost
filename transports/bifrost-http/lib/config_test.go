@@ -754,12 +754,13 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 	return nil
 }
 
-func (m *MockConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error {
+func (m *MockConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error {
 	if m.mcpConfig != nil {
 		for _, cfg := range m.mcpConfig.ClientConfigs {
 			if cfg.ID == clientID {
 				cfg.DiscoveredTools = tools
 				cfg.DiscoveredToolNameMapping = toolNameMapping
+				cfg.DiscoveredInstructions = instructions
 				return nil
 			}
 		}
@@ -1033,6 +1034,14 @@ func (m *MockConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVir
 
 func (m *MockConfigStore) GetVirtualKeysPaginated(ctx context.Context, params configstore.VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error) {
 	return nil, 0, nil
+}
+
+func (m *MockConfigStore) ListExpiredVirtualKeysForDeletion(ctx context.Context, now time.Time, includeUnset bool) ([]tables.TableVirtualKey, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) DeleteExpiredVirtualKey(ctx context.Context, id string, now time.Time, includeUnset bool) (*tables.TableVirtualKey, error) {
+	return nil, nil
 }
 
 func (m *MockConfigStore) GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) {
@@ -1447,7 +1456,7 @@ func (m *MockConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMo
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error) {
+func (m *MockConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, _ ...*gorm.DB) ([]tables.TableModelConfig, error) {
 	return nil, nil
 }
 
@@ -1952,6 +1961,10 @@ func (m *MockConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind 
 }
 
 func (m *MockConfigStore) GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error) {
 	return nil, nil
 }
 
@@ -18911,6 +18924,10 @@ var excludedGoFields = map[string]map[string]bool{
 		"mcp_tool_execution_timeout":   true,
 		"mcp_tool_sync_interval":       true,
 		"mcp_disable_auto_tool_inject": true,
+		// Configured only under mcp.tool_manager_config; the client columns are storage,
+		// deliberately without a deprecated client-level twin in the schema.
+		"mcp_max_instructions_per_client": true,
+		"mcp_max_instructions_total":      true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
 	// GovernanceConfig - some fields are internal/enterprise
@@ -22625,22 +22642,199 @@ func TestAttachWarpHistoryLock(t *testing.T) {
 	require.Nil(t, bare.locker)
 }
 
-// Warp ships behind a feature flag that is off until an operator turns it on.
+// TestGetAllKeys_PreservesEnabled pins that /api/keys reports each key's enabled
+// flag. GetAllKeys builds its keys field by field, and once dropped Enabled, so a
+// disabled key read as enabled to every client of the endpoint.
+func TestGetAllKeys_PreservesEnabled(t *testing.T) {
+	initTestLogger()
+	cfg := &Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			"typesafe": {
+				Keys: []schemas.Key{
+					{ID: "disabled-key", Name: "disabled", Value: *schemas.NewSecretVar("sk-disabled"), Enabled: new(false)},
+					{ID: "enabled-key", Name: "enabled", Value: *schemas.NewSecretVar("sk-enabled"), Enabled: new(true)},
+					{ID: "unset-key", Name: "unset", Value: *schemas.NewSecretVar("sk-unset")},
+				},
+			},
+		},
+	}
+
+	keys, err := cfg.GetAllKeys()
+	if err != nil {
+		t.Fatalf("GetAllKeys: %v", err)
+	}
+	byID := make(map[string]configstoreTables.TableKey, len(keys))
+	for _, key := range keys {
+		byID[key.KeyID] = key
+	}
+
+	if got := byID["disabled-key"].Enabled; got == nil || *got {
+		t.Fatalf("disabled key: expected Enabled=false, got %v", got)
+	}
+	if got := byID["enabled-key"].Enabled; got == nil || !*got {
+		t.Fatalf("enabled key: expected Enabled=true, got %v", got)
+	}
+	// Unset stays unset: the field is omitted and clients read it as enabled.
+	if got := byID["unset-key"].Enabled; got != nil {
+		t.Fatalf("unset key: expected Enabled=nil, got %v", *got)
+	}
+
+	// The flag is what clients act on, so pin it on the wire too.
+	body, err := json.Marshal(byID["disabled-key"])
+	if err != nil {
+		t.Fatalf("marshal disabled key: %v", err)
+	}
+	if !strings.Contains(string(body), `"enabled":false`) {
+		t.Fatalf("disabled key JSON should carry \"enabled\":false, got %s", body)
+	}
+}
+
+// Warp ships behind a feature flag that is on for OSS and off for enterprise,
+// where an operator turns it on per deployment. Either build can flip it.
 // registerFeatureFlags runs on every LoadConfig, and tests call LoadConfig many
 // times per process, so a second registration must not surface as an error.
-func TestRegisterFeatureFlags_WarpIsRegisteredOffAndIdempotent(t *testing.T) {
+func TestRegisterFeatureFlags_WarpDefaultsPerBuildAndIsIdempotent(t *testing.T) {
 	require.NoError(t, registerFeatureFlags(context.Background()))
 	require.NoError(t, registerFeatureFlags(context.Background()), "re-registering on a later LoadConfig must not fail")
 
 	def, ok := featureflags.LookupDef(FeatureFlagWarp)
 	require.True(t, ok, "warp flag must be registered")
-	require.False(t, def.Default, "Warp must be off unless an operator enables it")
-	require.False(t, def.EnterpriseOnly)
+	require.True(t, def.DefaultFor(false), "Warp is on by default in OSS")
+	require.False(t, def.DefaultFor(true), "Warp is off by default in enterprise until an operator enables it")
+	require.False(t, def.EnterpriseOnly, "enterprise can still turn it on")
 
-	store, err := featureflags.New(featureflags.Config{})
+	oss, err := featureflags.New(featureflags.Config{})
 	require.NoError(t, err)
-	require.False(t, store.IsEnabled(FeatureFlagWarp))
-	_, err = store.Set(context.Background(), FeatureFlagWarp, true)
+	require.True(t, oss.IsEnabled(FeatureFlagWarp))
+	_, err = oss.Set(context.Background(), FeatureFlagWarp, false)
 	require.NoError(t, err)
-	require.True(t, store.IsEnabled(FeatureFlagWarp))
+	require.False(t, oss.IsEnabled(FeatureFlagWarp), "an OSS operator can still turn Warp off")
+
+	enterprise, err := featureflags.New(featureflags.Config{IsEnterprise: true})
+	require.NoError(t, err)
+	require.False(t, enterprise.IsEnabled(FeatureFlagWarp))
+	status, err := enterprise.Status(FeatureFlagWarp)
+	require.NoError(t, err)
+	require.False(t, status.Default, "the reported default is the enterprise one")
+	_, err = enterprise.Set(context.Background(), FeatureFlagWarp, true)
+	require.NoError(t, err)
+	require.True(t, enterprise.IsEnabled(FeatureFlagWarp))
+}
+
+// governanceWithRoutingFallbacks decodes routing rules the way config.json is read, so each
+// fallback goes through RoutingFallback.UnmarshalJSON.
+func governanceWithRoutingFallbacks(t *testing.T, fallbacksJSON string) *configstore.GovernanceConfig {
+	t.Helper()
+	var governance configstore.GovernanceConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"routing_rules":[{"id":"rr-1","name":"rr","cel_expression":"true","scope":"global",`+
+		`"targets":[{"provider":"openai","weight":1}],"fallbacks":`+fallbacksJSON+`}]}`), &governance))
+	return &governance
+}
+
+// TestResolveGovernanceKeyReferences_RoutingFallbacks pins config.json provider_key_name resolution
+// for routing-rule fallbacks: a name resolves to that provider's key_id and the alias is dropped,
+// other entries are untouched, and every invalid combination fails the load.
+func TestResolveGovernanceKeyReferences_RoutingFallbacks(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	// Key names are unique across providers; the lookup still checks the name belongs to the fallback's provider.
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{Keys: []schemas.Key{
+		{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}}))
+	require.NoError(t, store.AddProvider(ctx, schemas.Vertex, configstore.ProviderConfig{Keys: []schemas.Key{
+		{ID: "k-vertex-prod", Name: "Vertex Prod", Value: *schemas.NewSecretVar("sk-v"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}}))
+	config := &Config{ConfigStore: store}
+
+	t.Run("resolves names per provider and leaves other entries alone", func(t *testing.T) {
+		governance := governanceWithRoutingFallbacks(t, `["openai/gpt-4o",`+
+			`{"provider":"vertex","model":"gemini-2.5-pro","provider_key_name":"Vertex Prod"},`+
+			`{"provider":"anthropic","provider_key_name":" Anthropic Prod "},`+
+			`{"provider":"anthropic","model":"claude-sonnet-4","key_id":"k-explicit"}]`)
+		require.NoError(t, resolveGovernanceKeyReferences(ctx, config, governance))
+
+		got := governance.RoutingRules[0].ParsedFallbacks
+		require.Len(t, got, 4)
+		want := []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o"},
+			{Provider: schemas.Vertex, Model: "gemini-2.5-pro", KeyID: "k-vertex-prod"},
+			{Provider: schemas.Anthropic, KeyID: "k-anthropic-prod"},
+			{Provider: schemas.Anthropic, Model: "claude-sonnet-4", KeyID: "k-explicit"},
+		}
+		for i, fb := range got {
+			assert.Equal(t, want[i], fb.Resolved(), "fallback %d", i)
+			assert.Nil(t, fb.ProviderKeyName, "fallback %d kept its config-only alias", i)
+		}
+
+		// What gets stored: the resolved key_id, never the alias, and legacy strings untouched.
+		data, err := json.Marshal(got)
+		require.NoError(t, err)
+		assert.Equal(t, `["openai/gpt-4o",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-vertex-prod"},`+
+			`{"provider":"anthropic","model":"","key_id":"k-anthropic-prod"},{"provider":"anthropic","model":"claude-sonnet-4","key_id":"k-explicit"}]`, string(data))
+	})
+
+	errorCases := []struct {
+		name      string
+		fallbacks string
+		wantErr   string
+	}{
+		{name: "unknown key name", fallbacks: `[{"provider":"vertex","provider_key_name":"Missing"}]`, wantErr: "fallback provider_key_name resolution failed"},
+		{name: "key name that belongs to another provider", fallbacks: `[{"provider":"anthropic","provider_key_name":"Vertex Prod"}]`, wantErr: "fallback provider_key_name resolution failed"},
+		{name: "key_id together with provider_key_name", fallbacks: `[{"provider":"vertex","key_id":"k","provider_key_name":"Vertex Prod"}]`, wantErr: "cannot set key_id together with provider_key_name"},
+		{name: "provider_key_name without a provider", fallbacks: `[{"provider_key_name":"Vertex Prod"}]`, wantErr: "requires provider to be set"},
+	}
+	for _, tc := range errorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := resolveGovernanceKeyReferences(ctx, config, governanceWithRoutingFallbacks(t, tc.fallbacks))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Contains(t, err.Error(), `"rr-1"`, "the error must name the rule")
+		})
+	}
+
+	t.Run("a name reference without a config store fails the load", func(t *testing.T) {
+		err := resolveGovernanceKeyReferences(ctx, &Config{}, governanceWithRoutingFallbacks(t, `[{"provider":"vertex","provider_key_name":"Vertex Prod"}]`))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "require config store")
+	})
+
+	t.Run("rules without name references need no config store", func(t *testing.T) {
+		governance := governanceWithRoutingFallbacks(t, `["openai/gpt-4o",{"provider":"vertex","key_id":"k-explicit"}]`)
+		require.NoError(t, resolveGovernanceKeyReferences(ctx, &Config{}, governance))
+		assert.Equal(t, schemas.Fallback{Provider: schemas.Vertex, KeyID: "k-explicit"}, governance.RoutingRules[0].ParsedFallbacks[1].Resolved())
+	})
+}
+
+// Reconciliation writes carry metadata_json forward inside UpdateClientConfig's transaction, so UI
+// flags survive a restart that re-syncs the client section without any restore step afterwards.
+func TestLoadConfig_ClientConfigSyncPreservesClientMetadata(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
+	}, tempDir)
+	configData.Client = &configstore.ClientConfig{LogRetentionDays: 30}
+	createConfigFile(t, tempDir, configData)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NoError(t, config1.ConfigStore.UpdateClientMetadata(ctx, map[string]any{"onboarding_dismissed": true}))
+	config1.Close(ctx)
+
+	// A changed client section forces the reconciliation write on the next start.
+	configData.Client = &configstore.ClientConfig{LogRetentionDays: 7}
+	createConfigFile(t, tempDir, configData)
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	cfg, err := config2.ConfigStore.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 7, cfg.LogRetentionDays, "the file change must reach the store")
+	metadata, err := config2.ConfigStore.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, metadata["onboarding_dismissed"])
 }
