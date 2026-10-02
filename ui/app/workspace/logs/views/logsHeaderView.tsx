@@ -444,8 +444,8 @@ export function LogsHeaderView({
 			/>
 			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
 				<PopoverTrigger asChild>
-					<Button variant="outline" size="sm" className="h-7.5 w-7.5">
-						<MoreVertical className="h-4 w-4" />
+					<Button variant="outline" size="sm" className="h-7.5 w-7.5" aria-label="More actions">
+						<MoreVertical className="h-4 w-4" aria-hidden="true" />
 					</Button>
 				</PopoverTrigger>
 				<PopoverContent className="bg-accent w-[250px] p-2" align="end">

@@ -45,7 +45,16 @@ import {
 import { getLogRoutingPanel } from "@/lib/registries/logs";
 import { useGetLogsQuery, useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
-import { BatchRequestCounts, ContentBlock, LLMUsage, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
+import {
+	BatchRequestCounts,
+	ContentBlock,
+	InputCostDetails,
+	LLMUsage,
+	LogEntry,
+	OutputCostDetails,
+	OverheadBucket,
+	ResponsesMessage,
+} from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -433,6 +442,35 @@ const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
 	}
 	lines.push(`Input tokens: ${formatExactNumber(total)}`);
 	return lines.join("\n");
+};
+
+const INPUT_COST_LABELS: [keyof InputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["cached_read_cost", "Cache read"],
+	["cached_write_cost", "Cache write"],
+	["request_cost", "Per-request fee"],
+];
+
+const OUTPUT_COST_LABELS: [keyof OutputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["reasoning_cost", "Reasoning"],
+	["citation_cost", "Citations"],
+	["search_queries_cost", "Web search"],
+];
+
+// Lists the non-zero cost categories; undefined when there are none or text is the only one.
+const getCostDetailsTooltip = <T extends InputCostDetails | OutputCostDetails>(
+	details: T | undefined,
+	labels: [keyof T, string][],
+): string | undefined => {
+	if (!details) return undefined;
+	const set = labels.filter(([key]) => ((details[key] as number | undefined) ?? 0) > 0);
+	if (set.length === 0 || (set.length === 1 && set[0][0] === "text_cost")) return undefined;
+	return set.map(([key, label]) => `${label}: ${formatCostPrecise(details[key] as number)}`).join("\n");
 };
 
 // Helper to detect passthrough operations
@@ -1157,6 +1195,28 @@ function MessageHistoryCollapse({ count, children }: { count: number; children: 
 	);
 }
 
+function EmbeddingJsonBox({ title, value }: { title: string; value: unknown }) {
+	const json = JSON.stringify(value, null, 2);
+	return (
+		<CollapsibleBox title={title} onCopy={() => json} collapsedHeight={150}>
+			<CodeEditor
+				className="z-0 w-full"
+				shouldAdjustInitialHeight
+				maxHeight={450}
+				wrap
+				code={json}
+				lang="json"
+				readonly
+				options={{
+					scrollBeyondLastLine: false,
+					lineNumbers: "off",
+					alwaysConsumeMouseWheel: false,
+				}}
+			/>
+		</CollapsibleBox>
+	);
+}
+
 interface LogDetailViewProps {
 	log: LogEntry | null;
 	resolvedSelectedPromptName?: string; // Current prompt name from prompt-repo when `selected_prompt_id` is set; falls back to stored log name
@@ -1299,6 +1359,7 @@ export function LogDetailView({
 		isRealtimeTurn && log.metadata?.realtime_event_type === "conversation.item.input_audio_transcription.completed";
 	const audioSeconds = log.token_usage?.audio_seconds;
 	const isBatch = isBatchOperation(log.object);
+	const isEmbedding = log.object === "embedding";
 	const batchDebug = log.batch_debug;
 	// Set on both the submission row and the aggregate cost row a settlement writes;
 	// only the latter carries accounting, which is what tells the two apart.
@@ -1952,12 +2013,13 @@ export function LogDetailView({
 										onFilterByParentRequestId ? (
 											<Tooltip>
 												<TooltipTrigger asChild>
-													<code
-														className="block max-w-full min-w-0 cursor-pointer truncate font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+													<button
+														type="button"
+														className="block max-w-full min-w-0 cursor-pointer truncate text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
 														onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
 													>
 														{log.parent_request_id}
-													</code>
+													</button>
 												</TooltipTrigger>
 												<TooltipContent sideOffset={6} className="max-w-md break-all">
 													{log.parent_request_id} · Filter this session
@@ -2345,13 +2407,19 @@ export function LogDetailView({
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
 									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
-										<LogEntryDetailsView className="w-full" label="Input Cost" value={formatCostPrecise(log.cost_breakdown?.input_cost)} />
+										<LogEntryDetailsView
+											className="w-full"
+											label="Input Cost"
+											value={formatCostPrecise(log.cost_breakdown?.input_cost)}
+											tooltip={getCostDetailsTooltip(log.cost_breakdown?.input_cost_details, INPUT_COST_LABELS)}
+										/>
 									)}
 									{(log.cost_breakdown?.output_cost ?? 0) > 0 && (
 										<LogEntryDetailsView
 											className="w-full"
 											label="Output Cost"
 											value={formatCostPrecise(log.cost_breakdown?.output_cost)}
+											tooltip={getCostDetailsTooltip(log.cost_breakdown?.output_cost_details, OUTPUT_COST_LABELS)}
 										/>
 									)}
 									{(log.cost_breakdown?.total_cost ?? log.cost ?? 0) > 0 && (
@@ -2860,7 +2928,7 @@ export function LogDetailView({
 						</TabsTrigger>
 					)}
 
-					{showTabs && !isPassthrough && !log.list_models_output && !isBatch && (
+					{showTabs && !isPassthrough && !log.list_models_output && !isBatch && !isEmbedding && (
 						<TabsTrigger value="tools" className="px-3">
 							Tools
 							{declaredTools.length ? (
@@ -3049,7 +3117,7 @@ export function LogDetailView({
 						</div>
 					)}
 					{/* Passthrough just renders the raw json, so there's nothing to filter */}
-					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough) && "hidden")}>
+					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough || isEmbedding) && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<button
@@ -3298,9 +3366,7 @@ export function LogDetailView({
 															.map((b, i) => {
 																const src = b.image_url?.url;
 																if (!src) return null;
-																return (
-																	<img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />
-																);
+																return <img key={`${i}-${src}`} src={src} alt="Attachment" className="mt-2 max-w-full rounded border" />;
 															})}
 													{text &&
 														Array.isArray(message.content) &&
@@ -3585,7 +3651,7 @@ export function LogDetailView({
 														<img
 															key={`${i}-${b.image_url}`}
 															src={b.image_url}
-															alt="Attached image"
+															alt="Attachment"
 															className="mt-2 max-w-full rounded border"
 														/>
 													))}
@@ -3597,7 +3663,10 @@ export function LogDetailView({
 						);
 					})()}
 
-					{log.is_large_payload_request && !log.input_history?.length && !log.responses_input_history?.length && (
+					{log.is_large_payload_request &&
+						!log.input_history?.length &&
+						!log.responses_input_history?.length &&
+						!log.embedding_input?.length && (
 						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
 							Large payload request: input content was streamed directly to the provider and is not available for display.
 							{log.raw_request && " A truncated preview is available in the Raw JSON tab."}
@@ -3610,20 +3679,14 @@ export function LogDetailView({
 						</div>
 					)}
 
+					{log.embedding_input && log.embedding_input.length > 0 && (
+						<EmbeddingJsonBox
+							title="Input"
+							value={applyRedactionMappingToValue(log.embedding_input, activeInputRevealMapping)}
+						/>
+					)}
 					{log.status !== "processing" && log.embedding_output && log.embedding_output.length > 0 && !log.error_details?.error.message && (
-						<div className="bg-card space-y-3 rounded-sm border p-5">
-							<div className="text-sm font-medium">Embedding</div>
-							<LogChatMessageView
-								message={{
-									role: "assistant",
-									content: JSON.stringify(
-										log.embedding_output.map((embedding) => embedding.embedding),
-										null,
-										2,
-									),
-								}}
-							/>
-						</div>
+						<EmbeddingJsonBox title="Embedding" value={log.embedding_output.map((embedding) => embedding.embedding)} />
 					)}
 					{log.status !== "processing" && log.rerank_output && !log.error_details?.error.message && (
 						<CollapsibleBox title={`Rerank Output (${log.rerank_output.length})`} onCopy={() => JSON.stringify(log.rerank_output, null, 2)}>
@@ -3910,7 +3973,7 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 		const isRealtimeTurn = log.object === "realtime.turn";
 		const isSpeech = log.object === "audio.speech" || log.object === "audio.speech.chunk";
 		const isTextCompletion = log.object === "text.completion" || log.object === "text.completion.chunk";
-		const isEmbedding = log.object === "list";
+		const isEmbedding = log.object === "embedding";
 
 		const extractTextFromMessage = (message: any): string => {
 			if (!message || !message.content) {
@@ -3974,7 +4037,10 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 			if (prompt) {
 				requestBody.prompt = prompt;
 			}
+		} else if (log.object === "embedding" && log.embedding_input && log.embedding_input.length > 0) {
+			requestBody.input = log.embedding_input;
 		} else if (isEmbedding && log.input_history && log.input_history.length > 0) {
+			// Fallback for logs written before embedding_input existed.
 			const texts: string[] = [];
 			for (const message of log.input_history) {
 				const messageTexts = extractTextsFromMessage(message);

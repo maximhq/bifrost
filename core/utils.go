@@ -19,9 +19,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// Aliases; canonical definitions live in schemas so EffectiveHTTPStatus can match them.
 const (
-	ProviderAutoResolveErrorMessage = "could not auto resolve a provider for the request, please specify a provider explicitly"
-	ModelAutoResolveErrorMessage    = "could not auto resolve a model for the request, please specify a model explicitly"
+	ProviderAutoResolveErrorMessage = schemas.ProviderAutoResolveErrorMessage
+	ModelAutoResolveErrorMessage    = schemas.ModelAutoResolveErrorMessage
 )
 
 // dynamicallyConfigurableProviders is the list of providers that can be dynamically configured.

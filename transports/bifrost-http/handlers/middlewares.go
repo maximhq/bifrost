@@ -1557,6 +1557,20 @@ func (m *TracingMiddleware) SetTracer(tracer *tracing.Tracer) {
 }
 
 // Middleware returns the middleware function that creates distributed traces for requests and forwards completed traces
+// Anything outside the semconv set maps to _OTHER so a junk method cannot inflate cardinality.
+var knownHTTPMethods = map[string]struct{}{
+	"CONNECT": {}, "DELETE": {}, "GET": {}, "HEAD": {}, "OPTIONS": {},
+	"PATCH": {}, "POST": {}, "PUT": {}, "TRACE": {},
+}
+
+// Returns the semconv method, plus the original when it is not a known one.
+func normalizeHTTPMethod(method string) (string, string) {
+	if _, ok := knownHTTPMethods[method]; ok {
+		return method, ""
+	}
+	return "_OTHER", method
+}
+
 func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
@@ -1648,7 +1662,7 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				tracer.ForceCleanupStreamAccumulator(traceID)
 			})
 			// Create root span for the HTTP request
-			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)
+			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.URI().Path()), schemas.SpanKindHTTPRequest)
 			if rootSpan != nil {
 				for name, value := range dimensions {
 					// "path" and "method" stay reserved for the standard http.* attributes.
@@ -1656,9 +1670,27 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 						tracer.SetAttribute(rootSpan, name, value)
 					}
 				}
-				tracer.SetAttribute(rootSpan, "http.method", string(ctx.Method()))
-				tracer.SetAttribute(rootSpan, "http.url", string(ctx.RequestURI()))
-				tracer.SetAttribute(rootSpan, "http.user_agent", string(ctx.Request.Header.UserAgent()))
+				rawMethod := string(ctx.Method())
+				userAgent := string(ctx.Request.Header.UserAgent())
+				path := string(ctx.URI().Path())
+				// The query string is dropped, not redacted: it can carry session
+				// credentials and nothing downstream needs it.
+				scheme := "http"
+				if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+					scheme = "https"
+				}
+				method, originalMethod := normalizeHTTPMethod(rawMethod)
+				tracer.SetAttribute(rootSpan, "http.request.method", method)
+				if originalMethod != "" {
+					tracer.SetAttribute(rootSpan, "http.request.method_original", originalMethod)
+				}
+				tracer.SetAttribute(rootSpan, "url.scheme", scheme)
+				tracer.SetAttribute(rootSpan, "url.path", path)
+				tracer.SetAttribute(rootSpan, "user_agent.original", userAgent)
+				// Deprecated equivalents, kept so existing dashboards keep working.
+				tracer.SetAttribute(rootSpan, "http.method", rawMethod)
+				tracer.SetAttribute(rootSpan, "http.url", path)
+				tracer.SetAttribute(rootSpan, "http.user_agent", userAgent)
 				// Set root span ID in context for child span creation
 				if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
 					ctx.SetUserValue(schemas.BifrostContextKeySpanID, spanID)
@@ -1683,7 +1715,12 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
 				// Record response status on the root span
 				if rootSpan != nil {
+					tracer.SetAttribute(rootSpan, schemas.AttrHTTPResponseStatusCode, ctx.Response.StatusCode())
 					tracer.SetAttribute(rootSpan, "http.status_code", ctx.Response.StatusCode())
+					// The router resolves the route template only once it dispatches.
+					if route, ok := ctx.UserValue(string(schemas.BifrostContextKeyHTTPRoute)).(string); ok && route != "" {
+						tracer.SetAttribute(rootSpan, "http.route", route)
+					}
 					// For deferred (streaming) requests, the trace completer ends the root
 					// span after the stream fully drains, so its latency reflects the whole
 					// streamed response. Ending it here (at handler return) would close the

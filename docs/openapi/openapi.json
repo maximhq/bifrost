@@ -206,6 +206,10 @@
       "description": "Role-targeted dashboard notifications, delivered over the dashboard WebSocket"
     },
     {
+      "name": "Background Jobs",
+      "description": "Status, progress and cancellation of durable background jobs (cost recalculation, Warp log indexing, and others)"
+    },
+    {
       "name": "Warp",
       "description": "Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry"
     }
@@ -94610,6 +94614,169 @@
         ]
       }
     },
+    "/api/sidekiq/jobs": {
+      "get": {
+        "operationId": "listSidekiqJobs",
+        "summary": "List background jobs",
+        "description": "Returns every pending or running background job, plus jobs that reached a\nterminal status (`completed`, `failed`, `cancelled`) within the window, newest\nfirst and capped at 50. Jobs of every kind are listed, including ones started\nfrom other features such as log cost recalculation or Warp log indexing.\n\n`progress` is present only for job kinds that report it; other kinds show\nstatus only. Totals are approximate, so `done` can differ from `total` on a\nfinished job.\n\nAdministrators only: the same callers that may manage Warp backfills.\n",
+        "tags": [
+          "Background Jobs"
+        ],
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "RFC 3339 timestamp. Terminal jobs that finished before it are omitted.\nDefaults to 24 hours ago. Active jobs are always listed.\n",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Background jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SidekiqJobList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ]
+      }
+    },
+    "/api/sidekiq/jobs/{id}/cancel": {
+      "post": {
+        "operationId": "cancelSidekiqJob",
+        "summary": "Cancel a background job",
+        "description": "Stops a pending or running job. Work the job already committed is kept; a\ncancelled job is terminal and is not resumed.\n\nCancelling an unknown or already finished job is not an error: the response is\n`{\"cancelled\": false}`. A job running on another node is stopped by that node\nat its next heartbeat.\n\nAdministrators only.\n",
+        "tags": [
+          "Background Jobs"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Job ID, as returned by the list endpoint.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancellation result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SidekiqJobCancelResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ]
+      }
+    },
     "/api/warp/config": {
       "get": {
         "operationId": "getWarpConfig",
@@ -94660,7 +94827,7 @@
       "put": {
         "operationId": "updateWarpConfig",
         "summary": "Update Warp configuration",
-        "description": "Writes Warp's settings. **Administrators only.**\n\nA single write points the server at a provider key and a model it will\nthen call on its own behalf, which is not something an ordinary dashboard\nuser should be able to do. In OSS only the local admin may write; in\nenterprise the caller needs `Warp` Update. Anyone else gets `403`. The\nresponse carries the key reference back, not a redacted credential -\nthere is no secret stored here to redact.\n\n`api_key_id` is a reference, not a credential, so it round-trips in the\nclear and needs no omitted-versus-empty rule: omitting it writes an empty\nvalue and clears the stored reference.\n",
+        "description": "Writes Warp's settings. **Administrators only.**\n\nA single write points the server at a provider key and a model it will\nthen call on its own behalf, which is not something an ordinary dashboard\nuser should be able to do. In OSS only the local admin may write; in\nenterprise the caller needs `Warp` Update. Anyone else gets `403`. The\nresponse carries the key reference back, not a redacted credential -\nthere is no secret stored here to redact.\n\n`api_key_id` is a reference, not a credential, so it round-trips in the\nclear and needs no omitted-versus-empty rule: omitting it writes an empty\nvalue and clears the stored reference.\n\n`provider` and `model` are Warp's default model. `additional_models`\nlists the others a chat request may name, so this write is also what\ndecides which models dashboard users can switch between: they pick among\nwhat is stored here and cannot add to it.\n",
         "tags": ["Warp"],
         "requestBody": {
           "required": true,
@@ -94938,7 +95105,7 @@
       "post": {
         "operationId": "warpSession",
         "summary": "Ask Warp a question",
-        "description": "Runs Warp's agent loop over the deployment's telemetry and returns an\nanswer.\n\n**The route is always registered, and answers `503` while Warp cannot\nwork.** The body carries a machine-readable `reason`, so \"present but\nunusable\" stays distinguishable from \"absent\" without the state being\npermanent: a deployment that enables logging after startup begins serving\nthis route without a restart.\n\nThe model's context is client-sent: `messages` carries the thread so far.\nWhere Warp history is available the server also files each turn under\n`conversation_id` so the thread can be listed and reopened through\n`/api/warp/conversations`. Omit `conversation_id` to start a new thread;\nits id comes back on the `done` event or in the JSON body.\n\n**Data visibility equals the caller's own.** Every tool query runs against\nthe caller's row-level scope, so Warp can never surface data the caller\ncould not already retrieve from the logs API directly.\n\nWith `stream: true` (the default) the response is `text/event-stream`. Both\nmodes run the identical loop; only the sink differs.\n\nEnterprise RBAC: requires `WarpSession` View.\n",
+        "description": "Runs Warp's agent loop over the deployment's telemetry and returns an\nanswer.\n\n**The route is always registered, and answers `503` while Warp cannot\nwork.** The body carries a machine-readable `reason`, so \"present but\nunusable\" stays distinguishable from \"absent\" without the state being\npermanent: a deployment that enables logging after startup begins serving\nthis route without a restart.\n\nThe model's context is client-sent: `messages` carries the thread so far.\nWhere Warp history is available the server also files each turn under\n`conversation_id` so the thread can be listed and reopened through\n`/api/warp/conversations`. Omit `conversation_id` to start a new thread;\nits id comes back on the `done` event or in the JSON body.\n\n**Data visibility equals the caller's own.** Every tool query runs against\nthe caller's row-level scope, so Warp can never surface data the caller\ncould not already retrieve from the logs API directly.\n\nThe turn runs on Warp's default model unless the body names another with\n`provider` and `model`. Only a model the configuration exposes is\naccepted; anything else is a `400` and no model is called.\n\nWith `stream: true` (the default) the response is `text/event-stream`. Both\nmodes run the identical loop; only the sink differs.\n\nEnterprise RBAC: requires `WarpSession` View.\n",
         "tags": ["Warp"],
         "requestBody": {
           "required": true,
@@ -99708,19 +99875,22 @@
           "input": {
             "oneOf": [
               {
-                "type": "string"
+                "type": "string",
+                "description": "A single text to embed"
               },
               {
                 "type": "array",
                 "items": {
                   "type": "string"
-                }
+                },
+                "description": "Several texts, one embedding each"
               },
               {
                 "type": "array",
                 "items": {
                   "type": "integer"
-                }
+                },
+                "description": "A single pre-tokenized input (OpenAI-compatible providers only)"
               },
               {
                 "type": "array",
@@ -99729,10 +99899,582 @@
                   "items": {
                     "type": "integer"
                   }
-                }
+                },
+                "description": "Several pre-tokenized inputs (OpenAI-compatible providers only)"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "description": "One entry of an embedding request's input - normally one item in, one embedding out.\nVertex `multimodalembedding@001` is the exception: it returns one vector per modality\npresent in the item, plus one per segment when a video part sets `video_config`. Those\nvectors carry `modality`, and video ones also carry `video_segment`.\nAccepts either shape:\n\n  [{\"type\": \"text\", \"text\": \"hi\"}]\n  {\"content\": [{\"type\": \"text\", \"text\": \"hi\"}], \"params\": {\"task_type\": \"RETRIEVAL_QUERY\"}}\n\n`params` overrides the request-level parameters for this item alone. Only providers with\na per-item wire format honour it (currently Gemini's `:batchEmbedContents`); others reject\nthe request rather than silently ignoring the override.\n",
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "description": "Exactly one modality field must be set, and it must match `type`.\nProvider support varies - see the provider pages for which part types each model accepts.\n",
+                        "required": [
+                          "type"
+                        ],
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "text",
+                              "image",
+                              "audio",
+                              "file",
+                              "video",
+                              "tokens"
+                            ]
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "image": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            },
+                            "oneOf": [
+                              {
+                                "required": [
+                                  "data"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "url"
+                                ]
+                              }
+                            ]
+                          },
+                          "audio": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            },
+                            "oneOf": [
+                              {
+                                "required": [
+                                  "data"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "url"
+                                ]
+                              }
+                            ]
+                          },
+                          "file": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            },
+                            "oneOf": [
+                              {
+                                "required": [
+                                  "data"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "url"
+                                ]
+                              }
+                            ]
+                          },
+                          "video": {
+                            "type": "object",
+                            "description": "Exactly one of `data` or `url` must be set.",
+                            "properties": {
+                              "data": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                              },
+                              "url": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              },
+                              "filename": {
+                                "type": "string"
+                              }
+                            },
+                            "oneOf": [
+                              {
+                                "required": [
+                                  "data"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "url"
+                                ]
+                              }
+                            ]
+                          },
+                          "video_config": {
+                            "type": "object",
+                            "description": "Optional video segment selection, honoured by providers that return per-segment embeddings.",
+                            "properties": {
+                              "start_offset_sec": {
+                                "type": "integer"
+                              },
+                              "end_offset_sec": {
+                                "type": "integer"
+                              },
+                              "interval_sec": {
+                                "type": "integer",
+                                "minimum": 4,
+                                "description": "Gap between embeddings in seconds (minimum 4)"
+                              }
+                            }
+                          },
+                          "tokens": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "integer"
+                            }
+                          }
+                        },
+                        "oneOf": [
+                          {
+                            "required": [
+                              "text"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "image"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "audio"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "file"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "video"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "tokens"
+                            ]
+                          }
+                        ],
+                        "dependentSchemas": {
+                          "text": {
+                            "properties": {
+                              "type": {
+                                "const": "text"
+                              }
+                            }
+                          },
+                          "image": {
+                            "properties": {
+                              "type": {
+                                "const": "image"
+                              }
+                            }
+                          },
+                          "audio": {
+                            "properties": {
+                              "type": {
+                                "const": "audio"
+                              }
+                            }
+                          },
+                          "file": {
+                            "properties": {
+                              "type": {
+                                "const": "file"
+                              }
+                            }
+                          },
+                          "video": {
+                            "properties": {
+                              "type": {
+                                "const": "video"
+                              }
+                            }
+                          },
+                          "tokens": {
+                            "properties": {
+                              "type": {
+                                "const": "tokens"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "description": "One content entry - a list of typed parts aggregated into a single embedding"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "content"
+                      ],
+                      "properties": {
+                        "content": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "object",
+                            "description": "Exactly one modality field must be set, and it must match `type`.\nProvider support varies - see the provider pages for which part types each model accepts.\n",
+                            "required": [
+                              "type"
+                            ],
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "text",
+                                  "image",
+                                  "audio",
+                                  "file",
+                                  "video",
+                                  "tokens"
+                                ]
+                              },
+                              "text": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "image": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                },
+                                "oneOf": [
+                                  {
+                                    "required": [
+                                      "data"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "url"
+                                    ]
+                                  }
+                                ]
+                              },
+                              "audio": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                },
+                                "oneOf": [
+                                  {
+                                    "required": [
+                                      "data"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "url"
+                                    ]
+                                  }
+                                ]
+                              },
+                              "file": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                },
+                                "oneOf": [
+                                  {
+                                    "required": [
+                                      "data"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "url"
+                                    ]
+                                  }
+                                ]
+                              },
+                              "video": {
+                                "type": "object",
+                                "description": "Exactly one of `data` or `url` must be set.",
+                                "properties": {
+                                  "data": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Inline payload - a data URI (`data:<mime>;base64,<...>`) or a bare base64 string"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Remote reference. Vertex `multimodalembedding@001` requires a GCS URI (`gs://...`).\n"
+                                  },
+                                  "mime_type": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  }
+                                },
+                                "oneOf": [
+                                  {
+                                    "required": [
+                                      "data"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "url"
+                                    ]
+                                  }
+                                ]
+                              },
+                              "video_config": {
+                                "type": "object",
+                                "description": "Optional video segment selection, honoured by providers that return per-segment embeddings.",
+                                "properties": {
+                                  "start_offset_sec": {
+                                    "type": "integer"
+                                  },
+                                  "end_offset_sec": {
+                                    "type": "integer"
+                                  },
+                                  "interval_sec": {
+                                    "type": "integer",
+                                    "minimum": 4,
+                                    "description": "Gap between embeddings in seconds (minimum 4)"
+                                  }
+                                }
+                              },
+                              "tokens": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "oneOf": [
+                              {
+                                "required": [
+                                  "text"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "image"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "audio"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "file"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "video"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "tokens"
+                                ]
+                              }
+                            ],
+                            "dependentSchemas": {
+                              "text": {
+                                "properties": {
+                                  "type": {
+                                    "const": "text"
+                                  }
+                                }
+                              },
+                              "image": {
+                                "properties": {
+                                  "type": {
+                                    "const": "image"
+                                  }
+                                }
+                              },
+                              "audio": {
+                                "properties": {
+                                  "type": {
+                                    "const": "audio"
+                                  }
+                                }
+                              },
+                              "file": {
+                                "properties": {
+                                  "type": {
+                                    "const": "file"
+                                  }
+                                }
+                              },
+                              "video": {
+                                "properties": {
+                                  "type": {
+                                    "const": "video"
+                                  }
+                                }
+                              },
+                              "tokens": {
+                                "properties": {
+                                  "type": {
+                                    "const": "tokens"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "description": "One content entry - a list of typed parts aggregated into a single embedding"
+                        },
+                        "params": {
+                          "type": "object",
+                          "properties": {
+                            "encoding_format": {
+                              "type": "string",
+                              "enum": [
+                                "float",
+                                "base64"
+                              ]
+                            },
+                            "dimensions": {
+                              "type": "integer"
+                            },
+                            "task_type": {
+                              "type": "string"
+                            },
+                            "title": {
+                              "type": "string"
+                            },
+                            "auto_truncate": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                },
+                "description": "Multimodal form. Each element is one input item and normally produces one embedding;\nthe parts inside an item are aggregated into that single vector. Vertex\n`multimodalembedding@001` instead returns one vector per modality, plus one per video\nsegment when `video_config` is set. An element may be a bare array of parts, or an\nobject carrying that item's own `params`.\n"
               }
             ],
-            "description": "Input for embedding - text or token arrays"
+            "description": "Text, pre-tokenized input, or multimodal content"
           },
           "fallbacks": {
             "type": "array",
@@ -99746,6 +100488,18 @@
           },
           "dimensions": {
             "type": "integer"
+          },
+          "task_type": {
+            "type": "string",
+            "description": "Intended downstream task (Gemini/Vertex text embeddings, e.g. RETRIEVAL_QUERY)"
+          },
+          "title": {
+            "type": "string",
+            "description": "Optional document title used alongside task_type=RETRIEVAL_DOCUMENT"
+          },
+          "auto_truncate": {
+            "type": "boolean",
+            "description": "Truncate inputs longer than the model's limit instead of erroring (Vertex text embeddings)"
           }
         }
       },
@@ -99758,13 +100512,48 @@
               "type": "object",
               "properties": {
                 "index": {
-                  "type": "integer"
+                  "type": "integer",
+                  "description": "Index of the input this vector belongs to"
                 },
                 "object": {
                   "type": "string"
                 },
+                "modality": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "image",
+                    "video",
+                    "audio"
+                  ],
+                  "description": "Set only when the provider returns one vector per modality for a single input\n(Vertex `multimodalembedding@001`). Absent when a single unified vector is returned.\n"
+                },
+                "video_segment": {
+                  "type": "object",
+                  "description": "Time range this video embedding covers. Present only when `modality` is `video`.",
+                  "properties": {
+                    "start_offset_sec": {
+                      "type": "integer"
+                    },
+                    "end_offset_sec": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "encoding_format": {
+                  "type": "string",
+                  "enum": [
+                    "float",
+                    "int8",
+                    "uint8",
+                    "binary",
+                    "ubinary",
+                    "base64"
+                  ],
+                  "description": "Set when the provider returns several representations of the same input\n(Cohere `embedding_types`), since int8/binary and uint8/ubinary are otherwise\nindistinguishable once decoded.\n"
+                },
                 "embedding": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "type": "string"
                     },
@@ -99781,6 +100570,12 @@
                         "items": {
                           "type": "number"
                         }
+                      }
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "integer"
                       }
                     }
                   ]
@@ -115642,6 +116437,143 @@
           }
         }
       },
+      "WarpModel": {
+        "type": "object",
+        "description": "One provider and model pair Warp may run on, with the provider key it is\npinned to. The pair is what identifies an entry: a chat request names the\nmodel it wants by `provider` and `model`, so no two entries may share both.\n",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "A provider registered in this Bifrost deployment.",
+            "minLength": 1,
+            "pattern": "\\S",
+            "example": "anthropic"
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S",
+            "example": "claude-sonnet-5"
+          },
+          "api_key_id": {
+            "type": "string",
+            "description": "Which of the provider's configured keys this model uses. A reference,\nnot a credential. Omitted when the provider's whole key pool is used.\n"
+          }
+        },
+        "required": [
+          "provider",
+          "model"
+        ]
+      },
+      "SidekiqJobStatus": {
+        "type": "string",
+        "description": "Lifecycle of a job. `completed`, `failed` and `cancelled` are terminal.\n",
+        "enum": [
+          "pending",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "SidekiqJobProgress": {
+        "type": "object",
+        "description": "Units of work finished out of the approximate total.",
+        "required": [
+          "done",
+          "total"
+        ],
+        "properties": {
+          "done": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Approximate; 0 when the total is unknown."
+          }
+        }
+      },
+      "SidekiqJob": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "cancellable",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "Job type, for example `logs_recalculate_cost` or `warp_log_embedding_backfill`."
+          },
+          "status": {
+            "$ref": "#/components/schemas/SidekiqJobStatus"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/SidekiqJobProgress"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable note from the job, when it reports one."
+          },
+          "last_error": {
+            "type": "string",
+            "description": "Why the job failed, when it did."
+          },
+          "cancellable": {
+            "type": "boolean",
+            "description": "True while the job is pending or running."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "SidekiqJobList": {
+        "type": "object",
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SidekiqJob"
+            }
+          }
+        }
+      },
+      "SidekiqJobCancelResponse": {
+        "type": "object",
+        "required": [
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "description": "True when this call moved the job to `cancelled`; false when it was unknown or already finished."
+          }
+        }
+      },
       "WarpConfig": {
         "type": "object",
         "description": "Warp's deployment-wide settings, as returned by the read API.\n\nThe stored provider credential is never included. `api_key_id` names which\nof the provider's configured keys Warp uses - a reference, not a secret, so\nthe settings form can render \"configured\" without the key itself ever\nleaving the server: a dashboard session is a weaker credential than the\nprovider key it would otherwise reveal.\n",
@@ -115656,16 +116588,25 @@
           },
           "provider": {
             "type": "string",
-            "description": "The model provider that runs the agent loop, e.g. `openai`.",
+            "description": "The provider of Warp's default model, e.g. `openai`. The default answers\nevery chat request that names no model.\n",
             "example": "openai"
           },
           "model": {
             "type": "string",
+            "description": "Warp's default model.",
             "example": "gpt-4o"
           },
           "api_key_id": {
             "type": "string",
-            "description": "Which of the provider's configured keys Warp uses. A reference, not a\ncredential, so it round-trips in the clear - there is nothing here worth\nredacting. Empty when the provider needs no key.\n"
+            "description": "Which of the provider's configured keys the default model uses. A\nreference, not a credential, so it round-trips in the clear - there is\nnothing here worth redacting. Empty when the provider needs no key.\n"
+          },
+          "additional_models": {
+            "type": "array",
+            "description": "The other models an operator has exposed. A chat request may name any of\nthem, or the default, by `provider` and `model`; nothing else is\naccepted. Omitted when only the default is configured.\n",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/WarpModel"
+            }
           },
           "max_iterations": {
             "type": "integer",
@@ -115806,6 +116747,14 @@
           "api_key_id": {
             "type": "string",
             "description": "Which of the provider's configured keys Warp should use. Empty is valid\nand common: a provider on a trusted network, or one using ambient IAM\ncredentials, needs no key at all.\n"
+          },
+          "additional_models": {
+            "type": "array",
+            "description": "The models to expose beside the default (`provider` and `model` above).\nReplaced whole on every write, like the default itself: leaving the\nfield out clears the list.\n\nEvery entry must be complete whether or not `enabled` is true, must name\na registered provider, and must not repeat the `provider` and `model` of\nthe default or of another entry. Any of those is rejected with `400`.\n",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/WarpModel"
+            }
           },
           "max_iterations": {
             "type": "integer",
@@ -115984,6 +116933,16 @@
             "type": "string",
             "maxLength": 36,
             "description": "Continues an existing thread in the caller's history. Omit it to start a\nnew one; the new thread's id comes back on the `done` event or in the\nJSON body.\n"
+          },
+          "provider": {
+            "type": "string",
+            "description": "With `model`, names which of Warp's configured models answers this turn:\nthe default, or one of `additional_models`. Omit both to use the\ndefault. A pair the operator has not exposed is rejected with `400`, so\na request can only ever choose among the configured models, and the\nprovider key is always the configured entry's own.\n",
+            "example": "anthropic"
+          },
+          "model": {
+            "type": "string",
+            "description": "See `provider`. The two are given together or not at all.",
+            "example": "claude-sonnet-5"
           },
           "stream": {
             "type": "boolean",

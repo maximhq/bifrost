@@ -26,15 +26,22 @@ import { cn } from "@/lib/utils";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { AlertTriangle, ArrowRight, CheckCircle2, Database, Info, Loader2, TriangleAlert } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Database, Info, Loader2, Plus, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	embeddingSpaceChanged,
+	newWarpModelRow,
 	normalizeWarpNamespace,
 	supportsWarpEmbedding,
 	validateWarpEmbedding,
+	validateWarpModelRows,
+	WARP_MAX_ADDITIONAL_MODELS,
+	warpModelRowsChanged,
+	warpModelRowsFromConfig,
+	warpModelsPayload,
 	type WarpEmbeddingFields,
+	type WarpModelRow,
 } from "./warpConfig.utils";
 import {
 	isFiniteNumber,
@@ -71,9 +78,8 @@ const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slic
 /** Everything the form edits, in one place. */
 interface WarpFormState {
 	enabled: boolean;
-	provider: string;
-	model: string;
-	apiKeyID: string;
+	// The first row is the default; the rest are the additional models the panel may switch to.
+	models: WarpModelRow[];
 	maxIterations: number;
 	requestTimeoutSeconds: number;
 	historyRetentionDays: number;
@@ -96,9 +102,7 @@ interface WarpFormState {
 
 const EMPTY_FORM: WarpFormState = {
 	enabled: false,
-	provider: "",
-	model: "",
-	apiKeyID: "",
+	models: [{ id: "default", provider: "", model: "", apiKeyID: "" }],
 	maxIterations: DEFAULT_MAX_ITERATIONS,
 	requestTimeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
 	historyRetentionDays: DEFAULT_HISTORY_RETENTION_DAYS,
@@ -176,31 +180,13 @@ export default function WarpView() {
 	// component, and ModelMultiselect refetches whenever the `keys` reference
 	// changes - so an inline array turned each unrelated edit into a models
 	// request for the same key.
-	const modelKeys = useMemo(() => (form.apiKeyID ? [form.apiKeyID] : undefined), [form.apiKeyID]);
-	// Same reasoning for the embedding picker's pinned key.
 	const embeddingModelKeys = useMemo(() => (form.embeddingAPIKeyID ? [form.embeddingAPIKeyID] : undefined), [form.embeddingAPIKeyID]);
 
-	// Keys are provider-scoped, so the query waits for a provider rather than
-	// firing a request for "".
 	const {
 		// currentData, not data: RTK Query keeps the previous argument's result
 		// while it fetches the new one, so after switching provider the selector
-		// briefly offered the old provider's keys - and saving one stored an
-		// api_key_id that belongs to a different provider, which only fails later
-		// at key selection.
-		currentData: providerKeysData,
-		// isFetching, not isLoading: isLoading is only true when there is nothing
-		// cached at all, so it is false for exactly the refetch that matters here.
-		isFetching: isKeysLoading,
-		isError: isKeysError,
-		refetch: refetchKeys,
-	} = useGetProviderKeysQuery(form.provider, { skip: !form.provider });
-	const providerKeys = providerKeysData ?? [];
-	const {
-		// currentData, for the same reason as the chat provider above: data holds
-		// the previous provider's keys while the new request is in flight, so the
-		// selector could offer - and store - a key belonging to a provider the
-		// form no longer points at. Nothing downstream checks that membership.
+		// could offer - and store - a key belonging to a provider the form no
+		// longer points at. Nothing downstream checks that membership.
 		currentData: embeddingProviderKeysData,
 		isFetching: isEmbeddingKeysLoading,
 		isError: isEmbeddingKeysError,
@@ -340,9 +326,7 @@ export default function WarpView() {
 		if (!config) return;
 		setForm({
 			enabled: config.enabled,
-			provider: config.provider ?? "",
-			model: config.model ?? "",
-			apiKeyID: config.api_key_id ?? "",
+			models: warpModelRowsFromConfig(config),
 			maxIterations: config.max_iterations || DEFAULT_MAX_ITERATIONS,
 			requestTimeoutSeconds: config.request_timeout_seconds || DEFAULT_TIMEOUT_SECONDS,
 			historyRetentionDays: config.history_retention_days || DEFAULT_HISTORY_RETENTION_DAYS,
@@ -387,13 +371,15 @@ export default function WarpView() {
 	}, [backfillStatus?.id, isBackfillActive]);
 
 	const update = <K extends keyof WarpFormState>(key: K, value: WarpFormState[K]) => setForm((current) => ({ ...current, [key]: value }));
+	const updateModels = (change: (models: WarpModelRow[]) => WarpModelRow[]) =>
+		setForm((current) => ({ ...current, models: change(current.models) }));
+	const updateModel = (id: string, patch: Partial<Omit<WarpModelRow, "id">>) =>
+		updateModels((models) => models.map((row) => (row.id === id ? { ...row, ...patch } : row)));
 
 	const hasChanges =
 		!!config &&
 		(form.enabled !== config.enabled ||
-			form.provider !== (config.provider ?? "") ||
-			form.model !== (config.model ?? "") ||
-			form.apiKeyID !== (config.api_key_id ?? "") ||
+			warpModelRowsChanged(form.models, config) ||
 			// The same fallback hydration applied, or a config stored without these
 			// fields reads as dirty the moment it loads and Save lights up before
 			// anyone has touched anything.
@@ -414,7 +400,11 @@ export default function WarpView() {
 			form.searchLimit !== (config.semantic_search_limit || DEFAULT_SEARCH_LIMIT));
 
 	// The server enforces the same rules; checking here only saves a round trip.
-	const missingRequired = form.enabled && (!form.provider || !form.model);
+	const defaultModel = form.models[0];
+	const missingRequired = form.enabled && (!defaultModel?.provider || !defaultModel?.model);
+	const modelErrors = validateWarpModelRows(form.models, form.enabled);
+	// Covers missingRequired too: the default row reports it.
+	const modelsInvalid = modelErrors.some((error) => error !== null);
 	const iterationsInvalid = !isFiniteNumber(form.maxIterations) || form.maxIterations < 1 || form.maxIterations > 20;
 	const timeoutInvalid = !isFiniteNumber(form.requestTimeoutSeconds) || form.requestTimeoutSeconds < 1;
 	// No upper bound: the per-owner conversation cap already limits the table, so
@@ -451,7 +441,7 @@ export default function WarpView() {
 			normalizeWarpNamespace(form.namespace) !== normalizeWarpNamespace(savedEmbeddingFields.namespace));
 	const shownBackfill = backfillSpaceEdited ? null : lastBackfill;
 	const invalid =
-		missingRequired ||
+		modelsInvalid ||
 		iterationsInvalid ||
 		timeoutInvalid ||
 		retentionInvalid ||
@@ -465,9 +455,7 @@ export default function WarpView() {
 
 		const payload: WarpConfigInput = {
 			enabled: form.enabled,
-			provider: form.provider.trim(),
-			model: form.model.trim(),
-			api_key_id: form.apiKeyID,
+			...warpModelsPayload(form.models),
 			max_iterations: form.maxIterations,
 			request_timeout_seconds: form.requestTimeoutSeconds,
 			history_retention_days: form.historyRetentionDays,
@@ -583,7 +571,7 @@ export default function WarpView() {
 							{/* A complete but switched-off config saves happily and then leaves
 							    the panel saying Warp is unavailable, with nothing on this page
 							    admitting why. Say it here, next to the switch that causes it. */}
-							{!form.enabled && !!form.provider && !!form.model && (
+							{!form.enabled && !!defaultModel?.provider && !!defaultModel?.model && (
 								<p className="text-muted-foreground text-xs" data-testid="warp-disabled-hint">
 									Everything below is filled in, but Warp stays hidden until this is on.
 								</p>
@@ -596,8 +584,8 @@ export default function WarpView() {
 						</div>
 
 						<WarpSection
-							title="Model"
-							description="The model Warp reasons with and writes answers from. A capable model pays for itself here."
+							title="Models"
+							description="The models Warp reasons with and writes answers from. The default answers unless someone picks another in the Warp panel. A capable model pays for itself here."
 						>
 							{/* A successful empty list is its own situation, distinct from
 							    loading and from a failed query. Without this the selector is
@@ -618,122 +606,55 @@ export default function WarpView() {
 									</AlertDescription>
 								</Alert>
 							)}
+							{/* An empty dropdown reads as "this deployment has no providers",
+							    which is a different and much more alarming statement than
+							    "the list has not arrived yet". */}
+							{isProvidersLoading && <p className="text-muted-foreground text-xs">Loading providers...</p>}
+							{isProvidersError && (
+								<p className="text-destructive flex items-center gap-2 text-xs" role="alert">
+									Could not load providers.
+									<button type="button" onClick={() => refetchProviders()} className="underline" data-testid="warp-providers-retry">
+										Retry
+									</button>
+								</p>
+							)}
 
-							<div className="grid gap-x-6 gap-y-5 md:grid-cols-3">
-								<WarpField label="Provider" htmlFor="warp-provider" hint="Only providers already configured in Bifrost are listed.">
-									<ProviderSelector
-										inputId="warp-provider"
-										data-testid="warp-provider-select"
-										value={form.provider}
-										onChange={(value: string) =>
-											setForm((current) =>
-												// Model and key are provider-scoped, so values carried over from
-												// the previous provider would be silently invalid.
-												// "" is ProviderSelector deselecting the current row, not a choice.
-												!value || value === current.provider ? current : { ...current, provider: value, model: "", apiKeyID: "" },
-											)
-										}
+							<div className="divide-y" data-testid="warp-models-list">
+								{form.models.map((row, index) => (
+									<WarpModelRowFields
+										key={row.id}
+										row={row}
+										index={index}
 										disabled={!hasWarpUpdateAccess}
+										// The default row's "nothing chosen yet" is said once, beside Save.
+										error={index === 0 && missingRequired ? null : modelErrors[index]}
+										onChange={(patch) => updateModel(row.id, patch)}
+										onMakeDefault={
+											index === 0 ? undefined : () => updateModels((models) => [row, ...models.filter((other) => other.id !== row.id)])
+										}
+										// The default cannot be removed, only replaced by making another model the default.
+										onRemove={index === 0 ? undefined : () => updateModels((models) => models.filter((other) => other.id !== row.id))}
 									/>
-									{/* An empty dropdown reads as "this deployment has no providers",
-									    which is a different and much more alarming statement than
-									    "the list has not arrived yet". */}
-									{isProvidersLoading && <p className="text-muted-foreground text-xs">Loading providers...</p>}
-									{isProvidersError && (
-										<p className="text-destructive flex items-center gap-2 text-xs" role="alert">
-											Could not load providers.
-											<button type="button" onClick={() => refetchProviders()} className="underline" data-testid="warp-providers-retry">
-												Retry
-											</button>
-										</p>
-									)}
-								</WarpField>
+								))}
+							</div>
 
-								<WarpField label="Model" htmlFor="warp-model">
-									<ModelSelector
-										inputId="warp-model"
-										data-testid="warp-model-select"
-										multiple={false}
-										provider={form.provider || undefined}
-										// Scoped to the pinned key, because /api/models filters by each
-										// key's model restrictions: without this the picker offered - and
-										// the form saved - models the pinned key cannot reach, and the
-										// first question failed at the provider. Unset for "Any key",
-										// which is Bifrost load-balancing across the whole pool.
-										keys={modelKeys}
-										value={form.model}
-										unfiltered
-										onChange={(model) => update("model", model)}
-										placeholder={form.provider ? "Search or type a model..." : "Select a provider first"}
-										disabled={!form.provider || !hasWarpUpdateAccess}
-									/>
-								</WarpField>
-
-								<WarpField
-									label="API key"
-									htmlFor="warp-api-key-id"
-									hint="Any key load-balances across the provider's pool. Pin one to isolate Warp's traffic."
+							<div className="flex items-center gap-3">
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={() => updateModels((models) => [...models, newWarpModelRow()])}
+									disabled={!hasWarpUpdateAccess || form.models.length > WARP_MAX_ADDITIONAL_MODELS}
+									data-testid="warp-add-model-btn"
 								>
-									<Select
-										value={form.apiKeyID || WARP_ANY_KEY}
-										onValueChange={(value) => {
-											// Same reasoning as the provider select: "" is Radix losing track
-											// of the value, not a choice. The real "no key" answer is the
-											// sentinel.
-											if (!value) return;
-											setForm((current) => ({
-												...current,
-												apiKeyID: value === WARP_ANY_KEY ? "" : value,
-												// Cleared rather than revalidated: the new key's model list is
-												// not loaded yet, so there is nothing to check against, and
-												// leaving the old value keeps a model the new key may not be
-												// allowed to use. An empty model already blocks the save, so the
-												// operator is told rather than left with a silently wrong pin.
-												model: "",
-											}));
-										}}
-										// Also disabled while this provider's keys are unknown, so a stale
-										// or empty list cannot be committed as a choice.
-										disabled={!form.provider || isKeysLoading || isKeysError || !hasWarpUpdateAccess}
-									>
-										<SelectTrigger className="w-full" id="warp-api-key-id" data-testid="warp-api-key-select">
-											<SelectValue placeholder={form.provider ? "Any key" : "Select a provider first"} />
-										</SelectTrigger>
-										<SelectContent>
-											{/* Radix forbids an empty-string SelectItem value, so the unpinned
-											    default needs a sentinel, mapped back to "" before it leaves.
-											    Listing it first makes it the obvious default. */}
-											<SelectItem value={WARP_ANY_KEY}>Any key</SelectItem>
-											{/* Same reasoning as the provider list: a pinned key missing from
-											    the fetched set still has to show, or it silently reads as Any
-											    key here while staying pinned on the server. */}
-											{form.apiKeyID && !providerKeys.some((providerKey) => providerKey.id === form.apiKeyID) && (
-												<SelectItem value={form.apiKeyID}>{form.apiKeyID}</SelectItem>
-											)}
-											{providerKeys.map((providerKey) => (
-												<SelectItem key={providerKey.id} value={providerKey.id}>
-													{providerKey.name || providerKey.id}
-												</SelectItem>
-											))}
-										</SelectContent>
-									</Select>
-									{/* "No keys configured" is a statement of fact about the provider,
-									    so it must not be made while the query is still in flight or
-									    after it failed - both of those also produce an empty list.
-									    Kept inline, not in the tooltip: it describes current state. */}
-									{form.provider && !isKeysLoading && !isKeysError && providerKeys.length === 0 && (
-										<p className="text-muted-foreground text-xs">This provider has no keys configured, which is fine if it needs none.</p>
-									)}
-									{form.provider && isKeysLoading && <p className="text-muted-foreground text-xs">Loading keys...</p>}
-									{form.provider && isKeysError && (
-										<p className="text-destructive flex items-center gap-2 text-xs" role="alert">
-											Could not load this provider&apos;s keys.
-											<button type="button" onClick={() => refetchKeys()} className="underline" data-testid="warp-keys-retry">
-												Retry
-											</button>
-										</p>
-									)}
-								</WarpField>
+									<Plus className="size-3.5" />
+									Add model
+								</Button>
+								{form.models.length > WARP_MAX_ADDITIONAL_MODELS && (
+									<p className="text-muted-foreground text-xs">
+										Warp offers its default and up to {WARP_MAX_ADDITIONAL_MODELS} more models.
+									</p>
+								)}
 							</div>
 						</WarpSection>
 
@@ -768,7 +689,7 @@ export default function WarpView() {
 								<WarpField
 									label="Reasoning effort"
 									htmlFor="warp-reasoning-effort"
-									hint="Only for reasoning models. Some providers reject an effort sent to a model without reasoning."
+									hint="Only for reasoning models, and sent to every model listed above. Some providers reject an effort sent to a model without reasoning."
 								>
 									<Select
 										value={form.reasoningEffort || WARP_REASONING_UNSET}
@@ -1211,6 +1132,192 @@ export default function WarpView() {
 					</Button>
 				</div>
 			</form>
+		</div>
+	);
+}
+
+interface WarpModelRowFieldsProps {
+	row: WarpModelRow;
+	/** Position in the list. 0 is Warp's default model. */
+	index: number;
+	disabled: boolean;
+	error: string | null;
+	onChange: (patch: Partial<Omit<WarpModelRow, "id">>) => void;
+	/** Absent on the default row. */
+	onMakeDefault?: () => void;
+	onRemove?: () => void;
+}
+
+/** One provider, model and key. Each row loads its own provider's keys, so the list can mix providers. */
+function WarpModelRowFields({ row, index, disabled, error, onChange, onMakeDefault, onRemove }: WarpModelRowFieldsProps) {
+	const isDefault = index === 0;
+	// The default row keeps the ids it had as the page's only model.
+	const suffix = isDefault ? "" : `-${index}`;
+
+	// Memoized by the id, not rebuilt inline: every form edit rerenders this
+	// component, and ModelMultiselect refetches whenever the `keys` reference
+	// changes - so an inline array turned each unrelated edit into a models
+	// request for the same key.
+	const modelKeys = useMemo(() => (row.apiKeyID ? [row.apiKeyID] : undefined), [row.apiKeyID]);
+
+	// Keys are provider-scoped, so the query waits for a provider rather than
+	// firing a request for "".
+	const {
+		// currentData, not data: RTK Query keeps the previous argument's result
+		// while it fetches the new one, so after switching provider the selector
+		// briefly offered the old provider's keys - and saving one stored an
+		// api_key_id that belongs to a different provider, which only fails later
+		// at key selection.
+		currentData: providerKeysData,
+		// isFetching, not isLoading: isLoading is only true when there is nothing
+		// cached at all, so it is false for exactly the refetch that matters here.
+		isFetching: isKeysLoading,
+		isError: isKeysError,
+		refetch: refetchKeys,
+	} = useGetProviderKeysQuery(row.provider, { skip: !row.provider });
+	const providerKeys = providerKeysData ?? [];
+
+	return (
+		<div className="space-y-3 py-4 first:pt-0 last:pb-0" data-testid={`warp-model-row${suffix}`}>
+			<div className="flex min-h-7 items-center justify-between gap-3">
+				<h4 className="text-sm font-medium">{isDefault ? "Default model" : `Model ${index + 1}`}</h4>
+				{!isDefault && (
+					<div className="flex items-center gap-1">
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							onClick={onMakeDefault}
+							// A half-filled row cannot answer, so it cannot become what answers by default.
+							disabled={disabled || !row.provider || !row.model}
+							data-testid={`warp-model-make-default-btn${suffix}`}
+						>
+							Make default
+						</Button>
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon"
+							className="size-7"
+							onClick={onRemove}
+							disabled={disabled}
+							aria-label={`Remove model ${index + 1}`}
+							data-testid={`warp-model-remove-btn${suffix}`}
+						>
+							<Trash2 className="size-3.5" />
+						</Button>
+					</div>
+				)}
+			</div>
+
+			<div className="grid gap-x-6 gap-y-5 md:grid-cols-3">
+				<WarpField label="Provider" htmlFor={`warp-provider${suffix}`} hint="Only providers already configured in Bifrost are listed.">
+					<ProviderSelector
+						inputId={`warp-provider${suffix}`}
+						data-testid={`warp-provider-select${suffix}`}
+						value={row.provider}
+						onChange={(value: string) => {
+							// Model and key are provider-scoped, so values carried over from
+							// the previous provider would be silently invalid.
+							// "" is ProviderSelector deselecting the current row, not a choice.
+							if (!value || value === row.provider) return;
+							onChange({ provider: value, model: "", apiKeyID: "" });
+						}}
+						disabled={disabled}
+					/>
+				</WarpField>
+
+				<WarpField label="Model" htmlFor={`warp-model${suffix}`}>
+					<ModelSelector
+						inputId={`warp-model${suffix}`}
+						data-testid={`warp-model-select${suffix}`}
+						multiple={false}
+						provider={row.provider || undefined}
+						// Scoped to the pinned key, because /api/models filters by each
+						// key's model restrictions: without this the picker offered - and
+						// the form saved - models the pinned key cannot reach, and the
+						// first question failed at the provider. Unset for "Any key",
+						// which is Bifrost load-balancing across the whole pool.
+						keys={modelKeys}
+						value={row.model}
+						unfiltered
+						onChange={(model) => onChange({ model })}
+						placeholder={row.provider ? "Search or type a model..." : "Select a provider first"}
+						disabled={!row.provider || disabled}
+					/>
+				</WarpField>
+
+				<WarpField
+					label="API key"
+					htmlFor={`warp-api-key-id${suffix}`}
+					hint="Any key load-balances across the provider's pool. Pin one to isolate Warp's traffic."
+				>
+					<Select
+						value={row.apiKeyID || WARP_ANY_KEY}
+						onValueChange={(value) => {
+							// Same reasoning as the provider select: "" is Radix losing track
+							// of the value, not a choice. The real "no key" answer is the
+							// sentinel.
+							if (!value) return;
+							onChange({
+								apiKeyID: value === WARP_ANY_KEY ? "" : value,
+								// Cleared rather than revalidated: the new key's model list is
+								// not loaded yet, so there is nothing to check against, and
+								// leaving the old value keeps a model the new key may not be
+								// allowed to use. An empty model already blocks the save, so the
+								// operator is told rather than left with a silently wrong pin.
+								model: "",
+							});
+						}}
+						// Also disabled while this provider's keys are unknown, so a stale
+						// or empty list cannot be committed as a choice.
+						disabled={!row.provider || isKeysLoading || isKeysError || disabled}
+					>
+						<SelectTrigger className="w-full" id={`warp-api-key-id${suffix}`} data-testid={`warp-api-key-select${suffix}`}>
+							<SelectValue placeholder={row.provider ? "Any key" : "Select a provider first"} />
+						</SelectTrigger>
+						<SelectContent>
+							{/* Radix forbids an empty-string SelectItem value, so the unpinned
+							    default needs a sentinel, mapped back to "" before it leaves.
+							    Listing it first makes it the obvious default. */}
+							<SelectItem value={WARP_ANY_KEY}>Any key</SelectItem>
+							{/* A pinned key missing from the fetched set still has to show,
+							    or it silently reads as Any key here while staying pinned on
+							    the server. */}
+							{row.apiKeyID && !providerKeys.some((providerKey) => providerKey.id === row.apiKeyID) && (
+								<SelectItem value={row.apiKeyID}>{row.apiKeyID}</SelectItem>
+							)}
+							{providerKeys.map((providerKey) => (
+								<SelectItem key={providerKey.id} value={providerKey.id}>
+									{providerKey.name || providerKey.id}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+					{/* "No keys configured" is a statement of fact about the provider,
+					    so it must not be made while the query is still in flight or
+					    after it failed - both of those also produce an empty list.
+					    Kept inline, not in the tooltip: it describes current state. */}
+					{row.provider && !isKeysLoading && !isKeysError && providerKeys.length === 0 && (
+						<p className="text-muted-foreground text-xs">This provider has no keys configured, which is fine if it needs none.</p>
+					)}
+					{row.provider && isKeysLoading && <p className="text-muted-foreground text-xs">Loading keys...</p>}
+					{row.provider && isKeysError && (
+						<p className="text-destructive flex items-center gap-2 text-xs" role="alert">
+							Could not load this provider&apos;s keys.
+							<button type="button" onClick={() => refetchKeys()} className="underline" data-testid={`warp-keys-retry${suffix}`}>
+								Retry
+							</button>
+						</p>
+					)}
+				</WarpField>
+			</div>
+
+			{error && (
+				<p className="text-destructive text-xs" role="alert" data-testid={`warp-model-row-error${suffix}`}>
+					{error}
+				</p>
+			)}
 		</div>
 	);
 }

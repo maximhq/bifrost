@@ -72,6 +72,8 @@ export interface MCPClientFormSatellites {
 	perUserHeaderKeys: string[];
 	headerKeysInput: string;
 	setHeaderKeysInput: (value: string) => void;
+	allowedExtraHeadersText: string;
+	setAllowedExtraHeadersText: (value: string) => void;
 	authScope: MCPAuthScope;
 	setAuthScope: (value: MCPAuthScope) => void;
 	reset: (init?: MCPClientFormSatellitesInit) => void;
@@ -81,6 +83,7 @@ export interface MCPClientFormSatellitesInit {
 	argsText?: string;
 	envVars?: Record<string, string>;
 	perUserHeaderKeys?: string[];
+	allowedExtraHeaders?: string[];
 	authScope?: MCPAuthScope;
 }
 
@@ -91,6 +94,7 @@ export function useMCPClientFormSatellites(): MCPClientFormSatellites {
 	const [tokenExchangeScopesText, setTokenExchangeScopesText] = useState("");
 	const [resourceText, setResourceText] = useState("");
 	const [headerKeysInput, setHeaderKeysInput] = useState("");
+	const [allowedExtraHeadersText, setAllowedExtraHeadersText] = useState("");
 	const [authScope, setAuthScope] = useState<MCPAuthScope>("shared");
 
 	const reset = useCallback((init?: MCPClientFormSatellitesInit) => {
@@ -100,6 +104,7 @@ export function useMCPClientFormSatellites(): MCPClientFormSatellites {
 		setTokenExchangeScopesText("");
 		setResourceText("");
 		setHeaderKeysInput((init?.perUserHeaderKeys ?? []).join(", "));
+		setAllowedExtraHeadersText((init?.allowedExtraHeaders ?? []).join(", "));
 		setAuthScope(init?.authScope ?? "shared");
 	}, []);
 
@@ -119,6 +124,8 @@ export function useMCPClientFormSatellites(): MCPClientFormSatellites {
 		perUserHeaderKeys: parseArrayFromText(headerKeysInput),
 		headerKeysInput,
 		setHeaderKeysInput,
+		allowedExtraHeadersText,
+		setAllowedExtraHeadersText,
 		authScope,
 		setAuthScope,
 		reset,
@@ -144,17 +151,13 @@ export function isValidOAuthResourceURI(value: string): boolean {
 }
 
 /**
- * Live header validation shared by both sheets. Both "headers" and
- * "per_user_headers" persist the static headers map, so the gate must cover
- * both — otherwise an empty static header in the per-user flow slips past
- * client validation and opens MCPHeadersAuthorizer with a config the server
- * has to reject.
+ * Live header validation shared by both sheets. Static headers ride on every
+ * auth type (the server persists them for "none" and the OAuth types too), so
+ * the gate is not scoped to one — otherwise an empty static header slips past
+ * client validation and reaches the server as a config it has to reject.
  */
-export function getHeadersValidationError(
-	authType: MCPAuthType | undefined,
-	headers: Record<string, SecretVar> | undefined,
-): string | null {
-	if ((authType !== "headers" && authType !== "per_user_headers") || !headers) return null;
+export function getHeadersValidationError(headers: Record<string, SecretVar> | undefined): string | null {
+	if (!headers) return null;
 	for (const [key, secretVar] of Object.entries(headers)) {
 		if (!secretVar.value && !secretVar.ref) {
 			return `Header "${key}" must have a value`;
@@ -249,6 +252,15 @@ export function validateMCPClientForm({
 		hasErrors = true;
 	}
 
+	// Mirrors the server's WhiteList validation, which rejects "*" alongside names.
+	// Skipped for STDIO, which hides the field and drops the value from the
+	// payload: text left over from a network transport must not block submit.
+	const allowedExtraHeaders = parseArrayFromText(satellites.allowedExtraHeadersText);
+	if (connectionType !== "stdio" && allowedExtraHeaders.includes("*") && allowedExtraHeaders.length > 1) {
+		onToast("Invalid allowed extra headers", "Wildcard '*' cannot be combined with specific header names.");
+		hasErrors = true;
+	}
+
 	return !hasErrors;
 }
 
@@ -298,12 +310,10 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 						resource: satellites.resourceText.trim() || undefined,
 					}
 				: undefined,
-		// "headers" and "per_user_headers" both can carry static admin headers on
-		// data.headers (per-user values are submitted separately by end users).
-		headers:
-			(authType === "headers" || authType === "per_user_headers") && data.headers && Object.keys(data.headers).length > 0
-				? data.headers
-				: undefined,
+		// Every network auth type can carry static admin headers on data.headers
+		// (per-user values are submitted separately by end users); STDIO has no
+		// request headers to send.
+		headers: !isStdio && data.headers && Object.keys(data.headers).length > 0 ? data.headers : undefined,
 		per_user_header_keys: authType === "per_user_headers" ? satellites.perUserHeaderKeys : undefined,
 		token_exchange:
 			authType === "token_exchange"
@@ -323,6 +333,8 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 					}
 				: undefined,
 		tools_to_execute: ["*"],
+		// Extra headers only ride on the network transports.
+		allowed_extra_headers: isStdio ? undefined : parseArrayFromText(satellites.allowedExtraHeadersText),
 	};
 }
 
@@ -699,7 +711,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 
 			{isRemote && (
 				<>
-					{authType === "headers" && (
+					{authType !== "per_user_headers" && (
 						<>
 							<DottedSeparator />
 							<div className="space-y-4">
@@ -908,6 +920,23 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 							</div>
 						</>
 					)}
+
+					<DottedSeparator />
+
+					{/* Allowed Extra Headers */}
+					<div className="space-y-4">
+						<SectionHeader
+							title="Allowed Extra Headers"
+							description="Comma-separated dynamic request header names, or * to allow all. Leave empty to block all extra headers."
+						/>
+						<Input
+							id="allowed-extra-headers-input"
+							value={satellites.allowedExtraHeadersText}
+							onChange={(e) => satellites.setAllowedExtraHeadersText(e.target.value)}
+							placeholder="*, or: authorization, x-user-id"
+							data-testid="allowed-extra-headers-input"
+						/>
+					</div>
 
 					<DottedSeparator />
 

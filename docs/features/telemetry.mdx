@@ -51,7 +51,7 @@ These metrics track requests forwarded to AI providers:
 | ---------------------------------- | --------- | ----------------------------------------------------------------- | ----------------------------------------------------- |
 | `bifrost_upstream_requests_total`  | Counter   | Total requests forwarded to upstream providers                    | Base Labels, custom labels                            |
 | `bifrost_success_requests_total`   | Counter   | Total successful requests to upstream providers                   | Base Labels, custom labels                            |
-| `bifrost_error_requests_total`     | Counter   | Total failed requests, by raw status and normalized reason         | Base Labels, `status_code`, `error_type`, custom labels |
+| `bifrost_error_requests_total`     | Counter   | Total failed requests, by effective status and normalized reason   | Base Labels, `status_code`, `error_type`, custom labels |
 | `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests                             | Base Labels, `is_success`, custom labels              |
 | `bifrost_overhead_latency_microseconds`   | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) | Base Labels, custom labels                            |
 | `bifrost_overhead_component_microseconds` | Histogram | Same overhead broken down by internal component. Opt-in via `overhead_breakdown_enabled`; populated only when tracing is active | Base Labels, `overhead_component`, custom labels      |

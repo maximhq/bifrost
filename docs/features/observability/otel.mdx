@@ -45,6 +45,7 @@ The plugin supports multiple trace formats to match your observability platform:
 | `tls_ca_cert` | `string` | ❌ No | File path to client CA certificate for TLS. Optional. Works with both gRPC and HTTP protocol |
 | `group_traces_by_session` | `boolean` | ❌ No | Group requests sharing the same `x-bf-session-id` into one trace (default: `false`). See [Grouping Traces by Session](#grouping-traces-by-session) |
 | `disable_content_logging` | `boolean` | ❌ No | Drop message content from exported spans (default: `false`). See [Controlling Exported Content](#controlling-exported-content) |
+| `excluded_attributes` | `string[]` | ❌ No | Span attribute names to leave out of exported spans (default: none). See [Excluding Attributes](#excluding-attributes) |
 | `export_raw_payloads` | `boolean` | ❌ No | Attach raw provider request/response bodies to LLM spans (default: `false`). See [Raw Provider Payloads](#raw-provider-payloads) |
 | `disable_root_span_content` | `boolean` | ❌ No | Drop content from the **root span only**, keeping it on child spans (default: `false`). Overridden by `disable_content_logging`, which drops content from every span. See [Controlling Exported Content](#controlling-exported-content) |
 | `request_headers` | `string[]` | ❌ No | Request-header name patterns whose values are attached to the root span as `http.request.header.*` attributes. Supports exact names and wildcards (`x-custom-*`, `*`) |
@@ -310,6 +311,12 @@ If you need to connect to an OTEL collector that requires TLS, configure `tls_ca
 </Tab>
 
 </Tabs>
+
+With `protocol: "http"`, the endpoint URL decides the transport: an `https://` endpoint
+is sent over TLS and an `http://` endpoint over plain HTTP. `insecure` only controls
+whether the collector's certificate is verified, so leaving it at its default still
+exports over TLS to an `https://` endpoint. Set it to `false` to require a valid
+certificate, optionally alongside `tls_ca_cert` for a private CA.
 
 ---
 
@@ -851,6 +858,24 @@ These flags are **independent** of the global `client.disable_content_logging`, 
 Values captured via `request_headers` are attached to the root span **regardless** of either flag. Only enable header capture for headers you intend to export.
 </Warning>
 
+### Excluding Attributes
+
+Some span attributes are large and not needed downstream. Tool definitions are a common example. List the attribute names you want left out of exported spans:
+
+```json
+{
+  "excluded_attributes": ["gen_ai.request.tools"]
+}
+```
+
+Names are matched exactly, as they appear on the exported span. A name that does not match any attribute is ignored, so a typo silently has no effect. Check the spelling against a span you have already received.
+
+The raw payload attributes can be excluded the same way. Naming `bifrost.raw_request` or `bifrost.raw_response` keeps that body off exported spans while leaving the other one in place, which is finer-grained than turning [`export_raw_payloads`](#raw-provider-payloads) off entirely.
+
+<Note>
+Excluding an attribute controls what is **exported**, not what Bifrost collects. To stop provider-side raw-body capture, turn `store_raw_request_response` off on the provider. To stop OTEL raw-payload assembly and export, disable `export_raw_payloads` on every profile.
+</Note>
+
 ### Raw Provider Payloads
 
 `export_raw_payloads` attaches the **raw bodies Bifrost exchanged with the provider** to LLM spans, as `bifrost.raw_request` and `bifrost.raw_response`. This is what makes the provider's wire format visible in Langfuse or any other OTLP backend.
@@ -1123,7 +1148,7 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 |--------|------|-------------|
 | `bifrost_upstream_requests_total` | Counter | Total requests to upstream providers |
 | `bifrost_success_requests_total` | Counter | Successful upstream requests |
-| `bifrost_error_requests_total` | Counter | Error requests with status code labels |
+| `bifrost_error_requests_total` | Counter | Error requests, labelled by `status_code` |
 | `bifrost_input_tokens_total` | Counter | Total input tokens |
 | `bifrost_output_tokens_total` | Counter | Total output tokens |
 | `bifrost_cache_hits_total` | Counter | Cache hits |
@@ -1143,6 +1168,10 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `http_request_duration_seconds` | Histogram | HTTP request duration |
 | `http_request_size_bytes` | Histogram | HTTP request body size |
 | `http_response_size_bytes` | Histogram | HTTP response body size |
+
+<Note>
+Before Bifrost 2.2.2, a failure Bifrost raised itself — a request-conversion error, or an empty or unparseable provider response — carried no status of its own and was labelled `status_code="unknown"`, even though the caller received a 500. 5xx dashboards and alerts under-counted these. They are now labelled `status_code="500"`, and the counter gained an `error_type` attribute matching the Prometheus one; repoint anything keyed on `status_code="unknown"`. See [Error Types](./prometheus#error-types) for the `error_type` vocabulary.
+</Note>
 
 > **Note:** Size metrics are only recorded when the `Content-Length` header is present. Requests or responses without it (e.g., chunked transfer encoding, streaming responses) do not produce data points in these histograms.
 

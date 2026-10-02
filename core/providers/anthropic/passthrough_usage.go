@@ -75,6 +75,7 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			NumSearchQueries: &n,
 		}
+		usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 	}
 
 	// Extended-thinking tokens are already inside au.OutputTokens, so CompletionTokens

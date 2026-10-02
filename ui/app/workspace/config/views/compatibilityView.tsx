@@ -68,7 +68,7 @@ export default function CompatibilityView() {
 					rel="noopener noreferrer"
 					data-testid="litellm-docs-link"
 				>
-					Learn more
+					Learn more about the compatibility plugin
 				</a>
 			</PageTitle>
 

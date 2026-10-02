@@ -3662,6 +3662,11 @@
                       },
                       "description": "Custom labels to add to Prometheus metrics"
                     },
+                    "metrics_enabled": {
+                      "type": "boolean",
+                      "description": "Serve the /metrics scrape endpoint. Defaults to true when omitted.",
+                      "default": true
+                    },
                     "overhead_breakdown_enabled": {
                       "type": "boolean",
                       "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component label). Off by default. Requires tracing to be active, since the breakdown is computed from completed trace spans.",
@@ -4914,6 +4919,12 @@
           "type": "boolean",
           "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
           "default": false
+        },
+        "excluded_attributes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
+          "default": []
         },
         "export_raw_payloads": {
           "type": "boolean",
@@ -7529,6 +7540,12 @@
             }
           ]
         },
+        "max_instructions_length": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Per-client override for the forwarded instruction byte cap. When set, overrides the global mcp.tool_manager_config.max_instructions_per_client for this MCP server only; the aggregate is still bounded by max_instructions_total. Omit or set to 0 to use the global default."
+        },
         "allowed_extra_headers": {
           "type": "array",
           "items": {
@@ -7765,6 +7782,18 @@
           "type": "boolean",
           "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
           "default": false
+        },
+        "max_instructions_per_client": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte bound on a single MCP server's forwarded instructions. Longer text is truncated on a rune boundary with a notice. 0 uses the built-in default of 4096.",
+          "default": 0
+        },
+        "max_instructions_total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.",
+          "default": 0
         }
       }
     },
@@ -11260,6 +11289,9 @@
           "description": "Allowed request types for the custom provider",
           "properties": {
             "list_models": {
+              "type": "boolean"
+            },
+            "model_retrieve": {
               "type": "boolean"
             },
             "text_completion": {

@@ -66,7 +66,7 @@ describe("pricingFieldUnit", () => {
 			"input_cost_per_image",
 			"ocr_cost_per_page",
 			"annotation_cost_per_page",
-			"search_context_cost_per_query",
+			"web_search_cost_per_request",
 			"input_cost_per_query",
 			"code_interpreter_cost_per_session",
 			"output_cost_per_image_high_quality",

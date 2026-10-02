@@ -98,6 +98,8 @@ type ClientConfig struct {
 	MaxRequestBodySizeMB                  int                                   `json:"max_request_body_size_mb"`                    // The maximum request body size in MB
 	Compat                                CompatConfig                          `json:"compat"`                                      // Compat plugin configuration
 	MCPAgentDepth                         int                                   `json:"mcp_agent_depth"`                             // The maximum depth for MCP agent mode tool execution
+	MCPMaxInstructionsPerClient           int                                   `json:"mcp_max_instructions_per_client"`             // Byte bound on one server's forwarded instructions; 0 is the default
+	MCPMaxInstructionsTotal               int                                   `json:"mcp_max_instructions_total"`                  // Byte bound on the whole forwarded aggregate; 0 is the default
 	MCPToolExecutionTimeout               int                                   `json:"mcp_tool_execution_timeout"`                  // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel               string                                `json:"mcp_code_mode_binding_level"`                 // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                                   `json:"mcp_tool_sync_interval"`                      // Global tool sync interval in minutes (default: 10, 0 = built-in default)
@@ -221,6 +223,13 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	} else {
 		hash.Write([]byte("mcpAgentDepth:0"))
 	}
+	// No else: 0 is the default, so writing ":0" would change every existing config's hash.
+	if c.MCPMaxInstructionsPerClient > 0 {
+		hash.Write([]byte("mcpMaxInstructionsPerClient:" + strconv.Itoa(c.MCPMaxInstructionsPerClient)))
+	}
+	if c.MCPMaxInstructionsTotal > 0 {
+		hash.Write([]byte("mcpMaxInstructionsTotal:" + strconv.Itoa(c.MCPMaxInstructionsTotal)))
+	}
 
 	if c.MCPToolExecutionTimeout > 0 {
 		hash.Write([]byte("mcpToolExecutionTimeout:" + strconv.Itoa(c.MCPToolExecutionTimeout)))
@@ -244,6 +253,8 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	if c.MCPDisableAutoToolInject {
 		hash.Write([]byte("mcpDisableAutoToolInject:true"))
 	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.MCPEnableTempTokenAuth {
@@ -480,6 +491,8 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 	} else {
 		h.Write([]byte("toolMgrDisableAutoInject:false"))
 	}
+	// Only hash a non-default value, so a config written before this field existed keeps
+	// producing the same hash on upgrade.
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 

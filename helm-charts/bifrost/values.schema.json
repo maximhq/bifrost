@@ -747,6 +747,18 @@
                   "type": "boolean",
                   "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
                   "default": false
+                },
+                "maxInstructionsPerClient": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Byte bound on a single MCP server's forwarded instructions. Longer text is truncated with a notice. 0 uses the built-in default of 4096.",
+                  "default": 0
+                },
+                "maxInstructionsTotal": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools. 0 uses the built-in default of 16384.",
+                  "default": 0
                 }
               }
             },
@@ -1183,7 +1195,13 @@
                       "type": "string",
                       "description": "Datadog site/region for agentless mode (e.g. datadoghq.com, datadoghq.eu)"
                     },
-                    "request_headers": {
+"excluded_attributes": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
+                      "default": []
+                    },
+                                        "request_headers": {
                       "type": "array",
                       "items": {
                         "type": "string"
@@ -1279,7 +1297,13 @@
                       },
                       "description": "Static key/value fields added to every event and metric"
                     },
-                    "request_headers": {
+"excluded_attributes": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
+                      "default": []
+                    },
+                                        "request_headers": {
                       "type": "array",
                       "items": {
                         "type": "string"
@@ -1379,7 +1403,18 @@
                     "disable_content_logging": {
                       "type": "boolean"
                     },
-                    "request_headers": {
+"excluded_attributes": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Column names to omit from every row, matched exactly (e.g. \"tools\"). BigQuery writes typed columns, so these are column names rather than attribute names. trace_id and timestamp cannot be excluded.",
+                      "default": []
+                    },
+                    "export_raw_payloads": {
+                      "type": "boolean",
+                      "description": "Store the raw provider request and response bodies. Requires raw request/response storage on the provider and is ignored when content logging is disabled.",
+                      "default": false
+                    },
+                                        "request_headers": {
                       "type": "array",
                       "items": { "type": "string" }
                     },
@@ -1497,7 +1532,13 @@
                       "type": "boolean",
                       "description": "Strip input/output message content from traces before publishing"
                     },
-                    "request_headers": {
+"excluded_attributes": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
+                      "default": []
+                    },
+                                        "request_headers": {
                       "type": "array",
                       "items": { "type": "string" },
                       "description": "Request-header name patterns (exact or wildcard like \"x-custom-*\") whose captured values are embedded in published traces"
@@ -1574,7 +1615,13 @@
                       "type": "boolean",
                       "description": "Strip request/response content from traces before publishing"
                     },
-                    "request_headers": {
+"excluded_attributes": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
+                      "default": []
+                    },
+                                        "request_headers": {
                       "type": "array",
                       "items": { "type": "string" },
                       "description": "Request-header name patterns (exact or wildcard like \"x-custom-*\") whose captured values are included in published traces"
@@ -5874,7 +5921,18 @@
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
           "default": false
         },
-        "request_headers": {
+"excluded_attributes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
+          "default": []
+        },
+        "export_raw_payloads": {
+          "type": "boolean",
+          "description": "Attach the raw provider request and response bodies to exported spans. Requires raw request/response storage on the provider and is ignored when content logging is disabled.",
+          "default": false
+        },
+                "request_headers": {
           "type": "array",
           "items": {
             "type": "string"
@@ -7103,6 +7161,11 @@
         "toolExecutionTimeout": {
           "type": ["string", "integer"],
           "description": "Per-client override for tool execution timeout. Go duration string (e.g. '30s', '2m') or a bare integer treated as seconds. Overrides the global mcp.toolManagerConfig.toolExecutionTimeout for this server only. Omit or set to 0 to use the global default."
+        },
+        "maxInstructionsLength": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-client override for the forwarded instruction byte cap. Overrides the global mcp.toolManagerConfig.maxInstructionsPerClient for this server only; the aggregate is still bounded by maxInstructionsTotal. Omit or set to 0 to use the global default."
         },
         "isPingAvailable": {
           "type": "boolean",

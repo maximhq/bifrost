@@ -4,6 +4,11 @@ import { useWarp } from "@/lib/contexts/warpContext";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useEffect, useRef } from "react";
 
+// Same keycap as SheetNavigationButtons; min-w instead of a fixed size so "Ctrl" fits.
+const kbdClass =
+	"inline-flex items-center justify-center h-4 min-w-4 px-1 rounded border border-border/60 bg-muted/80 text-[10px] leading-none text-muted-foreground shadow-[0_1px_0_0.5px] shadow-border/40";
+
+// isAppleDevice picks the modifier label shown in the shortcut hint.
 function isAppleDevice(): boolean {
 	if (typeof navigator === "undefined") return false;
 	return /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
@@ -56,12 +61,11 @@ export default function WarpLauncher() {
 					<WarpIcon className="size-5" />
 				</button>
 			</TooltipTrigger>
-			<TooltipContent sideOffset={8}>
-				<span className="flex items-center gap-2">
-					Ask Warp
-					<kbd className="bg-muted text-muted-foreground rounded px-1 py-0.5 font-mono text-[10px]">
-						{isAppleDevice() ? "⌘I" : "Ctrl+I"}
-					</kbd>
+			<TooltipContent sideOffset={8} className="flex items-center gap-1.5 px-2 py-1 text-xs">
+				Ask Warp
+				<span className="inline-flex items-center gap-1">
+					<kbd className={kbdClass}>{isAppleDevice() ? "⌘" : "Ctrl"}</kbd>
+					<kbd className={kbdClass}>I</kbd>
 				</span>
 			</TooltipContent>
 		</Tooltip>

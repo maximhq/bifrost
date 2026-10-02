@@ -434,7 +434,7 @@ The resolution-banded video rates are matched on the short edge of the generated
 
 | Field | Description |
 |-------|-------------|
-| `search_context_cost_per_query` | Cost per web search context query |
+| `web_search_cost_per_request` | Cost per server-side web search call, billed from `usage.tool_usage.web_search.num_requests` |
 | `input_cost_per_query` | Cost per rerank query. One query covers up to 100 document chunks, so a larger request bills as several. Does not apply to Vertex, which bills content-size-derived ranking units |
 | `code_interpreter_cost_per_session` | Cost per code interpreter session |
 | `inference_geo_us_multiplier` | Data-residency cost multiplier applied when a request is served from a US inference region |
@@ -460,7 +460,7 @@ Three rules govern how this works:
 
 - **Base rates are the peak rates.** Every other cost field is the higher, peak-hour price, and `off_peak_cost_multiplier` discounts downward from it. A row that carries a schedule but no multiplier — or whose schedule cannot be evaluated — bills at the full base rate rather than silently under-billing.
 - **Both fields are required on the resolved row.** A multiplier with no schedule has no way to know when to apply, and a schedule with no multiplier has nothing to apply. An override may set one and inherit the other from the model's datasheet entry, so setting the multiplier alone still discounts when the datasheet already declares a schedule. It bills at the base rate only when neither the override nor the datasheet supplies the missing half.
-- **Flat fees are not discounted.** `cost_per_request`, `input_cost_per_query`, and `search_context_cost_per_query` are per-request and per-query charges rather than usage charges, so they are billed in full at any hour.
+- **Flat fees are not discounted.** `cost_per_request`, `input_cost_per_query`, and `web_search_cost_per_request` are per-request and per-query charges rather than usage charges, so they are billed in full at any hour.
 
 `peak_hours` takes a timezone and a list of windows:
 

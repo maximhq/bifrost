@@ -138,7 +138,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 												<img
 													key={img.id}
 													src={getImageSrc(img.image_base64!)}
-													alt={`Image ${img.id}`}
+													alt={`Extracted ${img.id}`}
 													className="max-h-48 max-w-48 rounded border object-contain"
 												/>
 											))}

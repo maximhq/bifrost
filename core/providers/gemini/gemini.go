@@ -1260,12 +1260,12 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 
 	providerName := provider.GetProviderKey()
 
-	// Convert Bifrost request to Gemini batch embedding request format
+	// Convert Bifrost request to Gemini embedding request format
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToGeminiEmbeddingRequest(request), nil
+			return ToGeminiEmbeddingRequest(request)
 		})
 	if err != nil {
 		return nil, err
@@ -1280,8 +1280,8 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	// Use Gemini's batchEmbedContents endpoint
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":batchEmbedContents"))
+	endpoint := "/models/" + request.Model + ":batchEmbedContents"
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, endpoint))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	setGeminiAuthHeader(req, key.Value.GetValue())
@@ -1342,7 +1342,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	wait()
 	fasthttp.ReleaseResponse(resp)
 
-	// Parse Gemini's batch embedding response
+	// Parse Gemini embedding response
 	var geminiResponse GeminiEmbeddingResponse
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &geminiResponse, jsonData,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -4098,6 +4098,11 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	}
 
 	return response, nil
+}
+
+// ModelRetrieve is not supported by the Gemini provider.
+func (provider *GeminiProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Gemini provider.

@@ -703,3 +703,14 @@ func TestPersistRecalcOutcomes_ShapeMatrix(t *testing.T) {
 		})
 	}
 }
+
+func TestCostRecalcProgress(t *testing.T) {
+	done, total, msg := CostRecalcProgress(`{"total":120,"processed":30,"updated":20,"message":"working"}`)
+	if done != 30 || total != 120 || msg != "working" {
+		t.Fatalf("got done=%d total=%d msg=%q", done, total, msg)
+	}
+	done, total, msg = CostRecalcProgress(`{not json`)
+	if done != 0 || total != 0 || msg != "" {
+		t.Fatalf("malformed metadata should yield zero values, got %d %d %q", done, total, msg)
+	}
+}

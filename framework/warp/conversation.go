@@ -16,6 +16,12 @@ type ChatRequest struct {
 	// ConversationID continues an existing thread. Empty starts a new one, and
 	// the id of the thread that was created comes back on the done event.
 	ConversationID string `json:"conversation_id,omitempty"`
+	// Provider and Model name which of the exposed models answers this turn.
+	// Both empty means the default. The pair is only ever a selection among
+	// what the operator configured (see schemas.WarpConfig.ForModel): anything
+	// else is refused, and the key is never the client's to choose.
+	Provider schemas.ModelProvider `json:"provider,omitempty"`
+	Model    string                `json:"model,omitempty"`
 	// Stream selects the transport, not the behaviour. Both paths run the same
 	// loop; only the sink differs.
 	Stream *bool `json:"stream,omitempty"`

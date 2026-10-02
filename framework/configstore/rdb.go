@@ -296,6 +296,8 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		CompatShouldConvertParams:             config.Compat.ShouldConvertParams,
 		CompatAzureDeepseek:                   config.Compat.AzureDeepseek,
 		MCPAgentDepth:                         config.MCPAgentDepth,
+		MCPMaxInstructionsPerClient:           config.MCPMaxInstructionsPerClient,
+		MCPMaxInstructionsTotal:               config.MCPMaxInstructionsTotal,
 		MCPToolExecutionTimeout:               config.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel:               config.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   config.MCPToolSyncInterval,
@@ -596,6 +598,8 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 			AzureDeepseek:          dbConfig.CompatAzureDeepseek,
 		},
 		MCPAgentDepth:                         dbConfig.MCPAgentDepth,
+		MCPMaxInstructionsPerClient:           dbConfig.MCPMaxInstructionsPerClient,
+		MCPMaxInstructionsTotal:               dbConfig.MCPMaxInstructionsTotal,
 		MCPToolExecutionTimeout:               dbConfig.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel:               dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   dbConfig.MCPToolSyncInterval,
@@ -1664,11 +1668,13 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 					ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+					MaxInstructionsLength:     dbClient.MaxInstructionsLength,
 					ToolPricing:               dbClient.ToolPricing,
 					AllowByDefault:            dbClient.AllowByDefault,
 					Disabled:                  dbClient.Disabled,
 					DiscoveredTools:           dbClient.DiscoveredTools,
 					DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+					DiscoveredInstructions:    dbClient.DiscoveredInstructions,
 					PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 					TokenExchange:             dbClient.TokenExchange,
 					PendingOAuthConfig:        dbClient.PendingOAuthConfig,
@@ -1690,10 +1696,12 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		return nil, err
 	}
 	toolManagerConfig := schemas.MCPToolManagerConfig{
-		ToolExecutionTimeout:  schemas.Duration(time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second),
-		MaxAgentDepth:         clientConfig.MCPAgentDepth,
-		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
-		DisableAutoToolInject: clientConfig.MCPDisableAutoToolInject,
+		ToolExecutionTimeout:     schemas.Duration(time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second),
+		MaxAgentDepth:            clientConfig.MCPAgentDepth,
+		MaxInstructionsPerClient: clientConfig.MCPMaxInstructionsPerClient,
+		MaxInstructionsTotal:     clientConfig.MCPMaxInstructionsTotal,
+		CodeModeBindingLevel:     schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
+		DisableAutoToolInject:    clientConfig.MCPDisableAutoToolInject,
 	}
 	clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
 	for i, dbClient := range dbMCPClients {
@@ -1716,11 +1724,13 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+			MaxInstructionsLength:     dbClient.MaxInstructionsLength,
 			AllowByDefault:            dbClient.AllowByDefault,
 			Disabled:                  dbClient.Disabled,
 			ToolPricing:               dbClient.ToolPricing,
 			DiscoveredTools:           dbClient.DiscoveredTools,
 			DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+			DiscoveredInstructions:    dbClient.DiscoveredInstructions,
 			PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 			TokenExchange:             dbClient.TokenExchange,
 			PendingOAuthConfig:        dbClient.PendingOAuthConfig,
@@ -2154,11 +2164,13 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 		ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+		MaxInstructionsLength:     dbClient.MaxInstructionsLength,
 		AllowByDefault:            dbClient.AllowByDefault,
 		Disabled:                  dbClient.Disabled,
 		ToolPricing:               dbClient.ToolPricing,
 		DiscoveredTools:           dbClient.DiscoveredTools,
 		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+		DiscoveredInstructions:    dbClient.DiscoveredInstructions,
 		PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 		TokenExchange:             dbClient.TokenExchange,
 		PendingOAuthConfig:        dbClient.PendingOAuthConfig,
@@ -2213,13 +2225,14 @@ func (s *RDBConfigStore) UpdateMCPClientOAuthConfigID(ctx context.Context, clien
 	return nil
 }
 
-// UpdateMCPClientTools persists an MCP client's discovered tools and tool
-// name mapping as a targeted column update — unlike UpdateMCPClientConfig's
-// full-row overwrite, this never touches any other column, so it's safe to
-// call from a periodic background refresh without racing a concurrent config
-// edit. An empty (non-nil) map is a legitimate "server has zero tools"
-// result and is written as-is, same as a populated one.
-func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error {
+// UpdateMCPClientTools persists an MCP client's discovered tools, tool name
+// mapping and server instructions as a targeted column update — unlike
+// UpdateMCPClientConfig's full-row overwrite, this never touches any other
+// column, so it's safe to call from a periodic background refresh without
+// racing a concurrent config edit. An empty (non-nil) map is a legitimate
+// "server has zero tools" result and is written as-is, same as a populated
+// one; an empty instructions string likewise means the server advertises none.
+func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error {
 	toolsJSON, err := json.Marshal(tools)
 	if err != nil {
 		return fmt.Errorf("failed to marshal discovered_tools: %w", err)
@@ -2232,9 +2245,10 @@ func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID stri
 		Model(&tables.TableMCPClient{}).
 		Where("client_id = ?", clientID).
 		Updates(map[string]interface{}{
-			"discovered_tools_json":  string(toolsJSON),
-			"tool_name_mapping_json": string(mappingJSON),
-			"updated_at":             time.Now(),
+			"discovered_tools_json":   string(toolsJSON),
+			"tool_name_mapping_json":  string(mappingJSON),
+			"discovered_instructions": instructions,
+			"updated_at":              time.Now(),
 		})
 	if res.Error != nil {
 		return res.Error
@@ -2320,10 +2334,12 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			NeedsSessionStickiness: clientConfigCopy.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncIntervalSec,
 			ToolExecutionTimeout:   toolExecutionTimeoutSec,
+			MaxInstructionsLength:  clientConfigCopy.MaxInstructionsLength,
 			AllowByDefault:         clientConfigCopy.AllowByDefault,
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+			DiscoveredInstructions:    clientConfig.DiscoveredInstructions,
 			// PerUserHeaderKeys is the admin-declared schema for
 			// MCPAuthTypePerUserHeaders. Without this copy the BeforeSave
 			// hook persists an empty column, and on restart AddClient's
@@ -2490,6 +2506,9 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 
 		// Update only editable fields using a map to avoid updating connection info
 		// Connection info (ConnectionType, ConnectionString, StdioConfig) is read-only and should not be modified via API
+		if clientConfigCopy.MaxInstructionsLength < 0 {
+			return fmt.Errorf("max_instructions_length must be non-negative, got %d", clientConfigCopy.MaxInstructionsLength)
+		}
 		if clientConfigCopy.ToolExecutionTimeout < 0 {
 			return fmt.Errorf("tool_execution_timeout must be non-negative, got %d", clientConfigCopy.ToolExecutionTimeout)
 		}
@@ -2507,6 +2526,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"tool_pricing_json":          string(toolPricingJSON),
 			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
 			"tool_execution_timeout":     clientConfigCopy.ToolExecutionTimeout,
+			"max_instructions_length":    clientConfigCopy.MaxInstructionsLength,
 			"allow_on_all_virtual_keys":  clientConfigCopy.AllowByDefault,
 			"disabled":                   clientConfigCopy.Disabled,
 			"updated_at":                 time.Now(),
@@ -2924,6 +2944,7 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_video_per_second_4k",
 	// Costs - Other
 	"search_context_cost_per_query",
+	"web_search_cost_per_request",
 	"input_cost_per_query",
 	"code_interpreter_cost_per_session",
 	"cost_per_request",

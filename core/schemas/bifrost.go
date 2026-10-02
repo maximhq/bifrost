@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 )
 
@@ -138,6 +139,7 @@ func (r RequestType) Value() (driver.Value, error) {
 
 const (
 	ListModelsRequest              RequestType = "list_models"
+	ModelRetrieveRequest           RequestType = "model_retrieve"
 	TextCompletionRequest          RequestType = "text_completion"
 	TextCompletionStreamRequest    RequestType = "text_completion_stream"
 	ChatCompletionRequest          RequestType = "chat_completion"
@@ -407,6 +409,7 @@ const (
 	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers"          // map[string]string (set by provider handlers for response header forwarding)
 	BifrostContextKeyDroppedUnsupportedTools             BifrostContextKey = "bifrost-dropped-unsupported-tools"          // []string (set by provider request builders — tool type strings silently dropped because the target provider/model doesn't support them)
 	BifrostContextKeyMCPAddedTools                       BifrostContextKey = "bifrost-mcp-added-tools"                    // []string (set by bifrost - DO NOT SET THIS MANUALLY)) - list of tools added to the request by MCP, all the tool are in the format "clientName-toolName"
+	BifrostContextKeyMCPInstructionsInjected             BifrostContextKey = "bifrost-mcp-instructions-injected"          // bool (set by bifrost - DO NOT SET THIS MANUALLY) - guards the agent loop from stacking the instructions block on every turn
 	BifrostContextKeyLargePayloadMode                    BifrostContextKey = "bifrost-large-payload-mode"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large payload streaming mode is active
 	BifrostContextKeyLargePayloadReader                  BifrostContextKey = "bifrost-large-payload-reader"               // io.Reader (set by bifrost - DO NOT SET THIS MANUALLY)) upstream reader for large payloads
 	BifrostContextKeyLargePayloadContentLength           BifrostContextKey = "bifrost-large-payload-content-length"       // int (set by bifrost - DO NOT SET THIS MANUALLY)) content length for large payloads
@@ -619,6 +622,7 @@ type BifrostRequest struct {
 	RequestType RequestType
 
 	ListModelsRequest            *BifrostListModelsRequest
+	ModelRetrieveRequest         *BifrostModelRetrieveRequest
 	TextCompletionRequest        *BifrostTextCompletionRequest
 	ChatRequest                  *BifrostChatRequest
 	ResponsesRequest             *BifrostResponsesRequest
@@ -677,6 +681,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 	switch {
 	case br.ListModelsRequest != nil:
 		return br.ListModelsRequest.Provider, "", nil
+	case br.ModelRetrieveRequest != nil:
+		return br.ModelRetrieveRequest.Provider, br.ModelRetrieveRequest.Model, nil
 	case br.TextCompletionRequest != nil:
 		return br.TextCompletionRequest.Provider, br.TextCompletionRequest.Model, br.TextCompletionRequest.Fallbacks
 	case br.ChatRequest != nil:
@@ -833,6 +839,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 	switch {
 	case br.ListModelsRequest != nil:
 		br.ListModelsRequest.Provider = provider
+	case br.ModelRetrieveRequest != nil:
+		br.ModelRetrieveRequest.Provider = provider
 	case br.TextCompletionRequest != nil:
 		br.TextCompletionRequest.Provider = provider
 	case br.ChatRequest != nil:
@@ -899,6 +907,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 // SetModel sets the model on the active request variant.
 func (br *BifrostRequest) SetModel(model string) {
 	switch {
+	case br.ModelRetrieveRequest != nil:
+		br.ModelRetrieveRequest.Model = model
 	case br.TextCompletionRequest != nil:
 		br.TextCompletionRequest.Model = model
 	case br.ChatRequest != nil:
@@ -1188,6 +1198,7 @@ func (r *BifrostMCPRequest) GetToolArguments() interface{} {
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
 	ListModelsResponse            *BifrostListModelsResponse
+	ModelRetrieveResponse         *BifrostModelRetrieveResponse
 	TextCompletionResponse        *BifrostTextCompletionResponse
 	ChatResponse                  *BifrostChatResponse
 	ResponsesResponse             *BifrostResponsesResponse
@@ -1243,6 +1254,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	switch {
 	case r.ListModelsResponse != nil:
 		return &r.ListModelsResponse.ExtraFields
+	case r.ModelRetrieveResponse != nil:
+		return &r.ModelRetrieveResponse.ExtraFields
 	case r.TextCompletionResponse != nil:
 		return &r.TextCompletionResponse.ExtraFields
 	case r.ChatResponse != nil:
@@ -1483,6 +1496,11 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.ListModelsResponse.ExtraFields.Provider = provider
 		r.ListModelsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.ListModelsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ModelRetrieveResponse != nil:
+		r.ModelRetrieveResponse.ExtraFields.RequestType = requestType
+		r.ModelRetrieveResponse.ExtraFields.Provider = provider
+		r.ModelRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ModelRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	case r.TextCompletionResponse != nil:
 		r.TextCompletionResponse.ExtraFields.RequestType = requestType
 		r.TextCompletionResponse.ExtraFields.Provider = provider
@@ -1760,7 +1778,10 @@ type BifrostMCPConnectResponse struct {
 	ServerInfo         *MCPServerInfo           // Name + version from the initialize handshake
 	ProtocolVersion    string                   // Negotiated MCP protocol version
 	ServerCapabilities *MCPServerCapabilities   // Which MCP feature groups the server claims to support
-	ExtraFields        BifrostMCPResponseExtraFields
+	// Instructions is the server's usage guidance from the initialize result. A sibling of
+	// ServerInfo on the wire, not nested inside it. Empty when the server sent none.
+	Instructions string
+	ExtraFields  BifrostMCPResponseExtraFields
 }
 
 // PopulateExtraFields backfills ClientName on the Connect response when it's not
@@ -2057,6 +2078,42 @@ func (e *BifrostError) PopulateExtraFields(requestType RequestType, provider Mod
 	} else {
 		e.ExtraFields.ResolvedModelUsed = originalModelRequested
 	}
+}
+
+// Here, not in package bifrost, so EffectiveHTTPStatus can match them without a cycle.
+const (
+	ProviderAutoResolveErrorMessage = "could not auto resolve a provider for the request, please specify a provider explicitly"
+	ModelAutoResolveErrorMessage    = "could not auto resolve a model for the request, please specify a model explicitly"
+)
+
+// NormalizeJSONErrorStatus maps statuses that forbid response content to 502.
+func NormalizeJSONErrorStatus(code int) int {
+	if code < 200 || code == http.StatusNoContent ||
+		code == http.StatusResetContent || code == http.StatusNotModified {
+		return http.StatusBadGateway
+	}
+	return code
+}
+
+// EffectiveHTTPStatus returns the HTTP status this error resolves to. Single source of
+// truth for the response, the span attribute and the metric dimension.
+func (e *BifrostError) EffectiveHTTPStatus() int {
+	if e == nil {
+		return http.StatusInternalServerError
+	}
+	if e.StatusCode != nil {
+		return NormalizeJSONErrorStatus(*e.StatusCode)
+	}
+	if !e.IsBifrostError {
+		return http.StatusBadRequest
+	}
+	// Auto-resolve failures are caller mistakes, not Bifrost faults.
+	if e.Error != nil &&
+		(e.Error.Message == ProviderAutoResolveErrorMessage ||
+			e.Error.Message == ModelAutoResolveErrorMessage) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 // String renders the error as JSON for logging and test diagnostics.

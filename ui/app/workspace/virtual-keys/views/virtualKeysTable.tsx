@@ -963,7 +963,7 @@ export default function VirtualKeysTable({
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border">
-					<Table containerClassName="h-full overflow-auto" className="w-full min-w-[1528px] table-fixed" data-testid="vk-table">
+					<Table containerClassName="h-full overflow-auto" className="w-full min-w-[1588px] table-fixed" data-testid="vk-table">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
 								<TableHead className="w-[48px]">
@@ -983,7 +983,7 @@ export default function VirtualKeysTable({
 									<SortableHeader column="budget_spent" label="Budget" />
 								</TableHead>
 								<TableHead className="w-[200px]">Rate Limits</TableHead>
-								<TableHead className="w-[120px]">
+								<TableHead className="w-[180px]">
 									<SortableHeader column="status" label="Status" />
 								</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-30 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>

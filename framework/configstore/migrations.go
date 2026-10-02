@@ -18,6 +18,8 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -499,6 +501,9 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
 	{IDs: []string{"widen_oauth2_client_controlled_columns"}, run: migrationWidenOAuth2ClientControlledColumns},
 	{IDs: []string{"add_virtual_key_business_unit_column"}, run: migrationAddVirtualKeyBusinessUnitColumn},
+	{IDs: []string{"add_mcp_discovered_instructions_column"}, run: migrationAddMCPDiscoveredInstructionsColumn},
+	{IDs: []string{"add_mcp_instruction_cap_columns"}, run: migrationAddMCPInstructionCapColumns},
+	{IDs: []string{"add_mcp_client_max_instructions_length_column"}, run: migrationAddMCPClientMaxInstructionsLengthColumn},
 	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
 	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
@@ -506,6 +511,9 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_temperature_reasoning_columns"}, run: migrationAddWarpTemperatureReasoningColumns},
 	{IDs: []string{"add_virtual_key_disable_content_logging_column"}, run: migrationAddVirtualKeyDisableContentLoggingColumn},
 	{IDs: []string{"add_ttft_timeout_ms_column_to_routing_targets"}, run: migrationAddTTFTTimeoutMsColumnToRoutingTargets},
+	{IDs: []string{"add_web_search_cost_per_request_column"}, run: migrationAddWebSearchCostPerRequestColumn},
+	{IDs: []string{"move_pricing_override_search_context_to_web_search"}, run: migrationMovePricingOverrideSearchContextToWebSearch},
+	{IDs: []string{"add_warp_additional_models_column"}, run: migrationAddWarpAdditionalModelsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -594,6 +602,33 @@ func migrationAddWarpTemperatureReasoningColumns(ctx context.Context, db *gorm.D
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: dropping a configured temperature or reasoning effort would lose operator settings", migrationName)
+		},
+	})
+}
+
+// migrationAddWarpAdditionalModelsColumn adds the list of models an operator
+// exposes beside Warp's default, so the panel can offer more than one.
+//
+// It arrives NULL on an existing row, which reads as "no additional models":
+// the deployment keeps running on the one provider and model it already had.
+func migrationAddWarpAdditionalModelsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_additional_models_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			// Only the column this migration owns, not a full-model AutoMigrate;
+			// see migrationAddWarpLogEmbeddingColumns.
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "additional_models"); err != nil {
+				return fmt.Errorf("add additional_models column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: the default model lives in its own columns, so dropping
+			// this costs the extra choices and leaves Warp answering.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "additional_models")
 		},
 	})
 }
@@ -14169,6 +14204,173 @@ func migrationAddTTFTTimeoutMsColumnToRoutingTargets(ctx context.Context, db *go
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPDiscoveredInstructionsColumn adds the discovered_instructions column to the
+// MCP client table. Per-call auth types (per-user OAuth, per-user headers, token exchange) hold
+// no persistent connection, so — exactly like discovered_tools_json beside it — their
+// instructions have to survive a restart here or be lost until the next admin verification.
+func migrationAddMCPDiscoveredInstructionsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_discovered_instructions_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "discovered_instructions")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "discovered_instructions")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp discovered instructions migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPInstructionCapColumns adds the two byte bounds on forwarded MCP instructions to
+// the client config table. Both default to 0, which the core reads as "use the built-in default",
+// so existing rows keep exactly the limits they ran with before.
+func migrationAddMCPInstructionCapColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_instruction_cap_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"mcp_max_instructions_per_client", "mcp_max_instructions_total"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"mcp_max_instructions_per_client", "mcp_max_instructions_total"} {
+				if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp instruction cap migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWebSearchCostPerRequestColumn adds web_search_cost_per_request, seeded from search_context_cost_per_query.
+func migrationAddWebSearchCostPerRequestColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_web_search_cost_per_request_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, "web_search_cost_per_request"); err != nil {
+				return fmt.Errorf("failed to add column web_search_cost_per_request: %w", err)
+			}
+			// Existing rows would bill web search at $0 until the next datasheet sync.
+			if err := tx.Model(&tables.TableModelPricing{}).
+				Where("web_search_cost_per_request IS NULL AND search_context_cost_per_query IS NOT NULL").
+				Update("web_search_cost_per_request", gorm.Expr("search_context_cost_per_query")).Error; err != nil {
+				return fmt.Errorf("failed to backfill web_search_cost_per_request: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "web_search_cost_per_request"); err != nil {
+				return fmt.Errorf("failed to drop column web_search_cost_per_request: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationMovePricingOverrideSearchContextToWebSearch renames search_context_cost_per_query to web_search_cost_per_request in override patches.
+func migrationMovePricingOverrideSearchContextToWebSearch(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "move_pricing_override_search_context_to_web_search"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			var rows []struct {
+				ID               string
+				PricingPatchJSON string
+			}
+			if err := tx.Table(tables.TablePricingOverride{}.TableName()).
+				Select("id, pricing_patch_json").
+				Where("pricing_patch_json LIKE ?", "%search_context_cost_per_query%").
+				Scan(&rows).Error; err != nil {
+				return fmt.Errorf("failed to load pricing overrides: %w", err)
+			}
+			for _, row := range rows {
+				legacy := gjson.Get(row.PricingPatchJSON, "search_context_cost_per_query")
+				if !legacy.Exists() {
+					continue
+				}
+				patch := row.PricingPatchJSON
+				var err error
+				// An explicit web_search_cost_per_request wins over the legacy rate.
+				if !gjson.Get(patch, "web_search_cost_per_request").Exists() {
+					if patch, err = sjson.SetRaw(patch, "web_search_cost_per_request", legacy.Raw); err != nil {
+						return fmt.Errorf("failed to set web_search_cost_per_request on override %s: %w", row.ID, err)
+					}
+				}
+				if patch, err = sjson.Delete(patch, "search_context_cost_per_query"); err != nil {
+					return fmt.Errorf("failed to drop search_context_cost_per_query on override %s: %w", row.ID, err)
+				}
+				if err := tx.Table(tables.TablePricingOverride{}.TableName()).
+					Where("id = ?", row.ID).
+					UpdateColumn("pricing_patch_json", patch).Error; err != nil {
+					return fmt.Errorf("failed to update override %s: %w", row.ID, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientMaxInstructionsLengthColumn adds the per-client instruction byte cap to
+// the MCP client table. Defaults to 0, which means "use the global cap", so existing clients
+// keep exactly the limit they ran with before.
+func migrationAddMCPClientMaxInstructionsLengthColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_max_instructions_length_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "max_instructions_length")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "max_instructions_length")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client max instructions length migration: %s", err.Error())
 	}
 	return nil
 }

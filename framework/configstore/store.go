@@ -312,10 +312,10 @@ type ConfigStore interface {
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	// UpdateMCPClientTools is a targeted column update for
-	// discovered_tools_json/tool_name_mapping_json only — safe to call from
-	// a periodic background tool-sync without racing a concurrent full
-	// UpdateMCPClientConfig call over unrelated fields.
-	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error
+	// discovered_tools_json/tool_name_mapping_json/discovered_instructions only —
+	// safe to call from a periodic background tool-sync without racing a concurrent
+	// full UpdateMCPClientConfig call over unrelated fields.
+	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// MCP library catalog (synced + org-custom)
@@ -978,6 +978,7 @@ type ConfigStore interface {
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
 	// Batch jobs - mutable coordination state for delayed batch accounting

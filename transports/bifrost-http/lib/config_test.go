@@ -754,12 +754,13 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 	return nil
 }
 
-func (m *MockConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error {
+func (m *MockConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error {
 	if m.mcpConfig != nil {
 		for _, cfg := range m.mcpConfig.ClientConfigs {
 			if cfg.ID == clientID {
 				cfg.DiscoveredTools = tools
 				cfg.DiscoveredToolNameMapping = toolNameMapping
+				cfg.DiscoveredInstructions = instructions
 				return nil
 			}
 		}
@@ -1960,6 +1961,10 @@ func (m *MockConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind 
 }
 
 func (m *MockConfigStore) GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error) {
 	return nil, nil
 }
 
@@ -18919,6 +18924,10 @@ var excludedGoFields = map[string]map[string]bool{
 		"mcp_tool_execution_timeout":   true,
 		"mcp_tool_sync_interval":       true,
 		"mcp_disable_auto_tool_inject": true,
+		// Configured only under mcp.tool_manager_config; the client columns are storage,
+		// deliberately without a deprecated client-level twin in the schema.
+		"mcp_max_instructions_per_client": true,
+		"mcp_max_instructions_total":      true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
 	// GovernanceConfig - some fields are internal/enterprise

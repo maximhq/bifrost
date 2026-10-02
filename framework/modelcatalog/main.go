@@ -365,13 +365,7 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 // list-models cache. List-models refresh is now driven by key/provider
 // edits, not by pricing reloads.
 func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
-	timeout := datasheet.DefaultPricingTimeout
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
-
+	// The URL fetch is bounded inside the datasheet; DB fallback and overrides reload need a live ctx.
 	var wg sync.WaitGroup
 	var pricingErr, paramsErr error
 	wg.Add(2)
