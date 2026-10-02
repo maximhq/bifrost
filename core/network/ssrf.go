@@ -123,11 +123,13 @@ func embeddedIPv4(addr netip.Addr) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
-// ipLookuper resolves a hostname to IPs. *net.Resolver satisfies it; tests
+// IPLookuper resolves a hostname to IPs. *net.Resolver satisfies it; tests
 // substitute a fake to exercise the dial path without real DNS.
-type ipLookuper interface {
+type IPLookuper interface {
 	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
 }
+
+type ipLookuper = IPLookuper
 
 // SSRFSafeDialContext returns a DialContext for outbound requests to
 // user-controlled URLs. On every dial it resolves the host, rejects the
@@ -564,19 +566,19 @@ func guardedProxySelector(next func(*http.Request) (*url.URL, error), checkIP fu
 
 // vetGuardedDestination applies checkIP to a destination host before a guarded
 // client contacts it. An IP literal is checked as is. A hostname is resolved
-// and every returned address must pass. When the lookup itself fails the
-// outcome depends on who will connect: on the direct path the dialer is about
-// to resolve the same name and would fail the same way, so refuse now with a
-// clear reason; on the proxied path the proxy resolves the name on its own
-// side, so a local resolver that cannot answer (proxy-only DNS) is not grounds
-// to refuse - the proxy is then the policy boundary for that hop.
-func vetGuardedDestination(ctx context.Context, host string, proxied bool, resolver ipLookuper, checkIP func(ip net.IP, host string) error) error {
+// and every returned address must pass. When the lookup itself fails,
+// deferUnresolved decides: false refuses with a clear reason (the direct path,
+// where the dialer would fail the same way, and the strict proxied path, where
+// nothing may reach the proxy unvetted); true leaves the name to the proxy,
+// which resolves it on its own side (the private-network proxied path, where a
+// proxy-only DNS deployment is the documented reason local resolution fails).
+func vetGuardedDestination(ctx context.Context, host string, deferUnresolved bool, resolver ipLookuper, checkIP func(ip net.IP, host string) error) error {
 	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
 		return checkIP(ip, host)
 	}
 	ips, err := resolver.LookupIP(ctx, "ip", host)
 	if err != nil {
-		if proxied {
+		if deferUnresolved {
 			return nil
 		}
 		return fmt.Errorf("DNS lookup failed: %w", err)
@@ -587,4 +589,67 @@ func vetGuardedDestination(ctx context.Context, host string, proxied bool, resol
 		}
 	}
 	return nil
+}
+
+// CheckProxiedDestination applies the dial-time destination policy to a
+// request that will travel through a proxy, where the dialer only ever sees
+// the proxy's address. strict selects the public-only policy of
+// SSRFSafeDialContext; otherwise the private-network policy of
+// PrivateNetworkDialContext applies. An IP literal is checked as is and a
+// hostname against the resolver's answer. A hostname the resolver cannot
+// answer is treated differently by policy: the private-network policy leaves
+// it to the proxy (a proxy-only egress deployment resolves names there), the
+// strict policy refuses it, because strict guards a target chosen by a caller
+// who passed no credential check and a name that stops resolving locally is
+// also how such a caller would route a later private resolution through the
+// proxy unchecked.
+func CheckProxiedDestination(ctx context.Context, host string, strict bool, resolver IPLookuper) error {
+	checkIP := checkPrivateNetworkPolicy
+	if strict {
+		checkIP = func(ip net.IP, host string) error {
+			if !IsPublicIP(ip) {
+				return fmt.Errorf("blocked connection to non-public address %s (host %s)", ip, host)
+			}
+			return nil
+		}
+	}
+	return vetGuardedDestination(ctx, host, !strict, resolver, checkIP)
+}
+
+// ProxyAwareTransport routes each request, by that request's own proxy
+// decision, to one of two transports: Direct, which never uses a proxy and
+// dials the destination under the destination policy, and ViaProxy, which
+// always uses the proxy and so dials nothing but the proxy, under the proxy
+// policy. Keeping the two policies on separate transports is what makes the
+// classification per request: there is no shared record of "addresses that
+// are proxies" for a later direct request to match by coincidence, and
+// http.Transport hands DialContext the proxy address on exactly the transport
+// whose dialer expects it.
+type ProxyAwareTransport struct {
+	// Proxy decides the route: nil means direct. It is the operator's proxy
+	// configuration (http.ProxyFromEnvironment), not a policy check; the
+	// destination policy for the proxied path runs in ViaProxy.Proxy.
+	Proxy    func(*http.Request) (*url.URL, error)
+	Direct   *http.Transport
+	ViaProxy *http.Transport
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *ProxyAwareTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.Proxy != nil {
+		proxyURL, err := t.Proxy(req)
+		if err != nil {
+			return nil, err
+		}
+		if proxyURL != nil {
+			return t.ViaProxy.RoundTrip(req)
+		}
+	}
+	return t.Direct.RoundTrip(req)
+}
+
+// CloseIdleConnections closes idle connections on both transports.
+func (t *ProxyAwareTransport) CloseIdleConnections() {
+	t.Direct.CloseIdleConnections()
+	t.ViaProxy.CloseIdleConnections()
 }
