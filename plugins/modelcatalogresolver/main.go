@@ -61,6 +61,9 @@ func (p *Plugin) Cleanup() error { return nil }
 //
 // If the catalog returns zero providers, the resolver leaves req.Provider empty — the
 // empty-provider validation in handleRequest/handleStreamRequest then returns a clear error.
+// Exception: key-selection-bypass requests (BifrostContextKeySkipKeySelection) are pinned to
+// the integration's canonical provider regardless of catalog contents — see
+// ResolveProviderFromCatalog for why a zero-key OAuth-passthrough provider needs this.
 func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
 	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
 		return nil
@@ -145,7 +148,26 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 // selection — emitting routing-engine logs visible to callers when the allowlist prunes
 // candidates. Side effect: routing-engine logs are written to ctx when allowlist filtering
 // is applied (nil ctx skips logging).
+//
+// Key-selection-bypass requests (BifrostContextKeySkipKeySelection — currently set only by
+// checkAnthropicPassthrough for Claude Code OAuth/Max-mode passthrough) are pinned to the
+// integration's canonical provider unconditionally, before any catalog lookup: the OAuth
+// credential such a request carries is only ever valid against that one provider, and a
+// zero-key passthrough provider (e.g. `anthropic` configured with `"keys": []`) by design
+// contributes nothing to the catalog, so it could otherwise never be resolved this way. This
+// restores, at this consolidated layer, the behavior the now-removed core/providers/utils.
+// CheckAndSetDefaultProvider used to provide for every ToBifrost*Request converter before #4177.
 func ResolveProviderFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatalog.ModelCatalog, model string) (schemas.ModelProvider, []schemas.ModelProvider) {
+	if ctx != nil {
+		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skip {
+			if integrationType, ok := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); ok {
+				if integrationDefault, mapped := integrationTypeToDefaultProvider[integrationType]; mapped && integrationDefault != "" {
+					return integrationDefault, nil
+				}
+			}
+		}
+	}
+
 	if catalog == nil || model == "" {
 		return "", nil
 	}
