@@ -358,18 +358,18 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					render={({ field }) => (
 						<FormItem className="px-0.5">
 							<FormLabel>
-								{isGithubCopilot ? "Copilot API Token" : "API Key"} {isVLLM || isGithubCopilot ? "(Optional)" : ""}
+								{isGithubCopilot ? "GitHub Token or Copilot API Token" : "API Key"} {isVLLM || isGithubCopilot ? "(Optional)" : ""}
 							</FormLabel>
 							{isGithubCopilot && (
 								<FormDescription>
-									Requires Network Config &gt; Base URL set to the host the token was issued for, because a Copilot token does not carry
-									one. Also expires after about 30 minutes, and Bifrost cannot refresh a token it did not mint, so prefer the GitHub App
-									below for anything long-running.
+									A GitHub token (OAuth, GitHub App user or fine-grained personal access token) needs no Base URL and bills to the Copilot
+									subscription of that user. A Copilot API token requires Network Config &gt; Base URL set to the host the token was issued
+									for, and expires after about 30 minutes.
 								</FormDescription>
 							)}
 							<FormControl>
 								<SecretVarInput
-									placeholder={isGithubCopilot ? "Copilot API token, or leave blank to use a GitHub App" : "API Key or env.MY_KEY"}
+									placeholder={isGithubCopilot ? "GitHub token, Copilot API token, or blank to use a GitHub App" : "API Key or env.MY_KEY"}
 									type="text"
 									{...field}
 								/>
@@ -1209,8 +1209,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						<p className="text-muted-foreground text-sm">
 							Copilot accepts either credential. Fill in <strong>one</strong> of the two. <strong>GitHub App</strong> is the option for a
 							shared gateway: usage bills to the organization that owns the installation and no individual Copilot seat is used. A{" "}
-							<strong>Copilot API token</strong> in the field above is simpler but expires after about 30 minutes, so it suits testing
-							rather than a running gateway.{" "}
+							<strong>GitHub token</strong> in the field above uses the Copilot subscription of one user. A{" "}
+							<strong>Copilot API token</strong> is simpler but expires after about 30 minutes, so it suits testing rather than a running
+							gateway.{" "}
 							<a
 								href="https://docs.github.com/en/copilot/how-tos/copilot-sdk/auth/server-to-server-tokens"
 								target="_blank"
@@ -1238,9 +1239,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						    control, so there is no FormItem id for htmlFor to point at. */}
 						<Label>GitHub App Credentials</Label>
 						<p className="text-muted-foreground text-sm">
-							Leave these blank if you supplied a Copilot API token above. Otherwise all four are needed together. The App needs the Copilot
-							Requests permission at Read &amp; write, installed on the organization that should be billed with All repositories access, and
-							that organization must allow Copilot requests from GitHub App installations.
+							Leave these blank if you supplied a token above. Otherwise all four are needed together. The App needs the Copilot Requests
+							permission at Read &amp; write, installed on the organization that should be billed with All repositories access, and that
+							organization must allow Copilot requests from GitHub App installations.
 						</p>
 					</div>
 					<FormField

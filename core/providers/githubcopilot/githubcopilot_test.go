@@ -118,6 +118,64 @@ func TestResolveCredentials(t *testing.T) {
 		assert.Contains(t, bErr.Error.Message, "base_url")
 	})
 
+	t.Run("a GitHub token needs no base URL", func(t *testing.T) {
+		// Copilot accepts a GitHub OAuth, GitHub App user or fine-grained personal access
+		// token as the bearer on the public host, so there is a safe default for these.
+		for _, token := range []string{"gho_abc", "ghu_abc", "github_pat_abc"} {
+			key := schemas.Key{Value: *schemas.NewSecretVar(token)}
+
+			creds, bErr := resolveCredentials(nil, key, nil, "", nil)
+
+			require.Nil(t, bErr, token)
+			assert.Equal(t, token, creds.Token)
+			assert.Equal(t, defaultCopilotAPIBaseURL, creds.BaseURL)
+		}
+	})
+
+	t.Run("a configured base URL wins for a GitHub token", func(t *testing.T) {
+		key := schemas.Key{Value: *schemas.NewSecretVar("gho_abc")}
+
+		creds, bErr := resolveCredentials(nil, key, nil, "https://copilot-api.acme.ghe.com/", nil)
+
+		require.Nil(t, bErr)
+		assert.Equal(t, "https://copilot-api.acme.ghe.com", creds.BaseURL)
+	})
+
+	t.Run("refuses to send a GitHub token over http to a host that is not loopback", func(t *testing.T) {
+		key := schemas.Key{Value: *schemas.NewSecretVar("gho_abc")}
+
+		for _, baseURL := range []string{"http://copilot-api.acme.ghe.com", "http://10.0.0.5:8080", "copilot-api.acme.ghe.com"} {
+			creds, bErr := resolveCredentials(nil, key, nil, baseURL, nil)
+
+			require.Nil(t, creds, baseURL)
+			require.NotNil(t, bErr, baseURL)
+			assert.Contains(t, bErr.Error.Message, "https", baseURL)
+		}
+	})
+
+	t.Run("accepts http on a loopback address for a GitHub token", func(t *testing.T) {
+		// A local recording proxy is the reason to configure one, and the bytes never leave
+		// the machine.
+		key := schemas.Key{Value: *schemas.NewSecretVar("gho_abc")}
+
+		for _, baseURL := range []string{"http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"} {
+			creds, bErr := resolveCredentials(nil, key, nil, baseURL, nil)
+
+			require.Nil(t, bErr, baseURL)
+			assert.Equal(t, baseURL, creds.BaseURL)
+		}
+	})
+
+	t.Run("refuses a classic personal access token", func(t *testing.T) {
+		key := schemas.Key{Value: *schemas.NewSecretVar("ghp_abc")}
+
+		creds, bErr := resolveCredentials(nil, key, nil, "https://api.githubcopilot.com", nil)
+
+		require.Nil(t, creds)
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "classic personal access token")
+	})
+
 	t.Run("a whitespace-only token is treated as absent", func(t *testing.T) {
 		key := schemas.Key{Value: *schemas.NewSecretVar("   ")}
 

@@ -88,7 +88,7 @@ works.
 
 1. Navigate to **Models** > **Model Providers**.
 2. Click **Add Provider** and choose **GitHub Copilot**.
-3. Leave **API Key** blank.
+3. Leave **GitHub Token or Copilot API Token** blank.
 4. Under **GitHub App Credentials**, fill in **App ID**, **Installation ID**, **Repository ID** and **Private Key**.
 5. Leave **GitHub Enterprise Domain** blank unless you run GitHub Enterprise.
 6. Click **Save**.
@@ -152,6 +152,40 @@ case schemas.GithubCopilot:
 
 </Tab>
 </Tabs>
+
+### Using a GitHub token instead
+
+A GitHub token can go in `value` in place of the GitHub App credentials. Copilot accepts
+three kinds:
+
+| Token | Prefix |
+| ----- | ------ |
+| OAuth token | `gho_` |
+| GitHub App user token | `ghu_` |
+| Fine-grained personal access token with the **Copilot Requests** permission | `github_pat_` |
+
+A classic personal access token (`ghp_`) is not accepted.
+
+```json
+{
+  "providers": {
+    "github-copilot": {
+      "keys": [{ "name": "copilot-user", "value": "env.COPILOT_GITHUB_TOKEN", "models": ["*"], "weight": 1.0 }]
+    }
+  }
+}
+```
+
+No `base_url` is needed. Bifrost sends the token to `https://api.githubcopilot.com`. Set
+`base_url` only when your Copilot API host is different, for example on GitHub Enterprise
+Cloud with data residency. The `base_url` must use `https`, because the token is sent to that
+host. `http` is accepted only for a loopback address, such as a local proxy.
+
+<Note>
+Usage bills to the Copilot subscription of the user who owns the token, and the rate limits
+of that user apply. The models you can call depend on the application that issued the token,
+so check `/v1/models`. For a shared gateway, use the GitHub App credentials above.
+</Note>
 
 ### Using a Copilot API token instead
 
