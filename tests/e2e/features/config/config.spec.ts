@@ -108,6 +108,41 @@ test.describe('Inference auth setup defaults', () => {
   })
 })
 
+test.describe('Onboarding widget snooze', () => {
+  test.use({ skipAutoLogin: true })
+
+  test('remind me later opens a picker above the widget and snoozes it', async ({ page }) => {
+    // Mock an unconfigured instance so the checklist is incomplete and visible.
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/config') {
+        await route.fulfill({ json: {
+          client_config: { ...DefaultCoreConfig, enforce_auth_on_inference: false, allowed_origins: [] },
+          auth_config: null,
+          framework_config: {}, is_db_connected: true, metadata: {},
+        } })
+      } else if (path === '/api/version') {
+        await route.fulfill({ json: '1.0.0' })
+      } else if (path === '/api/session/is-auth-enabled') {
+        await route.fulfill({ json: { is_auth_enabled: false, has_valid_token: false, auth_type: 'none', inference_auth_enforced: false } })
+      } else if (path === '/api/keys') {
+        await route.fulfill({ json: [] })
+      } else {
+        await route.fulfill({ json: {} })
+      }
+    })
+    await page.goto('/workspace/config/client-settings')
+
+    await page.getByTestId('onboarding-later').click()
+    // The popover is portaled to body, so it must stack above the widget card.
+    // A non-forced click fails if the card covers the option.
+    await page.getByTestId('onboarding-remind-tomorrow').click({ timeout: 5000 })
+    await expect(page.getByTestId('onboarding-later')).not.toBeVisible()
+    const cookies = await page.context().cookies()
+    expect(cookies.some(c => c.name === 'bifrost_onboarding_remind_at')).toBe(true)
+  })
+})
+
 test.describe('Config Settings', () => {
   // Run all config tests serially to avoid parallel writes to the same config/store
   test.describe.configure({ mode: 'serial' })
