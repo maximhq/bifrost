@@ -1,0 +1,1 @@
+- fix: anthropic - native Sonnet 5.5 requests keep the caller's thinking and sampling settings on both the typed and raw paths (#7895) [@valentinyanakiev](https://github.com/valentinyanakiev)
