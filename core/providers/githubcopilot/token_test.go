@@ -624,6 +624,39 @@ func TestCachingAndRefresh(t *testing.T) {
 		assert.Equal(t, int64(2), fake.copilotHits.Load())
 	})
 
+	t.Run("a 401 from inference discards the Copilot token", func(t *testing.T) {
+		fake := newFakeGithub(t)
+		key := schemas.Key{GithubCopilotKeyConfig: fake.configFor(t, "reject-1")}
+		cfg := fake.resolve(t, "reject-1")
+
+		_, bErr := fake.mint(cfg, noopLogger{})
+		require.Nil(t, bErr)
+
+		dropRejectedToken(key, blockingError("x", http.StatusUnauthorized))
+		_, bErr = fake.mint(cfg, noopLogger{})
+		require.Nil(t, bErr)
+
+		assert.Equal(t, int64(1), fake.installationHits.Load())
+		assert.Equal(t, int64(2), fake.copilotHits.Load())
+	})
+
+	t.Run("other inference errors keep the Copilot token", func(t *testing.T) {
+		fake := newFakeGithub(t)
+		key := schemas.Key{GithubCopilotKeyConfig: fake.configFor(t, "reject-2")}
+		cfg := fake.resolve(t, "reject-2")
+
+		_, bErr := fake.mint(cfg, noopLogger{})
+		require.Nil(t, bErr)
+
+		dropRejectedToken(key, nil)
+		dropRejectedToken(key, blockingError("x", http.StatusForbidden))
+		dropRejectedToken(key, blockingError("x", http.StatusTooManyRequests))
+		_, bErr = fake.mint(cfg, noopLogger{})
+		require.Nil(t, bErr)
+
+		assert.Equal(t, int64(1), fake.copilotHits.Load())
+	})
+
 	t.Run("a short refresh_in is floored rather than obeyed", func(t *testing.T) {
 		fake := newFakeGithub(t)
 		fake.refreshIn.Store(1)
@@ -691,7 +724,43 @@ func TestFailureBackoff(t *testing.T) {
 		assert.Equal(t, transientBackoffCap, backoffFor(100, false))
 	})
 
+	t.Run("a cached failure is copied for each request", func(t *testing.T) {
+		fake := newFakeGithub(t)
+		fake.copilotStatus.Store(http.StatusForbidden)
+		cfg := fake.resolve(t, "backoff-5")
+
+		_, first := fake.mint(cfg, noopLogger{})
+		_, second := fake.mint(cfg, noopLogger{})
+		require.NotNil(t, first)
+		require.NotNil(t, second)
+
+		// Core writes request metadata onto every error a provider returns.
+		first.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.GithubCopilot, "model-a", "model-a")
+		second.PopulateExtraFields(schemas.ResponsesRequest, schemas.GithubCopilot, "model-b", "model-b")
+		_, third := fake.mint(cfg, noopLogger{})
+		require.NotNil(t, third)
+
+		assert.Equal(t, "model-a", first.ExtraFields.OriginalModelRequested)
+		assert.Equal(t, "model-b", second.ExtraFields.OriginalModelRequested)
+		assert.Empty(t, third.ExtraFields.OriginalModelRequested)
+	})
+
+	t.Run("an unreachable GitHub backs off on the transient schedule", func(t *testing.T) {
+		fake := newFakeGithub(t)
+		cfg := fake.resolve(t, "backoff-6")
+		fake.server.Close()
+
+		start := time.Now()
+		_, bErr := fake.mint(cfg, noopLogger{})
+		require.NotNil(t, bErr)
+
+		failure := loadOrCreateEntry(cfg.cacheKey).failure.Load()
+		require.NotNil(t, failure)
+		assert.Less(t, failure.retryAfter.Sub(start), permanentBackoffBase)
+	})
+
 	t.Run("rate limits and server errors count as transient", func(t *testing.T) {
+		assert.False(t, isPermanentError(blockingError("x", 0)))
 		assert.False(t, isPermanentError(blockingError("x", http.StatusTooManyRequests)))
 		assert.False(t, isPermanentError(blockingError("x", http.StatusBadGateway)))
 		assert.True(t, isPermanentError(blockingError("x", http.StatusUnauthorized)))

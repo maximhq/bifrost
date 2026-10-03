@@ -168,7 +168,7 @@ func (p *githubCopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		return nil, bErr
 	}
 
-	return openai.HandleOpenAIChatCompletionRequest(
+	response, bErr := openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		p.client,
 		creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
@@ -183,6 +183,8 @@ func (p *githubCopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		nil,
 		p.logger,
 	)
+	dropRejectedToken(key, bErr)
+	return response, bErr
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Copilot API.
@@ -192,7 +194,7 @@ func (p *githubCopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		return nil, bErr
 	}
 
-	return openai.HandleOpenAIChatCompletionStreaming(
+	stream, bErr := openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		p.streamingClient,
 		creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
@@ -213,6 +215,8 @@ func (p *githubCopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		p.logger,
 		postHookSpanFinalizer,
 	)
+	dropRejectedToken(key, bErr)
+	return stream, bErr
 }
 
 // Responses performs a responses request by converting through chat completions.
