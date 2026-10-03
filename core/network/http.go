@@ -79,7 +79,7 @@ type GlobalProxyConfig struct {
 // proxy enablement (SCIM, Inference, API).
 //
 // Clients handed out are live: GetFasthttpClient, GetHTTPClient, HTTPClientWithTLS
-// and SSRFHTTPClient return the same object for the life of the factory, and every
+// and PolicyTransport return the same object for the life of the factory, and every
 // request made through it runs on an inner client built for the proxy config current
 // at that moment. UpdateProxyConfig therefore reaches every caller, including ones
 // that stored the client when they were created, without anyone rebuilding anything.
@@ -220,8 +220,7 @@ func shouldBypassProxy(host, pattern string) bool {
 type httpClientKey struct {
 	purpose ClientPurpose
 	tls     *tls.Config // HTTPClientWithTLS: the caller's TLS settings
-	ssrf    bool        // SSRFHTTPClient
-	allow   *Allowlist  // SSRFHTTPClient: hosts permitted past the SSRF check
+	policy  *DialPolicy // PolicyTransport: which targets may be reached
 }
 
 // GetFasthttpClient returns the live fasthttp client for purpose. The same client is
@@ -299,16 +298,43 @@ func (f *HTTPClientFactory) HTTPClientWithTLS(purpose ClientPurpose, tlsConfig *
 	return f.liveHTTPClient(httpClientKey{purpose: purpose, tls: tlsConfig})
 }
 
-// SSRFHTTPClient returns a live net/http client for fetching user-controlled URLs
-// (webhooks, skills, plugin downloads) that honours the global proxy for purpose
-// without weakening the SSRF check. Direct connections go through
-// SSRFSafeDialContextWithAllowlist. Proxied requests dial only the proxy's own
-// address unchecked, and the target of every hop, redirects included, is refused
-// unless it resolves to public addresses or is permitted by allow (see
-// NewTargetCheckingTransport for the DNS caveat). Redirects are limited to http and
-// https, at most 10. allow may be nil.
-func (f *HTTPClientFactory) SSRFHTTPClient(purpose ClientPurpose, allow *Allowlist) *http.Client {
-	return f.liveHTTPClient(httpClientKey{purpose: purpose, ssrf: true, allow: allow})
+// DialPolicy decides which targets a client may reach, for callers that fetch
+// user-controlled URLs (webhooks, skills, plugin downloads). Build one with SSRFPolicy
+// or NewDialPolicy, once per caller: the factory keeps one transport per policy pointer.
+type DialPolicy struct {
+	dial        func(ctx context.Context, netw, addr string) (net.Conn, error)
+	checkTarget func(ctx context.Context, host string) error
+}
+
+// NewDialPolicy returns a policy that connects directly with dial, and judges the
+// target host of every proxied hop with checkTarget before the request is sent.
+func NewDialPolicy(dial func(ctx context.Context, netw, addr string) (net.Conn, error), checkTarget func(ctx context.Context, host string) error) *DialPolicy {
+	return &DialPolicy{dial: dial, checkTarget: checkTarget}
+}
+
+// SSRFPolicy is the standard policy for user-controlled URLs: public targets only,
+// plus the hosts in allow (nil permits none). Direct connections go through
+// SSRFSafeDialContextWithAllowlist, which checks every resolved address at dial time;
+// dial time is bounded by the request context.
+func SSRFPolicy(allow *Allowlist) *DialPolicy {
+	return SSRFPolicyWithDialTimeout(0, allow)
+}
+
+// SSRFPolicyWithDialTimeout is SSRFPolicy with each direct dial also bounded by
+// dialTimeout (0 leaves it to the request context).
+func SSRFPolicyWithDialTimeout(dialTimeout time.Duration, allow *Allowlist) *DialPolicy {
+	return NewDialPolicy(SSRFSafeDialContextWithAllowlist(dialTimeout, allow), publicTargetCheck(net.DefaultResolver, allow))
+}
+
+// PolicyTransport returns a live RoundTripper that honours the global proxy for purpose
+// while enforcing policy. Direct connections, including no_proxy matches, use the
+// policy's dialer. Once a request is proxied the dial goes to the proxy, which is
+// operator configuration and is let through; the target of every hop, redirects
+// included, is judged by the policy's check instead (see NewTargetCheckingTransport for
+// the DNS caveat). The caller keeps its own http.Client for timeouts and redirect rules:
+// the transport adds no timeout of its own and requires TLS 1.2 or later.
+func (f *HTTPClientFactory) PolicyTransport(purpose ClientPurpose, policy *DialPolicy) http.RoundTripper {
+	return f.liveHTTPClient(httpClientKey{purpose: purpose, policy: policy}).Transport
 }
 
 // liveHTTPClient returns the live client for key, creating it on first use.
@@ -326,17 +352,6 @@ func (f *HTTPClientFactory) liveHTTPClient(key httpClientKey) *http.Client {
 		return client
 	}
 	client = &http.Client{Transport: &liveHTTPTransport{factory: f, key: key}}
-	if key.ssrf {
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
-			}
-			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
-			}
-			return nil
-		}
-	}
 	f.liveHTTP[key] = client
 	return client
 }
@@ -594,9 +609,18 @@ func (f *HTTPClientFactory) createHTTPClient(key httpClientKey) *http.Client {
 	}
 
 	var roundTripper http.RoundTripper = transport
-	if key.ssrf {
-		ssrfDial := ssrfSafeDialContext(net.DefaultResolver, dialer.DialContext, key.allow)
-		transport.DialContext = ssrfDial
+	timeout := DefaultClientConfig.ReadTimeout
+	if f.proxyConfig != nil && f.proxyConfig.Timeout > 0 {
+		timeout = time.Duration(f.proxyConfig.Timeout) * time.Second
+	}
+	if policy := key.policy; policy != nil {
+		// Policy transports are bounded by the caller's client and request context.
+		timeout = 0
+		transport.ResponseHeaderTimeout = 0
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		transport.DialContext = policy.dial
 		if proxyURL != nil {
 			// Once proxied, the dial goes to the proxy: let that one address through
 			// and judge the target per hop instead.
@@ -605,15 +629,10 @@ func (f *HTTPClientFactory) createHTTPClient(key httpClientKey) *http.Client {
 				if addr == proxyAddr {
 					return dialer.DialContext(ctx, netw, addr)
 				}
-				return ssrfDial(ctx, netw, addr)
+				return policy.dial(ctx, netw, addr)
 			}
-			roundTripper = &targetCheckingTransport{resolver: net.DefaultResolver, allow: key.allow, next: transport}
+			roundTripper = &targetCheckingTransport{check: policy.checkTarget, next: transport}
 		}
-	}
-
-	timeout := DefaultClientConfig.ReadTimeout
-	if f.proxyConfig != nil && f.proxyConfig.Timeout > 0 {
-		timeout = time.Duration(f.proxyConfig.Timeout) * time.Second
 	}
 
 	return &http.Client{
