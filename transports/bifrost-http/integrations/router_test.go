@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -1017,5 +1018,236 @@ func (c *cancelRecorder) requireCancelled(t *testing.T, msg string) {
 	case <-c.done:
 	case <-time.After(5 * time.Second):
 		t.Fatal(msg)
+	}
+}
+
+// passthroughTestAccount configures a single Anthropic provider whose BaseURL points at a
+// local test upstream, so passthrough tests can observe exactly what (if anything) reaches it.
+type passthroughTestAccount struct {
+	baseURL string
+}
+
+func (a passthroughTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Anthropic}, nil
+}
+
+func (a passthroughTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	if p != schemas.Anthropic {
+		return nil, nil
+	}
+	return []schemas.Key{{
+		ID:     "passthrough-test-key",
+		Value:  *schemas.NewSecretVar("sk-ant-test-operator-key"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 1.0,
+	}}, nil
+}
+
+func (a passthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if p != schemas.Anthropic {
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	nc := schemas.DefaultNetworkConfig
+	nc.BaseURL = a.baseURL
+	return &schemas.ProviderConfig{
+		NetworkConfig:            nc,
+		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+	}, nil
+}
+
+type passthroughUpstreamHit struct {
+	path   string
+	apiKey string
+}
+
+func TestStripPassthroughPrefix(t *testing.T) {
+	genai := []string{"/genai_passthrough/v1beta1", "/genai_passthrough/v1beta", "/genai_passthrough/v1", "/genai_passthrough"}
+	tests := []struct {
+		name     string
+		path     string
+		prefixes []string
+		want     string
+		wantOK   bool
+	}{
+		{name: "versioned prefix at boundary", path: "/genai_passthrough/v1beta/models/x", prefixes: genai, want: "/models/x", wantOK: true},
+		{name: "v1 prefix at boundary", path: "/genai_passthrough/v1/models/x", prefixes: genai, want: "/models/x", wantOK: true},
+		{name: "bare prefix at boundary", path: "/genai_passthrough/files/abc", prefixes: genai, want: "/files/abc", wantOK: true},
+		{name: "exact prefix yields root", path: "/genai_passthrough/v1beta", prefixes: genai, want: "/", wantOK: true},
+		{name: "longer first segment falls through to shorter prefix", path: "/genai_passthrough/v1beta1foo/x", prefixes: genai, want: "/v1beta1foo/x", wantOK: true},
+		{name: "userinfo separator after prefix falls through to shorter prefix", path: "/genai_passthrough/v1@127.0.0.1/x", prefixes: genai, want: "/v1@127.0.0.1/x", wantOK: true},
+		{name: "single prefix with userinfo separator does not match", path: "/anthropic_passthrough@evil.example/x", prefixes: []string{"/anthropic_passthrough"}, wantOK: false},
+		{name: "unrelated path does not match", path: "/openai_passthrough/v1/models", prefixes: []string{"/anthropic_passthrough"}, wantOK: false},
+		{name: "runware v1 remainder kept", path: "/runware_passthrough/v1", prefixes: []string{"/runware_passthrough"}, want: "/v1", wantOK: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := stripPassthroughPrefix(tc.path, tc.prefixes)
+			require.Equal(t, tc.wantOK, ok)
+			if ok {
+				require.Equal(t, tc.want, got)
+			}
+		})
+	}
+}
+
+func TestValidatePassthroughPath(t *testing.T) {
+	valid := []string{
+		"/",
+		"/v1/messages",
+		"/models/gemini-2.5-pro:generateContent",
+		"/v1/projects/p/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict",
+		"/v1/files/file%2Fabc",
+		"/openai/deployments/gpt-4o/chat/completions",
+	}
+	for _, p := range valid {
+		require.NoError(t, validatePassthroughPath(p), "path %q should be accepted", p)
+	}
+
+	invalid := []string{
+		"",
+		"v1/messages",
+		"@evil.example/v1/messages",
+		"/@evil.example/v1/messages",
+		"/v1@evil.example/messages",
+		"//evil.example/x",
+		"/%2F%2Fevil.example/x",
+		"/%40evil.example/x",
+		"/v1/../admin",
+		"/v1/%2e%2e/admin",
+		"/v1\\messages",
+		"/v1/https://evil.example/x",
+		"/v1/messages\r\nX-Injected: 1",
+		"/v1/%0d%0amessages",
+		"/v1/%zz",
+	}
+	for _, p := range invalid {
+		require.Error(t, validatePassthroughPath(p), "path %q should be rejected", p)
+	}
+}
+
+// TestHandlePassthrough_PathAndProviderGuards drives the passthrough catch-all end to end
+// against a real Bifrost instance and a local upstream. Malformed remainders and unknown
+// providers must be rejected by the router with no upstream request at all, because any
+// request that reaches the provider carries the operator's key. Well-formed paths must
+// still be forwarded with the prefix stripped at a segment boundary.
+func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
+	var mu sync.Mutex
+	var hits []passthroughUpstreamHit
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, passthroughUpstreamHit{path: r.URL.RequestURI(), apiKey: r.Header.Get("x-api-key")})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	takeHits := func() []passthroughUpstreamHit {
+		mu.Lock()
+		defer mu.Unlock()
+		out := hits
+		hits = nil
+		return out
+	}
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewGenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewAnthropicPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "http://")
+
+	tests := []struct {
+		name         string
+		uri          string
+		provider     string
+		wantStatus   int
+		wantUpstream string // expected upstream request URI; empty means no upstream request allowed
+		wantBodyHas  string
+	}{
+		{
+			// "/genai_passthrough/v1" no longer matches past the boundary, so the bare prefix
+			// strips to "/v1@host/x" and the first-segment rule rejects it before dispatch.
+			name:        "userinfo separator after a versioned prefix is rejected",
+			uri:         "/genai_passthrough/v1@" + upstreamHost + "/x",
+			provider:    "anthropic",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "invalid passthrough path",
+		},
+		{
+			name:        "percent-encoded userinfo separator is rejected",
+			uri:         "/genai_passthrough/v1%40" + upstreamHost + "/x",
+			provider:    "anthropic",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "invalid passthrough path",
+		},
+		{
+			name:        "userinfo separator in the first segment is rejected",
+			uri:         "/anthropic_passthrough/@evil.example/v1/messages",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "invalid passthrough path",
+		},
+		{
+			name:        "unknown x-model-provider is rejected",
+			uri:         "/anthropic_passthrough/v1/messages",
+			provider:    "not-a-provider",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "x-model-provider",
+		},
+		{
+			name:         "well-formed anthropic path is forwarded",
+			uri:          "/anthropic_passthrough/v1/messages?beta=true",
+			wantStatus:   fasthttp.StatusOK,
+			wantUpstream: "/v1/messages?beta=true",
+		},
+		{
+			name:         "versioned genai prefix is stripped at the boundary",
+			uri:          "/genai_passthrough/v1beta/models/claude:generateContent",
+			provider:     "anthropic",
+			wantStatus:   fasthttp.StatusOK,
+			wantUpstream: "/models/claude:generateContent",
+		},
+		{
+			name:         "longer first segment falls back to the shorter prefix",
+			uri:          "/genai_passthrough/v1beta1foo/x",
+			provider:     "anthropic",
+			wantStatus:   fasthttp.StatusOK,
+			wantUpstream: "/v1beta1foo/x",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			takeHits()
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.SetContentType("application/json")
+			if tc.provider != "" {
+				ctx.Request.Header.Set("x-model-provider", tc.provider)
+			}
+			ctx.Request.SetBodyString(`{}`)
+
+			r.Handler(&ctx)
+
+			got := takeHits()
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			if tc.wantBodyHas != "" {
+				require.Contains(t, string(ctx.Response.Body()), tc.wantBodyHas)
+			}
+			if tc.wantUpstream == "" {
+				require.Empty(t, got, "no request may reach the upstream for %s", tc.uri)
+				return
+			}
+			require.Len(t, got, 1)
+			require.Equal(t, tc.wantUpstream, got[0].path)
+			require.Equal(t, "sk-ant-test-operator-key", got[0].apiKey)
+		})
 	}
 }
