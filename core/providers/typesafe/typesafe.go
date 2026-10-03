@@ -51,11 +51,10 @@ func NewTypesafeProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
-	defaultBaseURL := config.NetworkConfig.BaseURL == ""
-	if defaultBaseURL {
-		config.NetworkConfig.BaseURL = typesafeDefaultBaseURL
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	// Whether the operator overrode base_url must be read before normalisation,
+	// which substitutes the default when unset.
+	defaultBaseURL := !config.NetworkConfig.BaseURL.IsSet()
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, typesafeDefaultBaseURL)
 
 	return &TypesafeProvider{
 		logger:              logger,
@@ -156,7 +155,7 @@ func (provider *TypesafeProvider) fetchNativeCatalog(ctx *schemas.BifrostContext
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + typesafeModelsPath)
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + typesafeModelsPath)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -222,7 +221,7 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, typesafeSystemOnePath))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, typesafeSystemOnePath))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {

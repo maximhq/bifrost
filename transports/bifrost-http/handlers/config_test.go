@@ -35,7 +35,7 @@ type inferenceSetupAccount struct {
 func (a inferenceSetupAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
 	c, err := a.wsSpanTestAccount.GetConfigForProvider(p)
 	if err == nil {
-		c.NetworkConfig.BaseURL = a.url
+		c.NetworkConfig.BaseURL = schemas.NewSecretVar(a.url)
 		c.NetworkConfig.AllowPrivateNetwork = true
 	}
 	return c, err

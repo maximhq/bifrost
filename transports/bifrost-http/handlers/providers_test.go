@@ -199,7 +199,7 @@ func TestAddProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 			IsKeyLess:        true,
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:             "http://169.254.169.254/",
+			BaseURL:             schemas.NewSecretVar("http://169.254.169.254/"),
 			AllowPrivateNetwork: true,
 		},
 	})
@@ -422,7 +422,7 @@ func TestUpdateProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 	}{
 		providerUpdatePayload: providerUpdatePayload{
 			NetworkConfig: schemas.NetworkConfig{
-				BaseURL:             "http://169.254.169.254/",
+				BaseURL:             schemas.NewSecretVar("http://169.254.169.254/"),
 				AllowPrivateNetwork: true,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
@@ -445,7 +445,7 @@ func TestUpdateProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
 		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	if got := h.inMemoryStore.Providers["mock-openai"].NetworkConfig; got != nil && got.BaseURL == "http://169.254.169.254/" {
+	if got := h.inMemoryStore.Providers["mock-openai"].NetworkConfig; got != nil && got.BaseURL.GetValue() == "http://169.254.169.254/" {
 		t.Fatalf("expected base URL not to be persisted")
 	}
 }
@@ -498,7 +498,7 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 					ClientConfig: &configstore.ClientConfig{},
 					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 						"mock-openai": {
-							NetworkConfig:            &schemas.NetworkConfig{BaseURL: tc.baseURL},
+							NetworkConfig:            &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(tc.baseURL)},
 							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 							CustomProviderConfig:     customConfig,
 						},
@@ -509,7 +509,7 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 			attachBifrostClient(t, h.inMemoryStore)
 
 			body, err := sonic.Marshal(providerUpdatePayload{
-				NetworkConfig:            schemas.NetworkConfig{BaseURL: tc.baseURL, AllowPrivateNetwork: tc.allowPrivateNetwork},
+				NetworkConfig:            schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(tc.baseURL), AllowPrivateNetwork: tc.allowPrivateNetwork},
 				ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 4},
 				CustomProviderConfig:     customConfig,
 			})

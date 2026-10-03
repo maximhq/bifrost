@@ -363,8 +363,8 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusForbidden, providerDialTargetForbiddenMsg)
 			return
 		}
-		if payload.NetworkConfig.BaseURL != "" {
-			if err := bifrost.ValidateExternalURL(payload.NetworkConfig.BaseURL, payload.NetworkConfig.AllowPrivateNetwork); err != nil {
+		if baseURL := payload.NetworkConfig.BaseURL.GetValue(); baseURL != "" {
+			if err := bifrost.ValidateExternalURL(baseURL, payload.NetworkConfig.AllowPrivateNetwork); err != nil {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
 				return
 			}
@@ -584,8 +584,8 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusForbidden, providerDialTargetForbiddenMsg)
 		return
 	}
-	if nc.BaseURL != "" {
-		if err := bifrost.ValidateExternalURL(nc.BaseURL, nc.AllowPrivateNetwork); err != nil {
+	if baseURL := nc.BaseURL.GetValue(); baseURL != "" {
+		if err := bifrost.ValidateExternalURL(baseURL, nc.AllowPrivateNetwork); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
 			return
 		}
@@ -1686,7 +1686,7 @@ const providerDialTargetForbiddenMsg = "Setting a provider's base URL or allow_p
 // the dialer enforces it at connect time, where DNS can move an allowed hostname to a private
 // IP. Clearing the base URL or turning the flag off only narrows the target and passes.
 func providerDialTargetChanged(old *schemas.NetworkConfig, next schemas.NetworkConfig) bool {
-	var oldBaseURL string
+	var oldBaseURL *schemas.SecretVar
 	var oldAllowPrivate bool
 	if old != nil {
 		oldBaseURL, oldAllowPrivate = old.BaseURL, old.AllowPrivateNetwork
@@ -1694,5 +1694,14 @@ func providerDialTargetChanged(old *schemas.NetworkConfig, next schemas.NetworkC
 	if next.AllowPrivateNetwork && !oldAllowPrivate {
 		return true
 	}
-	return next.BaseURL != "" && next.BaseURL != oldBaseURL
+	if !next.BaseURL.IsSet() {
+		return false
+	}
+	// base_url may now be an env./vault. reference, so "different" is judged on both the
+	// declaration and what it resolves to, and either differing counts. Comparing only the
+	// declaration would let a reference that now points elsewhere through on an unchanged
+	// string; comparing only the resolved value would let an unresolvable reference through
+	// as if nothing had been set. A guard that answers 403 should err towards changed.
+	return schemas.SecretVarAsString(next.BaseURL) != schemas.SecretVarAsString(oldBaseURL) ||
+		next.BaseURL.GetValue() != oldBaseURL.GetValue()
 }

@@ -91,7 +91,7 @@ func TestGroqModelRetrieve(t *testing.T) {
 	defer server.Close()
 
 	provider, err := groq.NewGroqProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL), DefaultRequestTimeoutInSeconds: 30},
 	}, bifrost.NewNoOpLogger())
 	require.NoError(t, err)
 
