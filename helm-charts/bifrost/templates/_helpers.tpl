@@ -411,6 +411,11 @@ false
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
 {{- end }}
 {{- if .Values.bifrost.client.mcpServerAuthMode }}
+{{- if or (eq .Values.bifrost.client.mcpServerAuthMode "oauth") (eq .Values.bifrost.client.mcpServerAuthMode "both") }}
+{{- $issuerSet := false }}
+{{- if .Values.bifrost.client.oauth2ServerConfig }}{{- if .Values.bifrost.client.oauth2ServerConfig.issuerUrl }}{{- $issuerSet = true }}{{- end }}{{- end }}
+{{- if not $issuerSet }}{{- fail (printf "ERROR: bifrost.client.oauth2ServerConfig.issuerUrl is required when bifrost.client.mcpServerAuthMode is '%s'. Bifrost exits at startup without it. Set the issuer URL (env.VAR_NAME is supported) or use mcpServerAuthMode 'headers'." .Values.bifrost.client.mcpServerAuthMode) }}{{- end }}
+{{- end }}
 {{- $_ := set $client "mcp_server_auth_mode" .Values.bifrost.client.mcpServerAuthMode }}
 {{- end }}
 {{- if .Values.bifrost.client.oauth2ServerConfig }}
