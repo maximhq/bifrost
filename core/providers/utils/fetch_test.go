@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maximhq/bifrost/core/internal/proxytest"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
