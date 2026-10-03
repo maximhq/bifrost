@@ -187529,6 +187529,64 @@
           ]
         }
       ]
+    },
+    {
+      "name": "143. Hugging Face DeepInfra model discovery (#7761)",
+      "description": "Issue #7761: the Hugging Face discovery catalogue omitted DeepInfra and queried three retired Hub providers. GET /v1/models must expose huggingface/deepinfra/ model IDs without doubled provider prefixes. page_size=0 disables Bifrost pagination, and the Hub limit=10 keeps the per-provider payload small while still returning supported models. This case checks model metadata only and makes no inference calls. The deterministic Go regression also checks that retired providers are never queried.",
+      "item": [
+        {
+          "name": "huggingface/deepinfra models - DeepInfra model discovery - #7761",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('DeepInfra models are discoverable through Hugging Face', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'model list missing: ' + text).to.be.an('array');",
+                  "  var deepinfra = body.data.filter(function (model) { return typeof model.id === 'string' && model.id.indexOf('huggingface/deepinfra/') === 0; });",
+                  "  pm.expect(deepinfra, 'no huggingface/deepinfra model found: ' + text).to.not.be.empty;",
+                  "  deepinfra.forEach(function (model) {",
+                  "    pm.expect(model.id.indexOf('huggingface/deepinfra/deepinfra/'), 'provider prefix was duplicated: ' + model.id).to.eql(-1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=huggingface&page_size=0&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "huggingface"
+                },
+                {
+                  "key": "page_size",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

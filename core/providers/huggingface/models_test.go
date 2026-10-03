@@ -230,3 +230,83 @@ func TestToBifrostListModelsResponse_BackfillEnrichesHuggingFaceIDOnlyWhenMethod
 	assert.Equal(t, "abc123", *got.HuggingFaceID)
 	assert.Nil(t, got.SupportedMethods)
 }
+
+func TestListModelsByKeyDiscoversDeepInfraWithoutRetiredProviders(t *testing.T) {
+	t.Parallel()
+
+	var deepInfraRequested atomic.Bool
+	var retiredRequests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/models", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("inference_provider") {
+		case "hyperbolic", "nebius", "sambanova":
+			retiredRequests.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+			_, err := w.Write([]byte(`{"error":"invalid inference provider"}`))
+			assert.NoError(t, err)
+		case "deepinfra":
+			deepInfraRequested.Store(true)
+			_, err := w.Write([]byte(`[{"_id":"qwen","modelId":"Qwen/Qwen3.8-27B","pipeline_tag":"conversational"}]`))
+			assert.NoError(t, err)
+		default:
+			_, err := w.Write([]byte(`[]`))
+			assert.NoError(t, err)
+		}
+	}))
+	defer server.Close()
+
+	provider := &HuggingFaceProvider{
+		client: &fasthttp.Client{
+			Dial: func(string) (net.Conn, error) {
+				return net.Dial("tcp", server.Listener.Addr().String())
+			},
+			TLSConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // Test server certificate.
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	key := schemas.Key{Value: *schemas.NewSecretVar(""), Models: schemas.WhiteList{"*"}}
+	response, bifrostErr := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{})
+
+	require.Nil(t, bifrostErr)
+	assert.True(t, deepInfraRequested.Load(), "model discovery must query DeepInfra")
+	assert.Zero(t, retiredRequests.Load(), "the Hub rejects these retired inference providers")
+	require.NotNil(t, response)
+	require.Len(t, response.Data, 1)
+	assert.Equal(t, "huggingface/deepinfra/Qwen/Qwen3.8-27B", response.Data[0].ID)
+}
+
+func TestToBifrostListModelsResponseAllowlistWithDeepInfraProviderSegment(t *testing.T) {
+	t.Parallel()
+	allowlist := schemas.WhiteList{"deepinfra/Qwen/Qwen3.8-27B"}
+	response := &HuggingFaceListModelsResponse{}
+
+	t.Run("matching provider keeps the selected model ID", func(t *testing.T) {
+		t.Parallel()
+		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, inferenceProvider("deepinfra"), allowlist, nil, nil, false)
+		require.NotNil(t, result)
+		require.Len(t, result.Data, 1)
+		assert.Equal(t, "huggingface/deepinfra/Qwen/Qwen3.8-27B", result.Data[0].ID)
+	})
+	t.Run("other providers do not backfill the DeepInfra model", func(t *testing.T) {
+		t.Parallel()
+		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, cohere, allowlist, nil, nil, false)
+		require.NotNil(t, result)
+		assert.Empty(t, result.Data)
+	})
+}
+
+func TestToBifrostListModelsResponseLegacyProviderSegments(t *testing.T) {
+	t.Parallel()
+	for _, legacy := range []inferenceProvider{hyperbolic, nebius, sambanova} {
+		t.Run(string(legacy), func(t *testing.T) {
+			t.Parallel()
+			response := &HuggingFaceListModelsResponse{}
+			allowlist := schemas.WhiteList{string(legacy) + "/org/model"}
+			result := response.ToBifrostListModelsResponse(schemas.HuggingFace, legacy, allowlist, nil, nil, false)
+			require.NotNil(t, result)
+			require.Len(t, result.Data, 1)
+			assert.Equal(t, "huggingface/"+string(legacy)+"/org/model", result.Data[0].ID)
+		})
+	}
+}

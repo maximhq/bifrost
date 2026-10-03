@@ -30,6 +30,7 @@ const (
 	baseten       inferenceProvider = "baseten"
 	cerebras      inferenceProvider = "cerebras"
 	cohere        inferenceProvider = "cohere"
+	deepInfra     inferenceProvider = "deepinfra"
 	falAI         inferenceProvider = "fal-ai"
 	featherlessAI inferenceProvider = "featherless-ai"
 	fireworksAI   inferenceProvider = "fireworks-ai"
@@ -55,30 +56,30 @@ var INFERENCE_PROVIDERS = []inferenceProvider{
 	baseten,
 	cerebras,
 	cohere,
+	deepInfra,
 	falAI,
 	featherlessAI,
 	fireworksAI,
 	groq,
 	hfInference,
-	hyperbolic,
-	nebius,
 	novita,
 	nscale,
 	ovhcloud,
 	publicai,
 	replicate,
-	sambanova,
 	scaleway,
 	together,
 	wavespeed,
 	zaiOrg,
 }
 
-// PROVIDERS_OR_POLICIES is the above list plus the special "auto" policy
+// PROVIDERS_OR_POLICIES recognizes active providers, the "auto" policy, and
+// legacy provider segments in model allowlists. Legacy providers are not queried
+// during Hub discovery, but must not be mistaken for part of a model name.
 var PROVIDERS_OR_POLICIES = func() []inferenceProvider {
-	out := make([]inferenceProvider, 0, len(INFERENCE_PROVIDERS)+1)
+	out := make([]inferenceProvider, 0, len(INFERENCE_PROVIDERS)+4)
 	out = append(out, INFERENCE_PROVIDERS...)
-	out = append(out, "auto")
+	out = append(out, auto, hyperbolic, nebius, sambanova)
 	return out
 }()
 
