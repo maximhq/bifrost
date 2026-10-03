@@ -328,6 +328,14 @@ func (e SecretVar) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON unmarshals the value from JSON.
 func (e *SecretVar) UnmarshalJSON(data []byte) error {
 	val := string(data)
+	// JSON null means unset. Without this case it reaches the plain string form below and
+	// is stored as the literal text "null".
+	if strings.TrimSpace(val) == "null" {
+		e.Val = ""
+		e.ref = ""
+		e.SecretType = SecretTypePlainText
+		return nil
+	}
 	if unquoted, err := strconv.Unquote(val); err == nil {
 		val = unquoted
 	}
