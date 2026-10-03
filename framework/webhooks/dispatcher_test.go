@@ -486,15 +486,25 @@ func TestRedirectsAreNotFollowed(t *testing.T) {
 	assert.Equal(t, http.StatusFound, deliveries[0].StatusCode)
 }
 
-func TestPrivateDialerStillBlocksLinkLocal(t *testing.T) {
-	dial := newPrivateDialContext()
-	_, err := dial(context.Background(), "tcp", "169.254.169.254:80")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "link-local")
-
-	_, err = dial(context.Background(), "tcp", "0.0.0.0:80")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unspecified")
+// TestPrivateClientStillBlocksLinkLocal: allow_private_network opens
+// loopback and RFC 1918, never link-local - including 169.254.169.254 written
+// as a NAT64 or 6to4 IPv6 address - nor the unspecified address.
+func TestPrivateClientStillBlocksLinkLocal(t *testing.T) {
+	client := newDeliveryClient()
+	deliverTo := func(host string) attemptResult {
+		endpoint := testEndpoint("ep-1", "http://"+host+"/hook")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return client.deliver(ctx, endpoint, tables.WebhookEventAsyncJobCompleted, "wh-1", []byte(`{}`), time.Now())
+	}
+	for _, host := range []string{"169.254.169.254", "[64:ff9b::a9fe:a9fe]", "[2002:a9fe:a9fe::]"} {
+		result := deliverTo(host)
+		assert.Zero(t, result.statusCode, host)
+		assert.Contains(t, result.errText, "link-local", host)
+	}
+	result := deliverTo("0.0.0.0")
+	assert.Zero(t, result.statusCode)
+	assert.Contains(t, result.errText, "unspecified")
 }
 
 func TestStrictClientBlocksPrivateReceivers(t *testing.T) {

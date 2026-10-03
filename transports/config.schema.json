@@ -4306,7 +4306,7 @@
         },
         "mcp_library_url": {
           "type": "string",
-          "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. Accepts a file:// URL to load the catalog from local disk in air-gapped deployments.",
+          "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. In config.json this also accepts a file:// URL to load the catalog from local disk in air-gapped deployments; the API accepts http(s) URLs only.",
           "optional": true,
           "format": "uri"
         },

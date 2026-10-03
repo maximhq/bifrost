@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -1326,36 +1325,39 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 // httptest.Server; production code must never reassign it.
 var checkURLAccessibilityDialContext = network.SSRFSafeDialContext(10 * time.Second)
 
-// checkURLAccessibility verifies that the given URL is reachable.
-// For file:// URLs it checks that the path exists on disk.
-// For http(s):// URLs it performs a GET and expects a 200 OK.
+// errURLNotReachable is the only failure checkURLAccessibility reports for a
+// URL that could not be fetched, whatever the cause.
+var errURLNotReachable = errors.New("url is not reachable")
+
+// errFileURLOverAPI is returned for a file:// URL supplied over the API.
+var errFileURLOverAPI = errors.New("file:// URLs can only be configured in config.json, not over the API")
+
+// checkURLAccessibility verifies that a datasheet or catalog URL supplied over
+// the API is an http(s) URL that answers 200 OK.
 //
-// This runs against an admin-supplied URL (framework config's pricing_url,
-// model_parameters_url, mcp_library_url), and no documented deployment
-// (including the air-gapped guide, which uses file:// instead) points these
-// at a private-network HTTP(S) target, so private/link-local/CGNAT addresses
-// are rejected outright rather than allowed. Both the save-time hostname
-// check (ValidateExternalURL) and the actual dial are guarded, since a save-time-only
-// check leaves a DNS-rebinding window between validation and the real
-// connection. Errors are deliberately generic: a non-HTTP service on the
-// target port can make Go's client surface its raw response bytes (e.g. an
-// SSH banner) inside the transport error, which would otherwise be reflected
-// straight back to the caller as a fingerprinting/banner-grab primitive - the
-// detailed error is logged server-side only.
+// file:// URLs are refused here. They are an operator feature for values set
+// in config.json (air-gapped deployments; see
+// docs/deployment-guides/how-to/airgapped.mdx), where whoever writes the file
+// already has the host's filesystem. Accepting one from an API caller would let
+// that caller name any path on the host for the catalog loaders to read.
+//
+// This runs against an admin-supplied URL, and no documented deployment points
+// these at a private-network HTTP(S) target, so private/link-local/CGNAT
+// addresses are rejected outright: both the save-time hostname check
+// (ValidateExternalURL) and the actual dial are guarded, since a save-time-only
+// check leaves a DNS-rebinding window, and the dial guard applies to every
+// redirect hop. A failed fetch reports only errURLNotReachable: the transport
+// error names the address that was dialed and, for a non-HTTP service, quotes
+// the bytes it could not parse, which would turn this endpoint into a
+// port-scan and banner oracle for anyone who can call it. That detail is
+// useful to the operator, so it goes to the server log only.
 func checkURLAccessibility(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
-	if parsed.Scheme == "file" {
-		info, err := os.Stat(parsed.Path)
-		if err != nil {
-			return fmt.Errorf("file not accessible: %w", err)
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("path is not a regular file")
-		}
-		return nil
+	if strings.EqualFold(parsed.Scheme, "file") {
+		return errFileURLOverAPI
 	}
 	if err := bifrost.ValidateExternalURL(rawURL, false); err != nil {
 		return fmt.Errorf("URL validation failed: %w", err)
@@ -1387,14 +1389,16 @@ func checkURLAccessibility(rawURL string) error {
 			logErr = urlErr.Err
 		}
 		logger.Warn(fmt.Sprintf("URL accessibility check failed for host %s: %v", parsed.Hostname(), logErr))
-		return fmt.Errorf("URL is not accessible")
+		return errURLNotReachable
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		// Host only, for the same reason as the transport-error branch above.
+		logger.Debug("url accessibility check for host %s returned HTTP %d", parsed.Hostname(), resp.StatusCode)
+		return errURLNotReachable
 	}
 	return nil
 }
