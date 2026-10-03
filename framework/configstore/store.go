@@ -984,6 +984,9 @@ type ConfigStore interface {
 	// Batch jobs - mutable coordination state for delayed batch accounting
 	UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error
 	GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error)
+	// GetProviderJobsByIDs returns the provider jobs among the given stable ids
+	// that exist; ids with no row are simply absent from the result.
+	GetProviderJobsByIDs(ctx context.Context, jobIDs []string) ([]*tables.TableProviderJob, error)
 	ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error)
 	ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
 	MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
