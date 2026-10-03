@@ -1,6 +1,8 @@
 package githubcopilot
 
 import (
+	"net"
+	"net/url"
 	"strings"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -38,6 +40,28 @@ func isGithubUserToken(token string) bool {
 		strings.HasPrefix(token, githubFineGrainedPATPrefix)
 }
 
+// isHTTPSOrLoopback reports whether rawURL is safe to send a GitHub token to: https to any
+// host, or a loopback address, where the bytes never leave the machine. This is the same
+// rule as providerUtils.StripCallerAuthForInsecureURL.
+func isHTTPSOrLoopback(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return true
+	}
+	if !strings.EqualFold(u.Scheme, "http") {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // resolveCredentials produces the credentials for one request.
 //
 // Three auth modes, checked in this order:
@@ -45,7 +69,8 @@ func isGithubUserToken(token string) bool {
 //  1. A GitHub token in Key.Value: an OAuth token, a GitHub App user token or a fine-grained
 //     personal access token. It is used verbatim and does not expire on a 30 minute cycle.
 //     Usage bills to the Copilot subscription of the user that owns the token. base_url is
-//     optional, because these tokens work on the public host.
+//     optional, because these tokens work on the public host. A configured base_url must
+//     use https, or be a loopback address, so the token is never sent in cleartext.
 //  2. A pre-minted Copilot API token in Key.Value. This is GitHub's documented "direct API
 //     token" method and the token is used verbatim. base_url is required alongside it: a
 //     Copilot token does not carry its own host, paid plans are served from api.individual,
@@ -75,8 +100,16 @@ func resolveCredentials(
 			)
 		}
 		baseURL := strings.TrimRight(strings.TrimSpace(configuredBaseURL), "/")
-		if baseURL == "" && isGithubUserToken(token) {
-			baseURL = defaultCopilotAPIBaseURL
+		if isGithubUserToken(token) {
+			if baseURL == "" {
+				baseURL = defaultCopilotAPIBaseURL
+			} else if !isHTTPSOrLoopback(baseURL) {
+				return nil, configurationError(
+					"github copilot: network_config.base_url must use https when the key value is a " +
+						"GitHub token, because the token is sent to that host. http is accepted only " +
+						"for a loopback address.",
+				)
+			}
 		}
 		if baseURL == "" {
 			return nil, configurationError(

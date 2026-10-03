@@ -141,6 +141,31 @@ func TestResolveCredentials(t *testing.T) {
 		assert.Equal(t, "https://copilot-api.acme.ghe.com", creds.BaseURL)
 	})
 
+	t.Run("refuses to send a GitHub token over http to a host that is not loopback", func(t *testing.T) {
+		key := schemas.Key{Value: *schemas.NewSecretVar("gho_abc")}
+
+		for _, baseURL := range []string{"http://copilot-api.acme.ghe.com", "http://10.0.0.5:8080", "copilot-api.acme.ghe.com"} {
+			creds, bErr := resolveCredentials(nil, key, nil, baseURL, nil)
+
+			require.Nil(t, creds, baseURL)
+			require.NotNil(t, bErr, baseURL)
+			assert.Contains(t, bErr.Error.Message, "https", baseURL)
+		}
+	})
+
+	t.Run("accepts http on a loopback address for a GitHub token", func(t *testing.T) {
+		// A local recording proxy is the reason to configure one, and the bytes never leave
+		// the machine.
+		key := schemas.Key{Value: *schemas.NewSecretVar("gho_abc")}
+
+		for _, baseURL := range []string{"http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"} {
+			creds, bErr := resolveCredentials(nil, key, nil, baseURL, nil)
+
+			require.Nil(t, bErr, baseURL)
+			assert.Equal(t, baseURL, creds.BaseURL)
+		}
+	})
+
 	t.Run("refuses a classic personal access token", func(t *testing.T) {
 		key := schemas.Key{Value: *schemas.NewSecretVar("ghp_abc")}
 

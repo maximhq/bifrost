@@ -178,7 +178,8 @@ A classic personal access token (`ghp_`) is not accepted.
 
 No `base_url` is needed. Bifrost sends the token to `https://api.githubcopilot.com`. Set
 `base_url` only when your Copilot API host is different, for example on GitHub Enterprise
-Cloud with data residency.
+Cloud with data residency. The `base_url` must use `https`, because the token is sent to that
+host. `http` is accepted only for a loopback address, such as a local proxy.
 
 <Note>
 Usage bills to the Copilot subscription of the user who owns the token, and the rate limits
