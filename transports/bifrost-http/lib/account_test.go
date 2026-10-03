@@ -109,16 +109,20 @@ func TestInheritGlobalProxy(t *testing.T) {
 			if got.proxy.Type != tt.wantType {
 				t.Errorf("type = %q, want %q", got.proxy.Type, tt.wantType)
 			}
-			if got.skipTLSVerify != tt.wantSkip {
-				t.Errorf("skipTLSVerify = %v, want %v", got.skipTLSVerify, tt.wantSkip)
+			// The proxy stacks read it from the proxy config for the TLS hop to an
+			// https:// proxy, which NetworkConfig never reaches.
+			if got.proxy.SkipTLSVerify != tt.wantSkip {
+				t.Errorf("proxy.SkipTLSVerify = %v, want %v", got.proxy.SkipTLSVerify, tt.wantSkip)
 			}
 		})
 	}
 }
 
-// TestGetConfigForProvider_InheritedSkipTLSVerifyDoesNotLeak pins that carrying the
-// global skip_tls_verify onto a provider changes only the config handed to core, never
-// the provider's stored network config.
+// TestGetConfigForProvider_InheritedSkipTLSVerifyDoesNotLeak pins where an inherited
+// global skip_tls_verify goes: onto the inherited proxy config, which scopes it to TLS
+// through the proxy, and never onto the provider's network config, where it would also
+// switch off certificate checks for no_proxy hosts reached directly. The stored network
+// config stays untouched either way.
 func TestGetConfigForProvider_InheritedSkipTLSVerifyDoesNotLeak(t *testing.T) {
 	global := enabledGlobalProxy()
 	global.SkipTLSVerify = true
@@ -134,8 +138,11 @@ func TestGetConfigForProvider_InheritedSkipTLSVerifyDoesNotLeak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConfigForProvider: %v", err)
 	}
-	if !config.NetworkConfig.InsecureSkipVerify {
-		t.Error("inherited skip_tls_verify must reach the provider's effective network config")
+	if config.ProxyConfig == nil || !config.ProxyConfig.SkipTLSVerify {
+		t.Error("inherited skip_tls_verify must reach the provider through its proxy config")
+	}
+	if config.NetworkConfig.InsecureSkipVerify {
+		t.Error("inherited skip_tls_verify must not become network_config.insecure_skip_verify: that would also skip verification for direct no_proxy hosts")
 	}
 	if store.Providers[schemas.Vertex].NetworkConfig.InsecureSkipVerify {
 		t.Error("the stored network config must stay untouched")

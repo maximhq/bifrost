@@ -91,11 +91,10 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 		providerConfig.NetworkConfig = schemas.DefaultNetworkConfig
 	}
 	if inherited, ok := inheritGlobalProxy(providerConfig.ProxyConfig, baseAccount.store.GetGlobalProxyConfig()); ok {
+		// skip_tls_verify travels on inherited.proxy (ProxyConfig.SkipTLSVerify), which
+		// scopes it to TLS through the proxy. Setting NetworkConfig.InsecureSkipVerify
+		// instead would also skip verification for no_proxy hosts reached directly.
 		providerConfig.ProxyConfig = inherited.proxy
-		if inherited.skipTLSVerify {
-			// NetworkConfig is a copy here, so this never touches the stored config.
-			providerConfig.NetworkConfig.InsecureSkipVerify = true
-		}
 	}
 	if config.ConcurrencyAndBufferSize != nil {
 		providerConfig.ConcurrencyAndBufferSize = *config.ConcurrencyAndBufferSize
@@ -126,8 +125,7 @@ func hasOwnProxy(proxyConfig *schemas.ProxyConfig) bool {
 
 // inheritedProxy is the global proxy translated for one provider.
 type inheritedProxy struct {
-	proxy         *schemas.ProxyConfig
-	skipTLSVerify bool
+	proxy *schemas.ProxyConfig
 }
 
 // inheritGlobalProxy returns the global proxy for a provider that has none of its
@@ -159,8 +157,12 @@ func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.Glob
 			Username: plainSecret(global.Username),
 			Password: plainSecret(global.Password),
 			NoProxy:  global.NoProxy,
+			// The only carrier of the global skip_tls_verify: the proxy stacks skip
+			// verification for the TLS hop to an https:// proxy and for TLS through
+			// the proxy, and still verify no_proxy hosts reached directly.
+			// NetworkConfig is deliberately left alone.
+			SkipTLSVerify: global.SkipTLSVerify,
 		},
-		skipTLSVerify: global.SkipTLSVerify,
 	}, true
 }
 
