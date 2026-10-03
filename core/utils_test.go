@@ -701,3 +701,46 @@ func TestClearContextForInternalRequestShedsAnthropicNativeSurfaceOnFreshChild(t
 	assert.Equal(t, "caller-surface", caller.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
 		"shedding it on the derived context must not disarm the caller's own request")
 }
+
+// TestClearContextForInternalRequestShedsEveryKeyOnFreshChild is the general
+// case of the test above. ClearValue shadows a parent's value through this
+// context's OWN value map, and NewBifrostContext leaves that map unallocated
+// until something is written, so until the allocating write was moved to the top
+// of ClearContextForInternalRequest every ClearValue in it was a no-op on a
+// fresh child and the caller's credentials and headers stayed readable through
+// to the parent. These are the keys where that mattered most.
+func TestClearContextForInternalRequestShedsEveryKeyOnFreshChild(t *testing.T) {
+	sensitive := map[schemas.BifrostContextKey]any{
+		schemas.BifrostContextKeyDirectKey:             "caller-direct-key",
+		schemas.BifrostContextKeyAPIKeyID:              "caller-api-key-id",
+		schemas.BifrostContextKeyAPIKeyName:            "caller-api-key-name",
+		schemas.BifrostContextKeyRoutingPinnedAPIKeyID: "caller-pinned-key",
+		schemas.BifrostContextKeyExtraHeaders:          map[string]string{"x-caller": "secret"},
+		schemas.BifrostContextKeyPassthroughHeaders:    map[string]string{"x-caller": "secret"},
+		schemas.BifrostContextKeyURLPath:               "/v1/caller/path",
+	}
+
+	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	for k, v := range sensitive {
+		caller.SetValue(k, v)
+	}
+
+	// No write of any kind on the child before the shed: this is what
+	// NewBifrostContext hands a plugin.
+	internal := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+	for k := range sensitive {
+		require.NotNil(t, internal.Value(k),
+			"a derived context reads the caller's value through to the parent; that is the state under test")
+	}
+
+	ClearContextForInternalRequest(internal)
+
+	for k := range sensitive {
+		assert.Nil(t, internal.Value(k),
+			"ClearContextForInternalRequest must shed %s on a child whose value map no write has allocated yet", k)
+	}
+	for k, v := range sensitive {
+		assert.Equal(t, v, caller.Value(k),
+			"shedding %s on the derived context must not disarm the caller's own request", k)
+	}
+}
