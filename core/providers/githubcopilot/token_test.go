@@ -817,7 +817,9 @@ func TestMissingCopilotPermissionWarns(t *testing.T) {
 // behaviour we want if that changes silently.
 type noopLogger struct{ schemas.Logger }
 
-func (noopLogger) Warn(string, ...any) {}
+func (noopLogger) Debug(string, ...any) {}
+func (noopLogger) Info(string, ...any)  {}
+func (noopLogger) Warn(string, ...any)  {}
 
 type recordingLogger struct {
 	noopLogger
