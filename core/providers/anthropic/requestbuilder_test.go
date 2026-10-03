@@ -1636,7 +1636,7 @@ func (p surfaceProbe) wire(t *testing.T) string {
 // whose headers disagree with the body it ships with.
 func (p surfaceProbe) build(t *testing.T) ([]byte, *schemas.BifrostContext) {
 	t.Helper()
-	ctx := schemas.NewBifrostContext(t.Context(), time.Now())
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 
 	in := &AnthropicMessageRequest{
 		Model:     p.model,
@@ -2414,7 +2414,7 @@ func TestWitnessDoesNotLeakAcrossRequests(t *testing.T) {
 // egress restores nothing and the sub-request is answered as the stock,
 // witness-free request it is.
 func TestShedWitnessRestoresNothing(t *testing.T) {
-	caller := schemas.NewBifrostContext(t.Context(), time.Now())
+	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	callerReq := &AnthropicMessageRequest{
 		Model:     "claude-sonnet-5-5",
 		MaxTokens: 1024,
@@ -2772,7 +2772,7 @@ type neutralProbe struct {
 
 func (p neutralProbe) wire(t *testing.T) string {
 	t.Helper()
-	ctx := schemas.NewBifrostContext(t.Context(), time.Now())
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	req := &schemas.BifrostResponsesRequest{
 		Provider: schemas.Anthropic,
 		Model:    p.model,
@@ -2976,7 +2976,7 @@ func TestNeutralChatInboundIsByteUnchanged(t *testing.T) {
 				if override, ok := c.perModel[model]; ok {
 					want = override
 				}
-				ctx := schemas.NewBifrostContext(t.Context(), time.Now())
+				ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 				req := &schemas.BifrostChatRequest{
 					Provider: schemas.Anthropic,
 					Model:    model,
@@ -3119,7 +3119,7 @@ func largeToolContextRequest(model string, thinking *AnthropicThinking) *Anthrop
 // native-ingress witness is on the context.
 func buildLargeToolContext(t *testing.T, model string, thinking *AnthropicThinking, sampling bool, shed bool) []byte {
 	t.Helper()
-	ctx := schemas.NewBifrostContext(t.Context(), time.Now())
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	in := largeToolContextRequest(model, thinking)
 	if sampling {
 		in.Temperature = schemas.Ptr(0.7)
@@ -3241,7 +3241,7 @@ func TestPreservedRestoreIsConfinedToTheCallerSurface(t *testing.T) {
 // restored as a number or a top_k restored as 40.0 would all satisfy a
 // value-only assertion and all be a different request on the wire.
 func TestPreservedSurfaceFieldTypes(t *testing.T) {
-	ctx := schemas.NewBifrostContext(t.Context(), time.Now())
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	in := &AnthropicMessageRequest{
 		Model:     "claude-sonnet-5-5",
 		MaxTokens: 1024,
@@ -3286,7 +3286,7 @@ func TestPreservedSurfaceFieldTypes(t *testing.T) {
 	}
 
 	// display is restored as a string, beside a thinking.type this build keeps.
-	ctx2 := schemas.NewBifrostContext(t.Context(), time.Now())
+	ctx2 := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	in2 := &AnthropicMessageRequest{
 		Model:     "claude-sonnet-5-5",
 		MaxTokens: 1024,
