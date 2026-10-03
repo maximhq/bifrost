@@ -187529,6 +187529,757 @@
           ]
         }
       ]
+    },
+    {
+      "name": "143. Sonnet 5.5 caller request surface (sonnet-5-5-surface)",
+      "description": "Local fixture regression, no live provider. Point an isolated gateway's anthropic base_url at runners/anthropic-request-surface-fixture.mjs with max_retries=0 and set anthropicRequestSurfaceFixture=1 to enable these cases; see tests/e2e/api/README.md, \"Sonnet 5.5 caller request surface\". The fixture stands in for the Anthropic Messages API and inspects the request it receives, so these cases assert WHAT BIFROST FORWARDS. They are not evidence of what the live Claude API accepts, and they need no key, no quota and no subscription entitlement. Each request carries its case name in the user message; the fixture answers 200 only when the reasoning and sampling surface on the wire is the one the caller sent, and otherwise answers 400 naming every field that drifted. Seven cases are red before the request-surface fix and green after: between_tools carrying a sibling thinking.display; enabled+budget on the typed and the claude-cli raw path; a caller-sent effort; and the sampling tuple on unary, stream and count. Seven are invariance controls that must pass on both trees: bare between_tools on unary, stream and count_tokens (already forwarded upstream since PR #7665, and recorded here as controls rather than fixes), the raw path's already-correct sampling tuple, and claude-sonnet-5 keeping its adaptive rewrite, its raw-path asymmetry and its dropped count sampling. count_tokens still deletes temperature for every model, which the count cases pin rather than fix.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('anthropicRequestSurfaceFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture accepted the forwarded request', function () {",
+              "  var body = pm.response.text();",
+              "  pm.expect(pm.response.code, body).to.equal(200);",
+              "  pm.expect(body, 'the fixture rejected the forwarded request').to.not.include('surface_mismatch');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Anthropic /v1/messages - thinking between_tools is forwarded verbatim (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages stream - thinking between_tools is forwarded verbatim (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-stream\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\"\n  },\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message stream', function () {",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), body).to.include('text/event-stream');",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "  pm.expect(body).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages/count_tokens - thinking between_tools is forwarded verbatim (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-count\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a token count', function () {",
+                  "  pm.expect(pm.response.json().input_tokens, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - thinking between_tools keeps a sibling display (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-display-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\",\n    \"display\": \"omitted\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - thinking enabled keeps its budget, invents no effort, and carries the interleaved beta (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: enabled-budget-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - thinking enabled on the claude-cli raw path matches the typed path (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: enabled-budget-raw\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - a caller-sent effort survives beside the restored thinking (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: effort-preserved-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - temperature, top_p and top_k all reach the provider (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-unary\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages stream - temperature, top_p and top_k all reach the provider (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-stream\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message stream', function () {",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), body).to.include('text/event-stream');",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "  pm.expect(body).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages/count_tokens - top_p and top_k reach the provider, temperature is still deleted (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-count\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a token count', function () {",
+                  "  pm.expect(pm.response.json().input_tokens, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - the claude-cli raw path forwards the same sampling tuple (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-raw\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - the neighbouring model keeps its adaptive rewrite and its dropped sampling (claude-sonnet-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: control-sonnet-5-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  },\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - the neighbouring model keeps its raw-path asymmetry (claude-sonnet-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: control-sonnet-5-raw\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  },\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages/count_tokens - the neighbouring model still loses all three sampling parameters (claude-sonnet-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: control-sonnet-5-count\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a token count', function () {",
+                  "  pm.expect(pm.response.json().input_tokens, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

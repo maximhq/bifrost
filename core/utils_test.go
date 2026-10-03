@@ -572,3 +572,63 @@ func TestWaitRetryBackoffReportsCancellationAtTimerExpiry(t *testing.T) {
 		}
 	}
 }
+
+// A plugin-owned sub-request is built on a context DERIVED from the caller's,
+// and BifrostContext.Value reads through to its parent. So every piece of
+// caller-request state that a provider egress consults has to be shed here, or
+// the sub-request is answered with the caller's parameters instead of its own.
+//
+// The Anthropic native-request surface is exactly such a witness: it records an
+// inbound Anthropic Messages caller's own thinking and sampling scalars so the
+// Anthropic egress can rebuild them verbatim. Inherited by a fresh internal
+// Sonnet 5.5 request, it would apply one caller's temperature/top_p/top_k and
+// thinking mode to a request that never had them --- external parameters
+// steering a plugin-owned call. The provider half (a shed witness means the
+// egress restores nothing) is asserted in
+// core/providers/anthropic/requestbuilder_test.go.
+func TestPrepareContextForInternalRequestShedsAnthropicNativeSurface(t *testing.T) {
+	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	caller.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, "caller-surface")
+
+	internal := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+	require.Equal(t, "caller-surface", internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"a derived context reads the caller's witness through to the parent; that is the state under test")
+
+	PrepareContextForInternalRequest(internal)
+
+	assert.Nil(t, internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"an internal sub-request must not inherit the caller's native Anthropic request surface")
+	assert.Equal(t, "caller-surface", caller.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"shedding it on the derived context must not disarm the caller's own request")
+}
+
+// ClearContextForInternalRequest is public and documented to shed caller-request
+// state on its own; PrepareContextForInternalRequest is the variant that ALSO
+// skips the plugin pipeline. A plugin that wants its sub-request to run the
+// pipeline is expected to call the clearing helper directly, so that entry point
+// has to shed just as completely.
+//
+// It is the hostile ordering for a shed: ClearValue only shadows a parent's
+// value through the derived context's OWN value map, and NewBifrostContext
+// leaves that map unallocated until something is written to it. Prepare's
+// skip-pipeline write happens to allocate it first; called directly on a fresh
+// child, nothing has. A shed that relies on that incidental write leaves the
+// caller's witness readable on a sub-request that never carried it.
+func TestClearContextForInternalRequestShedsAnthropicNativeSurfaceOnFreshChild(t *testing.T) {
+	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	caller.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, "caller-surface")
+
+	// No write of any kind on the child before the shed: this is what
+	// NewBifrostContext hands a plugin.
+	internal := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+	require.Equal(t, "caller-surface", internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"a derived context reads the caller's witness through to the parent; that is the state under test")
+
+	ClearContextForInternalRequest(internal)
+
+	assert.Nil(t, internal.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"the documented clearing helper must shed the caller's native Anthropic request surface "+
+			"even on a child whose value map no write has allocated yet")
+	assert.Equal(t, "caller-surface", caller.Value(schemas.BifrostContextKeyAnthropicNativeRequestSurface),
+		"shedding it on the derived context must not disarm the caller's own request")
+}
