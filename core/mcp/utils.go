@@ -31,11 +31,22 @@ import (
 // a genuine discovery result from being recorded).
 func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[string]string) string {
 	h := sha256.New()
-	if data, err := json.Marshal(tools); err == nil {
+	// Provider JSON deliberately omits MCP metadata. Hash it explicitly so a
+	// schema-only or annotation-only change still rebuilds the downstream server.
+	type hashTool struct {
+		Tool        schemas.ChatTool            `json:"tool"`
+		Schema      *schemas.MCPToolSchema      `json:"schema,omitempty"`
+		Annotations *schemas.MCPToolAnnotations `json:"annotations,omitempty"`
+	}
+	content := make(map[string]hashTool, len(tools))
+	for name, tool := range tools {
+		content[name] = hashTool{tool, tool.MCPToolSchema, tool.Annotations}
+	}
+	if data, err := schemas.MarshalSorted(content); err == nil {
 		h.Write(data)
 	}
 	h.Write([]byte{0}) // separator so {"a":"b"} tools + {} mapping can't collide with {} tools + {"a":"b"} mapping
-	if data, err := json.Marshal(toolNameMapping); err == nil {
+	if data, err := schemas.MarshalSorted(toolNameMapping); err == nil {
 		h.Write(data)
 	}
 	return hex.EncodeToString(h.Sum(nil))
@@ -487,7 +498,7 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		ctx,
 		func() error {
 			var retrieveErr error
-			toolsResponse, retrieveErr = client.ListTools(ctx, listRequest)
+			toolsResponse, retrieveErr = listToolsPreservingSchemas(ctx, client, listRequest)
 			return retrieveErr
 		},
 		retryConfig,
@@ -688,6 +699,27 @@ func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) 
 
 // convertMCPToolToBifrostSchema converts an MCP tool definition to Bifrost format.
 func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) schemas.ChatTool {
+	// Preserve the contract before provider-only array normalization. Direct
+	// in-process tools may have typed schemas only; discovered tools carry raw.
+	input := mcpTool.RawInputSchema
+	if input == nil {
+		input, _ = schemas.MarshalSorted(mcpTool.InputSchema)
+	}
+	output := mcpTool.RawOutputSchema
+	if output == nil && mcpTool.OutputSchema.Type != "" {
+		output, _ = schemas.MarshalSorted(mcpTool.OutputSchema)
+	}
+	input, _ = canonicalMCPSchema(input)
+	output, _ = canonicalMCPSchema(output)
+	metadata := (&schemas.MCPToolSchema{InputSchema: input, OutputSchema: output}).Clone()
+	// FixArraySchemas mutates maps. Work on an independent typed view so neither
+	// the upstream object nor the gateway's original schema is normalized.
+	projection, _ := schemas.MarshalSorted(mcpTool.InputSchema)
+	var projected mcp.ToolInputSchema
+	_ = json.Unmarshal(projection, &projected)
+	copied := *mcpTool
+	copied.InputSchema = projected
+	mcpTool = &copied
 	var properties *schemas.OrderedMap
 	if len(mcpTool.InputSchema.Properties) > 0 {
 		// Fix array schemas on the source map before copying to OrderedMap
@@ -753,7 +785,8 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 				Defs:       defs,
 			},
 		},
-		Annotations: annotations,
+		Annotations:   annotations,
+		MCPToolSchema: metadata,
 	}
 }
 
