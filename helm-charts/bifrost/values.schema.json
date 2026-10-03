@@ -7370,9 +7370,19 @@
       "type": "object",
       "properties": {
         "base_url": {
-          "type": "string",
-          "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama)"
+          "description": "Base URL for the provider (optional, required for Ollama). Accepts a URL or an env.VAR_NAME / vault.path secret reference that resolves to the URL.",
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uri",
+              "description": "A literal base URL."
+            },
+            {
+              "type": "string",
+              "pattern": "^(env|vault)\\.\\S+$",
+              "description": "An env.VAR_NAME or vault.path reference that resolves to the base URL. Kept in step with the same anyOf in transports/config.schema.json."
+            }
+          ]
         },
         "extra_headers": {
           "type": "object",
