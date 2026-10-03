@@ -19,6 +19,7 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1942,6 +1943,20 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 	)
 }
 
+// rawResponsesCacheCountersKnown preserves one fact that
+// BifrostResponsesResponse.WithDefaults otherwise destroys: whether the raw
+// provider response actually contained an input-token detail object. Only the
+// closed boolean is retained in request context; raw content never
+// leaves this parser boundary.
+func rawResponsesCacheCountersKnown(body []byte, streaming bool) bool {
+	path := "usage.input_tokens_details"
+	if streaming {
+		path = "response.usage.input_tokens_details"
+	}
+	detail := gjson.GetBytes(body, path)
+	return detail.Exists() && detail.IsObject()
+}
+
 // HandleOpenAIResponsesRequest handles a responses request to OpenAI's API.
 func HandleOpenAIResponsesRequest(
 	ctx *schemas.BifrostContext,
@@ -1988,11 +2003,18 @@ func HandleOpenAIResponsesRequest(
 			return nil, lpErr
 		}
 		if len(lpResult.ResponseBody) > 0 {
+			// The large-request passthrough returns before the normal response parser
+			// below. Read the raw presence fact at this boundary, before the returned
+			// typed response can reach WithDefaults in the caller.
+			countersKnown := rawResponsesCacheCountersKnown(lpResult.ResponseBody, false)
+
 			response := &schemas.BifrostResponsesResponse{}
 			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
+			// ExtraFields is replaced wholesale here, so the fact is stamped after.
 			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
+			response.ExtraFields.RawResponsesCacheCountersKnown = &countersKnown
 			return response, nil
 		}
 		return &schemas.BifrostResponsesResponse{
@@ -2056,6 +2078,11 @@ func HandleOpenAIResponsesRequest(
 		}, nil
 	}
 
+	// Read raw field presence before HandleProviderResponse / WithDefaults can
+	// materialize an empty InputTokensDetails object. Stamped onto the response
+	// below, once it exists.
+	countersKnown := rawResponsesCacheCountersKnown(body, false)
+
 	response := &schemas.BifrostResponsesResponse{}
 
 	var rawRequest, rawResponse interface{}
@@ -2081,6 +2108,7 @@ func HandleOpenAIResponsesRequest(
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	response.ExtraFields.RawResponsesCacheCountersKnown = &countersKnown
 
 	// Set raw request if enabled
 	if sendBackRawRequest {
@@ -2403,6 +2431,12 @@ func HandleOpenAIResponsesStreaming(
 
 			response.ExtraFields.ChunkIndex = response.SequenceNumber
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+				// The terminal event is the sole authoritative usage object, and the only
+				// frame that can know the answer - every earlier chunk leaves the field
+				// nil, i.e. unknown. Read before WithDefaults reaches plugin post hooks.
+				countersKnown := rawResponsesCacheCountersKnown([]byte(jsonData), true)
+				response.ExtraFields.RawResponsesCacheCountersKnown = &countersKnown
+
 				// Set raw request if enabled
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
