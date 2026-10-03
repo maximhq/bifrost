@@ -1302,8 +1302,10 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	// requirement must not silently run with a Host-derived issuer.
 	if cc.IsMCPOAuthDiscoveryEnabled() {
 		oc := cc.OAuth2ServerConfig
-		if oc == nil || !oc.IssuerURL.IsSet() {
-			return fmt.Errorf("oauth2_server_config.issuer_url must be set when mcp_server_auth_mode is oauth or both")
+		// A reference ("env.X") counts as set even when it resolves to nothing,
+		// so the resolved value is checked too; the error never echoes it.
+		if oc == nil || !oc.IssuerURL.IsSet() || oc.IssuerURL.GetValue() == "" {
+			return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
 		}
 	}
 	return nil
@@ -2092,6 +2094,11 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 	if fileClient.NeedsSessionStickiness == nil {
 		fileClient.NeedsSessionStickiness = existing.NeedsSessionStickiness
 	}
+
+	// A stored require_public_target records that the client was registered
+	// with no credential check; a file entry that omits it must not lift the
+	// dial-time restriction. Declaring it true in the file is honored.
+	fileClient.RequirePublicTarget = fileClient.RequirePublicTarget || existing.RequirePublicTarget
 	return changed
 }
 
@@ -2321,6 +2328,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.DiscoveredInstructions = clientConfig.DiscoveredInstructions
 	row.PendingOAuthConfig = clientConfig.PendingOAuthConfig
 	row.NeedsSessionStickiness = clientConfig.NeedsSessionStickiness
+	row.RequirePublicTarget = clientConfig.RequirePublicTarget
 }
 
 // mergeMCPConfig merges MCP config from file with store
@@ -2547,6 +2555,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
 		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
+		RequirePublicTarget:       clientConfig.RequirePublicTarget,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
 		ToolPricing:               clientConfig.ToolPricing,

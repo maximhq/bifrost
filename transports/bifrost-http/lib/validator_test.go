@@ -3782,3 +3782,35 @@ func TestSchemaVirtualMCPByName(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateConfigSchema_IssuerURLRequiredForDiscovery pins the schema's own
+// statement of the load-time invariant: enabling OAuth discovery without a
+// pinned issuer_url is rejected by the schema, not only by validateClientConfig.
+func TestValidateConfigSchema_IssuerURLRequiredForDiscovery(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	t.Setenv(ConfigSchemaURLEnv, schemaPath)
+
+	for _, tc := range []struct {
+		name    string
+		config  string
+		wantErr bool
+	}{
+		{"oauth without issuer_url", `{"client":{"mcp_server_auth_mode":"oauth"}}`, true},
+		{"both without issuer_url", `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{}}}`, true},
+		{"oauth with issuer_url", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://issuer.example.com"}}}`, false},
+		{"headers without issuer_url", `{"client":{"mcp_server_auth_mode":"headers"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(tc.config))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to reject discovery without issuer_url")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected config to pass schema validation, got: %v", err)
+			}
+		})
+	}
+}

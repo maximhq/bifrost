@@ -4160,9 +4160,9 @@ func (provider *GeminiProvider) Passthrough(
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.PassthroughRequest); err != nil {
 		return nil, err
 	}
-	url := provider.networkConfig.BaseURL.GetValue() + req.Path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
+	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL.GetValue(), req.Path, req.RawQuery)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
 
 	url = strings.Replace(url, "v1beta/upload/v1beta", "upload/v1beta", 1)
@@ -4239,9 +4239,9 @@ func (provider *GeminiProvider) PassthroughStream(
 		return nil, err
 	}
 
-	url := provider.networkConfig.BaseURL.GetValue() + req.Path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
+	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL.GetValue(), req.Path, req.RawQuery)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
 
 	url = strings.Replace(url, "v1beta/upload/v1beta", "upload/v1beta", 1)
@@ -4268,7 +4268,7 @@ func (provider *GeminiProvider) PassthroughStream(
 	fasthttpReq.SetBody(req.Body)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
+	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

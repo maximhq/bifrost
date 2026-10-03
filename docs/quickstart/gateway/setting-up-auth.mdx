@@ -51,6 +51,15 @@ Bifrost provides built-in authentication to protect your dashboard and admin API
   Setup token is required for version 2.0.0-prerelease3 and above.
 </Note>
 
+<Note>
+  **Re-enabling authentication after disabling it:** while authentication is switched off, the admin API is reachable
+  without a password even though your admin account is still stored. To stop anyone who can reach the port from
+  switching it back on with their own credentials, a `PUT /api/config` that re-enables authentication, or that changes
+  `admin_username` / `admin_password` while it stays disabled, must prove control of the instance with either
+  `auth_config.current_password` (the stored admin password) or the configured `auth_config.setup_token`. Requests made
+  from an authenticated session (for example through Basic Auth) need neither.
+</Note>
+
 ### Step 3: Configure Inference Call Authentication (Optional)
 
 By default, when authentication is enabled, all API calls (including inference calls) require authentication. You can optionally disable authentication for inference calls while keeping it enabled for the dashboard and admin API:

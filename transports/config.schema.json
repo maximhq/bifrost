@@ -67,6 +67,18 @@
     },
     "client": {
       "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": { "mcp_server_auth_mode": { "enum": ["oauth", "both"] } },
+            "required": ["mcp_server_auth_mode"]
+          },
+          "then": {
+            "required": ["oauth2_server_config"],
+            "properties": { "oauth2_server_config": { "required": ["issuer_url"] } }
+          }
+        }
+      ],
       "description": "Client configuration settings",
       "properties": {
         "drop_excess_requests": {
@@ -406,7 +418,7 @@
                   "additionalProperties": false
                 }
               ],
-              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required for multi-host deployments; single-host deployments can omit this (falls back to request Host header). Supports env var syntax: \"env.MY_VAR\"."
+              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required whenever mcp_server_auth_mode is 'both' or 'oauth' (config load and PUT /api/config reject an unset value in those modes); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
             },
             "auth_code_ttl": {
               "type": "integer",
@@ -431,7 +443,36 @@
           "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mcp_server_auth_mode": {
+                "enum": [
+                  "both",
+                  "oauth"
+                ]
+              }
+            },
+            "required": [
+              "mcp_server_auth_mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "oauth2_server_config"
+            ],
+            "properties": {
+              "oauth2_server_config": {
+                "required": [
+                  "issuer_url"
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "framework": {
       "type": "object",
@@ -3980,6 +4021,10 @@
                     "exclude_system_prompt": {
                       "type": "boolean",
                       "description": "Exclude system prompt in cache key (default: false)"
+                    },
+                    "cache_tool_call_responses": {
+                      "type": "boolean",
+                      "description": "Persist responses that carry tool calls (chat tool_calls or Responses API function_call/custom_tool_call/computer_call/local_shell_call/mcp_call/mcp_approval_request items). Off by default: a replayed tool call runs in a later caller's agent loop with arguments chosen for someone else's prompt."
                     }
                   },
                   "required": [
@@ -5800,7 +5845,7 @@
         },
         "mcp_library_url": {
           "type": "string",
-          "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. Accepts a file:// URL to load the catalog from local disk in air-gapped deployments.",
+          "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. In config.json this also accepts a file:// URL to load the catalog from local disk in air-gapped deployments; the API accepts http(s) URLs only.",
           "optional": true,
           "format": "uri"
         },
@@ -7639,6 +7684,11 @@
         "needs_session_stickiness": {
           "type": "boolean",
           "description": "Only meaningful for connection_type 'http': whether this client maintains one persistent connection reused across every caller (true) or connects fresh per call (false, the default for newly created clients). SSE and STDIO always behave as sticky regardless of this field.",
+          "default": false
+        },
+        "require_public_target": {
+          "type": "boolean",
+          "description": "Server-managed. Set to true when the client was registered over the management API with no admin credential check; every connection to the MCP server (initial, reconnect, per-call) must then resolve to a public address. Once stored as true it is never cleared by the API or by config.json reconciliation; declaring it true here is honored.",
           "default": false
         },
         "tool_pricing": {

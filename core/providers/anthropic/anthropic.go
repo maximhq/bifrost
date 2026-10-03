@@ -3173,9 +3173,9 @@ func (provider *AnthropicProvider) Passthrough(
 		return nil, err
 	}
 
-	url := provider.networkConfig.BaseURL.GetValue() + req.Path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
+	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL.GetValue(), req.Path, req.RawQuery)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
@@ -3245,9 +3245,9 @@ func (provider *AnthropicProvider) PassthroughStream(
 		return nil, err
 	}
 
-	url := provider.networkConfig.BaseURL.GetValue() + req.Path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
+	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL.GetValue(), req.Path, req.RawQuery)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
 
 	startTime := time.Now()
@@ -3277,7 +3277,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 	fasthttpReq.SetBody(req.Body)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
+	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

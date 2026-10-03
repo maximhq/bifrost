@@ -178,7 +178,35 @@ func TestCheckURLAccessibility_BlocksLoopbackByDefault(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected loopback target to be blocked, got nil error")
 	}
-	if err.Error() != "URL is not accessible" {
+	if err.Error() != "url is not reachable" {
 		t.Fatalf("expected a generic error (no reflected transport detail), got: %v", err)
+	}
+}
+
+// TestCheckURLAccessibility_DoesNotFollowRedirects pins that the check judges the
+// URL the operator validated, not wherever it redirects: a 302 to a second server
+// that would answer 200 must still be reported as not accessible.
+func TestCheckURLAccessibility_DoesNotFollowRedirects(t *testing.T) {
+	useUnguardedURLAccessibilityDialer(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	followed := false
+	target.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		followed = true
+		w.WriteHeader(http.StatusOK)
+	})
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	err := checkURLAccessibility(redirector.URL)
+	if followed {
+		t.Fatal("redirect target was requested; redirects must not be followed")
+	}
+	if err == nil {
+		t.Fatal("expected a redirecting URL to be reported as not accessible, got nil")
 	}
 }

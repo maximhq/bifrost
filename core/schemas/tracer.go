@@ -23,7 +23,7 @@ type StreamAccumulatorResult struct {
 	OutputMessage    *ChatMessage        // Accumulated output message
 	OutputMessages   []ResponsesMessage  // For responses API
 	TokenUsage       *BifrostLLMUsage    // Token usage
-	ServiceTier      *BifrostServiceTier // Served tier (for example "priority", "flex", "ultrafast", or "default"); needs its own field because it lives on the response envelope, not on BifrostLLMUsage like Speed and InferenceGeo
+	ServiceTier      *BifrostServiceTier // Served tier (for example "priority", "fast", "flex", "ultrafast", or "default"); needs its own field because it lives on the response envelope, not on BifrostLLMUsage like Speed and InferenceGeo
 	Cost             *float64            // Cost in dollars
 	// Debug spelling is retained for the established Go contract.
 	CacheDebug            *BifrostCacheMetadata           // Semantic cache metadata if available

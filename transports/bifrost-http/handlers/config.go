@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -89,6 +88,9 @@ type ConfigManager interface {
 	// ValidateSetupToken checks the one-time bootstrap token required to create the
 	// first admin account. Returns true once an admin account already exists.
 	ValidateSetupToken(token string) bool
+	// ValidateConfiguredSetupToken checks a token against the operator-configured setup
+	// token regardless of whether an admin account exists; false when none is configured.
+	ValidateConfiguredSetupToken(token string) bool
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	UpdateSyncConfig(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
@@ -287,10 +289,11 @@ func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
 // risk of it ever being written to storage or echoed back by GET /api/config.
 type authConfigWithSetupToken struct {
 	configstore.AuthConfig
-	// SetupToken is the one-time bootstrap token (see AuthMiddleware.bootstrapToken)
-	// required only when this request is creating the very first admin account.
-	// It is never persisted.
-	SetupToken string `json:"setup_token,omitempty"`
+	// SetupToken is the operator-configured bootstrap token (see AuthMiddleware.bootstrapToken):
+	// required to create the very first admin account, and accepted as proof of control for
+	// changes made while dashboard auth is disabled. It is never persisted.
+	SetupToken      string `json:"setup_token,omitempty"`
+	CurrentPassword string `json:"current_password,omitempty"` // stored admin password, proves control while auth is disabled; never persisted
 }
 
 // updateConfig updates the core configuration settings.
@@ -482,8 +485,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// misconfiguration (validateClientConfig enforces the same invariant at
 	// load time, for config.json and pre-existing DB rows).
 	if (effectiveAuthMode == configstoreTables.MCPServerAuthModeOAuth || effectiveAuthMode == configstoreTables.MCPServerAuthModeBoth) &&
-		(effectiveOAuth2Config == nil || !effectiveOAuth2Config.IssuerURL.IsSet()) {
-		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set when mcp_server_auth_mode is oauth or both")
+		(effectiveOAuth2Config == nil || !effectiveOAuth2Config.IssuerURL.IsSet() || effectiveOAuth2Config.IssuerURL.GetValue() == "") {
+		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
 		return
 	}
 
@@ -992,6 +995,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in this request")
 				return
 			}
+			// Stored credentials with auth switched off: the caller was admitted without any
+			// credential check, so switching auth back on (or replacing the credentials in
+			// the same request) must first prove control of the instance.
+			if authConfig != nil && isAuthBypassed(ctx) && !h.verifyStoredAdminCredential(ctx, authConfig, payload.AuthConfig) {
+				return
+			}
 			// Fetching current Auth config
 			if payload.AuthConfig.AdminUserName.GetValue() != "" {
 				if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
@@ -1002,30 +1011,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 					// Assuming that password hasn't been changed
 					payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 				} else {
-					// Password has been changed
-					passwordPolicyFailures := getPasswordPolicyFailures(payload.AuthConfig.AdminPassword.GetValue())
-					if len(passwordPolicyFailures) > 0 {
-						SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(passwordPolicyFailures, ", ")))
+					hashed, ok := h.hashAdminPassword(ctx, payload.AuthConfig.AdminPassword)
+					if !ok {
 						return
 					}
-					// We will hash the password
-					hashedPassword := initialPasswordHash
-					if hashedPassword == "" {
-						hashedPassword, err = encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
+					// First-time setup pre-hashed the password while validating the request
+					// (initialPasswordHash); reuse that hash rather than computing a second one.
+					if initialPasswordHash != "" {
+						hashed.Val = initialPasswordHash
 					}
-					if err != nil {
-						logger.Warn("failed to hash password: %v", err)
-						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-						return
-					}
-					// Preserve env/vault reference metadata when storing hashed password
-					if payload.AuthConfig.AdminPassword.IsFromSecret() {
-						sv := *payload.AuthConfig.AdminPassword
-						sv.Val = hashedPassword
-						payload.AuthConfig.AdminPassword = &sv
-					} else {
-						payload.AuthConfig.AdminPassword = &schemas.SecretVar{Val: hashedPassword}
-					}
+					payload.AuthConfig.AdminPassword = hashed
 				}
 			}
 			// Save auth config - this handles both first-time creation and updates
@@ -1036,12 +1031,27 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				return
 			}
 		} else if authConfig != nil {
-			// Auth is being disabled but there's an existing config - preserve credentials and update disabled state
-			if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+			// Auth is being disabled (or kept disabled) over an existing config - preserve the
+			// credentials that were not resubmitted and update the disabled state.
+			passwordReplaced := !payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+			if !passwordReplaced {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 			}
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" {
 				payload.AuthConfig.AdminUserName = authConfig.AdminUserName
+			}
+			// Replacing the stored credentials while auth stays off is the same exposure as
+			// re-enabling with new ones, so it needs the same proof of control.
+			credentialsReplaced := passwordReplaced || !payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
+			if credentialsReplaced && isAuthBypassed(ctx) && !h.verifyStoredAdminCredential(ctx, authConfig, payload.AuthConfig) {
+				return
+			}
+			if passwordReplaced {
+				hashed, ok := h.hashAdminPassword(ctx, payload.AuthConfig.AdminPassword)
+				if !ok {
+					return
+				}
+				payload.AuthConfig.AdminPassword = hashed
 			}
 			err = h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig)
 			if err != nil {
@@ -1163,6 +1173,14 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 			// Make sure the URL is provided
 			if payload.URL == "" {
 				SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
+				return
+			}
+			// Every proxied request carries its provider credentials to this host, so the
+			// proxy URL follows the same destination rule as a provider base URL. Private
+			// and loopback hosts stay allowed (a self-hosted egress proxy is the normal
+			// setup); link-local and unspecified addresses never are.
+			if err := bifrost.ValidateExternalURL(payload.URL, true); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid proxy URL: %v", err))
 				return
 			}
 			// Validate timeout if provided
@@ -1339,36 +1357,39 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 // httptest.Server; production code must never reassign it.
 var checkURLAccessibilityDialContext = network.SSRFSafeDialContext(10 * time.Second)
 
-// checkURLAccessibility verifies that the given URL is reachable.
-// For file:// URLs it checks that the path exists on disk.
-// For http(s):// URLs it performs a GET and expects a 200 OK.
+// errURLNotReachable is the only failure checkURLAccessibility reports for a
+// URL that could not be fetched, whatever the cause.
+var errURLNotReachable = errors.New("url is not reachable")
+
+// errFileURLOverAPI is returned for a file:// URL supplied over the API.
+var errFileURLOverAPI = errors.New("file:// URLs can only be configured in config.json, not over the API")
+
+// checkURLAccessibility verifies that a datasheet or catalog URL supplied over
+// the API is an http(s) URL that answers 200 OK.
 //
-// This runs against an admin-supplied URL (framework config's pricing_url,
-// model_parameters_url, mcp_library_url), and no documented deployment
-// (including the air-gapped guide, which uses file:// instead) points these
-// at a private-network HTTP(S) target, so private/link-local/CGNAT addresses
-// are rejected outright rather than allowed. Both the save-time hostname
-// check (ValidateExternalURL) and the actual dial are guarded, since a save-time-only
-// check leaves a DNS-rebinding window between validation and the real
-// connection. Errors are deliberately generic: a non-HTTP service on the
-// target port can make Go's client surface its raw response bytes (e.g. an
-// SSH banner) inside the transport error, which would otherwise be reflected
-// straight back to the caller as a fingerprinting/banner-grab primitive - the
-// detailed error is logged server-side only.
+// file:// URLs are refused here. They are an operator feature for values set
+// in config.json (air-gapped deployments; see
+// docs/deployment-guides/how-to/airgapped.mdx), where whoever writes the file
+// already has the host's filesystem. Accepting one from an API caller would let
+// that caller name any path on the host for the catalog loaders to read.
+//
+// This runs against an admin-supplied URL, and no documented deployment points
+// these at a private-network HTTP(S) target, so private/link-local/CGNAT
+// addresses are rejected outright: both the save-time hostname check
+// (ValidateExternalURL) and the actual dial are guarded, since a save-time-only
+// check leaves a DNS-rebinding window, and the dial guard applies to every
+// redirect hop. A failed fetch reports only errURLNotReachable: the transport
+// error names the address that was dialed and, for a non-HTTP service, quotes
+// the bytes it could not parse, which would turn this endpoint into a
+// port-scan and banner oracle for anyone who can call it. That detail is
+// useful to the operator, so it goes to the server log only.
 func checkURLAccessibility(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
-	if parsed.Scheme == "file" {
-		info, err := os.Stat(parsed.Path)
-		if err != nil {
-			return fmt.Errorf("file not accessible: %w", err)
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("path is not a regular file")
-		}
-		return nil
+	if strings.EqualFold(parsed.Scheme, "file") {
+		return errFileURLOverAPI
 	}
 	if err := bifrost.ValidateExternalURL(rawURL, false); err != nil {
 		return fmt.Errorf("URL validation failed: %w", err)
@@ -1378,8 +1399,19 @@ func checkURLAccessibility(rawURL string) error {
 		Transport: &http.Transport{
 			DialContext: checkURLAccessibilityDialContext,
 		},
+		// The operator validated this URL, not wherever it redirects: a redirect
+		// is returned as-is and fails the 200 check below instead of being followed.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
-	resp, err := client.Get(rawURL)
+	reqCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		// Log the host and the underlying transport error only: the full URL
 		// can carry userinfo or query secrets, and *url.Error echoes it back.
@@ -1389,14 +1421,15 @@ func checkURLAccessibility(rawURL string) error {
 			logErr = urlErr.Err
 		}
 		logger.Warn(fmt.Sprintf("URL accessibility check failed for host %s: %v", parsed.Hostname(), logErr))
-		return fmt.Errorf("URL is not accessible")
+		return errURLNotReachable
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		logger.Debug("url accessibility check for %s returned HTTP %d", rawURL, resp.StatusCode)
+		return errURLNotReachable
 	}
 	return nil
 }
@@ -1416,25 +1449,6 @@ func validateGlobalToolSyncIntervalMinutes(minutes int) error {
 	return nil
 }
 
-// globalProxyInterceptionChanges returns the global proxy settings next adds or changes,
-// relative to old (nil when none is stored), that widen who can read proxied traffic: a new
-// proxy URL or TLS verification turned off. Keeping the stored URL while editing other fields,
-// disabling the proxy, or turning verification back on is not reported.
-func globalProxyInterceptionChanges(old *configstoreTables.GlobalProxyConfig, next configstoreTables.GlobalProxyConfig) []string {
-	var prev configstoreTables.GlobalProxyConfig
-	if old != nil {
-		prev = *old
-	}
-	var changed []string
-	if next.URL != "" && next.URL != prev.URL {
-		changed = append(changed, "url")
-	}
-	if next.SkipTLSVerify && !prev.SkipTLSVerify {
-		changed = append(changed, "skip_tls_verify")
-	}
-	return changed
-}
-
 // validateMCPInstructionCaps rejects bounds that cannot hold: a negative value, or a per-client
 // cap larger than the total it must fit inside. 0 means "use the built-in default" for either.
 // maxInstructionCapBytes bounds both caps: far above any real server, far below prompt bloat.
@@ -1452,4 +1466,66 @@ func validateMCPInstructionCaps(perClient, total int) error {
 		return fmt.Errorf("mcp_max_instructions_per_client (%d) must not exceed mcp_max_instructions_total (%d)", perClient, total)
 	}
 	return nil
+}
+
+// hashAdminPassword applies the password policy to a newly submitted admin password and
+// returns its hash, keeping env/vault reference metadata so the stored value still records
+// where the password came from. On failure it sends the response and returns false.
+func (h *ConfigHandler) hashAdminPassword(ctx *fasthttp.RequestCtx, password *schemas.SecretVar) (*schemas.SecretVar, bool) {
+	if failures := getPasswordPolicyFailures(password.GetValue()); len(failures) > 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(failures, ", ")))
+		return nil, false
+	}
+	hashed, err := encrypt.Hash(password.GetValue())
+	if err != nil {
+		logger.Warn("failed to hash password: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
+		return nil, false
+	}
+	if password.IsFromSecret() {
+		sv := *password
+		sv.Val = hashed
+		return &sv, true
+	}
+	return &schemas.SecretVar{Val: hashed}, true
+}
+
+// verifyStoredAdminCredential authorizes an auth_config change made while dashboard auth is
+// disabled but admin credentials are stored. Such a request reached the handler without any
+// credential check (BifrostContextKeyAuthBypassed), so switching auth back on or replacing
+// the stored credentials must prove control of the instance: either current_password matches
+// the stored admin password, or setup_token matches the operator-configured setup token
+// (which, unlike the first-admin gate, stays valid for the life of the process). Without that
+// proof anyone who can reach the port could install their own admin account. On failure it
+// sends the 403 and returns false.
+func (h *ConfigHandler) verifyStoredAdminCredential(ctx *fasthttp.RequestCtx, stored *configstore.AuthConfig, payload *authConfigWithSetupToken) bool {
+	if payload.CurrentPassword != "" && stored.AdminPassword != nil {
+		if ok, err := encrypt.CompareHash(stored.AdminPassword.GetValue(), payload.CurrentPassword); err == nil && ok {
+			return true
+		}
+	}
+	if payload.SetupToken != "" && h.configManager.ValidateConfiguredSetupToken(payload.SetupToken) {
+		return true
+	}
+	SendError(ctx, fasthttp.StatusForbidden, "dashboard auth is disabled but an admin account exists; re-enabling it or changing the admin credentials requires current_password (the stored admin password) or a valid setup_token")
+	return false
+}
+
+// globalProxyInterceptionChanges returns the global proxy settings next adds or changes,
+// relative to old (nil when none is stored), that widen who can read proxied traffic: a new
+// proxy URL or TLS verification turned off. Keeping the stored URL while editing other fields,
+// disabling the proxy, or turning verification back on is not reported.
+func globalProxyInterceptionChanges(old *configstoreTables.GlobalProxyConfig, next configstoreTables.GlobalProxyConfig) []string {
+	var prev configstoreTables.GlobalProxyConfig
+	if old != nil {
+		prev = *old
+	}
+	var changed []string
+	if next.URL != "" && next.URL != prev.URL {
+		changed = append(changed, "url")
+	}
+	if next.SkipTLSVerify && !prev.SkipTLSVerify {
+		changed = append(changed, "skip_tls_verify")
+	}
+	return changed
 }

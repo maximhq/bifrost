@@ -759,17 +759,18 @@ func (provider *RunwareProvider) ContainerFileDelete(_ *schemas.BifrostContext, 
 // single endpoint whose base URL already includes the /v1 version segment, so a leading /v1 in the
 // passthrough path is stripped to avoid duplicating it — both /runware_passthrough and
 // /runware_passthrough/v1 therefore map to the base endpoint.
-func (provider *RunwareProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) string {
+func (provider *RunwareProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) (string, error) {
 	baseURL := provider.networkConfig.BaseURL.GetValue()
 	if req.UpstreamURL != "" {
-		baseURL = strings.TrimRight(req.UpstreamURL, "/")
+		baseURL = req.UpstreamURL
 	}
-	path := strings.TrimPrefix(req.Path, "/v1")
-	url := baseURL + path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
+	// Collapse a leading /v1 only as a whole segment: /v1 and /v1/... map onto the base
+	// endpoint, while /v1beta/... merely shares the prefix and is forwarded as sent.
+	path := req.Path
+	if path == "/v1" || strings.HasPrefix(path, "/v1/") {
+		path = strings.TrimPrefix(path, "/v1")
 	}
-	return url
+	return providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
 }
 
 // Passthrough forwards a raw request to Runware's unified endpoint and returns the untouched
@@ -785,7 +786,10 @@ func (provider *RunwareProvider) Passthrough(
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-	url := provider.buildPassthroughURL(req)
+	url, err := provider.buildPassthroughURL(req)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
