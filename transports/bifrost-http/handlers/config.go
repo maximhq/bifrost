@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1148,6 +1149,8 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+	// The settings form trims what it validates; store what the dialer will parse.
+	payload.URL = strings.TrimSpace(payload.URL)
 
 	// Under the fail-open bypass (dashboard auth disabled/unconfigured), refuse to point the
 	// global proxy somewhere new or to stop verifying its TLS: either lets whoever runs the
@@ -1166,29 +1169,11 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 
 	// Validate proxy config
 	if payload.Enabled {
-		// Validate proxy type
+		// Validate proxy type. http and socks5 have dialers in the HTTP client
+		// factory and the provider stacks (network.DialViaProxy); tcp has none.
 		switch payload.Type {
-		case network.GlobalProxyTypeHTTP:
-			// HTTP proxy is supported
-			// Make sure the URL is provided
-			if payload.URL == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
-				return
-			}
-			// Every proxied request carries its provider credentials to this host, so the
-			// proxy URL follows the same destination rule as a provider base URL. Private
-			// and loopback hosts stay allowed (a self-hosted egress proxy is the normal
-			// setup); link-local and unspecified addresses never are.
-			if err := bifrost.ValidateExternalURL(payload.URL, true); err != nil {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid proxy URL: %v", err))
-				return
-			}
-			// Validate timeout if provided
-			if payload.Timeout < 0 {
-				SendError(ctx, fasthttp.StatusBadRequest, "proxy timeout must be non-negative")
-				return
-			}
-		case network.GlobalProxyTypeSOCKS5, network.GlobalProxyTypeTCP:
+		case network.GlobalProxyTypeHTTP, network.GlobalProxyTypeSOCKS5:
+		case network.GlobalProxyTypeTCP:
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("proxy type %s is not yet supported", payload.Type))
 			return
 		default:
@@ -1199,6 +1184,21 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		// Validate URL is provided when enabled
 		if payload.URL == "" {
 			SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
+			return
+		}
+
+		proxyURL, err := validateGlobalProxyURL(payload.Type, payload.URL)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		// Every proxied request carries its provider credentials to this host, so the
+		// proxy URL follows the same destination rule as a provider base URL. Private
+		// and loopback hosts stay allowed (a self-hosted egress proxy is the normal
+		// setup); link-local and unspecified addresses never are. The rule is about
+		// the host, so it is checked the same way whatever the proxy scheme.
+		if err := bifrost.ValidateExternalURL("http://"+proxyURL.Host, true); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid proxy URL: %v", err))
 			return
 		}
 
@@ -1270,6 +1270,40 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		"status":  "success",
 		"message": "proxy configuration updated successfully",
 	})
+}
+
+// validateGlobalProxyURL checks a global proxy URL the way the HTTP client factory will
+// read it (HTTPClientFactory.proxyURLForPurpose): a bare host:port takes the type's
+// scheme, and the URL must parse with a host and a valid port. The factory treats a URL
+// it cannot parse as no proxy at all, so accepting one would send traffic direct. A
+// socks5 proxy must be named by a socks5:// or socks5h:// URL, compared case-insensitively
+// as the parser lowercases schemes, because the dialer follows the URL's scheme and would
+// otherwise speak HTTP CONNECT to it.
+func validateGlobalProxyURL(proxyType network.GlobalProxyType, raw string) (*url.URL, error) {
+	effective := raw
+	if !strings.Contains(raw, "://") {
+		scheme := "http"
+		if proxyType == network.GlobalProxyTypeSOCKS5 {
+			scheme = "socks5"
+		}
+		effective = scheme + "://" + raw
+	}
+	parsed, err := url.Parse(effective)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy URL: %v", err)
+	}
+	if parsed.Hostname() == "" {
+		return nil, fmt.Errorf("proxy URL %q names no host", raw)
+	}
+	if port := parsed.Port(); port != "" {
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return nil, fmt.Errorf("proxy URL %q has an invalid port", raw)
+		}
+	}
+	if proxyType == network.GlobalProxyTypeSOCKS5 && parsed.Scheme != "socks5" && parsed.Scheme != "socks5h" {
+		return nil, fmt.Errorf("a socks5 proxy URL must use the socks5:// or socks5h:// scheme")
+	}
+	return parsed, nil
 }
 
 // headerFilterConfigEqual compares two GlobalHeaderFilterConfig for equality

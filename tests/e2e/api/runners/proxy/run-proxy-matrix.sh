@@ -8,11 +8,9 @@ set -euo pipefail
 # microsocks (socks5://), all requiring credentials, then runs one cell per
 # (mode, proxy):
 #
-#   global-http  global-https                        PUT /api/proxy-config, Inference + API on
+#   global-http  global-https  global-socks5         PUT /api/proxy-config, Inference + API on
 #   provider-http  provider-https  provider-socks5   proxy_config on every provider
 #   env-http  env-https  env-socks5                  proxy_config type environment + HTTPS_PROXY
-#
-# The global proxy API does not accept socks5 yet, so there is no global-socks5 cell.
 #
 # Each cell boots a fresh gateway (harness-gateway.sh), runs the provider harness on
 # proxy-smoke-manifest.json (one upstream-reaching row per provider), and then requires
@@ -26,7 +24,7 @@ set -euo pipefail
 # the proxy fails the request outright. CI turns this on.
 #
 # Environment:
-#   PROXY_CELLS               cells to run (default: all eight)
+#   PROXY_CELLS               cells to run (default: all nine)
 #   PORT                      gateway port (default 8080; must be free)
 #   SKIP_GATEWAY_BUILD=1      reuse tmp/bifrost-http (or HARNESS_BINARY)
 #   HARNESS_BINARY            gateway binary to boot (bifrost-enterprise passes its own)
@@ -49,7 +47,7 @@ WORK_DIR="$REPO_ROOT/$WORK_DIR_REL"
 APP_DIR_REL="$WORK_DIR_REL/app"
 APP_DIR="$REPO_ROOT/$APP_DIR_REL"
 MANIFEST="tests/e2e/api/collections/proxy-smoke-manifest.json"
-ALL_CELLS="global-http global-https provider-http provider-https provider-socks5 env-http env-https env-socks5"
+ALL_CELLS="global-http global-https global-socks5 provider-http provider-https provider-socks5 env-http env-https env-socks5"
 PROXY_CELLS="${PROXY_CELLS:-$ALL_CELLS}"
 RERUN_ATTEMPTS="${RERUN_ATTEMPTS:-1}"
 EGRESS_GROUP="bifrost-egress"
@@ -192,9 +190,10 @@ enable_global_proxy() {
     skip_verify=true
   fi
   local payload
-  payload="$(jq -n --arg url "$(cell_proxy_url "$kind")" --arg user "$PROXY_USER" --arg pass "$PROXY_PASS" \
+  payload="$(jq -n --arg type "$([ "$kind" = socks5 ] && echo socks5 || echo http)" \
+    --arg url "$(cell_proxy_url "$kind")" --arg user "$PROXY_USER" --arg pass "$PROXY_PASS" \
     --arg no_proxy "$NO_PROXY_LIST" --argjson skip "$skip_verify" \
-    '{enabled: true, type: "http", url: $url, username: $user, password: $pass, no_proxy: $no_proxy, timeout: 30, skip_tls_verify: $skip, enable_for_scim: false, enable_for_inference: true, enable_for_api: true}')"
+    '{enabled: true, type: $type, url: $url, username: $user, password: $pass, no_proxy: $no_proxy, timeout: 30, skip_tls_verify: $skip, enable_for_scim: false, enable_for_inference: true, enable_for_api: true}')"
   api_curl -X PUT -H "Content-Type: application/json" --data "$payload" "$BASE_URL/api/proxy-config" >/dev/null
   local stored
   stored="$(api_curl "$BASE_URL/api/proxy-config")"
