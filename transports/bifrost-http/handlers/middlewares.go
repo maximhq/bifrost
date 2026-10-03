@@ -1034,6 +1034,7 @@ type AuthMiddleware struct {
 	// /api/config-plants-admin-credentials path while a fresh, not-yet-configured
 	// instance is reachable over the network.
 	bootstrapToken atomic.Pointer[string]
+	setupToken     atomic.Pointer[string] // the configured setup token, kept for the life of the process
 }
 
 // InitAuthMiddleware initializes the auth middleware. The tempTokens service
@@ -1057,6 +1058,9 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	}
 
 	am.authConfig.Store(authConfig)
+	if configuredSetupToken != "" {
+		am.setupToken.Store(&configuredSetupToken)
+	}
 
 	if authConfig == nil {
 		if configuredSetupToken != "" {
@@ -1117,6 +1121,19 @@ func (m *AuthMiddleware) CheckBootstrapToken(token string) bool {
 // account has been created successfully.
 func (m *AuthMiddleware) ClearBootstrapToken() {
 	m.bootstrapToken.Store(nil)
+}
+
+// CheckConfiguredSetupToken reports whether token matches the operator-configured setup
+// token (config.json setup_token or BIFROST_SETUP_TOKEN). Unlike CheckBootstrapToken it does
+// not open up once an admin account exists and is never cleared: it is the operator's proof
+// of control for auth_config changes made while dashboard auth is disabled (see
+// ConfigHandler.verifyStoredAdminCredential). It is false when no token is configured.
+func (m *AuthMiddleware) CheckConfiguredSetupToken(token string) bool {
+	current := m.setupToken.Load()
+	if current == nil || token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(*current), []byte(token)) == 1
 }
 
 // UpdateWhitelistedRoutes updates the configured whitelisted routes that bypass auth middleware.

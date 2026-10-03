@@ -79,6 +79,7 @@ type ServerCallbacks interface {
 	// Auth related callbacks
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ValidateSetupToken(token string) bool
+	ValidateConfiguredSetupToken(token string) bool
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	// Pricing related callbacks
 	UpdateSyncConfig(ctx context.Context) error
@@ -1491,6 +1492,17 @@ func (s *BifrostHTTPServer) ValidateSetupToken(token string) bool {
 		return true
 	}
 	return s.AuthMiddleware.CheckBootstrapToken(token)
+}
+
+// ValidateConfiguredSetupToken reports whether token matches the operator-configured setup
+// token (see AuthMiddleware.CheckConfiguredSetupToken). Unlike ValidateSetupToken it does not
+// open up once an admin account exists, and it is false when no token is configured or no
+// auth middleware is installed.
+func (s *BifrostHTTPServer) ValidateConfiguredSetupToken(token string) bool {
+	if s.AuthMiddleware == nil {
+		return false
+	}
+	return s.AuthMiddleware.CheckConfiguredSetupToken(token)
 }
 
 // UpdateDropExcessRequests updates excess requests config
