@@ -594,6 +594,15 @@ var proxyMatrixSources = []proxyMatrixSource{
 	{name: "environment", config: func(*proxyMatrixProxies, proxyMatrixTarget) *schemas.ProxyConfig {
 		return &schemas.ProxyConfig{Type: schemas.EnvProxy}
 	}},
+	// The shape an inherited global proxy takes: a proxy plus the global no_proxy
+	// list, here naming the target, so every stack must connect directly.
+	{name: "http-ip+no_proxy", config: func(p *proxyMatrixProxies, _ proxyMatrixTarget) *schemas.ProxyConfig {
+		return &schemas.ProxyConfig{
+			Type:    schemas.HTTPProxy,
+			URL:     schemas.NewSecretVar("http://127.0.0.1:" + p.config.port()),
+			NoProxy: "api.bifrost.test,203.0.113.10",
+		}
+	}},
 }
 
 // proxyMatrixEnv is one state of the proxy environment variables. Values name a
@@ -652,6 +661,8 @@ func proxyMatrixExpect(stack string, source proxyMatrixSource, env proxyMatrixEn
 		return ""
 	case "http-ip", "http-hostname":
 		return "config"
+	case "http-ip+no_proxy":
+		return ""
 	case "socks5":
 		return "socks"
 	case "environment":
@@ -785,5 +796,52 @@ func TestProxyRoutingMatrix(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestConfigureProxy_NoProxyDialsDirectlyThroughConfigureDialer pins that a host on the
+// proxy's no_proxy list connects directly, through ConfigureDialer's own checked dial,
+// while every other host still goes to the proxy. An inherited global proxy relies on
+// this to keep, say, a Bedrock VPC endpoint off the corporate proxy.
+func TestConfigureProxy_NoProxyDialsDirectlyThroughConfigureDialer(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer target.Close()
+
+	client := &fasthttp.Client{}
+	ConfigureProxy(client, &schemas.ProxyConfig{
+		Type:    schemas.HTTPProxy,
+		URL:     schemas.NewSecretVar("http://127.0.0.1:1"),
+		NoProxy: "127.0.0.1, .vpce.amazonaws.com",
+	}, testLogger{})
+	ConfigureDialer(client, false)
+
+	conn, err := client.Dial(strings.TrimPrefix(target.URL, "http://"))
+	if err != nil {
+		t.Fatalf("no_proxy host must dial directly, got %v", err)
+	}
+	conn.Close()
+
+	_, err = client.Dial("example.com:80")
+	if err == nil || !strings.Contains(err.Error(), "127.0.0.1:1") {
+		t.Fatalf("a host off the no_proxy list must go to the proxy, got %v", err)
+	}
+}
+
+func TestNetHTTPProxy_NoProxyConnectsDirectly(t *testing.T) {
+	proxy, _, err := NetHTTPProxy(&schemas.ProxyConfig{
+		Type:    schemas.HTTPProxy,
+		URL:     schemas.NewSecretVar("http://10.0.0.9:3128"),
+		NoProxy: ".vpce.amazonaws.com",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	bypassed, _ := http.NewRequest(http.MethodPost, "https://vpce-0abc.bedrock-runtime.us-east-1.vpce.amazonaws.com/model/x/converse", nil)
+	if got, _ := proxy(bypassed); got != nil {
+		t.Errorf("no_proxy host: proxy = %v, want direct", got)
+	}
+	proxied, _ := http.NewRequest(http.MethodPost, "https://us-central1-aiplatform.googleapis.com/v1/x", nil)
+	if got, _ := proxy(proxied); got == nil || got.Host != "10.0.0.9:3128" {
+		t.Errorf("other host: proxy = %v, want 10.0.0.9:3128", got)
 	}
 }
