@@ -740,9 +740,9 @@ func TestFailureBackoff(t *testing.T) {
 		_, third := fake.mint(cfg, noopLogger{})
 		require.NotNil(t, third)
 
-		assert.Equal(t, "model-a", first.ExtraFields.OriginalModelRequested)
-		assert.Equal(t, "model-b", second.ExtraFields.OriginalModelRequested)
-		assert.Empty(t, third.ExtraFields.OriginalModelRequested)
+		assert.Equal(t, schemas.ChatCompletionRequest, first.ExtraFields.RequestType)
+		assert.Equal(t, schemas.ResponsesRequest, second.ExtraFields.RequestType)
+		assert.Empty(t, third.ExtraFields.RequestType)
 	})
 
 	t.Run("an unreachable GitHub backs off on the transient schedule", func(t *testing.T) {
