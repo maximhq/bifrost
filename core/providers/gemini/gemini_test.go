@@ -5971,3 +5971,167 @@ func TestGenAIPartMediaResolution_SurvivesBatchConversion(t *testing.T) {
 	require.NotNil(t, got, "batch conversion must preserve per-part media resolution")
 	assert.Equal(t, "MEDIA_RESOLUTION_ULTRA_HIGH", got.Level)
 }
+
+func TestGemini35ThinkingAndStreamingUsage(t *testing.T) {
+	t.Run("EffortAndMaxTokensOnGemini3EmitsThinkingLevel", func(t *testing.T) {
+		for _, tc := range []struct {
+			model     string
+			effort    string
+			maxTokens int
+			summary   *string
+			display   *string
+			wantLevel string
+			wantInc   bool
+		}{
+			{
+				model:     "gemini-3.5-flash",
+				effort:    "low",
+				maxTokens: 4096,
+				wantLevel: "low",
+				wantInc:   true,
+			},
+			{
+				model:     "au.gemini-3.5-flash",
+				effort:    "minimal",
+				maxTokens: 1024,
+				summary:   schemas.Ptr("none"),
+				display:   schemas.Ptr("omitted"),
+				wantLevel: "minimal",
+				wantInc:   false,
+			},
+			{
+				model:     "gemini-3.5-pro",
+				effort:    "minimal",
+				maxTokens: 2048,
+				wantLevel: "low",
+				wantInc:   true,
+			},
+			{
+				model:     "gemini-3.1-pro",
+				effort:    "low",
+				maxTokens: 4096,
+				summary:   schemas.Ptr("none"),
+				display:   schemas.Ptr("omitted"),
+				wantLevel: "low",
+				wantInc:   false,
+			},
+		} {
+			t.Run(tc.model, func(t *testing.T) {
+				chatReq := &schemas.BifrostChatRequest{
+					Model: tc.model,
+					Input: minimalChatInput(),
+					Params: &schemas.ChatParameters{
+						Reasoning: &schemas.ChatReasoning{
+							Effort:    schemas.Ptr(tc.effort),
+							MaxTokens: schemas.Ptr(tc.maxTokens),
+							Display:   tc.display,
+						},
+					},
+				}
+				chatOut, err := gemini.ToGeminiChatCompletionRequest(nil, chatReq)
+				require.NoError(t, err)
+				require.NotNil(t, chatOut.GenerationConfig.ThinkingConfig)
+				require.NotNil(t, chatOut.GenerationConfig.ThinkingConfig.ThinkingLevel)
+				assert.Equal(t, tc.wantLevel, *chatOut.GenerationConfig.ThinkingConfig.ThinkingLevel)
+				assert.Nil(t, chatOut.GenerationConfig.ThinkingConfig.ThinkingBudget)
+				assert.Equal(t, tc.wantInc, chatOut.GenerationConfig.ThinkingConfig.IncludeThoughts)
+
+				respReq := &schemas.BifrostResponsesRequest{
+					Model: tc.model,
+					Input: []schemas.ResponsesMessage{{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Solve this")},
+					}},
+					Params: &schemas.ResponsesParameters{
+						Reasoning: &schemas.ResponsesParametersReasoning{
+							Effort:    schemas.Ptr(tc.effort),
+							MaxTokens: schemas.Ptr(tc.maxTokens),
+							Summary:   tc.summary,
+						},
+					},
+				}
+				respOut, err := gemini.ToGeminiResponsesRequest(nil, respReq)
+				require.NoError(t, err)
+				require.NotNil(t, respOut.GenerationConfig.ThinkingConfig)
+				require.NotNil(t, respOut.GenerationConfig.ThinkingConfig.ThinkingLevel)
+				assert.Equal(t, tc.wantLevel, *respOut.GenerationConfig.ThinkingConfig.ThinkingLevel)
+				assert.Nil(t, respOut.GenerationConfig.ThinkingConfig.ThinkingBudget)
+				assert.Equal(t, tc.wantInc, respOut.GenerationConfig.ThinkingConfig.IncludeThoughts)
+			})
+		}
+	})
+
+	t.Run("RegionalPrefixSupportsToolCombinationOnVertex", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex,
+			Model:    "au.gemini-3.5-flash",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather in sydney?")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{
+					{Type: schemas.ResponsesToolTypeWebSearch, ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{}},
+					{
+						Type:                  schemas.ResponsesToolTypeFunction,
+						Name:                  schemas.Ptr("get_weather"),
+						ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+					},
+				},
+			},
+		}
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 2, "regional Gemini 3+ model must support combining function declarations and Google Search")
+		require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+		assert.NotNil(t, out.Tools[1].GoogleSearch)
+	})
+
+	t.Run("SplitFinishReasonAndUsageMetadataStreamChunks", func(t *testing.T) {
+		state := gemini.NewGeminiStreamState()
+
+		chunk1 := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-split-1",
+			ModelVersion: "gemini-3.5-flash",
+			Candidates: []*gemini.Candidate{{
+				Index:        0,
+				FinishReason: gemini.FinishReasonStop,
+				Content: &gemini.Content{
+					Role:  string(gemini.RoleModel),
+					Parts: []*gemini.Part{{Text: "Hello"}},
+				},
+			}},
+		}
+		deltas1, bifrostErr, isLast1 := chunk1.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		assert.False(t, isLast1, "finishReason chunk without usageMetadata must not terminate stream early")
+		require.Len(t, deltas1, 1)
+		require.Len(t, deltas1[0].Choices, 1)
+		require.NotNil(t, deltas1[0].Choices[0].FinishReason)
+		assert.Equal(t, "stop", *deltas1[0].Choices[0].FinishReason)
+
+		chunk2 := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-split-1",
+			ModelVersion: "gemini-3.5-flash",
+			Candidates:   []*gemini.Candidate{},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:        2500,
+				CachedContentTokenCount: 2000,
+				CandidatesTokenCount:    10,
+				ThoughtsTokenCount:      120,
+				TotalTokenCount:         2630,
+			},
+		}
+		deltas2, bifrostErr, isLast2 := chunk2.ToBifrostChatCompletionStream(state)
+		require.Nil(t, bifrostErr)
+		assert.True(t, isLast2, "trailing usageMetadata chunk after finishReason must close stream")
+		require.Len(t, deltas2, 1)
+		require.NotNil(t, deltas2[0].Usage)
+		assert.Equal(t, 2500, deltas2[0].Usage.PromptTokens)
+		require.NotNil(t, deltas2[0].Usage.PromptTokensDetails)
+		assert.Equal(t, 2000, deltas2[0].Usage.PromptTokensDetails.CachedReadTokens)
+		require.NotNil(t, deltas2[0].Usage.CompletionTokensDetails)
+		assert.Equal(t, 120, deltas2[0].Usage.CompletionTokensDetails.ReasoningTokens)
+		assert.Equal(t, 2630, deltas2[0].Usage.TotalTokens)
+	})
+}
