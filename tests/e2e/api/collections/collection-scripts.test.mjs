@@ -15,12 +15,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 const collection = JSON.parse(
   readFileSync(join(here, "bifrost-api-management.postman_collection.json"), "utf8"),
 );
+
+const guardsCollection = JSON.parse(
+  readFileSync(join(here, "bifrost-v1-request-guards.postman_collection.json"), "utf8"),
+);
 const rateLimitCollection = JSON.parse(
   readFileSync(join(here, "bifrost-v1-rate-limit.postman_collection.json"), "utf8"),
 );
 
 // Locate a request by "Folder / Request Name" and return one of its scripts.
-function scriptFor(path, listen) {
+function scriptFor(path, listen, source = collection) {
   const wanted = path.split(" / ");
   function walk(items, trail) {
     for (const item of items) {
@@ -37,32 +41,19 @@ function scriptFor(path, listen) {
     }
     return null;
   }
-  const src = walk(collection.item, []);
+  const src = walk(source.item, []);
   assert.ok(src, `request not found: ${path}`);
   return src;
 }
 
+// Same lookup inside the request-guards collection.
+function guardsScriptFor(path, listen) {
+  return scriptFor(path, listen, guardsCollection);
+}
+
 // Same lookup inside the rate-limit collection.
 function rateLimitScriptFor(path, listen) {
-  const wanted = path.split(" / ");
-  function walk(items, trail) {
-    for (const item of items) {
-      const here = [...trail, item.name];
-      if (item.item) {
-        const found = walk(item.item, here);
-        if (found) return found;
-        continue;
-      }
-      if (here.join(" / ") !== wanted.join(" / ")) continue;
-      const event = (item.event || []).find((e) => e.listen === listen);
-      assert.ok(event, `${path} has no ${listen} script`);
-      return event.script.exec.join("\n");
-    }
-    return null;
-  }
-  const src = walk(rateLimitCollection.item, []);
-  assert.ok(src, `request not found: ${path}`);
-  return src;
+  return scriptFor(path, listen, rateLimitCollection);
 }
 
 // A no-op chai-style chain, so pm.expect(...) assertions neither throw nor pass
@@ -86,6 +77,9 @@ function sandbox({ responseBody = "", responseCode = 200, variables = {} } = {})
       get: (key) => (key in vars ? vars[key] : undefined),
       set: (key, value) => {
         vars[key] = value;
+      },
+      unset: (key) => {
+        delete vars[key];
       },
     },
     variables: { get: (key) => (key in vars ? vars[key] : undefined) },
@@ -234,6 +228,141 @@ test("webhook capture still records the id on success", () => {
     responseBody: JSON.stringify({ endpoint: { id: "wh-1" }, secret: "s3cret" }),
   });
   assert.strictEqual(ctx.vars.webhook_id, "wh-1");
+});
+
+// ── Providers / Add Provider and its dependents ───────────────────────────────
+// The create sets a base URL, which the server only accepts from an admin
+// session: the unauthenticated pass gets a 403 and the dependents must skip.
+const addProviderTest = scriptFor("Providers / Add Provider", "test");
+
+test("provider capture records provider_created only on a 2xx", () => {
+  const refused = run(addProviderTest, {
+    responseCode: 403,
+    responseBody: JSON.stringify({ error: { message: "requires an authenticated admin session" } }),
+  });
+  assert.ok(!refused.vars.provider_created, "provider_created must stay unset on a 403");
+  const created = run(addProviderTest, {
+    responseCode: 200,
+    responseBody: JSON.stringify({ name: "custom-123" }),
+    variables: { admin_auth_header: "Bearer x" },
+  });
+  assert.strictEqual(created.vars.provider_created, "custom-123");
+});
+
+test("provider capture clears a stale provider_created before judging the response", () => {
+  const ctx = run(addProviderTest, {
+    responseCode: 403,
+    responseBody: "{}",
+    variables: { provider_created: "custom-123" },
+  });
+  assert.ok(!ctx.vars.provider_created, "a value from an earlier run must not survive a refusal");
+});
+
+for (const name of ["Get Provider (After Create)", "Update Provider", "Delete Provider"]) {
+  const prerequest = scriptFor(`Providers / ${name}`, "prerequest");
+  test(`${name} skips when the create was refused`, () => {
+    assert.strictEqual(run(prerequest, { variables: { provider_created: "" } }).state.skipped, true);
+    assert.strictEqual(run(prerequest, {}).state.skipped, true);
+  });
+  test(`${name} runs when the create succeeded`, () => {
+    assert.strictEqual(run(prerequest, { variables: { provider_created: "custom-123" } }).state.skipped, false);
+  });
+}
+
+// ── Proxy / Update Proxy Config and Get Proxy Config ──────────────────────────
+const updateProxyPrerequest = scriptFor("Proxy / Update Proxy Config", "prerequest");
+
+test("unauthenticated proxy update attempts a loopback URL with a port stamped per run and records it", () => {
+  const ctx = run(updateProxyPrerequest, {});
+  const body = JSON.parse(ctx.pm.request.body.raw);
+  assert.match(body.url, /^http:\/\/127\.0\.0\.1:2\d{4}$/);
+  assert.notStrictEqual(body.url, "http://127.0.0.1:38080", "must differ from the fixed authenticated URL");
+  assert.strictEqual(ctx.vars.proxy_attempted_url, body.url);
+  assert.strictEqual(body.enabled, true);
+});
+
+test("authenticated proxy update sends the fixed URL the seeded-value check expects", () => {
+  const ctx = run(updateProxyPrerequest, { variables: { admin_auth_header: "Bearer x" } });
+  const body = JSON.parse(ctx.pm.request.body.raw);
+  assert.strictEqual(body.url, "http://127.0.0.1:38080");
+  assert.strictEqual(ctx.vars.proxy_attempted_url, body.url);
+});
+
+test("Get Proxy Config survives a non-JSON body without a script error", () => {
+  const getProxyTest = scriptFor("Proxy / Get Proxy Config", "test");
+  const ctx = run(getProxyTest, {
+    responseBody: SPA_FALLBACK,
+    variables: { proxy_attempted_url: "http://127.0.0.1:20001" },
+  });
+  assert.ok(ctx.state.tests.length > 0, "the script must reach its named assertions");
+});
+
+// ── MCP Clients / Add MCP Client and its dependents ───────────────────────────
+const addMCPClientTest = scriptFor("MCP Clients / Add MCP Client", "test");
+
+test("MCP client capture records mcp_client_registered only on a 2xx", () => {
+  const refused = run(addMCPClientTest, {
+    responseCode: 403,
+    responseBody: JSON.stringify({ error: { message: "loopback, private-network, or link-local" } }),
+    variables: { mcp_client_id: "test_mcp_123", mcp_client_registered: "stale" },
+  });
+  assert.ok(!refused.vars.mcp_client_registered, "must stay unset on a 403 (and clear a stale value)");
+  const connected = run(addMCPClientTest, {
+    responseCode: 200,
+    responseBody: JSON.stringify({ message: "MCP client connected successfully", status: "success" }),
+    variables: { mcp_client_id: "test_mcp_123", admin_auth_header: "Bearer x" },
+  });
+  assert.strictEqual(connected.vars.mcp_client_registered, "test_mcp_123");
+});
+
+for (const name of ["Reconnect MCP Client", "Update MCP Client", "Delete MCP Client"]) {
+  const prerequest = scriptFor(`MCP Clients / ${name}`, "prerequest");
+  test(`${name} skips when the registration was refused and runs when it succeeded`, () => {
+    assert.strictEqual(run(prerequest, {}).state.skipped, true);
+    assert.strictEqual(run(prerequest, { variables: { mcp_client_registered: "test_mcp_123" } }).state.skipped, false);
+  });
+}
+
+// ── Virtual MCPs folder prerequest ────────────────────────────────────────────
+// Folder-level scripts are not reachable through scriptFor (it walks requests).
+function folderScript(name, listen) {
+  const f = collection.item.find((i) => i.name === name);
+  assert.ok(f, `folder not found: ${name}`);
+  const event = (f.event || []).find((e) => e.listen === listen);
+  assert.ok(event, `${name} has no folder-level ${listen} script`);
+  return event.script.exec.join("\n");
+}
+
+test("Virtual MCPs skips only the requests that need the setup client", () => {
+  const src = folderScript("Virtual MCPs", "prerequest");
+  const runNamed = (requestName, variables) => {
+    const ctx = sandbox({ variables });
+    ctx.pm.info = { requestName };
+    // eslint-disable-next-line no-new-func
+    new Function("pm", src)(ctx.pm);
+    return ctx.state.skipped;
+  };
+  assert.strictEqual(runNamed("Create MCP Client (vMCP setup)", {}), false, "the setup request itself always runs");
+  assert.strictEqual(runNamed("Get Virtual MCP Invalid Id (Coverage Probe)", {}), false, "independent probes run unauthenticated");
+  assert.strictEqual(runNamed("Create Virtual MCP", {}), true, "a dependent skips when the setup client was refused");
+  assert.strictEqual(runNamed("Delete MCP Client (vMCP cleanup)", {}), true);
+  assert.strictEqual(runNamed("Create Virtual MCP", { vmcp_client_registered: "vmcp_client_1" }), false, "dependents run once the client exists");
+});
+
+test("vMCP setup capture records vmcp_client_registered only on a 2xx", () => {
+  const setupTest = scriptFor("Virtual MCPs / Create MCP Client (vMCP setup)", "test");
+  const refused = run(setupTest, {
+    responseCode: 403,
+    responseBody: SPA_FALLBACK,
+    variables: { vmcp_client_id: "vmcp_client_1", vmcp_client_registered: "stale" },
+  });
+  assert.ok(!refused.vars.vmcp_client_registered, "must stay unset on a refusal, even with a non-JSON body");
+  const connected = run(setupTest, {
+    responseCode: 200,
+    responseBody: JSON.stringify({ message: "MCP client connected successfully" }),
+    variables: { vmcp_client_id: "vmcp_client_1", admin_auth_header: "Bearer x" },
+  });
+  assert.strictEqual(connected.vars.vmcp_client_registered, "vmcp_client_1");
 });
 
 // ── Governance / Virtual key budget override ──────────────────────────────────
@@ -431,6 +560,106 @@ test("plugin requests are allowed a 403 only in the unauthenticated pass", () =>
     }),
     false,
     "with admin auth configured the 403 is a real failure",
+  );
+});
+
+test("dial-target writes are allowed a 403 only in the unauthenticated pass", () => {
+  const refusal = JSON.stringify({
+    error: { message: "Setting a provider's base URL or allow_private_network requires an authenticated admin session; dashboard auth is currently disabled or unconfigured." },
+  });
+  for (const name of ["Add Provider", "Update Proxy Config"]) {
+    assert.strictEqual(runGate({ requestName: name, code: 403, body: refusal }), true, name);
+    assert.strictEqual(
+      runGate({ requestName: name, code: 403, body: refusal, variables: { admin_auth_header: "Bearer x" } }),
+      false,
+      `${name}: with admin auth configured the 403 is a real failure`,
+    );
+    assert.strictEqual(
+      runGate({ requestName: name, code: 403, body: JSON.stringify({ error: { message: "forbidden" } }) }),
+      false,
+      `${name}: a 403 without the admin-session wording must still fail`,
+    );
+    assert.strictEqual(
+      runGate({ requestName: name, code: 401, body: refusal }),
+      false,
+      `${name}: only the 403 refusal is expected`,
+    );
+  }
+  assert.strictEqual(
+    runGate({ requestName: "Update Provider", code: 403, body: refusal }),
+    false,
+    "the allowance is per named request, not a blanket 403 rule",
+  );
+});
+
+test("MCP client registrations are allowed a 403 only in the unauthenticated pass", () => {
+  const loopback = JSON.stringify({
+    error: { message: "unauthenticated callers cannot register MCP clients that connect to loopback, private-network, or link-local addresses; set an admin password to allow this" },
+  });
+  const unresolvable = JSON.stringify({
+    error: { message: 'could not resolve MCP target host "mcp.e2e-unresolvable.invalid"; unauthenticated callers can only register MCP clients whose target resolves to a public address' },
+  });
+  for (const [name, body] of [
+    ["Add MCP Client", loopback],
+    ["Create MCP Client (vMCP setup)", loopback],
+    ["Add MCP Client (unresolvable host)", unresolvable],
+  ]) {
+    assert.strictEqual(runGate({ requestName: name, code: 403, body }), true, name);
+    assert.strictEqual(
+      runGate({ requestName: name, code: 403, body, variables: { admin_auth_header: "Bearer x" } }),
+      false,
+      `${name}: with admin auth configured the 403 is a real failure`,
+    );
+  }
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client", code: 403, body: unresolvable }),
+    false,
+    "the loopback request must carry the loopback wording, not any 403",
+  );
+});
+
+test("MCP registration input errors are allowed exactly as the server reports them", () => {
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client (unsupported connection_type)", code: 400, body: "{}" }),
+    true,
+  );
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client (unsupported connection_type)", code: 403, body: "{}" }),
+    false,
+    "only the 400 validation answer is expected",
+  );
+  const connectFailure = JSON.stringify({ error: { message: "Failed to connect MCP client: context deadline exceeded" } });
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client (unresolvable host)", code: 500, body: connectFailure, variables: { admin_auth_header: "Bearer x" } }),
+    true,
+    "an admin may register the target; the connect failure is the expected outcome",
+  );
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client (unresolvable host)", code: 500, body: connectFailure }),
+    false,
+    "unauthenticated the registration must be refused, never attempted",
+  );
+  assert.strictEqual(
+    runGate({ requestName: "Add MCP Client", code: 500, body: connectFailure, variables: { admin_auth_header: "Bearer x" } }),
+    false,
+    "the 500 allowance is only for the unresolvable-host request",
+  );
+});
+
+test("the webhook test delivery is allowed a 403 only in the unauthenticated pass", () => {
+  const refusal = JSON.stringify({
+    error: { message: "unauthenticated callers cannot test webhook endpoints that allow private-network delivery; set an admin password to allow this" },
+  });
+  assert.strictEqual(runGate({ requestName: "Test Webhook Endpoint", code: 403, body: refusal }), true);
+  assert.strictEqual(
+    runGate({ requestName: "Test Webhook Endpoint", code: 403, body: refusal, variables: { admin_auth_header: "Bearer x" } }),
+    false,
+    "with admin auth configured the 403 is a real failure",
+  );
+  assert.strictEqual(
+    runGate({ requestName: "Test Webhook Endpoint", code: 502, body: "{}" }),
+    false,
+    "without the probe suffix a receiver error is no longer tolerated",
   );
 });
 
@@ -635,6 +864,94 @@ for (const mode of ["leaked", "unset", "missing", "missing-ref", "http-error", "
     assert.ok(state.failures.length > 0, `${mode} was falsely accepted`);
   });
 }
+
+// ── Request guards - restore steps for a stored rejected value ───────────────
+// The guards assert that a refused proxy change or catalog URL was not persisted. If a
+// guard regresses and the value is stored, the check fails loudly and a skip-gated PUT
+// must put the earlier config back, the same way the leaked MCP client / provider / key
+// cleanups do, so the suites after this one do not run against a changed gateway.
+const catalogRead = guardsScriptFor("Catalog URL validation / Read the stored catalog URLs", "test");
+const catalogCheck = guardsScriptFor("Catalog URL validation / The stored catalog URLs are unchanged", "test");
+const catalogRestorePre = guardsScriptFor("Catalog URL validation / Cleanup: restore the stored catalog URLs", "prerequest");
+const catalogBefore = JSON.stringify({
+  client_config: { log_retention_days: 0, compat: { should_drop_params: true } },
+  framework_config: {
+    pricing_url: "https://example.com/pricing.json",
+    model_parameters_url: "https://example.com/params.json",
+    mcp_library_url: "https://example.com/mcp",
+    pricing_sync_interval: 86400,
+  },
+});
+
+test("catalog read stores a restore payload holding exactly the three earlier catalog URLs", () => {
+  const { vars } = run(catalogRead, { responseBody: catalogBefore });
+  // client_config rides along verbatim (with the write-rejected log_retention_days 0 patched to 1)
+  // so the handler sees an unchanged compat block and never reloads or removes the compat plugin.
+  assert.strictEqual(
+    vars.rg_catalog_restore_raw,
+    '{"client_config":{"log_retention_days":1,"compat":{"should_drop_params":true}},"framework_config":{"pricing_url":"https://example.com/pricing.json","model_parameters_url":"https://example.com/params.json","mcp_library_url":"https://example.com/mcp"}}',
+  );
+});
+
+test("catalog read leaves the restore payload empty when the config read has no client_config object", () => {
+  const { vars } = run(catalogRead, { responseBody: catalogBefore.replace('"client_config":{"log_retention_days":0,"compat":{"should_drop_params":true}},', "") });
+  assert.strictEqual(vars.rg_catalog_restore_raw, "");
+});
+
+test("catalog read leaves the restore payload empty on a non-200 so the restore can never send a placeholder", () => {
+  const { vars } = run(catalogRead, { responseBody: SPA_FALLBACK, responseCode: 503, variables: { rg_catalog_restore_raw: "stale" } });
+  assert.strictEqual(vars.rg_catalog_restore_raw, "");
+});
+
+test("catalog check flags a leak only when a stored catalog URL differs from the earlier value", () => {
+  const before = {
+    rg_pricing_url: "https://example.com/pricing.json",
+    rg_model_parameters_url: "https://example.com/params.json",
+    rg_mcp_library_url: "https://example.com/mcp",
+  };
+  const same = run(catalogCheck, { responseBody: catalogBefore, variables: { ...before, rg_catalog_leaked: "1" } });
+  assert.strictEqual(same.vars.rg_catalog_leaked, "", "unchanged URLs clear a stale flag");
+  const leakedBody = catalogBefore.replace("https://example.com/mcp", "file:///etc/hostname");
+  const leaked = run(catalogCheck, { responseBody: leakedBody, variables: before });
+  assert.strictEqual(leaked.vars.rg_catalog_leaked, "1", "a stored file:// URL sets the flag");
+});
+
+test("catalog restore skips unless a leak was flagged and a restore payload exists", () => {
+  assert.strictEqual(run(catalogRestorePre, { variables: { rg_catalog_leaked: "", rg_catalog_restore_raw: "{}" } }).state.skipped, true);
+  assert.strictEqual(run(catalogRestorePre, { variables: { rg_catalog_leaked: "1", rg_catalog_restore_raw: "" } }).state.skipped, true);
+  const live = run(catalogRestorePre, { variables: { rg_catalog_leaked: "1", rg_catalog_restore_raw: '{"framework_config":{"pricing_url":"x"}}' } });
+  assert.strictEqual(live.state.skipped, false);
+  assert.strictEqual(live.pm.request.body.raw, '{"framework_config":{"pricing_url":"x"}}', "the earlier URLs are resent verbatim");
+});
+
+const proxyRead = guardsScriptFor("Provider endpoint changes / Read the stored proxy config", "test");
+const proxyCheck = guardsScriptFor("Provider endpoint changes / The proxy config is unchanged", "test");
+const proxyRestorePre = guardsScriptFor("Provider endpoint changes / Cleanup: restore the stored proxy config", "prerequest");
+const proxyBefore = '{"enabled":false,"type":"http","url":"","timeout":0,"enable_for_scim":false,"enable_for_inference":false,"enable_for_api":false}';
+
+test("proxy read stores the raw response text for a verbatim restore", () => {
+  const { vars } = run(proxyRead, { responseBody: proxyBefore });
+  assert.strictEqual(vars.rg_proxy_before_raw, proxyBefore);
+  const bad = run(proxyRead, { responseBody: SPA_FALLBACK, responseCode: 503, variables: { rg_proxy_before_raw: "stale" } });
+  assert.strictEqual(bad.vars.rg_proxy_before_raw, "", "a failed read never leaves a stale snapshot behind");
+});
+
+test("proxy check flags a leak only when enabled, type or url moved from the earlier value", () => {
+  const before = { rg_proxy_before: JSON.stringify({ enabled: false, type: "http", url: "" }) };
+  const same = run(proxyCheck, { responseBody: proxyBefore, variables: { ...before, rg_proxy_leaked: "1" } });
+  assert.strictEqual(same.vars.rg_proxy_leaked, "", "an unchanged config clears a stale flag");
+  const leakedBody = proxyBefore.replace('"enabled":false,"type":"http","url":""', '"enabled":true,"type":"http","url":"http://proxy.example.com:3128"');
+  const leaked = run(proxyCheck, { responseBody: leakedBody, variables: before });
+  assert.strictEqual(leaked.vars.rg_proxy_leaked, "1", "a stored rejected URL sets the flag");
+});
+
+test("proxy restore skips unless a leak was flagged and a raw snapshot exists", () => {
+  assert.strictEqual(run(proxyRestorePre, { variables: { rg_proxy_leaked: "", rg_proxy_before_raw: proxyBefore } }).state.skipped, true);
+  assert.strictEqual(run(proxyRestorePre, { variables: { rg_proxy_leaked: "1", rg_proxy_before_raw: "" } }).state.skipped, true);
+  const live = run(proxyRestorePre, { variables: { rg_proxy_leaked: "1", rg_proxy_before_raw: proxyBefore } });
+  assert.strictEqual(live.state.skipped, false);
+  assert.strictEqual(live.pm.request.body.raw, proxyBefore, "the earlier config is resent byte for byte");
+});
 
 // ── Rate limit - Model config spelling: skip guards and the sibling check ─────
 // The folder's counter-dependent assertions must be skip-guarded on priming success like
