@@ -3,3 +3,4 @@
 - fix: deferred tools on OpenAI gpt-5.4+ (and Azure / Bedrock gpt) get the tool_search OpenAI requires instead of a 400 — a client search function (Claude Code's ToolSearch) becomes a client-executed tool_search with its history replayed as tool_search_call / tool_search_output, otherwise the hosted tool_search is added (#8361)
 - feat: gateway-run tool search for deferred tools on models with no tool search of their own (Gemini, older GPT, Bedrock non-Claude, ...) — the deferred tools are held back behind a bifrost_tool_search function that Bifrost resolves in the gateway (select: or BM25), at most 3 model calls per request (non-streaming)
 - feat: the gateway-run tool search also serves streaming Responses requests, splicing the search turns into one client stream
+- fix: anthropic - streaming message_delta keeps its required delta object and reported usage (#7896) [@valentinyanakiev](https://github.com/valentinyanakiev)
