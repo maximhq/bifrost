@@ -1,3 +1,5 @@
+[fix]: preserve gateway correlation IDs when forwarding provider response headers [@XuJian](https://github.com/xujiantop-crypto)
+
 ## ✨ Features
 
 - **Pinned Keys on Routing Fallbacks** - Each routing-rule fallback can pin a provider key via `key_id`, or `provider_key_name` in config.json. The UI rule editor lets you pick or clear a key per fallback. Unpinned fallbacks keep the legacy `provider/model` string, so existing rules keep their config hash (#7470, #7379, #7380, #7381)

@@ -2751,9 +2751,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 
 	// Forward provider response headers stored in context by streaming handlers
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		for key, value := range headers {
-			ctx.Response.Header.Set(key, value)
-		}
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 
 	// Routed-identity headers from the context snapshot — routing is final once
@@ -3588,7 +3586,7 @@ func (g *GenericRouter) handlePassthroughNonStream(
 		case "connection", "transfer-encoding", "set-cookie", "proxy-authenticate", "www-authenticate":
 			// drop
 		default:
-			ctx.Response.Header.Set(k, v)
+			lib.ForwardProviderResponseHeader(ctx, k, v)
 		}
 	}
 	// Passthrough forwards provider bytes 1:1, so extra_fields can't ride the body —
@@ -3699,7 +3697,7 @@ func (g *GenericRouter) handlePassthroughStream(
 			// drop — streaming invariants are set explicitly above (Content-Type is set from the
 			// upstream value before this loop); upstream must not override them here
 		default:
-			ctx.Response.Header.Set(k, v)
+			lib.ForwardProviderResponseHeader(ctx, k, v)
 		}
 	}
 	// Routed identity via headers (passthrough body is provider bytes 1:1).

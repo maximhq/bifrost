@@ -1297,3 +1297,87 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 		})
 	}
 }
+
+// Exercise the real router/provider paths and HTTP header commit for both SDK
+// conversion and raw passthrough. All provider requests go to a local server.
+func TestProviderCorrelationHeaders_IntegrationAndPassthroughWire(t *testing.T) {
+	const unary = `{"id":"msg_offline","type":"message","role":"assistant","model":"claude-offline","content":[{"type":"text","text":"offline reply"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	const stream = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_offline\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-offline\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"offline reply\"}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("X-Request-ID", "provider-request")
+		w.Header().Set("X-Bifrost-Trace-ID", "provider-trace")
+		w.Header().Set("x-ratelimit-remaining", "17")
+		w.Header().Set("Set-Cookie", "upstream-cookie=must-not-forward")
+		if strings.Contains(string(body), `"stream":true`) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, stream)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, unary)
+		}
+	}))
+	defer upstream.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughTestAccount{baseURL: upstream.URL}, Logger: bifrost.NewNoOpLogger(),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	outerHeaders := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if string(ctx.Request.Header.Peek("x-test-traced")) == "true" {
+				ctx.Response.Header.Set("x-request-id", "gateway-request")
+				ctx.Response.Header.Set("x-bifrost-trace-id", "gateway-trace")
+			}
+			next(ctx)
+		}
+	}
+	NewAnthropicRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, outerHeaders)
+	NewAnthropicPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, outerHeaders)
+	for _, tc := range []struct {
+		name, prefix      string
+		streaming, traced bool
+	}{
+		{"sdk unary", "/anthropic", false, true}, {"sdk stream", "/anthropic", true, true},
+		{"passthrough unary", "/anthropic_passthrough", false, true}, {"passthrough stream", "/anthropic_passthrough", true, true},
+		{"untraced passthrough", "/anthropic_passthrough", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			serverConn, clientConn := net.Pipe()
+			defer clientConn.Close()
+			require.NoError(t, clientConn.SetDeadline(time.Now().Add(10*time.Second)))
+			go func() { _ = fasthttp.ServeConn(serverConn, r.Handler) }()
+			body := fmt.Sprintf(`{"model":"anthropic/claude-offline","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"stream":%t}`, tc.streaming)
+			_, err := fmt.Fprintf(clientConn, "POST %s/v1/messages HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nx-test-traced: %t\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", tc.prefix, tc.traced, len(body), body)
+			require.NoError(t, err)
+			response, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
+			require.NoError(t, err)
+			defer response.Body.Close()
+			responseBody, err := io.ReadAll(response.Body)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, response.StatusCode, "%s", responseBody)
+			assert.Contains(t, string(responseBody), "offline reply")
+			wantRequest, wantTrace := "provider-request", "provider-trace"
+			if tc.traced {
+				wantRequest, wantTrace = "gateway-request", "gateway-trace"
+			}
+			assert.Equal(t, wantRequest, response.Header.Get("x-request-id"))
+			assert.Equal(t, wantTrace, response.Header.Get("x-bifrost-trace-id"))
+			assert.Equal(t, "17", response.Header.Get("x-ratelimit-remaining"))
+			assert.Empty(t, response.Header.Get("set-cookie"), "existing provider credential/framing filters remain active")
+			if tc.streaming {
+				assert.Contains(t, response.Header.Get("Content-Type"), "text/event-stream")
+			}
+		})
+	}
+}

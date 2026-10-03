@@ -537,6 +537,33 @@ func TestIsJSONContentType(t *testing.T) {
 	}
 }
 
+func TestWriteRealtimeClientSecretResponse_PreservesCorrelation(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Response.Header.Set("x-request-id", "gateway-request")
+	ctx.Response.Header.Set("x-bifrost-trace-id", "gateway-trace")
+	response := &schemas.BifrostPassthroughResponse{
+		StatusCode: fasthttp.StatusCreated,
+		Headers: map[string]string{
+			"X-Request-ID": "provider-request", "X-Bifrost-Trace-ID": "provider-trace",
+			"x-ratelimit-remaining": "17", "Content-Type": "application/json",
+		},
+		Body: []byte(`{"value":"ek_offline"}`),
+	}
+	writeRealtimeClientSecretResponse(ctx, response)
+	if got := string(ctx.Response.Header.Peek("x-request-id")); got != "gateway-request" {
+		t.Errorf("x-request-id = %q, want gateway-request", got)
+	}
+	if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got != "gateway-trace" {
+		t.Errorf("x-bifrost-trace-id = %q, want gateway-trace", got)
+	}
+	if got := string(ctx.Response.Header.Peek("x-ratelimit-remaining")); got != "17" {
+		t.Errorf("rate-limit header = %q, want 17", got)
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusCreated || string(ctx.Response.Body()) != string(response.Body) {
+		t.Fatal("provider status/body must remain unchanged")
+	}
+}
+
 // The handler finds the governance plugin by type-asserting each base plugin
 // against governance.BaseGovernancePlugin, so a mock that falls behind the
 // interface stops being found — silently, and without a build failure. Minting
