@@ -562,9 +562,11 @@ func NewPrivateNetworkHTTPClient(timeout time.Duration) *http.Client {
 // and NewPrivateNetworkHTTPClient: dial is the per-connection gate, checkIP is
 // the same policy expressed as a per-address predicate, applied to redirect
 // targets (every resolved address must pass) and, through
-// guardedProxySelector, to IP-literal destinations on the proxied path.
+// guardedProxySelector, to IP-literal destinations on the proxied path. The
+// proxy is the global proxy when it is enabled for API traffic, else the
+// environment's (DefaultProxyFunc).
 func newGuardedHTTPClient(timeout time.Duration, dial func(ctx context.Context, netw, addr string) (net.Conn, error), checkIP func(ip net.IP, host string) error) *http.Client {
-	return newGuardedHTTPClientWith(timeout, dial, checkIP, http.ProxyFromEnvironment, net.DefaultResolver)
+	return newGuardedHTTPClientWith(timeout, dial, checkIP, DefaultProxyFunc(ClientPurposeAPI), net.DefaultResolver)
 }
 
 // newGuardedHTTPClientWith is the seam behind newGuardedHTTPClient with the

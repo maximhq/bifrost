@@ -1397,6 +1397,9 @@ func checkURLAccessibility(rawURL string) error {
 	client := &http.Client{
 		Timeout: 60 * time.Second,
 		Transport: &http.Transport{
+			// The global proxy when it is enabled for API traffic, else the
+			// environment's: the sync that follows a successful check uses the same.
+			Proxy:       network.DefaultProxyFunc(network.ClientPurposeAPI),
 			DialContext: checkURLAccessibilityDialContext,
 		},
 		// The operator validated this URL, not wherever it redirects: a redirect
