@@ -4063,9 +4063,13 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 				config.PresencePenalty = schemas.Ptr(val)
 			}
 		}
-		if stopSequences, ok := params.ExtraParams["stop_sequences"]; ok {
-			if val, success := schemas.SafeExtractStringSlice(stopSequences); success {
+		// "stop" is the canonical Responses key (written by the Anthropic and
+		// Bedrock ingress converters); "stop_sequences" is written by the GenAI
+		// ingress. Prefer "stop" when both are present.
+		for _, key := range []string{"stop", "stop_sequences"} {
+			if val, success := schemas.SafeExtractStringSlice(params.ExtraParams[key]); success {
 				config.StopSequences = val
+				break
 			}
 		}
 		if mediaResolution, ok := params.ExtraParams["media_resolution"]; ok {
@@ -4086,6 +4090,7 @@ var responsesGenerationConfigExtraParamKeys = []string{
 	"top_k",
 	"frequency_penalty",
 	"presence_penalty",
+	"stop",
 	"stop_sequences",
 	"media_resolution",
 }
