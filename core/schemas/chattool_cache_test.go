@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 )
 
@@ -131,5 +132,79 @@ func TestChatTool_InvalidateSerialized_AfterRename(t *testing.T) {
 	}
 	if !bytes.Contains(fresh, []byte(`"renamed_weather"`)) || bytes.Contains(fresh, []byte(`"get_weather"`)) {
 		t.Fatalf("expected re-serialized tool to use the new name; got %s", fresh)
+	}
+}
+
+func TestChatTool_MCPMetadataExcludedFromProviderCache(t *testing.T) {
+	tool := mustTool(t)
+	before, err := MarshalSorted(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool.MCPToolSchema = &MCPToolSchema{InputSchema: []byte(`{"x-original":true}`), OutputSchema: []byte(`{}`)}
+	tool.Annotations = &MCPToolAnnotations{ReadOnlyHint: Ptr(true)}
+	metadata := tool.MCPToolSchema.Clone()
+	annotations := tool.Annotations.Clone()
+	metadata.InputSchema[0] = '['
+	*annotations.ReadOnlyHint = false
+	if tool.MCPToolSchema.InputSchema[0] != '{' || !*tool.Annotations.ReadOnlyHint {
+		t.Fatal("MCP metadata clone aliases original")
+	}
+	after, err := MarshalSorted(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("MCP metadata leaked to provider JSON")
+	}
+	if err := tool.EnsureSerialized(); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := MarshalSorted(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, cached) {
+		t.Fatal("MCP metadata leaked to cached provider JSON")
+	}
+}
+
+func TestChatTool_MCPPersistenceOwnsMetadataAndPreservesProviderCache(t *testing.T) {
+	tool := mustTool(t)
+	tool.MCPToolSchema = &MCPToolSchema{InputSchema: []byte(`{"maximum":9007199254740993}`), OutputSchema: []byte(`{}`)}
+	tool.Annotations = &MCPToolAnnotations{ReadOnlyHint: Ptr(true)}
+	if err := tool.EnsureSerialized(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := MarshalMCPDiscoveredTools(map[string]ChatTool{"weather": tool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(stored, []byte("9007199254740993")) {
+		t.Fatal("stored numeric schema bound lost precision")
+	}
+	got, err := UnmarshalMCPDiscoveredTools(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := got["weather"]
+	after, err := json.Marshal(restored)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("provider projection changed: %s %v", after, err)
+	}
+	restored.MCPToolSchema.InputSchema[0] = '['
+	*restored.Annotations.ReadOnlyHint = false
+	if tool.MCPToolSchema.InputSchema[0] != '{' || !*tool.Annotations.ReadOnlyHint {
+		t.Fatal("restored metadata aliases original")
+	}
+	if storedAgain, err := MarshalMCPDiscoveredTools(map[string]ChatTool{"weather": tool}); err != nil || !bytes.Equal(stored, storedAgain) {
+		t.Fatal("MCP storage mutated or nondeterministic")
+	}
+	if after, err := json.Marshal(tool); err != nil || !bytes.Equal(before, after) {
+		t.Fatal("storage changed serialized provider cache")
 	}
 }

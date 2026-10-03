@@ -2192,7 +2192,7 @@ func (s *RDBConfigStore) UpdateMCPClientOAuthConfigID(ctx context.Context, clien
 // edit. An empty (non-nil) map is a legitimate "server has zero tools"
 // result and is written as-is, same as a populated one.
 func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error {
-	toolsJSON, err := json.Marshal(tools)
+	toolsJSON, err := schemas.MarshalMCPDiscoveredTools(tools)
 	if err != nil {
 		return fmt.Errorf("failed to marshal discovered_tools: %w", err)
 	}
@@ -2425,8 +2425,10 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			return fmt.Errorf("failed to marshal tool_pricing: %w", err)
 		}
 		discoveredToolsJSON := ""
+		// Nil is an omitted config-update field; preserve the existing cache.
+		// A non-nil empty map explicitly clears the cache.
 		if clientConfig.DiscoveredTools != nil {
-			data, marshalErr := json.Marshal(clientConfig.DiscoveredTools)
+			data, marshalErr := schemas.MarshalMCPDiscoveredTools(clientConfig.DiscoveredTools)
 			if marshalErr != nil {
 				return fmt.Errorf("failed to marshal discovered_tools: %w", marshalErr)
 			}
