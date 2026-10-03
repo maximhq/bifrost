@@ -22,18 +22,38 @@ type copilotCredentials struct {
 	BaseURL string
 }
 
+// GitHub token prefixes. Copilot accepts the first three as the bearer on inference
+// requests; a classic personal access token is not accepted.
+const (
+	githubOAuthTokenPrefix     = "gho_"
+	githubAppUserTokenPrefix   = "ghu_"
+	githubFineGrainedPATPrefix = "github_pat_"
+	githubClassicPATPrefix     = "ghp_"
+)
+
+// isGithubUserToken reports whether token is a GitHub token that Copilot accepts directly.
+func isGithubUserToken(token string) bool {
+	return strings.HasPrefix(token, githubOAuthTokenPrefix) ||
+		strings.HasPrefix(token, githubAppUserTokenPrefix) ||
+		strings.HasPrefix(token, githubFineGrainedPATPrefix)
+}
+
 // resolveCredentials produces the credentials for one request.
 //
-// Two auth modes, checked in this order:
+// Three auth modes, checked in this order:
 //
-//  1. A pre-minted Copilot API token in Key.Value. This is GitHub's documented "direct API
+//  1. A GitHub token in Key.Value: an OAuth token, a GitHub App user token or a fine-grained
+//     personal access token. It is used verbatim and does not expire on a 30 minute cycle.
+//     Usage bills to the Copilot subscription of the user that owns the token. base_url is
+//     optional, because these tokens work on the public host.
+//  2. A pre-minted Copilot API token in Key.Value. This is GitHub's documented "direct API
 //     token" method and the token is used verbatim. base_url is required alongside it: a
 //     Copilot token does not carry its own host, paid plans are served from api.individual,
 //     api.business or api.enterprise, and only the token exchange reveals which. Guessing
 //     the public host would surface a Business token as a 401 that reads like a bad
 //     credential, which is why GitHub pairs GITHUB_COPILOT_API_TOKEN with COPILOT_API_URL.
 //     Copilot tokens live about 30 minutes, so this suits testing.
-//  2. GitHub App credentials, from which Bifrost mints its own tokens server-to-server.
+//  3. GitHub App credentials, from which Bifrost mints its own tokens server-to-server.
 //     base_url is optional here because the exchange reports the host. This is the mode
 //     intended for real deployments: usage bills to the organization and no individual
 //     Copilot seat is involved.
@@ -47,7 +67,17 @@ func resolveCredentials(
 	logger schemas.Logger,
 ) (*copilotCredentials, *schemas.BifrostError) {
 	if token := strings.TrimSpace(key.Value.GetValue()); token != "" {
+		if strings.HasPrefix(token, githubClassicPATPrefix) {
+			return nil, configurationError(
+				"github copilot: a classic personal access token (ghp_) is not accepted by Copilot. " +
+					"Use a fine-grained personal access token with the Copilot Requests permission, " +
+					"or a GitHub OAuth token.",
+			)
+		}
 		baseURL := strings.TrimRight(strings.TrimSpace(configuredBaseURL), "/")
+		if baseURL == "" && isGithubUserToken(token) {
+			baseURL = defaultCopilotAPIBaseURL
+		}
 		if baseURL == "" {
 			return nil, configurationError(
 				"github copilot: a Copilot API token needs network_config.base_url set to the host it " +
@@ -63,8 +93,8 @@ func resolveCredentials(
 
 	if key.GithubCopilotKeyConfig == nil {
 		return nil, configurationError(
-			"github copilot: no credentials on this key. Set either value (a Copilot API token) " +
-				"or github_copilot_key_config (GitHub App credentials).",
+			"github copilot: no credentials on this key. Set either value (a GitHub token or a " +
+				"Copilot API token) or github_copilot_key_config (GitHub App credentials).",
 		)
 	}
 
