@@ -5012,3 +5012,31 @@ func TestDeleteExpiredVirtualKey_RechecksEligibility(t *testing.T) {
 	_, err = store.DeleteExpiredVirtualKey(ctx, "vk-missing", now, true)
 	assert.ErrorIs(t, err, ErrNotFound)
 }
+
+// TestUpsertModelPricesBatch_PriorityAbove272kCacheCreation_SurvivesResync guards
+// the pricingSyncUpdateColumns entry for the priority >272k cache-write column:
+// the first sync writes every column, only the ON CONFLICT DO UPDATE of the
+// second sync reveals a column missing from the explicit update list.
+func TestUpsertModelPricesBatch_PriorityAbove272kCacheCreation_SurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{{
+		Model: "gpt-6-astra", Provider: "openai", Mode: "responses",
+		CacheCreationInputTokenCostPriority:                cost(0.000025),
+		CacheCreationInputTokenCostAbove272kTokensPriority: cost(0.00005),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	pricing[0].CacheCreationInputTokenCostAbove272kTokensPriority = cost(0.00006)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove272kTokensPriority)
+	assert.InDelta(t, 0.00006, *got[0].CacheCreationInputTokenCostAbove272kTokensPriority, 1e-12)
+}

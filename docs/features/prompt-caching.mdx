@@ -289,6 +289,7 @@ The matching rules:
 
 - **Role and index combine with AND.** A point with both matches only when the message at that index has that role.
 - **Role alone matches every message with that role.** Four `user` messages produce four markers, which is the whole budget.
+- **Tool results count as `user` turns.** A Responses `function_call_output` item and a Chat `tool` message are the client-supplied turn after a tool call, so `role: "user"` reaches them and an `index` that lands on one marks it. The marker goes on the tool result itself, which an agent loop makes the last message on every tool-calling turn.
 - **Index alone matches one message.** An index past either end of the conversation matches nothing. A conversation shorter than the configured index is normal in the early turns of a session, so it is not treated as an error and no other message is marked in its place.
 - **A point with neither role nor index matches nothing.** It is almost certainly a mistake, and marking every message would burn the whole budget.
 - **The last cacheable block of each match is marked**, not the first. A point names a message you want cached through to its end, unlike the default strategy which names a prefix boundary.

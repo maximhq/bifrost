@@ -84,7 +84,8 @@ func TestConsentFlowDetail(t *testing.T) {
 		var resp consentFlowDetailResponse
 		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
 		assert.Equal(t, "Test Client", resp.ClientName)
-		assert.Equal(t, []consentFlowMode{consentFlowModeVK, consentFlowModeSession}, resp.AvailableModes)
+		// A bare context carries no authenticated identity, so session is not offered.
+		assert.Equal(t, []consentFlowMode{consentFlowModeVK}, resp.AvailableModes)
 	})
 
 	t.Run("missing flow returns 404", func(t *testing.T) {
@@ -142,7 +143,10 @@ func TestConsentAvailableModes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newConsentHandler(newConsentStore(), tc.resolver, tc.enforceAuth)
 			h.store.ClientConfig.OAuth2ServerConfig.DisableVKIdentity = tc.disableVK
-			assert.Equal(t, tc.want, h.availableModes())
+			// Session is only offered to an authenticated consenter, so the table
+			// runs as a signed-in dashboard user; anonymous callers are covered by
+			// TestConsentSessionModeRequiresIdentity.
+			assert.Equal(t, tc.want, h.availableModes(signedInConsentCtx("flow-1", "")))
 		})
 	}
 }
@@ -218,7 +222,7 @@ func TestConsentFlowSubmit_Session(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
 		h := newConsentHandler(store, nil, false)
-		ctx := consentCtx("flow-1", `{"mode":"session"}`)
+		ctx := signedInConsentCtx("flow-1", `{"mode":"session"}`)
 		h.flowSubmit(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 		assert.Equal(t, "session", store.authReqs["flow-1"].BfMode)
@@ -229,7 +233,7 @@ func TestConsentFlowSubmit_Session(t *testing.T) {
 		store := newConsentStore()
 		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
 		h := newConsentHandler(store, nil, true)
-		ctx := consentCtx("flow-1", `{"mode":"session"}`)
+		ctx := signedInConsentCtx("flow-1", `{"mode":"session"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 		assert.Contains(t, string(ctx.Response.Body()), "not available")
@@ -300,5 +304,96 @@ func TestConsentFlowSubmit_VKUserBinding(t *testing.T) {
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-bound"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	})
+}
+
+// signedInConsentCtx builds a consent request carrying what the auth middleware
+// stamps after a verified dashboard session: a non-empty session token and the
+// local-admin marker, with no auth-bypass flag.
+func signedInConsentCtx(flowID, body string) *fasthttp.RequestCtx {
+	ctx := consentCtx(flowID, body)
+	ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "sess-1")
+	ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
+	return ctx
+}
+
+// bypassedConsentCtx mirrors the middleware's posture when no dashboard auth is
+// configured: the request is let through with the local-admin marker but an
+// empty session token and the auth-bypassed flag, so no credential was checked.
+func bypassedConsentCtx(flowID, body string) *fasthttp.RequestCtx {
+	ctx := consentCtx(flowID, body)
+	ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "")
+	ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	return ctx
+}
+
+// TestConsentSessionModeRequiresIdentity pins that the anonymous "session"
+// identity can only be granted by a consenting principal Bifrost has actually
+// authenticated. The consent temp token alone (which the authorize redirect hands
+// to whoever started the flow) is not an identity, and neither is the
+// auth-disabled bypass; a verified dashboard session or an identity-provider user
+// is. Virtual-key consent is untouched: TestConsentFlowSubmit_VK runs it with a
+// bare (temp-token-only) context.
+func TestConsentSessionModeRequiresIdentity(t *testing.T) {
+	t.Run("flow detail offers session only to an authenticated consenter", func(t *testing.T) {
+		store := newConsentStore()
+		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, nil, false)
+
+		anon := consentCtx("flow-1", "")
+		h.flowDetail(anon)
+		require.Equal(t, fasthttp.StatusOK, anon.Response.StatusCode())
+		var anonResp consentFlowDetailResponse
+		require.NoError(t, json.Unmarshal(anon.Response.Body(), &anonResp))
+		assert.Equal(t, []consentFlowMode{consentFlowModeVK}, anonResp.AvailableModes)
+
+		signedIn := signedInConsentCtx("flow-1", "")
+		h.flowDetail(signedIn)
+		require.Equal(t, fasthttp.StatusOK, signedIn.Response.StatusCode())
+		var signedInResp consentFlowDetailResponse
+		require.NoError(t, json.Unmarshal(signedIn.Response.Body(), &signedInResp))
+		assert.Equal(t, []consentFlowMode{consentFlowModeVK, consentFlowModeSession}, signedInResp.AvailableModes)
+	})
+
+	t.Run("anonymous session-mode submit is refused with 401", func(t *testing.T) {
+		store := newConsentStore()
+		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, nil, false)
+		ctx := consentCtx("flow-1", `{"mode":"session"}`)
+		h.flowSubmit(ctx)
+		assert.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Contains(t, string(ctx.Response.Body()), "authenticated consenting user")
+		assert.Equal(t, configtables.OAuth2AuthorizeRequestStatusPending, store.authReqs["flow-1"].Status, "flow must stay pending")
+	})
+
+	t.Run("auth-disabled bypass is not an identity", func(t *testing.T) {
+		store := newConsentStore()
+		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, nil, false)
+		ctx := bypassedConsentCtx("flow-1", `{"mode":"session"}`)
+		h.flowSubmit(ctx)
+		assert.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Equal(t, configtables.OAuth2AuthorizeRequestStatusPending, store.authReqs["flow-1"].Status, "flow must stay pending")
+	})
+
+	t.Run("verified dashboard session may grant session mode", func(t *testing.T) {
+		store := newConsentStore()
+		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, nil, false)
+		ctx := signedInConsentCtx("flow-1", `{"mode":"session"}`)
+		h.flowSubmit(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Equal(t, "session", store.authReqs["flow-1"].BfMode)
+	})
+
+	t.Run("identity-provider user may grant session mode", func(t *testing.T) {
+		store := newConsentStore()
+		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, &fakeResolver{userModeAvailable: true, userID: "user-1"}, false)
+		ctx := consentCtx("flow-1", `{"mode":"session"}`)
+		h.flowSubmit(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Equal(t, "session", store.authReqs["flow-1"].BfMode)
 	})
 }

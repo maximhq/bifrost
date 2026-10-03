@@ -1,0 +1,104 @@
+---
+title: "v2.2.5"
+description: "v2.2.5 changelog - 2026-10-02"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v2.2.5
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v2.2.5
+    docker run -p 8080:8080 maximhq/bifrost:v2.2.5
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="2.2.5">
+<Warning>
+**Upgrade recommended for all deployments with authentication enabled.** v2.2.5 fixes an authentication bypass where percent-encoded path traversal (for example `..%2F`) could reach protected API endpoints without credentials.
+Earlier versions are affected. Upgrade, then restrict management ports to trusted networks.
+</Warning>
+
+## ✨ Features
+
+- **First-Time Setup Token** - New installs now require a setup token before the initial dashboard setup can be completed, so a fresh instance is no longer open to anyone who can reach it (#7830)
+- **Long-Context Fast Tier Pricing** - Added ultrafast and priority above-272k pricing columns so fast-tier requests over 272k tokens, including cache writes, bill at the published long-context rates (#7834, #7838)
+
+## 🐞 Fixed
+
+- **Route parsing bug fix** - Auth whitelist and temp-token scope checks fixes fasthttp routing bug
+- **Code Mode Auto-Execute Allow List** - `tools_to_execute` and `tools_to_auto_execute` are now enforced at invocation time inside code mode, so indirect calls like `getattr(server, name)(...)` or a plugin tool rename cannot bypass them. Approved runs through `/v1/mcp/tool/execute` are bound only by `tools_to_execute` (#7833)
+- **OpenAI service_tier Fast Billing** - Requests with `service_tier` fast now bill at the priority rates, and the tier is echoed back to clients (#7837)
+- **Gemini to OpenAI Fallback** - Fallbacks from Gemini to OpenAI Responses now strip fields OpenAI rejects: item `status`, generated reasoning and function output IDs, function output `name`, and content signatures (#7835)
+- **Guardrail Redaction Alignment** - Anthropic raw transform targets now match normalized guardrail ordinals when billing headers or MCP blocks are present, so redaction hits the right fields (#7808)
+
+## 🗄️ Database Migrations
+
+- **add_ultrafast_above_272k_pricing_columns** - Adds ultrafast above-272k pricing columns to the model pricing table. Reversible: rollback drops the added columns. Nullable additions, safe for rolling deploys.
+- **add_priority_above_272k_cache_creation_pricing_column** - Adds the priority above-272k cache creation pricing column. Reversible: rollback drops the added column. Nullable addition, safe for rolling deploys.
+
+</Update>
+<Update label="Core" description="1.11.1">
+- fix: bill openai service_tier fast at the priority rates and echo it to clients
+- fix: enforce tools_to_execute and tools_to_auto_execute at invocation time in code mode
+- fix: strip Gemini-only fields when falling back from Gemini to OpenAI Responses
+- fix: use the raw request path for auth checks and tidy SSRF helper formatting
+
+</Update>
+<Update label="Framework" description="1.8.0">
+- feat: add ultrafast and priority above-272k pricing columns and bill long-context fast-tier requests at the published rates
+- fix: bill openai service_tier fast at the priority rates
+- chore: upgraded core to v1.11.1
+
+</Update>
+<Update label="compat" description="0.3.5">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>
+<Update label="governance" description="1.8.5">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>
+<Update label="jsonparser" description="1.6.8">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>
+<Update label="logging" description="1.8.5">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>
+<Update label="maxim" description="1.7.8">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>
+<Update label="mocker" description="1.6.8">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>
+<Update label="modelcatalogresolver" description="1.1.8">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>
+<Update label="otel" description="1.5.8">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>
+<Update label="prompts" description="1.1.8">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>
+<Update label="routing" description="1.1.5">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>
+<Update label="semanticcache" description="1.6.8">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>
+<Update label="telemetry" description="1.8.4">
+- chore: upgraded core to v1.11.1 and framework to v1.8.0
+
+</Update>

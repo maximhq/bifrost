@@ -540,6 +540,22 @@ func getProviderFromHeader(ctx *fasthttp.RequestCtx, defaultProvider schemas.Mod
 	return schemas.ModelProvider(providerHeader)
 }
 
+// getPassthroughProvider resolves the provider for a passthrough request from the
+// x-model-provider header, falling back to defaultProvider when the header is absent. On the
+// catch-all passthrough routes the header picks which key pool and upstream a caller-shaped
+// path is dispatched to, so its value is constrained to the known provider set (built-ins
+// plus registered custom providers) before anything is looked up.
+func getPassthroughProvider(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (schemas.ModelProvider, error) {
+	providerHeader := string(ctx.Request.Header.Peek("x-model-provider"))
+	if providerHeader == "" {
+		return defaultProvider, nil
+	}
+	if !schemas.IsKnownProvider(providerHeader) {
+		return "", fmt.Errorf("unknown provider %q in x-model-provider header", providerHeader)
+	}
+	return schemas.ModelProvider(providerHeader), nil
+}
+
 func RegisterKVDecoders(store *kvstore.Store) {
 	store.RegisterDecoder("genai_upload_session:", func(data []byte) (any, error) {
 		var v gemini.GeminiResumableUploadSession

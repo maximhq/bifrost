@@ -2583,6 +2583,11 @@ func (p *LoggerPlugin) drainPending() {
 	deadline := time.Now().Add(cleanupDrainTimeout)
 	batch := p.recoveredBatch
 	p.recoveredBatch = nil
+	// p.batchCtx is already cancelled (that is how batchWriter was stopped), so
+	// retries and splitting inside processBatch get their own context bounded
+	// by the same wall-clock deadline instead.
+	drainCtx, cancelDrain := context.WithDeadline(p.ctx, deadline)
+	defer cancelDrain()
 
 	// Pull everything currently buffered in the channel. Non-blocking — we
 	// only want what is there right now; new sends are already blocked by
@@ -2610,8 +2615,17 @@ drainQueue:
 		if chunkSize > len(batch) {
 			chunkSize = len(batch)
 		}
-		p.safeProcessBatch(batch[:chunkSize])
+		left := p.safeProcessBatch(drainCtx, batch[:chunkSize])
 		batch = batch[chunkSize:]
+		if len(left) > 0 {
+			// Only returned when drainCtx ended: the deadline passed or the
+			// plugin's parent context was cancelled. Either way nothing further
+			// can be written, so count what is left and stop.
+			remaining := len(left) + len(batch)
+			p.droppedRequests.Add(int64(remaining))
+			p.logger.Warn("logging plugin cleanup drain interrupted (%v); dropping %d entries", drainCtx.Err(), remaining)
+			return
+		}
 	}
 }
 

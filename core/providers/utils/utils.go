@@ -1241,12 +1241,62 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
+// passthroughPathDelimiters restores the bytes a client sent for a decoded passthrough path
+// before it is joined onto the base URL: a literal % can only have arrived as %25 and is
+// re-encoded first (the replacer is single-pass, so the %3F/%23 it emits are not touched),
+// and ? and # would otherwise end the path as a query or fragment.
+var passthroughPathDelimiters = strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23")
+
+// BuildPassthroughURL joins a provider base URL with a caller-supplied passthrough path and
+// raw query, and refuses any combination whose resolved authority differs from the base URL.
+// The path arrives percent-decoded from the transport and is sent on as received, except
+// that %, ? and # are re-encoded (see passthroughPathDelimiters) so the upstream sees the
+// bytes the client sent; nothing is cleaned or normalised. It must already be a rooted path:
+// empty, or starting with exactly one "/". A remainder such as "@host/x" or "//host/x"
+// appended to a bare origin would otherwise turn the base host into userinfo or a
+// scheme-relative authority and send the operator's credential to a caller-chosen host. The
+// transport validates the path before dispatch; this is the last check before the dial.
+func BuildPassthroughURL(baseURL, path, rawQuery string) (string, error) {
+	base := strings.TrimRight(baseURL, "/")
+	baseParsed, err := url.Parse(base)
+	if err != nil || baseParsed.Scheme == "" || baseParsed.Host == "" {
+		return "", fmt.Errorf("invalid provider base url %q", baseURL)
+	}
+	if path != "" && (!strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//")) {
+		return "", fmt.Errorf("invalid passthrough path %q: must be a rooted path", path)
+	}
+	// The transport hands over the decoded path, so a client's %25, %3F or %23 arrives as a
+	// literal %, ? or #. Joined as-is the upstream would decode % once more or see the path
+	// end at the ? or #; re-encode them so the path stays exactly what was sent. The real
+	// query arrives separately in rawQuery.
+	path = passthroughPathDelimiters.Replace(path)
+	full := base + path
+	if rawQuery != "" {
+		full += "?" + rawQuery
+	}
+	resolved, err := url.Parse(full)
+	if err != nil {
+		return "", fmt.Errorf("invalid passthrough url: %w", err)
+	}
+	if resolved.Scheme != baseParsed.Scheme || resolved.Host != baseParsed.Host || resolved.User.String() != baseParsed.User.String() {
+		return "", fmt.Errorf("passthrough url does not stay on provider host %q", baseParsed.Host)
+	}
+	return full, nil
+}
+
 // GetPathFromContext gets the path from the context, if it exists, otherwise returns the default path.
 func GetPathFromContext(ctx context.Context, defaultPath string) string {
 	if pathInContext, ok := ctx.Value(schemas.BifrostContextKeyURLPath).(string); ok {
 		return pathInContext
 	}
 	return defaultPath
+}
+
+// IsAbsoluteRequestURL reports whether a request-path override is a full URL (scheme and host)
+// that GetRequestPath sends requests to directly, rather than a path on the provider's base URL.
+func IsAbsoluteRequestURL(s string) bool {
+	u, err := url.Parse(strings.TrimSpace(s))
+	return err == nil && u != nil && u.IsAbs() && u.Host != ""
 }
 
 // GetRequestPath gets the request path from the context, if it exists, checking for path overrides in the custom provider config.
@@ -1271,7 +1321,7 @@ func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfi
 			}
 
 			// Treat absolute URLs with scheme+host as full URLs.
-			if u, err := url.Parse(override); err == nil && u != nil && u.IsAbs() && u.Host != "" {
+			if IsAbsoluteRequestURL(override) {
 				return override, true
 			}
 

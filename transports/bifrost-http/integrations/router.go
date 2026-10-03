@@ -3510,14 +3510,22 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return true
 	})
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
+	passthroughErr := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+		return err
+	}
 
-	path := string(ctx.Path())
-	for _, prefix := range g.passthroughCfg.StripPrefix {
-		if strings.HasPrefix(path, prefix) {
-			path = path[len(prefix):]
-			break
-		}
+	// The remainder after the prefix is concatenated onto the provider BaseURL by the
+	// provider, so it must be anchored at a segment boundary and shaped like a rooted path
+	// before anything else happens. Both checks run before the Bifrost context exists so a
+	// rejected request never reaches key selection or the upstream.
+	path, ok := stripPassthroughPrefix(string(ctx.Path()), cfg.StripPrefix)
+	if !ok {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "no passthrough route matches the request path", fasthttp.StatusNotFound))
+		return
+	}
+	if err := validatePassthroughPath(path); err != nil {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+		return
 	}
 
 	body := ctx.Request.Body()
@@ -3529,7 +3537,13 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, bodyModel)
 	}
-	provider = getProviderFromHeader(ctx, provider)
+	provider, err := getPassthroughProvider(ctx, provider)
+	if err != nil {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
 	isStreaming := strings.Contains(strings.ToLower(path), "stream") || bodyStream
 

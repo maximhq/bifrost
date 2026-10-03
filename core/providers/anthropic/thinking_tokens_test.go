@@ -155,3 +155,63 @@ func TestPassthroughStream_MergesThinkingTokensAcrossEvents(t *testing.T) {
 		t.Errorf("CompletionTokens = %d, want 87", got.LLMUsage.CompletionTokens)
 	}
 }
+
+// zeroThinkingUsage is a verbatim usage block from a Bedrock InvokeModel Sonnet 5
+// response where adaptive thinking was requested but the model chose not to think
+// (#7649 follow-up). Anthropic still reports the breakdown, as an explicit zero.
+const zeroThinkingUsage = `{
+  "input_tokens": 63,
+  "cache_creation_input_tokens": 0,
+  "cache_read_input_tokens": 0,
+  "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
+  "output_tokens": 281,
+  "output_tokens_details": {"thinking_tokens": 0}
+}`
+
+// A breakdown the upstream explicitly sent must survive the round trip even when
+// it is zero: presence is the signal, not the count. Absent upstream details
+// (TestChatConversion_NoThinkingLeavesReasoningZero) still stay absent.
+func TestResponsesConversion_KeepsExplicitZeroThinkingTokens(t *testing.T) {
+	got := ConvertAnthropicUsageToBifrostUsage(mustParseUsage(t, zeroThinkingUsage))
+	if got == nil || got.OutputTokensDetails == nil {
+		t.Fatal("OutputTokensDetails is nil; an explicit thinking_tokens: 0 breakdown was dropped")
+	}
+	if got.OutputTokensDetails.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0", got.OutputTokensDetails.ReasoningTokens)
+	}
+	if got.OutputTokens != 281 {
+		t.Errorf("OutputTokens = %d, want 281", got.OutputTokens)
+	}
+}
+
+func TestUsageRoundTrip_PreservesExplicitZeroThinkingTokens(t *testing.T) {
+	back := ConvertBifrostUsageToAnthropicUsage(ConvertAnthropicUsageToBifrostUsage(mustParseUsage(t, zeroThinkingUsage)))
+	if back == nil || back.OutputTokensDetails == nil {
+		t.Fatal("explicit thinking_tokens: 0 lost on Anthropic->Bifrost->Anthropic round trip")
+	}
+	if back.OutputTokensDetails.ThinkingTokens != 0 {
+		t.Errorf("ThinkingTokens = %d after round trip, want 0", back.OutputTokensDetails.ThinkingTokens)
+	}
+}
+
+func TestUsageConversion_AbsentDetailsStayAbsent(t *testing.T) {
+	got := ConvertAnthropicUsageToBifrostUsage(mustParseUsage(t, `{"input_tokens": 10, "output_tokens": 5}`))
+	if got.OutputTokensDetails != nil {
+		t.Errorf("OutputTokensDetails = %+v on a response without a breakdown, want nil", got.OutputTokensDetails)
+	}
+	back := ConvertBifrostUsageToAnthropicUsage(got)
+	if back.OutputTokensDetails != nil {
+		t.Errorf("Anthropic OutputTokensDetails = %+v without an upstream breakdown, want nil", back.OutputTokensDetails)
+	}
+}
+
+func TestChatConversion_KeepsExplicitZeroThinkingTokens(t *testing.T) {
+	resp := &AnthropicMessageResponse{Usage: mustParseUsage(t, zeroThinkingUsage)}
+	got := resp.ToBifrostChatResponse(nil)
+	if got.Usage == nil || got.Usage.CompletionTokensDetails == nil {
+		t.Fatal("CompletionTokensDetails is nil; an explicit thinking_tokens: 0 breakdown was dropped")
+	}
+	if got.Usage.CompletionTokensDetails.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0", got.Usage.CompletionTokensDetails.ReasoningTokens)
+	}
+}
