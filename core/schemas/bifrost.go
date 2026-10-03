@@ -407,7 +407,6 @@ const (
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
 	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"                      // bool (triggers additional key validation during provider add/update)
 	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers"          // map[string]string (set by provider handlers for response header forwarding)
-	BifrostContextKeyRawResponsesCacheCountersKnown      BifrostContextKey = "bifrost-raw-responses-cache-counters-known" // bool (set by OpenAI Responses raw decoder; payload-blind field-presence evidence)
 	BifrostContextKeyDroppedUnsupportedTools             BifrostContextKey = "bifrost-dropped-unsupported-tools"          // []string (set by provider request builders — tool type strings silently dropped because the target provider/model doesn't support them)
 	BifrostContextKeyMCPAddedTools                       BifrostContextKey = "bifrost-mcp-added-tools"                    // []string (set by bifrost - DO NOT SET THIS MANUALLY)) - list of tools added to the request by MCP, all the tool are in the format "clientName-toolName"
 	BifrostContextKeyMCPInstructionsInjected             BifrostContextKey = "bifrost-mcp-instructions-injected"          // bool (set by bifrost - DO NOT SET THIS MANUALLY) - guards the agent loop from stacking the instructions block on every turn
@@ -1901,9 +1900,17 @@ type BifrostResponseExtraFields struct {
 	// request because the target provider/model doesn't support them (e.g.
 	// web_search requested against a non-Nova Bedrock model). Currently populated
 	// only by the Bedrock provider.
-	DroppedUnsupportedTools []string          `json:"dropped_unsupported_tools,omitempty"`
-	ProviderResponseHeaders map[string]string `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
-	PassthroughPath         string            `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
+	DroppedUnsupportedTools []string `json:"dropped_unsupported_tools,omitempty"`
+	// RawResponsesCacheCountersKnown records whether the raw provider response
+	// actually carried an input-token detail object, which
+	// BifrostResponsesResponse.WithDefaults otherwise destroys by materializing an
+	// empty one - turning "the upstream said nothing" into "the upstream observed
+	// zero". Nil means unknown, not false: a stream that ends before its terminal
+	// event never learns the answer. Currently populated only by the OpenAI
+	// Responses raw decoder, and payload-blind - only the boolean is retained.
+	RawResponsesCacheCountersKnown *bool             `json:"raw_responses_cache_counters_known,omitempty"`
+	ProviderResponseHeaders        map[string]string `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	PassthroughPath                string            `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
 }
 
 type RoutingInfo struct {

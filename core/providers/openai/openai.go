@@ -2004,16 +2004,17 @@ func HandleOpenAIResponsesRequest(
 		}
 		if len(lpResult.ResponseBody) > 0 {
 			// The large-request passthrough returns before the normal response parser
-			// below. Preserve the same raw presence fact at this boundary before the
-			// returned typed response can reach WithDefaults in the caller.
-			ctx.SetValue(schemas.BifrostContextKeyRawResponsesCacheCountersKnown,
-				rawResponsesCacheCountersKnown(lpResult.ResponseBody, false))
+			// below. Read the raw presence fact at this boundary, before the returned
+			// typed response can reach WithDefaults in the caller.
+			countersKnown := rawResponsesCacheCountersKnown(lpResult.ResponseBody, false)
 
 			response := &schemas.BifrostResponsesResponse{}
 			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
+			// ExtraFields is replaced wholesale here, so the fact is stamped after.
 			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
+			response.ExtraFields.RawResponsesCacheCountersKnown = &countersKnown
 			return response, nil
 		}
 		return &schemas.BifrostResponsesResponse{
@@ -2077,10 +2078,10 @@ func HandleOpenAIResponsesRequest(
 		}, nil
 	}
 
-	// Preserve raw field presence before HandleProviderResponse / WithDefaults
-	// can materialize an empty InputTokensDetails object.
-	ctx.SetValue(schemas.BifrostContextKeyRawResponsesCacheCountersKnown,
-		rawResponsesCacheCountersKnown(body, false))
+	// Read raw field presence before HandleProviderResponse / WithDefaults can
+	// materialize an empty InputTokensDetails object. Stamped onto the response
+	// below, once it exists.
+	countersKnown := rawResponsesCacheCountersKnown(body, false)
 
 	response := &schemas.BifrostResponsesResponse{}
 
@@ -2107,6 +2108,7 @@ func HandleOpenAIResponsesRequest(
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	response.ExtraFields.RawResponsesCacheCountersKnown = &countersKnown
 
 	// Set raw request if enabled
 	if sendBackRawRequest {
@@ -2429,10 +2431,11 @@ func HandleOpenAIResponsesStreaming(
 
 			response.ExtraFields.ChunkIndex = response.SequenceNumber
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
-				// The terminal event is the sole authoritative usage object. Preserve
-				// only raw presence before WithDefaults reaches plugin post hooks.
-				ctx.SetValue(schemas.BifrostContextKeyRawResponsesCacheCountersKnown,
-					rawResponsesCacheCountersKnown([]byte(jsonData), true))
+				// The terminal event is the sole authoritative usage object, and the only
+				// frame that can know the answer - every earlier chunk leaves the field
+				// nil, i.e. unknown. Read before WithDefaults reaches plugin post hooks.
+				countersKnown := rawResponsesCacheCountersKnown([]byte(jsonData), true)
+				response.ExtraFields.RawResponsesCacheCountersKnown = &countersKnown
 
 				// Set raw request if enabled
 				if sendBackRawRequest {
