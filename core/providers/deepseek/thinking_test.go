@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -15,6 +17,12 @@ import (
 
 func newOpenAIChatResponse() string {
 	return `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+}
+
+func newOpenAIChatStreamResponse() string {
+	return `data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n" +
+		"data: [DONE]\n\n"
 }
 
 // captureDeepSeekChatBody drives request through DeepSeek's native
@@ -52,6 +60,104 @@ func captureDeepSeekChatBody(t *testing.T, request *schemas.BifrostChatRequest) 
 		t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
 	}
 	return captured
+}
+
+// captureDeepSeekChatStreamBody is the streaming twin of captureDeepSeekChatBody: it
+// drains ChatCompletionStream and returns the decoded outbound wire body.
+func captureDeepSeekChatStreamBody(t *testing.T, request *schemas.BifrostChatRequest) map[string]any {
+	t.Helper()
+
+	var mu sync.Mutex
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("path = %q, want /chat/completions", r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Errorf("decode body: %v", err)
+			return
+		}
+		mu.Lock()
+		captured = decoded
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, newOpenAIChatStreamResponse())
+	}))
+	defer server.Close()
+
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}
+	postHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, postHook, nil, key, request)
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletionStream: %v", bifrostErr.Error.Message)
+	}
+	for range stream {
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	return captured
+}
+
+// toolCallHistoryWithoutReasoning builds a history whose assistant tool-call turn replays
+// no reasoning. With midLoop the tool result is the last message; otherwise a new user
+// turn follows it.
+func toolCallHistoryWithoutReasoning(midLoop bool) []schemas.ChatMessage {
+	ask := "Read a.md and tell me the number inside."
+	toolResult := "# a.md\nthe answer is 42"
+	toolCallID := "call_1"
+	toolName := "read"
+
+	messages := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &ask}},
+		{
+			Role: schemas.ChatMessageRoleAssistant,
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{
+				ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					ID:       &toolCallID,
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{"path":"a.md"}`},
+				}},
+			},
+		},
+		{
+			Role:            schemas.ChatMessageRoleTool,
+			Content:         &schemas.ChatMessageContent{ContentStr: &toolResult},
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &toolCallID},
+		},
+	}
+	if !midLoop {
+		followUp := "State the number."
+		messages = append(messages, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &followUp}})
+	}
+	return messages
+}
+
+// assertEmptyReasoningReplayed fails unless the message at index i of the wire body
+// carries reasoning_content as an empty string.
+func assertEmptyReasoningReplayed(t *testing.T, captured map[string]any, i int) {
+	t.Helper()
+	got, ok := assistantMessageAt(t, captured, i)["reasoning_content"]
+	if !ok {
+		t.Fatalf("reasoning_content must be present on the assistant tool-call turn, got %#v", captured["messages"])
+	}
+	if got != "" {
+		t.Fatalf("reasoning_content = %#v, want an empty string", got)
+	}
 }
 
 // assistantMessageAt returns the decoded message at index i of the wire body.
@@ -197,11 +303,11 @@ func TestChatCompletion_OpenAIEndpointKeepsThinkingForReasoningDetailsOnly(t *te
 	}
 }
 
-// TestChatCompletion_OpenAIEndpointDisablesThinkingForToolCallWithoutReasoning guards the
-// safety net that must survive the fix: a tool-call turn genuinely missing reasoning_content
-// would 400 upstream with thinking on, so thinking is forced off.
-// This test is expected to pass both before and after the fix.
-func TestChatCompletion_OpenAIEndpointDisablesThinkingForToolCallWithoutReasoning(t *testing.T) {
+// TestChatCompletion_OpenAIEndpointKeepsThinkingForToolCallWithoutReasoning covers a request
+// in the middle of a tool loop whose assistant tool-call turn has no reasoning to replay.
+// Thinking must stay on (#7213). The turn goes out with an empty reasoning_content so
+// DeepSeek's replay rule for tool-call turns is still met.
+func TestChatCompletion_OpenAIEndpointKeepsThinkingForToolCallWithoutReasoning(t *testing.T) {
 	t.Parallel()
 
 	chatTool := llmtests.GetSampleChatTool(llmtests.SampleToolTypeTime)
@@ -209,10 +315,39 @@ func TestChatCompletion_OpenAIEndpointDisablesThinkingForToolCallWithoutReasonin
 		t.Fatal("GetSampleChatTool returned nil")
 	}
 
-	ask := "what time is it in UTC?"
-	toolResult := "2026-08-05T12:00:00Z"
+	captured := captureDeepSeekChatBody(t, &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Input:    toolCallHistoryWithoutReasoning(true),
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(3000),
+			Tools:               []schemas.ChatTool{*chatTool},
+		},
+	})
+
+	if thinking, ok := captured["thinking"]; ok {
+		t.Fatalf("thinking must stay on for a tool-call turn without reasoning, got %#v", thinking)
+	}
+	assertEmptyReasoningReplayed(t, captured, 1)
+}
+
+// TestChatCompletion_OpenAIEndpointKeepsRequestedThinkingForToolCallWithoutReasoning
+// reproduces #7213. The caller asks for thinking explicitly and replays an assistant
+// tool-call turn that carries no reasoning_content. The outbound body must keep the
+// requested thinking mode instead of rewriting it to disabled.
+func TestChatCompletion_OpenAIEndpointKeepsRequestedThinkingForToolCallWithoutReasoning(t *testing.T) {
+	t.Parallel()
+
+	chatTool := llmtests.GetSampleChatTool(llmtests.SampleToolTypeTime)
+	if chatTool == nil {
+		t.Fatal("GetSampleChatTool returned nil")
+	}
+
+	ask := "Read a.md and tell me the number inside."
+	toolResult := "# a.md\nthe answer is 42"
+	followUp := "State the number."
 	toolCallID := "call_1"
-	toolName := "get_current_time"
+	toolName := "read"
 
 	captured := captureDeepSeekChatBody(t, &schemas.BifrostChatRequest{
 		Provider: schemas.DeepSeek,
@@ -224,7 +359,7 @@ func TestChatCompletion_OpenAIEndpointDisablesThinkingForToolCallWithoutReasonin
 				ChatAssistantMessage: &schemas.ChatAssistantMessage{
 					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
 						ID:       &toolCallID,
-						Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`},
+						Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{"path":"a.md"}`},
 					}},
 				},
 			},
@@ -233,29 +368,32 @@ func TestChatCompletion_OpenAIEndpointDisablesThinkingForToolCallWithoutReasonin
 				Content:         &schemas.ChatMessageContent{ContentStr: &toolResult},
 				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &toolCallID},
 			},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &followUp}},
 		},
 		Params: &schemas.ChatParameters{
-			MaxCompletionTokens: schemas.Ptr(3000),
+			MaxCompletionTokens: schemas.Ptr(800),
+			Reasoning:           &schemas.ChatReasoning{Effort: schemas.Ptr("high")},
 			Tools:               []schemas.ChatTool{*chatTool},
+			ExtraParams:         map[string]any{"thinking": map[string]any{"type": "enabled"}},
 		},
 	})
 
 	thinking, ok := captured["thinking"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected thinking block in outbound body, got %#v", captured)
+		t.Fatalf("expected the caller's thinking block in outbound body, got %#v", captured["thinking"])
 	}
-	if got := thinking["type"]; got != "disabled" {
-		t.Fatalf("thinking.type = %v, want disabled", got)
+	if got := thinking["type"]; got != "enabled" {
+		t.Fatalf("thinking.type = %v, want enabled (caller asked for thinking, reasoning_effort = %v)", got, captured["reasoning_effort"])
 	}
 }
 
-// TestChatCompletion_OpenAIEndpointDisablesThinkingForToolCallWithReasoningDetailsOnly
+// TestChatCompletion_OpenAIEndpointKeepsThinkingForToolCallWithReasoningDetailsOnly
 // covers a tool-call turn whose reasoning is carried only as reasoning_details.
 // ReasoningDetails is inbound-only -- ConvertBifrostMessagesToOpenAIMessages copies
 // Reasoning into reasoning_content and never populates reasoning_details (see
-// core/providers/openai/types.go) -- so nothing reaches the wire to satisfy DeepSeek's
-// replay requirement and thinking must be forced off.
-func TestChatCompletion_OpenAIEndpointDisablesThinkingForToolCallWithReasoningDetailsOnly(t *testing.T) {
+// core/providers/openai/types.go) -- so the turn is handled like one with no reasoning:
+// thinking stays on and reasoning_content goes out empty.
+func TestChatCompletion_OpenAIEndpointKeepsThinkingForToolCallWithReasoningDetailsOnly(t *testing.T) {
 	t.Parallel()
 
 	chatTool := llmtests.GetSampleChatTool(llmtests.SampleToolTypeTime)
@@ -300,67 +438,145 @@ func TestChatCompletion_OpenAIEndpointDisablesThinkingForToolCallWithReasoningDe
 		},
 	})
 
-	// The premise: reasoning_details never reaches DeepSeek, so the tool-call turn
-	// really does go out with no replayed reasoning.
-	toolCallMsg := assistantMessageAt(t, captured, 1)
-	if got, ok := toolCallMsg["reasoning_content"]; ok {
-		t.Fatalf("reasoning_details must not reach the wire as reasoning_content, got %#v", got)
+	if thinking, ok := captured["thinking"]; ok {
+		t.Fatalf("thinking must stay on when reasoning is carried only as reasoning_details, got %#v", thinking)
 	}
-
-	thinking, ok := captured["thinking"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected thinking block in outbound body, got %#v", captured)
-	}
-	if got := thinking["type"]; got != "disabled" {
-		t.Fatalf("thinking.type = %v, want disabled", got)
-	}
+	assertEmptyReasoningReplayed(t, captured, 1)
 }
 
-// TestChatCompletion_OpenAIEndpointDisablesThinkingForToolCallWithoutDeclaredTools covers a
+// TestChatCompletion_OpenAIEndpointKeepsThinkingForToolCallWithoutDeclaredTools covers a
 // history that replays an assistant tool-call turn while the request itself declares no
 // tools -- the shape a caller produces when it drops the tool list on a final summarizing
-// turn. DeepSeek validates the replayed messages, not the tool declarations, so the missing
-// reasoning_content still 400s and thinking must be forced off.
-func TestChatCompletion_OpenAIEndpointDisablesThinkingForToolCallWithoutDeclaredTools(t *testing.T) {
+// turn. The backfill follows the messages, not the tool declarations.
+func TestChatCompletion_OpenAIEndpointKeepsThinkingForToolCallWithoutDeclaredTools(t *testing.T) {
 	t.Parallel()
-
-	ask := "what time is it in UTC?"
-	toolResult := "2026-08-05T12:00:00Z"
-	followUp := "thanks, now summarize that."
-	toolCallID := "call_1"
-	toolName := "get_current_time"
 
 	captured := captureDeepSeekChatBody(t, &schemas.BifrostChatRequest{
 		Provider: schemas.DeepSeek,
 		Model:    "deepseek-v4-flash",
-		Input: []schemas.ChatMessage{
-			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &ask}},
-			{
-				Role: schemas.ChatMessageRoleAssistant,
-				ChatAssistantMessage: &schemas.ChatAssistantMessage{
-					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
-						ID:       &toolCallID,
-						Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`},
-					}},
-				},
-			},
-			{
-				Role:            schemas.ChatMessageRoleTool,
-				Content:         &schemas.ChatMessageContent{ContentStr: &toolResult},
-				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &toolCallID},
-			},
-			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &followUp}},
-		},
-		// Deliberately no Tools: the replay requirement follows the messages.
+		Input:    toolCallHistoryWithoutReasoning(false),
+		// Deliberately no Tools: the backfill follows the messages.
 		Params: &schemas.ChatParameters{MaxCompletionTokens: new(3000)},
+	})
+
+	if thinking, ok := captured["thinking"]; ok {
+		t.Fatalf("thinking must stay on for a tool-call turn without reasoning, got %#v", thinking)
+	}
+	assertEmptyReasoningReplayed(t, captured, 1)
+}
+
+// TestChatCompletion_OpenAIEndpointBackfillsToolCallReasoningWithNilParams covers a request
+// with no Params at all. Thinking is on by default upstream, so the tool-call turn still
+// needs its reasoning_content.
+func TestChatCompletion_OpenAIEndpointBackfillsToolCallReasoningWithNilParams(t *testing.T) {
+	t.Parallel()
+
+	captured := captureDeepSeekChatBody(t, &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Input:    toolCallHistoryWithoutReasoning(true),
+	})
+
+	if thinking, ok := captured["thinking"]; ok {
+		t.Fatalf("thinking must stay on for a tool-call turn without reasoning, got %#v", thinking)
+	}
+	assertEmptyReasoningReplayed(t, captured, 1)
+}
+
+// TestChatCompletionStream_OpenAIEndpointKeepsThinkingForToolCallWithoutReasoning pins the
+// streaming call site, which applies the thinking shim separately from ChatCompletion.
+func TestChatCompletionStream_OpenAIEndpointKeepsThinkingForToolCallWithoutReasoning(t *testing.T) {
+	t.Parallel()
+
+	chatTool := llmtests.GetSampleChatTool(llmtests.SampleToolTypeTime)
+	if chatTool == nil {
+		t.Fatal("GetSampleChatTool returned nil")
+	}
+
+	captured := captureDeepSeekChatStreamBody(t, &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Input:    toolCallHistoryWithoutReasoning(true),
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(3000),
+			Tools:               []schemas.ChatTool{*chatTool},
+			ExtraParams:         map[string]any{"thinking": map[string]any{"type": "enabled"}},
+		},
 	})
 
 	thinking, ok := captured["thinking"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected thinking block in outbound body, got %#v", captured)
+		t.Fatalf("expected the caller's thinking block in outbound body, got %#v", captured["thinking"])
 	}
-	if got := thinking["type"]; got != "disabled" {
-		t.Fatalf("thinking.type = %v, want disabled", got)
+	if got := thinking["type"]; got != "enabled" {
+		t.Fatalf("thinking.type = %v, want enabled", got)
+	}
+	assertEmptyReasoningReplayed(t, captured, 1)
+}
+
+// TestChatCompletion_OpenAIEndpointSkipsReasoningBackfillWhenThinkingIsOff guards the two
+// cases where thinking is off on the wire: the caller disabled it, or a forced tool_choice
+// made the shim disable it. The replay rule only applies in thinking mode, so the
+// tool-call turn must go out untouched.
+// This test is expected to pass both before and after the fix.
+func TestChatCompletion_OpenAIEndpointSkipsReasoningBackfillWhenThinkingIsOff(t *testing.T) {
+	t.Parallel()
+
+	chatTool := llmtests.GetSampleChatTool(llmtests.SampleToolTypeTime)
+	if chatTool == nil {
+		t.Fatal("GetSampleChatTool returned nil")
+	}
+	requiredChoice := string(schemas.ChatToolChoiceTypeRequired)
+
+	tests := []struct {
+		name   string
+		params *schemas.ChatParameters
+	}{
+		{
+			name: "caller disabled thinking",
+			params: &schemas.ChatParameters{
+				Tools:       []schemas.ChatTool{*chatTool},
+				ExtraParams: map[string]any{"thinking": map[string]any{"type": "disabled"}},
+			},
+		},
+		{
+			name: "caller disabled thinking with a typed map",
+			params: &schemas.ChatParameters{
+				Tools:       []schemas.ChatTool{*chatTool},
+				ExtraParams: map[string]any{"thinking": map[string]string{"type": "disabled"}},
+			},
+		},
+		{
+			name: "forced tool_choice",
+			params: &schemas.ChatParameters{
+				Tools:      []schemas.ChatTool{*chatTool},
+				ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStr: &requiredChoice},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			captured := captureDeepSeekChatBody(t, &schemas.BifrostChatRequest{
+				Provider: schemas.DeepSeek,
+				Model:    "deepseek-v4-flash",
+				Input:    toolCallHistoryWithoutReasoning(true),
+				Params:   tt.params,
+			})
+
+			thinking, ok := captured["thinking"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected thinking block in outbound body, got %#v", captured)
+			}
+			if got := thinking["type"]; got != "disabled" {
+				t.Fatalf("thinking.type = %v, want disabled", got)
+			}
+			if got, ok := assistantMessageAt(t, captured, 1)["reasoning_content"]; ok {
+				t.Fatalf("reasoning_content must not be added while thinking is off, got %#v", got)
+			}
+		})
 	}
 }
 
@@ -376,8 +592,7 @@ func TestChatCompletion_DoesNotMutateCallerExtraParams(t *testing.T) {
 	}
 
 	ask := "what time is it in UTC?"
-	toolCallID := "call_1"
-	toolName := "get_current_time"
+	requiredChoice := string(schemas.ChatToolChoiceTypeRequired)
 	// ExtraParams must be non-nil here. The shim allocates a fresh map before adding
 	// thinking, so a nil caller map would take that allocation path no matter what --
 	// and an implementation that only allocates *when* nil, aliasing the caller's map
@@ -386,31 +601,125 @@ func TestChatCompletion_DoesNotMutateCallerExtraParams(t *testing.T) {
 	params := &schemas.ChatParameters{
 		MaxCompletionTokens: schemas.Ptr(3000),
 		Tools:               []schemas.ChatTool{*chatTool},
+		ToolChoice:          &schemas.ChatToolChoice{ChatToolChoiceStr: &requiredChoice},
 		ExtraParams:         map[string]any{"sentinel": "preserve"},
 	}
 
-	captureDeepSeekChatBody(t, &schemas.BifrostChatRequest{
+	captured := captureDeepSeekChatBody(t, &schemas.BifrostChatRequest{
 		Provider: schemas.DeepSeek,
 		Model:    "deepseek-v4-flash",
 		Input: []schemas.ChatMessage{
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &ask}},
-			{
-				Role: schemas.ChatMessageRoleAssistant,
-				ChatAssistantMessage: &schemas.ChatAssistantMessage{
-					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
-						ID:       &toolCallID,
-						Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`},
-					}},
-				},
-			},
 		},
 		Params: params,
 	})
 
+	// The shim must have fired, or the checks below prove nothing.
+	if thinking, ok := captured["thinking"].(map[string]any); !ok || thinking["type"] != "disabled" {
+		t.Fatalf("expected thinking disabled in outbound body, got %#v", captured["thinking"])
+	}
 	if got := params.ExtraParams["sentinel"]; got != "preserve" {
 		t.Fatalf("caller ExtraParams was replaced or corrupted, got %#v", params.ExtraParams)
 	}
 	if _, ok := params.ExtraParams["thinking"]; ok {
 		t.Fatalf("caller ChatParameters must not be mutated, got ExtraParams=%#v", params.ExtraParams)
 	}
+}
+
+// TestChatCompletion_DoesNotMutateCallerMessages ensures the reasoning backfill does not
+// write through to the caller's messages, which are shared with fallback attempts against
+// other providers.
+func TestChatCompletion_DoesNotMutateCallerMessages(t *testing.T) {
+	t.Parallel()
+
+	input := toolCallHistoryWithoutReasoning(true)
+	captured := captureDeepSeekChatBody(t, &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Input:    input,
+		Params:   &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(3000)},
+	})
+
+	// The backfill must have fired, or the check below proves nothing.
+	assertEmptyReasoningReplayed(t, captured, 1)
+	if got := input[1].ChatAssistantMessage.Reasoning; got != nil {
+		t.Fatalf("caller message must not be mutated, got Reasoning=%q", *got)
+	}
+}
+
+// TestResponses_OpenAIEndpointKeepsThinkingForFunctionCallWithoutReasoning covers the
+// Responses API entry point, which reaches DeepSeek through the chat path. A replayed
+// function_call item with no reasoning item before it becomes an assistant tool-call turn
+// without reasoning, so the same rule applies: thinking stays on and reasoning_content
+// goes out empty.
+func TestResponses_OpenAIEndpointKeepsThinkingForFunctionCallWithoutReasoning(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("path = %q, want /chat/completions", r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		if err := json.Unmarshal(body, &captured); err != nil {
+			t.Errorf("decode body: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, newOpenAIChatResponse())
+	}))
+	defer server.Close()
+
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	responsesTool := llmtests.GetSampleResponsesTool(llmtests.SampleToolTypeTime)
+	if responsesTool == nil {
+		t.Fatal("GetSampleResponsesTool returned nil")
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Responses(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostResponsesRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type:    new(schemas.ResponsesMessageTypeMessage),
+				Role:    new(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: new("what time is it in UTC?")},
+			},
+			{
+				Type: new(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    new("call_1"),
+					Name:      new(string(llmtests.SampleToolTypeTime)),
+					Arguments: new(`{"timezone":"UTC"}`),
+				},
+			},
+			{
+				Type: new(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: new("call_1"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: new("2026-08-05T12:00:00Z")},
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{*responsesTool},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Responses: %v", bifrostErr.Error.Message)
+	}
+
+	if thinking, ok := captured["thinking"]; ok {
+		t.Fatalf("thinking must stay on for a function_call without reasoning, got %#v", thinking)
+	}
+	assertEmptyReasoningReplayed(t, captured, 1)
 }

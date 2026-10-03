@@ -187529,6 +187529,267 @@
           ]
         }
       ]
+    },
+    {
+      "name": "143. DeepSeek keeps thinking with a tool-call history (#7213) (deepseek-thinking-tool-history)",
+      "description": "Issue #7213. On the default OpenAI-compatible DeepSeek path, a history holding an assistant tool-call turn with no reasoning_content made Bifrost rewrite the outbound body to thinking:{\"type\":\"disabled\"}, even when the caller sent thinking:{\"type\":\"enabled\"}. Nothing errored: the response was a 200 with no reasoning, and because the turn stays in the history the rewrite repeated on every later request. A tool-call turn without reasoning is ordinary traffic (the model can return none, and many clients drop the field). Bifrost now keeps the thinking mode and sends reasoning_content:\"\" on such turns instead. These cases check the captured outbound request (extra_fields.raw_request), since a 200 alone cannot tell the two behaviours apart. The 200 itself is the live proof that DeepSeek accepts the empty reasoning_content with thinking on. Cases: the issue's exact request (new user turn after the tool result), the same request streamed, a request in the middle of a tool loop with default thinking (the shape DeepSeek's replay rule targets), and the native Responses route, which reaches DeepSeek through the same chat path.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash /v1/chat/completions: requested thinking kept with a tool-call turn that has no reasoning_content - #7213",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_tokens\": 800,\n  \"thinking\": {\n    \"type\": \"enabled\"\n  },\n  \"reasoning_effort\": \"high\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read\",\n        \"description\": \"Read a file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read a.md and tell me the number inside.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read\",\n            \"arguments\": \"{\\\"path\\\":\\\"a.md\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1\",\n      \"content\": \"# a.md\\nthe answer is 42\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"State the number.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deepseek accepts the replayed tool-call turn (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 600);",
+                  "pm.test('outbound request was captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('requested thinking mode reaches deepseek unchanged (#7213)', function () {",
+                  "  pm.expect((rr || {}).thinking, 'thinking was dropped or rewritten: ' + wire).to.eql({ type: 'enabled' });",
+                  "});",
+                  "var toolTurns = ((rr || {}).messages || []).filter(function (m) { return m.role === 'assistant' && Array.isArray(m.tool_calls); });",
+                  "pm.test('tool-call turn goes out with an empty reasoning_content', function () {",
+                  "  pm.expect(toolTurns.length, 'expected one assistant tool-call turn on the wire: ' + wire).to.eql(1);",
+                  "  pm.expect(toolTurns[0].reasoning_content, 'reasoning_content on the tool-call turn: ' + JSON.stringify(toolTurns[0])).to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /v1/chat/completions streaming: requested thinking kept with a tool-call turn that has no reasoning_content - #7213",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_tokens\": 800,\n  \"thinking\": {\n    \"type\": \"enabled\"\n  },\n  \"reasoning_effort\": \"high\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read\",\n        \"description\": \"Read a file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read a.md and tell me the number inside.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read\",\n            \"arguments\": \"{\\\"path\\\":\\\"a.md\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1\",\n      \"content\": \"# a.md\\nthe answer is 42\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"State the number.\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('deepseek accepts the replayed tool-call turn (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var finished = false;",
+                  "var rr;",
+                  "txt.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  var frame;",
+                  "  try { frame = JSON.parse(data); } catch (e) { return; }",
+                  "  if (frame.extra_fields && frame.extra_fields.raw_request) { rr = frame.extra_fields.raw_request; }",
+                  "  var choice = frame.choices && frame.choices[0];",
+                  "  if (choice && choice.finish_reason) { finished = true; }",
+                  "});",
+                  "pm.test('stream reached finish_reason', function () {",
+                  "  pm.expect(finished, 'no finish_reason in stream: ' + txt.slice(0, 600)).to.be.true;",
+                  "});",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 600);",
+                  "pm.test('outbound request was captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('requested thinking mode reaches deepseek unchanged (#7213)', function () {",
+                  "  pm.expect((rr || {}).thinking, 'thinking was dropped or rewritten: ' + wire).to.eql({ type: 'enabled' });",
+                  "});",
+                  "var toolTurns = ((rr || {}).messages || []).filter(function (m) { return m.role === 'assistant' && Array.isArray(m.tool_calls); });",
+                  "pm.test('tool-call turn goes out with an empty reasoning_content', function () {",
+                  "  pm.expect(toolTurns.length, 'expected one assistant tool-call turn on the wire: ' + wire).to.eql(1);",
+                  "  pm.expect(toolTurns[0].reasoning_content, 'reasoning_content on the tool-call turn: ' + JSON.stringify(toolTurns[0])).to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /v1/chat/completions mid tool loop: default thinking kept with a tool-call turn that has no reasoning_content - #7213",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_tokens\": 800,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read\",\n        \"description\": \"Read a file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read a.md and tell me the number inside.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read\",\n            \"arguments\": \"{\\\"path\\\":\\\"a.md\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1\",\n      \"content\": \"# a.md\\nthe answer is 42\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deepseek accepts the replayed tool-call turn (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 600);",
+                  "pm.test('outbound request was captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('default thinking is not turned off (#7213)', function () {",
+                  "  pm.expect((rr || {}).thinking, 'thinking was forced onto the request: ' + wire).to.be.undefined;",
+                  "});",
+                  "var toolTurns = ((rr || {}).messages || []).filter(function (m) { return m.role === 'assistant' && Array.isArray(m.tool_calls); });",
+                  "pm.test('tool-call turn goes out with an empty reasoning_content', function () {",
+                  "  pm.expect(toolTurns.length, 'expected one assistant tool-call turn on the wire: ' + wire).to.eql(1);",
+                  "  pm.expect(toolTurns[0].reasoning_content, 'reasoning_content on the tool-call turn: ' + JSON.stringify(toolTurns[0])).to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /v1/responses: default thinking kept with a replayed function_call that has no reasoning item - #7213",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_output_tokens\": 800,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"read\",\n      \"description\": \"Read a file\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read a.md and tell me the number inside.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_1\",\n      \"name\": \"read\",\n      \"arguments\": \"{\\\"path\\\":\\\"a.md\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_1\",\n      \"output\": \"# a.md\\nthe answer is 42\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('deepseek accepts the replayed tool-call turn (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 600);",
+                  "pm.test('outbound request was captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('default thinking is not turned off (#7213)', function () {",
+                  "  pm.expect((rr || {}).thinking, 'thinking was forced onto the request: ' + wire).to.be.undefined;",
+                  "});",
+                  "var toolTurns = ((rr || {}).messages || []).filter(function (m) { return m.role === 'assistant' && Array.isArray(m.tool_calls); });",
+                  "pm.test('tool-call turn goes out with an empty reasoning_content', function () {",
+                  "  pm.expect(toolTurns.length, 'expected one assistant tool-call turn on the wire: ' + wire).to.eql(1);",
+                  "  pm.expect(toolTurns[0].reasoning_content, 'reasoning_content on the tool-call turn: ' + JSON.stringify(toolTurns[0])).to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
