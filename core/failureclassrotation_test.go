@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -538,30 +540,32 @@ func TestExecuteRequestWithRetries_TransportFailureStampsTransientAndSyntheticSt
 // rate-limited key's own hint survives, and it is what a load balancer needs to know how long
 // to leave that key alone.
 func TestExecuteRequestWithRetries_TrailKeepsThePerAttemptRetryHint(t *testing.T) {
-	ctx := rotationTestContext()
-	handler := func(k schemas.Key) (string, *schemas.BifrostError) {
-		if k.ID == rotationKeyA.ID {
-			limited := providerError(429, "rate_limit_error", "rate_limit_exceeded", "Rate limit reached")
-			limited.ExtraFields.RetryAfter = 12000
-			return "", limited
+	synctest.Test(t, func(t *testing.T) {
+		ctx := rotationTestContext()
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			if k.ID == rotationKeyA.ID {
+				limited := providerError(429, "rate_limit_error", "rate_limit_exceeded", "Rate limit reached")
+				limited.ExtraFields.RetryAfter = 12000
+				return "", limited
+			}
+			return "ok", nil
 		}
-		return "ok", nil
-	}
 
-	result, err := executeRequestWithRetries(ctx, createTestConfig(1, 0, 0), handler,
-		poolKeyProvider([]schemas.Key{rotationKeyA, rotationKeyB}),
-		schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
-	if err != nil || result != "ok" {
-		t.Fatalf("expected the second key to serve, got %q %v", result, err)
-	}
+		result, err := executeRequestWithRetries(ctx, createTestConfig(1, 0, 12*time.Second), handler,
+			poolKeyProvider([]schemas.Key{rotationKeyA, rotationKeyB}),
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
+		if err != nil || result != "ok" {
+			t.Fatalf("expected the second key to serve, got %q %v", result, err)
+		}
 
-	trail := attemptTrail(t, ctx, 2)
-	if trail[0].RetryAfter != 12000 {
-		t.Errorf("rotated-away attempt kept retry_after_ms=%d, want 12000", trail[0].RetryAfter)
-	}
-	if trail[1].RetryAfter != 0 {
-		t.Errorf("the successful attempt carries a hint: %+v", trail[1])
-	}
+		trail := attemptTrail(t, ctx, 2)
+		if trail[0].RetryAfter != 12000 {
+			t.Errorf("rotated-away attempt kept retry_after_ms=%d, want 12000", trail[0].RetryAfter)
+		}
+		if trail[1].RetryAfter != 0 {
+			t.Errorf("the successful attempt carries a hint: %+v", trail[1])
+		}
+	})
 }
 
 // A failure the provider gave no hint for leaves the field at zero rather than inventing one.
