@@ -196,6 +196,44 @@ func TestSecretVar_UnmarshalJSON_BackwardCompat(t *testing.T) {
 	})
 }
 
+// TestSecretVar_UnmarshalJSON_Null verifies that JSON null leaves the value unset instead of
+// storing the literal text "null".
+func TestSecretVar_UnmarshalJSON_Null(t *testing.T) {
+	type holder struct {
+		Value SecretVar `json:"value"`
+	}
+
+	t.Run("null in a struct field", func(t *testing.T) {
+		var h holder
+		if err := json.Unmarshal([]byte(`{"value":null}`), &h); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
+		if h.Value.IsSet() || h.Value.GetValue() != "" {
+			t.Fatalf("expected an unset value, got %q", h.Value.GetValue())
+		}
+	})
+
+	t.Run("null clears a value that was set", func(t *testing.T) {
+		sv := *NewSecretVar("env.SECRETVAR_NULL_TEST")
+		if err := sv.UnmarshalJSON([]byte("null")); err != nil {
+			t.Fatalf("UnmarshalJSON failed: %v", err)
+		}
+		if sv.IsSet() || sv.IsFromSecret() || sv.GetValue() != "" {
+			t.Fatalf("expected an unset value, got %#v", sv)
+		}
+	})
+
+	t.Run("the string null is still a value", func(t *testing.T) {
+		var sv SecretVar
+		if err := sv.UnmarshalJSON([]byte(`"null"`)); err != nil {
+			t.Fatalf("UnmarshalJSON failed: %v", err)
+		}
+		if sv.GetValue() != "null" {
+			t.Fatalf("expected the literal value, got %q", sv.GetValue())
+		}
+	})
+}
+
 func TestNewSecretVar_DoubleEscapedJSON(t *testing.T) {
 	tests := []struct {
 		name     string
