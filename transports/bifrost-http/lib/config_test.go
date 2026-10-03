@@ -2222,6 +2222,285 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBC
 	require.Equal(t, "stored", entry.Value)
 }
 
+// File defaults may initialize a new analyzer, but must not become overrides of
+// existing UI/API settings when split reconciliation sees an omitted field.
+func TestMergeGovernanceConfig_ComplexityFilePresence(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		current             string
+		file                string
+		previousFile        string
+		forceFile           bool
+		missingSection      bool
+		fresh               bool
+		explicitJev         bool
+		emptyJev            bool
+		semanticFallbackJev bool
+		invalid             bool
+		wantClassifier      string
+		wantJevHistory      int
+	}{
+		{name: "omitted_classifier_with_legacy_hash", current: "jev", wantClassifier: "jev", wantJevHistory: 5},
+		{name: "omitted_classifier_after_explicit_jev_file", current: "jev", previousFile: "jev", wantClassifier: "jev", wantJevHistory: 5},
+		{name: "omitted_classifier_with_prior_normalized_hash", current: "jev", previousFile: "normalized", wantClassifier: "jev", wantJevHistory: 5},
+		{name: "explicit_semantic_replaces_jev", current: "jev", file: "semantic", wantClassifier: "semantic", wantJevHistory: 5},
+		{name: "explicit_jev_preserves_omitted_jev_settings", current: "semantic", file: "jev", wantClassifier: "jev", wantJevHistory: 5},
+		{name: "semantic_fallback_preserves_omitted_jev_settings", current: "semantic", file: "semantic", semanticFallbackJev: true, wantClassifier: "semantic", wantJevHistory: 5},
+		{name: "explicit_jev_settings_apply", current: "semantic", file: "jev", explicitJev: true, wantClassifier: "jev", wantJevHistory: 3},
+		{name: "explicit_empty_jev_applies_defaults", current: "semantic", file: "jev", emptyJev: true, wantClassifier: "jev", wantJevHistory: 1},
+		{name: "classifier_case_and_space_normalize", current: "semantic", file: "  JEV ", wantClassifier: "jev", wantJevHistory: 5},
+		{name: "explicit_blank_classifier_defaults_to_semantic", current: "jev", file: " ", wantClassifier: "semantic", wantJevHistory: 5},
+		{name: "invalid_classifier_leaves_database_untouched", current: "jev", file: "invalid", invalid: true, wantClassifier: "jev", wantJevHistory: 5},
+		{name: "new_analyzer_defaults_to_semantic", fresh: true, wantClassifier: "semantic"},
+		{name: "config_json_defaults_to_semantic", current: "jev", forceFile: true, wantClassifier: "semantic"},
+		{name: "missing_analyzer_section_preserves_jev", current: "jev", missingSection: true, wantClassifier: "jev", wantJevHistory: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			initTestLogger()
+			file := testFileComplexityAnalyzerConfig()
+			previous := testFileComplexityAnalyzerConfig()
+			if tc.previousFile == "normalized" {
+				var err error
+				previous, err = complexity.ValidateAndNormalize(previous)
+				require.NoError(t, err)
+			} else {
+				previous.Classifier = tc.previousFile
+			}
+			previousHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(previous)
+			require.NoError(t, err)
+			current := testRuntimeComplexityAnalyzerConfig()
+			current.Classifier = tc.current
+			history := 5
+			current.Jev = &configstore.ComplexityJevConfig{PreviousMessageCount: &history, Timeout: 900 * time.Millisecond}
+			current, err = complexity.ValidateAndNormalize(current)
+			require.NoError(t, err)
+			current.ConfigHashes = previousHashes
+			if tc.fresh {
+				current = nil
+			}
+			file.Classifier = tc.file
+			if tc.semanticFallbackJev {
+				require.Nil(t, previous.Semantic)
+				require.Empty(t, previousHashes.SemanticSettings)
+				file.Semantic = &configstore.ComplexitySemanticConfig{
+					Provider:       "openai",
+					EmbeddingModel: "text-embedding-3-small",
+					Fallback:       configstore.ComplexitySemanticFallbackJev,
+				}
+			}
+			if tc.explicitJev {
+				fileHistory := 3
+				file.Jev = &configstore.ComplexityJevConfig{PreviousMessageCount: &fileHistory}
+			}
+			if tc.emptyJev {
+				file.Jev = &configstore.ComplexityJevConfig{}
+			}
+			// Exercise a real section update as well as classifier reconciliation.
+			if !tc.missingSection && tc.previousFile != "normalized" {
+				file.Keywords.MediumKeywords = append(file.Keywords.MediumKeywords, "new-file-keyword")
+			}
+			governance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: current}
+			store := NewMockConfigStore()
+			store.governanceConfig = governance
+			config := &Config{ConfigStore: store, GovernanceConfig: governance}
+			data := &ConfigData{Governance: &configstore.GovernanceConfig{ComplexityAnalyzerConfig: file}}
+			if tc.forceFile {
+				data.SourceOfTruth = SourceOfTruthConfigJSON
+			}
+			if tc.missingSection {
+				data.Governance.ComplexityAnalyzerConfig = nil
+			}
+
+			mergeGovernanceConfig(context.Background(), config, data, governance)
+
+			stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			require.Equal(t, tc.wantClassifier, stored.Classifier)
+			require.Equal(t, stored, config.GovernanceConfig.ComplexityAnalyzerConfig)
+			if tc.semanticFallbackJev {
+				require.NotNil(t, stored.Semantic)
+				require.Equal(t, configstore.ComplexitySemanticFallbackJev, stored.Semantic.Fallback)
+				require.NotEmpty(t, stored.ConfigHashes.SemanticSettings)
+			}
+			if tc.missingSection || tc.invalid || tc.previousFile == "normalized" {
+				require.Same(t, current, stored, "an unchanged plan must avoid persistence")
+			}
+			if tc.wantJevHistory != 0 {
+				require.NotNil(t, stored.Jev)
+				require.NotNil(t, stored.Jev.PreviousMessageCount)
+				require.Equal(t, tc.wantJevHistory, *stored.Jev.PreviousMessageCount)
+				if tc.wantJevHistory == 5 {
+					require.Equal(t, current.Jev, stored.Jev)
+					require.Equal(t, previousHashes.JevSettings, stored.ConfigHashes.JevSettings)
+				}
+			}
+			if tc.file == "" && !tc.forceFile && !tc.fresh {
+				require.Equal(t, previousHashes.ClassifierSettings, stored.ConfigHashes.ClassifierSettings)
+			}
+			if !tc.missingSection && !tc.invalid && tc.previousFile != "normalized" {
+				require.Contains(t, stored.Keywords.MediumKeywords, "new-file-keyword")
+			}
+			// Normalizing defaults must not erase the original file's omission.
+			require.Equal(t, tc.file, file.Classifier)
+			if !tc.explicitJev && !tc.emptyJev {
+				require.Nil(t, file.Jev)
+			}
+		})
+	}
+}
+
+// LoadConfig must retain stored classifier choices and Jev settings when a
+// subsequent raw config.json omits them, including across another restart.
+func TestLoadConfig_ComplexityFilePresence(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		initialClassifier string
+		nextClassifier    string
+		legacyHash        bool
+	}{
+		{name: "omitted_classifier_with_legacy_hash", initialClassifier: "jev", legacyHash: true},
+		{name: "omitted_classifier_after_explicit_jev_file", initialClassifier: "jev"},
+		{name: "explicit_jev_preserves_omitted_jev_settings", initialClassifier: "semantic", nextClassifier: "jev"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			initTestLogger()
+			for _, key := range []string{"OPENAI_API_KEY", "OPENAI_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_KEY", "MISTRAL_API_KEY", "MISTRAL_KEY"} {
+				t.Setenv(key, "")
+			}
+			dir := createTempDir(t)
+			ctx := context.Background()
+			data := makeMinimalConfigData(dir)
+			data.SourceOfTruth = SourceOfTruthSplit
+			file := testFileComplexityAnalyzerConfig()
+			file.Classifier = tc.initialClassifier
+			initialHistory := 2
+			file.Jev = &configstore.ComplexityJevConfig{
+				PreviousMessageCount: &initialHistory,
+				Timeout:              1200 * time.Millisecond,
+			}
+			data.Governance = &configstore.GovernanceConfig{ComplexityAnalyzerConfig: file}
+			createConfigFile(t, dir, data)
+
+			// Register a close before any fatal assertion, and guard explicit closes
+			// so cleanup neither leaks workers nor closes the same store twice.
+			load := func() (*Config, func()) {
+				config, err := LoadConfig(ctx, dir)
+				closed := false
+				closeConfig := func() {
+					if config != nil && !closed {
+						config.Close(ctx)
+						closed = true
+					}
+				}
+				t.Cleanup(closeConfig)
+				require.NoError(t, err)
+				require.NotNil(t, config)
+				return config, closeConfig
+			}
+			first, closeFirst := load()
+			stored, err := first.ConfigStore.GetComplexityAnalyzerConfig(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			require.Equal(t, tc.initialClassifier, stored.Classifier)
+			require.NotEmpty(t, stored.ConfigHashes.ClassifierSettings)
+			require.NotEmpty(t, stored.ConfigHashes.JevSettings)
+
+			if tc.legacyHash {
+				legacy := *stored
+				legacy.ConfigHashes.ClassifierSettings = ""
+				// An entirely empty hash struct is carried over by the store; retain
+				// the other actual file hashes to persist this specific legacy state.
+				require.NotEmpty(t, legacy.ConfigHashes.MediumKeywords)
+				require.False(t, legacy.ConfigHashes.Empty())
+				require.NoError(t, first.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, &legacy))
+				stored, err = first.ConfigStore.GetComplexityAnalyzerConfig(ctx)
+				require.NoError(t, err)
+				require.NotNil(t, stored)
+				require.Empty(t, stored.ConfigHashes.ClassifierSettings)
+			}
+			previousHashes := stored.ConfigHashes
+
+			// A normal UI save carries no file-sync hashes and must keep those
+			// from the last file import while changing the runtime Jev settings.
+			ui := *stored
+			ui.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{}
+			history := 5
+			ui.Jev = &configstore.ComplexityJevConfig{
+				PreviousMessageCount: &history,
+				Timeout:              900 * time.Millisecond,
+			}
+			require.NoError(t, first.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, &ui))
+			beforeRestart, err := first.ConfigStore.GetComplexityAnalyzerConfig(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, beforeRestart)
+			require.Equal(t, previousHashes, beforeRestart.ConfigHashes)
+			require.Equal(t, tc.initialClassifier, beforeRestart.Classifier)
+			require.NotNil(t, beforeRestart.Jev)
+			require.NotNil(t, beforeRestart.Jev.PreviousMessageCount)
+			require.Equal(t, 5, *beforeRestart.Jev.PreviousMessageCount)
+			require.Equal(t, 900*time.Millisecond, beforeRestart.Jev.Timeout)
+			closeFirst()
+
+			// Write an unnormalized file and verify the serialized field absence
+			// before LoadConfig decodes it through the real startup path.
+			file.Classifier = tc.nextClassifier
+			file.Jev = nil
+			file.Keywords.MediumKeywords = append(file.Keywords.MediumKeywords, "restart-file-keyword")
+			createConfigFile(t, dir, data)
+			raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
+			require.NoError(t, err)
+			var top map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(raw, &top))
+			var governance map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(top["governance"], &governance))
+			var analyzer map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(governance["complexity_analyzer_config"], &analyzer))
+			require.NotContains(t, analyzer, "jev")
+			if tc.nextClassifier == "" {
+				require.NotContains(t, analyzer, "classifier")
+			} else {
+				var classifier string
+				require.NoError(t, json.Unmarshal(analyzer["classifier"], &classifier))
+				require.Equal(t, tc.nextClassifier, classifier)
+			}
+
+			fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(file)
+			require.NoError(t, err)
+			wantHashes := previousHashes
+			wantHashes.MediumKeywords = fileHashes.MediumKeywords
+			wantClassifier := tc.initialClassifier
+			if tc.nextClassifier != "" {
+				wantClassifier = tc.nextClassifier
+				wantHashes.ClassifierSettings = fileHashes.ClassifierSettings
+			}
+			check := func(config *Config) *configstore.ComplexityAnalyzerConfig {
+				got, err := config.ConfigStore.GetComplexityAnalyzerConfig(ctx)
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				require.Equal(t, wantClassifier, got.Classifier)
+				require.NotNil(t, got.Jev)
+				require.NotNil(t, got.Jev.PreviousMessageCount)
+				require.Equal(t, 5, *got.Jev.PreviousMessageCount)
+				require.Equal(t, 900*time.Millisecond, got.Jev.Timeout)
+				require.Equal(t, beforeRestart.Jev, got.Jev)
+				require.Equal(t, wantHashes, got.ConfigHashes)
+				require.Contains(t, got.Keywords.MediumKeywords, "restart-file-keyword")
+				require.NotNil(t, config.GovernanceConfig)
+				require.Equal(t, got, config.GovernanceConfig.ComplexityAnalyzerConfig)
+				return got
+			}
+
+			second, closeSecond := load()
+			afterRestart := check(second)
+			closeSecond()
+			third, closeThird := load()
+			require.Equal(t, afterRestart, check(third), "another startup must retain the persisted reconciliation result")
+			closeThird()
+		})
+	}
+}
+
 func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
