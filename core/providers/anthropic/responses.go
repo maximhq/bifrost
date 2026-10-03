@@ -79,6 +79,7 @@ type AnthropicResponsesStreamState struct {
 	Model                     *string                           // Model name from message_start
 	StopReason                *string                           // Stop reason for the message
 	StopDetails               *schemas.ResponsesStopDetails     // Refusal stop_details (server-side fallback), carried to the final message_delta
+	StopSequence              *string                           // Matched custom stop sequence when stop_reason is stop_sequence
 	CreatedAt                 int                               // Timestamp for created_at consistency
 	HasEmittedCreated         bool                              // Whether we've emitted response.created
 	HasEmittedInProgress      bool                              // Whether we've emitted response.in_progress
@@ -753,6 +754,7 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.MessageID = nil
 	state.StopReason = nil
 	state.StopDetails = nil
+	state.StopSequence = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
@@ -817,6 +819,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.MessageID = nil
 	state.StopReason = nil
 	state.StopDetails = nil
+	state.StopSequence = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
@@ -2739,6 +2742,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				mapped = string(schemas.BifrostFinishReasonStop)
 			}
 			state.StopReason = &mapped
+			if *chunk.Delta.StopReason == AnthropicStopReasonStopSequence {
+				state.StopSequence = chunk.Delta.StopSequence
+			}
 		}
 		if chunk.Delta.StopDetails != nil {
 			state.StopDetails = stopDetailsToBifrost(chunk.Delta.StopDetails)
@@ -2768,6 +2774,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				response.StopReason = stopReason
 			}
 			response.StopDetails = state.StopDetails
+			response.StopSequence = state.StopSequence
 			if bifrostUsage != nil {
 				response.Usage = bifrostUsage
 				response.Speed = chunk.Usage.Speed
@@ -2812,6 +2819,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			response.StopReason = state.StopReason
 		}
 		response.StopDetails = state.StopDetails
+		response.StopSequence = state.StopSequence
 
 		// Fold the sandbox container (delivered on the final message_delta) onto
 		// every code_interpreter_call so response.completed carries it (mirrors the
@@ -3896,9 +3904,10 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		if bifrostResp.Response != nil {
 			anthropicContentDeltaEvent.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
 			if bifrostResp.Response.StopReason != nil {
+				reason, stopSequence := anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason), bifrostResp.Response.StopSequence)
 				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
-					StopReason:   schemas.Ptr(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)),
-					StopSequence: nil,
+					StopReason:   schemas.Ptr(reason),
+					StopSequence: stopSequence,
 				}
 			} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.Response.IncompleteDetails); reason != "" {
 				// A truncated turn carrying only incomplete_details must not report end_turn.
@@ -3972,8 +3981,10 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 
 			// Convert stop reason from Bifrost format to Anthropic format
 			if bifrostResp.Response != nil && bifrostResp.Response.StopReason != nil {
+				reason, stopSequence := anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason), bifrostResp.Response.StopSequence)
 				streamResp.Delta = &AnthropicStreamDelta{
-					StopReason: schemas.Ptr(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)),
+					StopReason:   schemas.Ptr(reason),
+					StopSequence: stopSequence,
 				}
 			} else if bifrostResp.Delta != nil {
 				// Handle text delta if present
@@ -5024,6 +5035,9 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 			}
 		}
 		bifrostResp.StopReason = &mapped
+		if response.StopReason == AnthropicStopReasonStopSequence {
+			bifrostResp.StopSequence = response.StopSequence
+		}
 	}
 	// Surface truncation/refusal per the Responses contract; without Status a
 	// max_tokens turn is indistinguishable from a complete one.
@@ -5126,7 +5140,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 
 	// Stop reason precedence: StopReason > IncompleteDetails > tool_use inference > end_turn.
 	if bifrostResp.StopReason != nil {
-		anthropicResp.StopReason = ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason)
+		anthropicResp.StopReason, anthropicResp.StopSequence = anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason), bifrostResp.StopSequence)
 	} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.IncompleteDetails); reason != "" {
 		// OpenAI-shaped providers never send stop_reason; a turn truncated by the
 		// output cap or a content filter carries only incomplete_details. Reporting
