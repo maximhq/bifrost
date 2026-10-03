@@ -786,3 +786,80 @@ func TestGuardedProxySelectorAppliesPolicyToHostnames(t *testing.T) {
 		})
 	}
 }
+
+// TestProxyAwareTransportRoutesByEachRequestsProxyDecision: a request the
+// selector routes through the proxy is served by ViaProxy (whose dialer only
+// ever sees the proxy), one it does not goes through Direct, and the decision
+// is made per request with nothing carried over - a direct request whose
+// destination is the proxy's own address still gets the destination policy.
+func TestProxyAwareTransportRoutesByEachRequestsProxyDecision(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Served-By", "proxy")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer proxy.Close()
+	proxyURL, _ := url.Parse(proxy.URL)
+
+	direct := &http.Transport{DialContext: SSRFSafeDialContext(5 * time.Second)}
+	via := &http.Transport{Proxy: func(*http.Request) (*url.URL, error) { return proxyURL, nil }, DialContext: PrivateNetworkDialContext(5 * time.Second)}
+	rt := &ProxyAwareTransport{
+		Proxy: func(req *http.Request) (*url.URL, error) {
+			if req.URL.Hostname() == "mcp.example" {
+				return proxyURL, nil
+			}
+			return nil, nil
+		},
+		Direct:   direct,
+		ViaProxy: via,
+	}
+	client := &http.Client{Transport: rt}
+
+	resp, err := client.Get("http://mcp.example/mcp")
+	if err != nil {
+		t.Fatalf("proxied request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("X-Served-By") != "proxy" {
+		t.Fatalf("proxied request must be answered by the proxy, got %q", resp.Header.Get("X-Served-By"))
+	}
+
+	mustFailGet(t, client, proxy.URL+"/mcp", "blocked connection to non-public address")
+
+	if _, err := (&ProxyAwareTransport{Proxy: func(*http.Request) (*url.URL, error) { return nil, errors.New("selector failed") }, Direct: direct, ViaProxy: via}).RoundTrip(&http.Request{URL: &url.URL{Scheme: "http", Host: "x.example"}}); err == nil || err.Error() != "selector failed" {
+		t.Fatalf("a selector error must be returned as is, got %v", err)
+	}
+	rt.CloseIdleConnections()
+}
+
+// TestCheckProxiedDestination pins the two policies on the proxied path.
+func TestCheckProxiedDestination(t *testing.T) {
+	cases := []struct {
+		name     string
+		host     string
+		strict   bool
+		resolver *fakeResolver
+		wantErr  string
+	}{
+		{"strict refuses private answer", "mcp.corp", true, &fakeResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}, "non-public"},
+		{"strict refuses loopback literal", "127.0.0.1", true, &fakeResolver{err: errors.New("no dns")}, "non-public"},
+		{"strict accepts public answer", "mcp.example", true, &fakeResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}}, ""},
+		{"strict refuses an unresolvable name rather than trusting the proxy", "only.proxy.knows", true, &fakeResolver{err: errors.New("no dns")}, "DNS lookup failed"},
+		{"permissive leaves an unresolvable name to the proxy", "only.proxy.knows", false, &fakeResolver{err: errors.New("no dns")}, ""},
+		{"permissive accepts private answer", "mcp.corp", false, &fakeResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}, ""},
+		{"permissive refuses metadata answer", "md.corp", false, &fakeResolver{ips: []net.IP{net.ParseIP("169.254.169.254")}}, "link-local"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckProxiedDestination(context.Background(), tc.host, tc.strict, tc.resolver)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected acceptance, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected refusal containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
