@@ -89,3 +89,17 @@ func TestDiscovery_JWKS(t *testing.T) {
 	assert.NotEmpty(t, jwk["n"])
 	assert.NotEmpty(t, jwk["e"])
 }
+
+// TestDiscovery_ResponsesAreNotCacheable pins Cache-Control: no-store on every
+// discovery document so a shared cache in front of Bifrost can never hold one.
+func TestDiscovery_ResponsesAreNotCacheable(t *testing.T) {
+	key, _ := newTestSigningKey(t)
+	store := &mockOAuth2Store{signingKey: key}
+	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	for i, fn := range []func(*fasthttp.RequestCtx){h.handlePRM, h.handleASMetadata, h.handleJWKS} {
+		ctx := &fasthttp.RequestCtx{}
+		fn(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+		assert.Equal(t, "no-store", string(ctx.Response.Header.Peek("Cache-Control")), "document %d", i)
+	}
+}

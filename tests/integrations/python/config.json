@@ -1214,6 +1214,10 @@
     "allowed_origins": ["*"],
     "enable_logging": true,
     "enforce_auth_on_inference": false,
-    "max_request_body_size_mb": 100
+    "max_request_body_size_mb": 100,
+    "mcp_server_auth_mode": "both",
+    "oauth2_server_config": {
+      "issuer_url": "http://localhost:8080"
+    }
   }
 }

@@ -29,7 +29,7 @@ A single setting, `mcp_server_auth_mode`, controls which credential types `/mcp`
 | `both` | Accepted | Accepted | Enabled |
 | `oauth` | Rejected | Accepted | Enabled |
 
-- **`headers`** — `/mcp` accepts header credentials only. The OAuth surface and `.well-known` discovery endpoints are not served.
+- **`headers`** — `/mcp` accepts header credentials only. The OAuth surface is not served: the `.well-known` discovery endpoints and the issuance endpoints (`/oauth2/register`, `/oauth2/authorize`, `/oauth2/token`) all return `404`.
 - **`both`** — `/mcp` accepts header credentials **and** Bifrost-issued JWTs. Discovery is served so OAuth clients can connect.
 - **`oauth`** — `/mcp` accepts Bifrost-issued JWTs only; header credentials are rejected.
 
@@ -87,15 +87,15 @@ During the consent step, Bifrost shows the user how they can identify themselves
 | Mode | Binds the grant to | Availability |
 |---|---|---|
 | **Virtual key** | A virtual key you paste on the consent page | Always available |
-| **Session** | A server-minted, anonymous session identity | Only when `enforce_auth_on_inference` is `false` |
+| **Session** | A server-minted, anonymous session identity | Only when `enforce_auth_on_inference` is `false` **and** the person consenting is signed in to Bifrost (dashboard session or SSO user) |
 | **User** | Your signed-in dashboard user | Requires SSO / SCIM |
 
 - **Virtual key** carries the same governance (budgets, rate limits, tool scoping) the key already has — the JWT simply represents that key.
-- **Session** is an anonymous identity for development and open deployments. It is unavailable once `enforce_auth_on_inference` is on.
+- **Session** is an anonymous identity for development and open deployments. Because the grant itself carries no identity, Bifrost only lets a signed-in person hand it out: the consent page offers session mode when the browser has a valid dashboard session (or an SSO user), and `PUT /api/oauth2/consent/flows/{id}` answers `401` to a session-mode submit that arrives with only the consent link's token. Running with dashboard auth disabled does not count as being signed in. Session mode is unavailable altogether once `enforce_auth_on_inference` is on.
 - **User** binds the grant to the authenticated person, so per-user upstream tool authorizations unify under one identity.
 
 <Info>
-**User mode requires SSO/SCIM** (enterprise). When no identity provider is configured, the consent page offers only virtual key and session modes.
+**User mode requires SSO/SCIM** (enterprise). When no identity provider is configured, the consent page offers virtual key mode, plus session mode when the consenting person is signed in to the dashboard.
 </Info>
 
 ---
@@ -224,7 +224,9 @@ When discovery is enabled (`both` or `oauth`), Bifrost serves the standard docum
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414) |
 | `GET /.well-known/jwks.json` | Public signing keys for JWT verification (RFC 7517) |
 
-In `headers` mode these endpoints return `404`.
+In `headers` mode these endpoints return `404`, as do the issuance endpoints `/oauth2/register`, `/oauth2/authorize` and `/oauth2/token`. Discovery responses are sent with `Cache-Control: no-store` so a shared cache or CDN in front of Bifrost never serves a stored copy.
+
+Client registration bounds its free-text fields: `client_name` up to 2048 bytes, `scope` up to 4096 bytes, and at most 32 `redirect_uris` of up to 2048 bytes each. The authorize request bounds `state` to 8192 bytes. Anything larger is refused with `400` before any state is stored.
 
 ---
 
@@ -249,6 +251,11 @@ In `headers` mode these endpoints return `404`.
 **Symptom:** `conflicting credentials: an OAuth token and a virtual key header were both provided`.
 **Cause:** The client completed an OAuth flow but is also configured with a VK header, so both arrive on one request. Claude Code does this in `both` mode when the VK is set under `x-bf-vk` / `X-Api-Key` instead of `Authorization`.
 **Fix:** Send only one credential — remove the VK header, or configure it as `Authorization: Bearer <vk>` so the client uses header auth and skips OAuth.
+
+### Session option missing, or session consent returns 401
+**Symptom:** The consent page offers only **Virtual key**, or submitting **Session** returns `401` with `session mode requires an authenticated consenting user`.
+**Cause:** Session mode grants an anonymous identity, so only a signed-in person can hand it out. The consent link's own token is not a sign-in, and neither is running with dashboard auth disabled.
+**Fix:** Sign in to the Bifrost dashboard in the same browser and reopen the consent link, or authorize with a virtual key instead.
 
 ### Client keeps re-opening the browser
 **Symptom:** The consent flow runs on every connection.
