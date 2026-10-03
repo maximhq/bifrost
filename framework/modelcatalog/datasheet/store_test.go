@@ -46,6 +46,23 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 	}
 }
 
+func TestGithubCopilotDatasheetRowsResolveForProvider(t *testing.T) {
+	const model = "claude-haiku-4.5"
+	inputCost := 0.000001
+	s := NewTestStore(nil)
+	s.applyPricingData(map[string]Entry{
+		"github_copilot/" + model: {Provider: "github_copilot", Mode: "chat", InputCostPerToken: &inputCost},
+	})
+
+	row := s.Get(model, schemas.GithubCopilot, schemas.ChatCompletionRequest)
+	if row == nil || row.InputCostPerToken == nil || *row.InputCostPerToken != inputCost {
+		t.Fatalf("Get() did not resolve the github_copilot datasheet row: %#v", row)
+	}
+	if got := s.DatasheetProviders(); !slices.Equal(got, []schemas.ModelProvider{schemas.GithubCopilot}) {
+		t.Fatalf("DatasheetProviders() = %v, want [%s]", got, schemas.GithubCopilot)
+	}
+}
+
 func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
 	s := NewTestStore(nil)
 	s.mu.Lock()
