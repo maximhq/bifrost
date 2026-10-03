@@ -187812,6 +187812,128 @@
               ]
             }
           }
+        },
+        {
+          "name": "huggingface/deepinfra/harness-model bare allowlist - provider named Hub organizations - #7761",
+          "description": "A Hub organization can share a name with a recognized inference provider or auto policy. This case configures bare deepinfra/model, nebius/model, auto/model and baseten/model IDs using a unique nonexistent harness model. Each must be returned exactly once as custom-provider/organization/model, preserving the configured suffix for key allowlist and automatic routing compatibility. The display name must retain the complete Hub organization/model identity, accepting friendly capitalization and slug formatting. It rejects extra inference-provider segments, missing or duplicate entries, changed organizations, and incorrect display names. Setup creates an owned temporary provider/key using env.HUGGING_FACE_API_KEY; cleanup deletes only that owned provider and verifies GET 404. Metadata/configuration calls only; no inference calls.",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var fixture = 'huggingface_hub_org_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);",
+                  "pm.variables.set('hfHubOrgProvider', fixture); pm.variables.set('hfHubOrgProviderCreated', 'false');",
+                  "pm.variables.unset('hfHubOrgEntries'); pm.variables.unset('hfHubOrgAliasTarget');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "function call(method, path, body, callback) {",
+                  "  var request = {url: base + path, method: method, header: headers};",
+                  "  if (body) { request.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(request, function (err, response) {",
+                  "    pm.test('setup: ' + method + ' ' + path + ' succeeds', function () {",
+                  "      pm.expect(err, 'request failed: ' + String(err)).to.not.exist;",
+                  "      pm.expect(response && response.code, 'request failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "    });",
+                  "    if (err || !response || response.code !== 200) { return; }",
+                  "    callback(response);",
+                  "  });",
+                  "}",
+                  "function createFixture(key) {",
+                  "  call('POST', '/api/providers', {provider: fixture, custom_provider_config: {base_provider_type: 'huggingface'}}, function () {",
+                  "    pm.variables.set('hfHubOrgProviderCreated', 'true');",
+                  "    key.name = fixture + '_key'; key.value = 'env.HUGGING_FACE_API_KEY'; key.weight = 1;",
+                  "    call('POST', '/api/providers/' + fixture + '/keys', key, function () {});",
+                  "  });",
+                  "}",
+                  "var uniqueModel = 'harness-model-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);",
+                  "var models = ['deepinfra', 'nebius', 'auto', 'baseten'].map(function (organization) { return organization + '/' + uniqueModel; });",
+                  "pm.variables.set('hfHubOrgEntries', JSON.stringify(models));",
+                  "createFixture({models: models});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider named Hub organizations preserve exact bare-model IDs and complete names once', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'model list missing: ' + text).to.be.an('array');",
+                  "  var fixture = pm.variables.get('hfHubOrgProvider');",
+                  "  var entries = JSON.parse(pm.variables.get('hfHubOrgEntries'));",
+                  "  pm.expect(data.length, 'each configured bare Hub ID must appear exactly once: ' + text).to.eql(4);",
+                  "  var seenIDs = {};",
+                  "  data.forEach(function (model) {",
+                  "    pm.expect(typeof model.id, 'model ID missing: ' + text).to.eql('string');",
+                  "    var parts = model.id.split('/');",
+                  "    pm.expect(parts.length, 'extra inference-provider segment changes configured Hub identity: ' + model.id + ': ' + text).to.eql(3);",
+                  "    pm.expect(parts[0], 'custom provider prefix changed: ' + model.id).to.eql(fixture);",
+                  "    var rawID = parts.slice(1).join('/');",
+                  "    pm.expect(entries.indexOf(rawID) >= 0, 'raw Hub ID changed: ' + model.id + ': ' + text).to.eql(true);",
+                  "    pm.expect(!!seenIDs[model.id], 'duplicate model ID: ' + model.id + ': ' + text).to.eql(false);",
+                  "    seenIDs[model.id] = true;",
+                  "    pm.expect(typeof model.name, 'model display name missing: ' + model.id + ': ' + text).to.eql('string');",
+                  "    var normalizedName = model.name.toLowerCase().replace(/[-_\\s]+/g, '');",
+                  "    var normalizedHubID = rawID.toLowerCase().replace(/[-_\\s]+/g, '');",
+                  "    pm.expect(normalizedName, 'model display name lost the Hub organization or model: ' + model.id + ': ' + text).to.eql(normalizedHubID);",
+                  "  });",
+                  "  entries.forEach(function (entry) {",
+                  "    pm.expect(!!seenIDs[fixture + '/' + entry], 'configured bare Hub ID missing: ' + entry + ': ' + text).to.eql(true);",
+                  "  });",
+                  "});",
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var headers = {}; var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "if (pm.variables.get('hfHubOrgProviderCreated') === 'true') {",
+                  "pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfHubOrgProvider'), method: 'DELETE', header: headers}, function (err, response) {",
+                  "  pm.test('cleanup: deleting the run-scoped Hugging Face provider succeeds', function () {",
+                  "    pm.expect(err, 'cleanup failed: ' + String(err)).to.not.exist;",
+                  "    pm.expect(response && response.code, 'cleanup failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "  });",
+                  "  pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfHubOrgProvider'), method: 'GET', header: headers}, function (lookupErr, lookupResponse) {",
+                  "    pm.test('cleanup: the run-scoped Hugging Face provider no longer exists', function () {",
+                  "      pm.expect(lookupErr, 'cleanup verification failed: ' + String(lookupErr)).to.not.exist;",
+                  "      pm.expect(lookupResponse && lookupResponse.code, 'provider remains after cleanup: ' + (lookupResponse ? lookupResponse.text() : 'no response')).to.eql(404);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{hfHubOrgProvider}}&page_size=0&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{hfHubOrgProvider}}"
+                },
+                {
+                  "key": "page_size",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
         }
       ]
     }

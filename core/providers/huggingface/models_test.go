@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -101,7 +102,8 @@ func TestListModelsByKey_DiscoversBasetenModels(t *testing.T) {
 	provider := &HuggingFaceProvider{
 		client: &fasthttp.Client{
 			Dial: func(string) (net.Conn, error) {
-				return net.Dial("tcp", server.Listener.Addr().String())
+				dialer := net.Dialer{Timeout: 5 * time.Second}
+				return dialer.DialContext(t.Context(), "tcp", server.Listener.Addr().String())
 			},
 			TLSConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // Test server certificate.
 		},
@@ -262,7 +264,8 @@ func TestListModelsByKeyDiscoversDeepInfraWithoutRetiredProviders(t *testing.T) 
 	provider := &HuggingFaceProvider{
 		client: &fasthttp.Client{
 			Dial: func(string) (net.Conn, error) {
-				return net.Dial("tcp", server.Listener.Addr().String())
+				dialer := net.Dialer{Timeout: 5 * time.Second}
+				return dialer.DialContext(t.Context(), "tcp", server.Listener.Addr().String())
 			},
 			TLSConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // Test server certificate.
 		},
@@ -368,6 +371,12 @@ func TestListModelsByKeyPreservesConfiguredLegacyProviderModels(t *testing.T) {
 			failCanonical: true,
 		},
 		{
+			name:          "partial discovery failure preserves provider-named Hub organizations",
+			key:           schemas.Key{Models: schemas.WhiteList{"baseten/model", "deepinfra/model", "nebius/model", "auto/model"}},
+			expected:      []string{"huggingface/baseten/model", "huggingface/deepinfra/model", "huggingface/nebius/model", "huggingface/auto/model"},
+			failCanonical: true,
+		},
+		{
 			name: "blacklist still excludes configured retired models",
 			key: schemas.Key{
 				Models:            schemas.WhiteList{"nebius/org/model", "sambanova/org/model"},
@@ -412,7 +421,8 @@ func TestListModelsByKeyPreservesConfiguredLegacyProviderModels(t *testing.T) {
 			provider := &HuggingFaceProvider{
 				client: &fasthttp.Client{
 					Dial: func(string) (net.Conn, error) {
-						return net.Dial("tcp", server.Listener.Addr().String())
+						dialer := net.Dialer{Timeout: 5 * time.Second}
+						return dialer.DialContext(t.Context(), "tcp", server.Listener.Addr().String())
 					},
 					TLSConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // Test server certificate.
 				},
@@ -445,7 +455,7 @@ func TestListModelsByKeyPreservesConfiguredLegacyProviderModels(t *testing.T) {
 					tt.expected = append(tt.expected, "huggingface/"+string(inferenceProvider)+"/org/bare-model")
 				}
 			}
-			assert.ElementsMatch(t, tt.expected, ids, "configured provider IDs must appear exactly once while bare IDs keep per-provider backfill")
+			assert.ElementsMatch(t, tt.expected, ids, "configured IDs must retain their lookup keys while ordinary bare IDs keep per-provider backfill")
 		})
 	}
 }
@@ -491,4 +501,78 @@ func TestToBifrostListModelsResponseProviderNamedOrganization(t *testing.T) {
 	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, schemas.WhiteList{"*"}, nil, nil, false)
 	require.Len(t, result.Data, 1)
 	assert.Equal(t, "huggingface/featherless-ai/nebius/model", result.Data[0].ID, "a real Hub organization is not an alias provider segment")
+}
+
+func TestToBifrostListModelsResponseBackfilledProviderNamedOrganization(t *testing.T) {
+	t.Parallel()
+	for _, organization := range []string{"baseten", "deepinfra", "nebius", "auto"} {
+		t.Run(organization, func(t *testing.T) {
+			t.Parallel()
+			modelID := organization + "/model"
+			for _, discovered := range []bool{false, true} {
+				response := &HuggingFaceListModelsResponse{}
+				if discovered {
+					// An unknown task also reaches backfill, which must recover
+					// metadata using the complete Hub ID.
+					response.Models = []HuggingFaceModel{{ID: "hub-id", ModelID: modelID, PipelineTag: "unknown-task"}}
+				}
+				allowedModels := schemas.WhiteList{modelID}
+				providers := []inferenceProvider{baseten, featherlessAI, deepInfra}
+				for _, firstSuccess := range []int{0, 1} {
+					var models []schemas.Model
+					for i := firstSuccess; i < len(providers); i++ {
+						result := response.toBifrostListModelsResponse(schemas.HuggingFace, providers[i], allowedModels, nil, nil, false, i == firstSuccess)
+						models = append(models, result.Data...)
+					}
+					require.Len(t, models, 1, "a configured Hub ID must be emitted once by the first successful response")
+					model := models[0]
+					assert.Equal(t, "huggingface/"+modelID, model.ID)
+					require.NotNil(t, model.Name)
+					assert.True(t, strings.EqualFold(modelID, *model.Name), "a friendly name must keep the complete Hub organization/model")
+					if discovered {
+						require.NotNil(t, model.HuggingFaceID)
+						assert.Equal(t, "hub-id", *model.HuggingFaceID)
+					}
+					lookupKey := strings.TrimPrefix(model.ID, "huggingface/")
+					assert.True(t, allowedModels.IsAllowed(lookupKey), "the listed lookup key must remain allowed at key selection")
+					routedProvider, routedModel, err := splitIntoModelProvider(lookupKey)
+					require.NoError(t, err)
+					assert.Empty(t, routedProvider, "a bare Hub organization does not select an inference backend")
+					assert.Equal(t, modelID, routedModel)
+				}
+			}
+		})
+	}
+}
+
+func TestToBifrostListModelsResponseProviderNamedAliasOrganization(t *testing.T) {
+	t.Parallel()
+	for _, aliasID := range []string{"deepinfra/model", "nebius/model", "auto/model"} {
+		configuredAliases := schemas.KeyAliases{aliasID: {ModelID: "org/original-model"}}
+		for _, discovered := range []bool{false, true} {
+			response := &HuggingFaceListModelsResponse{}
+			if discovered {
+				response.Models = []HuggingFaceModel{{ID: "original", ModelID: "org/original-model", PipelineTag: "conversational"}}
+			}
+			for _, allowedModels := range []schemas.WhiteList{{"*"}, {aliasID}} {
+				var aliases []schemas.Model
+				for _, provider := range INFERENCE_PROVIDERS {
+					result := response.ToBifrostListModelsResponse(schemas.HuggingFace, provider, allowedModels, nil, configuredAliases, false)
+					for _, model := range result.Data {
+						if model.Alias != nil {
+							aliases = append(aliases, model)
+						}
+					}
+				}
+				require.Len(t, aliases, 1, "each alias key must be emitted once across provider passes")
+				assert.Equal(t, "huggingface/"+aliasID, aliases[0].ID)
+				assert.Equal(t, "org/original-model", *aliases[0].Alias)
+				lookupKey := strings.TrimPrefix(aliases[0].ID, "huggingface/")
+				assert.True(t, allowedModels.IsAllowed(lookupKey))
+				resolved := configuredAliases.ResolveConfig(lookupKey)
+				require.NotNil(t, resolved, "listed aliases must resolve to the configured target at key selection")
+				assert.Equal(t, "org/original-model", resolved.ModelID)
+			}
+		}
+	}
 }

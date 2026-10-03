@@ -99,12 +99,21 @@ func (response *HuggingFaceListModelsResponse) toBifrostListModelsResponse(provi
 		// carry an inference-provider segment (e.g. "featherless-ai/org/model")
 		// or the "auto" policy. Prepending another segment here duplicates the
 		// provider in the compound ID and breaks request routing (#4215).
-		if first, modelName, found := strings.Cut(rawID, "/"); found && isKnownInferenceProviderOrPolicy(first) {
+		first, modelName, found := strings.Cut(rawID, "/")
+		// A two-segment Hub ID names organization/model, even if its
+		// organization is also a provider. Keep the configured lookup key and
+		// automatic routing intact; aliases still use their exact namespace.
+		providerNamedHubID := found && isKnownInferenceProviderOrPolicy(first) && !strings.Contains(modelName, "/") && m.Alias == nil
+		if found && isKnownInferenceProviderOrPolicy(first) && !providerNamedHubID {
 			m.Name = &modelName
 			lookupID = modelName
 		}
 		var include bool
-		m.ID, include = formatConfiguredModelID(providerKey, inferenceProvider, rawID, includeUnownedBackfill)
+		if providerNamedHubID {
+			m.ID, include = fmt.Sprintf("%s/%s", providerKey, rawID), includeUnownedBackfill
+		} else {
+			m.ID, include = formatConfiguredModelID(providerKey, inferenceProvider, rawID, includeUnownedBackfill)
+		}
 		if !include {
 			continue
 		}
