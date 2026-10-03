@@ -345,6 +345,31 @@ func (h *MCPServerHandler) SyncMCPServer(ctx context.Context) error {
 	return nil
 }
 
+// toolCallResultFromMessage renders an executed MCP tool message as the reply the
+// gateway hands back to its own MCP client. The upstream server's failure flag
+// (mcp.CallToolResult.IsError) rides on the tool message: dropping it here returns a
+// failed call as a success, so the model never learns the tool failed and anything
+// counting errors undercounts them.
+func toolCallResultFromMessage(toolMessage *schemas.ChatMessage) *mcp.CallToolResult {
+	var resultText string
+	if toolMessage != nil && toolMessage.Content != nil {
+		if toolMessage.Content.ContentStr != nil {
+			resultText = *toolMessage.Content.ContentStr
+		} else if toolMessage.Content.ContentBlocks != nil {
+			for _, block := range toolMessage.Content.ContentBlocks {
+				if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
+					resultText += *block.Text
+				}
+			}
+		}
+	}
+	if toolMessage != nil && toolMessage.ChatToolMessage != nil &&
+		toolMessage.IsError != nil && *toolMessage.IsError {
+		return mcp.NewToolResultError(resultText)
+	}
+	return mcp.NewToolResultText(resultText)
+}
+
 // server returns the server requests are currently served from, or nil before the first sync.
 func (h *MCPServerHandler) server() *server.MCPServer {
 	return h.mcpServer.Load()
@@ -419,24 +444,7 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 			}
 			logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
 
-			// Extract content from tool message
-			var resultText string
-			if toolMessage != nil && toolMessage.Content != nil {
-				// Handle ContentStr (string content)
-				if toolMessage.Content.ContentStr != nil {
-					resultText = *toolMessage.Content.ContentStr
-				} else if toolMessage.Content.ContentBlocks != nil {
-					// Handle ContentBlocks (structured content)
-					for _, block := range toolMessage.Content.ContentBlocks {
-						if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
-							resultText += *block.Text
-						}
-					}
-				}
-			}
-
-			// Return result using mcp-go helper
-			return mcp.NewToolResultText(resultText), nil
+			return toolCallResultFromMessage(toolMessage), nil
 		}
 
 		// Convert description from *string to string
