@@ -1,22 +1,19 @@
 package utils
 
 import (
-	"bufio"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	ws "github.com/fasthttp/websocket"
+	"github.com/maximhq/bifrost/core/internal/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -305,7 +302,7 @@ func TestNetHTTPProxy_Types(t *testing.T) {
 // client existed they used http.DefaultTransport, which only reads HTTPS_PROXY.
 func TestNewProviderHTTPClient_UsesProxyConfig(t *testing.T) {
 	var hits atomic.Int32
-	proxy := newForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Host == "oauth2.example" {
 			hits.Add(1)
 			_, _ = w.Write([]byte(`{"access_token":"t"}`))
@@ -331,7 +328,7 @@ func TestNewProviderHTTPClient_UsesProxyConfig(t *testing.T) {
 
 func TestNewProviderHTTPClient_WithoutProxyConfigKeepsEnvironment(t *testing.T) {
 	var hits atomic.Int32
-	proxy := newForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 	})
 	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"} {
@@ -381,7 +378,7 @@ func TestNewProviderHTTPClient_NeverProxiesMetadataOrLoopback(t *testing.T) {
 
 	// End to end: a loopback target is reached directly, and the proxy never sees it.
 	var proxyHits atomic.Int32
-	proxy := newForwardProxy(t, func(w http.ResponseWriter, r *http.Request) { proxyHits.Add(1) })
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) { proxyHits.Add(1) })
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("imds"))
 	}))
@@ -405,431 +402,118 @@ func TestNewProviderHTTPClient_NeverProxiesMetadataOrLoopback(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Proxy routing matrix
-//
-// Every combination of provider stack x proxy source x proxy env vars x target, with
-// the expected route stated by proxyMatrixExpect. Each case sends one real request
-// through recording proxies and asserts which proxy (if any) saw it.
-//
-// Stacks:
-//   fasthttp - inference clients (ConfigureProxy + ConfigureDialer)
-//   auth     - NewProviderHTTPClient (Vertex OAuth, Azure Entra ID)
-//   fetch    - FetchAndEncodeURL (image and document URLs)
-// Bedrock's net/http runtime client follows the auth rules and is covered in
-// core/providers/bedrock/transport_test.go.
-// ---------------------------------------------------------------------------
-
-// recordingProxy answers as an HTTP forward proxy or a SOCKS5 proxy without
-// forwarding anything, and records each target as host:port.
-type recordingProxy struct {
-	name     string
-	listener net.Listener
-	mu       sync.Mutex
-	targets  []string
-}
-
-func (p *recordingProxy) record(target string) {
-	p.mu.Lock()
-	p.targets = append(p.targets, target)
-	p.mu.Unlock()
-}
-
-func (p *recordingProxy) seen() []string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return append([]string(nil), p.targets...)
-}
-
-func (p *recordingProxy) reset() {
-	p.mu.Lock()
-	p.targets = nil
-	p.mu.Unlock()
-}
-
-func (p *recordingProxy) port() string {
-	_, port, _ := net.SplitHostPort(p.listener.Addr().String())
-	return port
-}
-
-// newRecordingHTTPProxy listens on network ("tcp4" or "tcp6") loopback. CONNECT gets
-// a 200 and a closed tunnel; an absolute-URI request gets an empty 200.
-func newRecordingHTTPProxy(t *testing.T, name, network string) *recordingProxy {
+// sendProxyMatrixRequest sends one request for target through stack and returns its
+// error. The route is read from the recorders, so a failing request is not in itself a
+// test failure: a recorder refuses to tunnel, and a direct connection has nowhere to go.
+func sendProxyMatrixRequest(t *testing.T, stack string, proxyConfig *schemas.ProxyConfig, host string, target proxytest.Target, expectDirect bool) error {
 	t.Helper()
-	addr := "127.0.0.1:0"
-	if network == "tcp6" {
-		addr = "[::1]:0"
-	}
-	listener, err := net.Listen(network, addr)
-	if err != nil {
-		t.Fatalf("%s: listen %s: %v", name, network, err)
-	}
-	p := &recordingProxy{name: name, listener: listener}
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodConnect {
-			p.record(r.Host)
-			conn, _, err := w.(http.Hijacker).Hijack()
-			if err == nil {
-				_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
-				conn.Close()
-			}
-			return
-		}
-		host := r.URL.Host
-		if r.URL.Port() == "" {
-			host = net.JoinHostPort(r.URL.Hostname(), "80")
-		}
-		p.record(host)
-	})}
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() { _ = server.Close() })
-	return p
-}
-
-// newRecordingSOCKS5Proxy accepts the no-auth method, records the CONNECT target and
-// reports success, then closes the connection.
-func newRecordingSOCKS5Proxy(t *testing.T, name string) *recordingProxy {
-	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("%s: listen: %v", name, err)
-	}
-	p := &recordingProxy{name: name, listener: listener}
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func(conn net.Conn) {
-				defer conn.Close()
-				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-				if target, ok := readSOCKS5Connect(conn); ok {
-					p.record(target)
-					_, _ = conn.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
-				}
-			}(conn)
-		}
-	}()
-	t.Cleanup(func() { _ = listener.Close() })
-	return p
-}
-
-// readSOCKS5Connect runs the RFC 1928 greeting and reads one CONNECT request.
-func readSOCKS5Connect(conn net.Conn) (string, bool) {
-	header := make([]byte, 2)
-	if _, err := io.ReadFull(conn, header); err != nil || header[0] != 5 {
-		return "", false
-	}
-	if _, err := io.ReadFull(conn, make([]byte, header[1])); err != nil {
-		return "", false
-	}
-	if _, err := conn.Write([]byte{5, 0}); err != nil {
-		return "", false
-	}
-	request := make([]byte, 4)
-	if _, err := io.ReadFull(conn, request); err != nil || request[1] != 1 {
-		return "", false
-	}
-	var host string
-	switch request[3] {
-	case 1:
-		ip := make([]byte, 4)
-		if _, err := io.ReadFull(conn, ip); err != nil {
-			return "", false
-		}
-		host = net.IP(ip).String()
-	case 3:
-		size := make([]byte, 1)
-		if _, err := io.ReadFull(conn, size); err != nil {
-			return "", false
-		}
-		name := make([]byte, size[0])
-		if _, err := io.ReadFull(conn, name); err != nil {
-			return "", false
-		}
-		host = string(name)
-	case 4:
-		ip := make([]byte, 16)
-		if _, err := io.ReadFull(conn, ip); err != nil {
-			return "", false
-		}
-		host = net.IP(ip).String()
-	default:
-		return "", false
-	}
-	port := make([]byte, 2)
-	if _, err := io.ReadFull(conn, port); err != nil {
-		return "", false
-	}
-	return net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(port)))), true
-}
-
-// proxyMatrixProxies are the recording proxies one matrix run routes through.
-type proxyMatrixProxies struct {
-	config    *recordingProxy // named by proxy_config (http, IP or hostname URL)
-	config6   *recordingProxy // named by proxy_config (http, IPv6 literal URL)
-	socks     *recordingProxy // named by proxy_config (socks5)
-	envHTTPS  *recordingProxy // HTTPS_PROXY / https_proxy
-	envHTTPS6 *recordingProxy // HTTPS_PROXY as an IPv6 literal
-	envHTTP   *recordingProxy // HTTP_PROXY / http_proxy
-	all       []*recordingProxy
-}
-
-func newProxyMatrixProxies(t *testing.T) *proxyMatrixProxies {
-	p := &proxyMatrixProxies{
-		config:    newRecordingHTTPProxy(t, "config", "tcp4"),
-		config6:   newRecordingHTTPProxy(t, "config6", "tcp6"),
-		socks:     newRecordingSOCKS5Proxy(t, "socks"),
-		envHTTPS:  newRecordingHTTPProxy(t, "env-https", "tcp4"),
-		envHTTPS6: newRecordingHTTPProxy(t, "env-https6", "tcp6"),
-		envHTTP:   newRecordingHTTPProxy(t, "env-http", "tcp4"),
-	}
-	p.all = []*recordingProxy{p.config, p.config6, p.socks, p.envHTTPS, p.envHTTPS6, p.envHTTP}
-	return p
-}
-
-func (p *proxyMatrixProxies) byName(name string) *recordingProxy {
-	for _, proxy := range p.all {
-		if proxy.name == name {
-			return proxy
-		}
-	}
-	return nil
-}
-
-// proxyMatrixSource is where a provider's proxy comes from.
-type proxyMatrixSource struct {
-	name   string
-	config func(p *proxyMatrixProxies, target proxyMatrixTarget) *schemas.ProxyConfig
-}
-
-var proxyMatrixSources = []proxyMatrixSource{
-	{name: "unset", config: func(*proxyMatrixProxies, proxyMatrixTarget) *schemas.ProxyConfig { return nil }},
-	{name: "none", config: func(*proxyMatrixProxies, proxyMatrixTarget) *schemas.ProxyConfig {
-		return &schemas.ProxyConfig{Type: schemas.NoProxy}
-	}},
-	{name: "http-ip", config: func(p *proxyMatrixProxies, _ proxyMatrixTarget) *schemas.ProxyConfig {
-		return &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://127.0.0.1:" + p.config.port())}
-	}},
-	{name: "http-hostname", config: func(p *proxyMatrixProxies, _ proxyMatrixTarget) *schemas.ProxyConfig {
-		return &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://localhost:" + p.config.port())}
-	}},
-	{name: "http-ipv6", config: func(p *proxyMatrixProxies, _ proxyMatrixTarget) *schemas.ProxyConfig {
-		return &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://[::1]:" + p.config6.port())}
-	}},
-	{name: "socks5", config: func(p *proxyMatrixProxies, _ proxyMatrixTarget) *schemas.ProxyConfig {
-		return &schemas.ProxyConfig{Type: schemas.Socks5Proxy, URL: schemas.NewSecretVar("socks5://127.0.0.1:" + p.socks.port())}
-	}},
-	{name: "environment", config: func(*proxyMatrixProxies, proxyMatrixTarget) *schemas.ProxyConfig {
-		return &schemas.ProxyConfig{Type: schemas.EnvProxy}
-	}},
-	// The shape an inherited global proxy takes: a proxy plus the global no_proxy
-	// list, here naming the target, so every stack must connect directly.
-	{name: "http-ip+no_proxy", config: func(p *proxyMatrixProxies, _ proxyMatrixTarget) *schemas.ProxyConfig {
-		return &schemas.ProxyConfig{
-			Type:    schemas.HTTPProxy,
-			URL:     schemas.NewSecretVar("http://127.0.0.1:" + p.config.port()),
-			NoProxy: "api.bifrost.test,203.0.113.10",
-		}
-	}},
-}
-
-// proxyMatrixEnv is one state of the proxy environment variables. Values name a
-// recording proxy ("env-https", "env-http") or, for NO_PROXY, the literal "target".
-type proxyMatrixEnv struct {
-	name string
-	vars map[string]string
-}
-
-var proxyMatrixEnvs = []proxyMatrixEnv{
-	{name: "no-env", vars: map[string]string{}},
-	{name: "HTTPS_PROXY", vars: map[string]string{"HTTPS_PROXY": "env-https"}},
-	{name: "HTTP_PROXY", vars: map[string]string{"HTTP_PROXY": "env-http"}},
-	{name: "HTTPS_PROXY-ipv6", vars: map[string]string{"HTTPS_PROXY": "env-https6"}},
-	{name: "both", vars: map[string]string{"HTTPS_PROXY": "env-https", "HTTP_PROXY": "env-http"}},
-	{name: "both+NO_PROXY", vars: map[string]string{"HTTPS_PROXY": "env-https", "HTTP_PROXY": "env-http", "NO_PROXY": "target"}},
-	{name: "https_proxy-lowercase", vars: map[string]string{"https_proxy": "env-https"}},
-	{name: "http_proxy-lowercase", vars: map[string]string{"http_proxy": "env-http"}},
-}
-
-// proxyMatrixTarget is the upstream a request is for.
-type proxyMatrixTarget struct {
-	name   string
-	scheme string
-	port   string
-}
-
-var proxyMatrixTargets = []proxyMatrixTarget{
-	{name: "https", scheme: "https", port: "443"},
-	{name: "http", scheme: "http", port: "80"},
-	// A TLS upstream on a non-standard port: every stack here runs on fasthttp, whose
-	// dialer sees only host:port and treats every port but 443 as plain HTTP, so it
-	// picks HTTP_PROXY. (Bedrock's net/http client picks HTTPS_PROXY; see its matrix.)
-	{name: "https-8443", scheme: "https", port: "8443"},
-}
-
-// proxyMatrixHost is the target host for each stack. fetch resolves the target
-// locally for its SSRF check, so it needs a public IP literal; the others hand the
-// hostname to the proxy, and a .test name never resolves if one dials it directly.
-func proxyMatrixHost(stack string) string {
-	if stack == "fetch" {
-		return "203.0.113.10"
-	}
-	return "api.bifrost.test"
-}
-
-// proxyMatrixExpect is the routing spec: the name of the recording proxy a request
-// must reach, or "" for a direct connection.
-func proxyMatrixExpect(stack string, source proxyMatrixSource, env proxyMatrixEnv, target proxyMatrixTarget) string {
-	switch source.name {
-	case "unset", "none":
-		// With no proxy configured, only the auth client keeps the environment
-		// default it had on http.DefaultTransport. Inference and fetch go direct.
-		if stack == "auth" {
-			return proxyMatrixFasthttpEnvPick(env, target)
-		}
-		return ""
-	case "http-ip", "http-hostname":
-		return "config"
-	case "http-ipv6":
-		return "config6"
-	case "http-ip+no_proxy":
-		return ""
-	case "socks5":
-		return "socks"
-	case "environment":
-		return proxyMatrixFasthttpEnvPick(env, target)
-	}
-	panic("unknown source " + source.name)
-}
-
-// proxyMatrixEnvPick is httpproxy's rule: https uses HTTPS_PROXY, http uses
-// HTTP_PROXY, with no fallback between them; a NO_PROXY match is direct.
-// proxyMatrixFasthttpEnvPick feeds it the scheme fasthttp infers from the port.
-func proxyMatrixEnvPick(env proxyMatrixEnv, https bool) string {
-	if env.vars["NO_PROXY"] != "" {
-		return ""
-	}
-	if https {
-		return firstNonEmpty(env.vars["HTTPS_PROXY"], env.vars["https_proxy"])
-	}
-	return firstNonEmpty(env.vars["HTTP_PROXY"], env.vars["http_proxy"])
-}
-
-// proxyMatrixFasthttpEnvPick is fasthttpproxy's rule for the env dialer: it cannot
-// see the scheme, so port 443 means HTTPS_PROXY and any other port means HTTP_PROXY.
-func proxyMatrixFasthttpEnvPick(env proxyMatrixEnv, target proxyMatrixTarget) string {
-	return proxyMatrixEnvPick(env, target.port == "443")
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-// setProxyMatrixEnv clears every variable httpproxy reads, then applies env.
-func setProxyMatrixEnv(t *testing.T, p *proxyMatrixProxies, env proxyMatrixEnv, targetHost string) {
-	t.Helper()
-	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"} {
-		t.Setenv(name, "")
-	}
-	for name, value := range env.vars {
-		if name == "NO_PROXY" {
-			t.Setenv(name, targetHost)
-			continue
-		}
-		proxy := p.byName(value)
-		host := "127.0.0.1"
-		if proxy == p.config6 || proxy == p.envHTTPS6 {
-			host = "[::1]"
-		}
-		t.Setenv(name, "http://"+host+":"+proxy.port())
-	}
-}
-
-// sendProxyMatrixRequest sends one request for target through stack. The outcome is
-// read from the recording proxies, so errors are expected and ignored: a proxy
-// refuses to tunnel, and a direct connection has nowhere to go.
-func sendProxyMatrixRequest(t *testing.T, stack string, proxyConfig *schemas.ProxyConfig, target proxyMatrixTarget, expectDirect bool) {
-	t.Helper()
-	host := proxyMatrixHost(stack)
-	hostPort := net.JoinHostPort(host, target.port)
-	targetURL := target.scheme + "://" + hostPort + "/resource"
+	hostPort := net.JoinHostPort(host, target.Port)
+	targetURL := target.Scheme + "://" + hostPort + "/resource"
 	switch stack {
 	case "fasthttp":
 		client := &fasthttp.Client{}
 		ConfigureProxy(client, proxyConfig, testLogger{})
 		ConfigureDialer(client, false)
-		if conn, err := client.Dial(hostPort); err == nil {
+		conn, err := client.Dial(hostPort)
+		if err == nil {
 			conn.Close()
 		}
+		return err
 	case "auth":
 		client := NewProviderHTTPClient(proxyConfig, schemas.DefaultNetworkConfig, testLogger{})
 		client.Timeout = 3 * time.Second
-		if resp, err := client.Get(targetURL); err == nil {
+		resp, err := client.Get(targetURL)
+		if err == nil {
 			resp.Body.Close()
 		}
+		return err
 	case "fetch":
-		// A direct fetch to the documentation-range target never connects, so bound
-		// it; a proxied fetch is answered by the recording proxy at once.
+		// A direct fetch to the documentation-range target never connects, so bound it;
+		// a proxied fetch is answered by the recorder at once.
 		timeout := 3 * time.Second
 		if expectDirect {
-			timeout = 250 * time.Millisecond
+			timeout = 150 * time.Millisecond
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), timeout)
 		defer cancel()
 		if proxyConfig != nil {
-			ctx2 := context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, proxyConfig)
-			_, _, _ = FetchAndEncodeURL(ctx2, targetURL)
-		} else {
-			_, _, _ = FetchAndEncodeURL(ctx, targetURL)
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, proxyConfig)
 		}
-	default:
-		t.Fatalf("unknown stack %q", stack)
+		_, _, err := FetchAndEncodeURL(ctx, targetURL)
+		return err
+	}
+	t.Fatalf("unknown stack %q", stack)
+	return nil
+}
+
+// TestProxyRoutingMatrix pins, for every fasthttp provider stack, where a request goes
+// for every combination of proxy_config source, proxy env vars and target: which proxy
+// saw it, for which target, with which credentials, that it went direct, or that it
+// failed rather than going direct when the proxy refused it. See core/internal/proxytest
+// for the sources, env states and targets.
+//
+// Stacks:
+//
+//	fasthttp - inference clients (ConfigureProxy + ConfigureDialer)
+//	auth     - NewProviderHTTPClient (Vertex OAuth, Azure Entra ID, Databricks M2M)
+//	fetch    - FetchAndEncodeURL (image and document URLs)
+//
+// All three choose HTTPS_PROXY vs HTTP_PROXY by port. Bedrock (TestBedrockTransportProxyMatrix)
+// and the WebSocket dialer (TestWebSocketProxyMatrix) choose by scheme.
+func TestProxyRoutingMatrix(t *testing.T) {
+	set := proxytest.NewSet(t)
+	for _, stack := range []string{"fasthttp", "auth", "fetch"} {
+		host := proxytest.TargetHost
+		if stack == "fetch" {
+			host = proxytest.FetchTargetHost
+		}
+		for _, source := range proxytest.Sources {
+			for _, env := range proxytest.Envs {
+				for _, target := range proxytest.Targets {
+					t.Run(fmt.Sprintf("%s/%s/%s/%s", stack, source.Name, env.Name, target.Name), func(t *testing.T) {
+						set.Reset()
+						proxytest.SetEnv(t, set, env, host)
+						want := proxytest.Expect(set, source, env, target, proxytest.ByPort, stack == "auth")
+						err := sendProxyMatrixRequest(t, stack, source.Config(set), host, target, want.Proxy == "")
+						proxytest.AssertRoute(t, set, want, net.JoinHostPort(host, target.Port), err)
+					})
+				}
+			}
+		}
 	}
 }
 
-// TestProxyRoutingMatrix pins, for every provider stack, which proxy a request
-// reaches for every combination of proxy_config source, proxy env vars and target.
-func TestProxyRoutingMatrix(t *testing.T) {
-	proxies := newProxyMatrixProxies(t)
-	for _, stack := range []string{"fasthttp", "auth", "fetch"} {
-		for _, source := range proxyMatrixSources {
-			for _, env := range proxyMatrixEnvs {
-				for _, target := range proxyMatrixTargets {
-					name := fmt.Sprintf("%s/%s/%s/%s", stack, source.name, env.name, target.name)
-					t.Run(name, func(t *testing.T) {
-						for _, proxy := range proxies.all {
-							proxy.reset()
-						}
-						setProxyMatrixEnv(t, proxies, env, proxyMatrixHost(stack))
-						want := proxyMatrixExpect(stack, source, env, target)
-						sendProxyMatrixRequest(t, stack, source.config(proxies, target), target, want == "")
+// TestWebSocketProxyMatrix pins the realtime WebSocket dialer's route for every
+// combination of proxy source, proxy env vars and target, dialing for real through the
+// recorders. ConfigureWebSocketProxy uses NetHTTPProxy, so the dialer follows net/http's
+// rule: the variable is picked by scheme (the websocket library turns wss into https and
+// ws into http before asking), and with no proxy_config it connects directly, like the
+// inference clients.
+func TestWebSocketProxyMatrix(t *testing.T) {
+	set := proxytest.NewSet(t)
+	for _, source := range proxytest.Sources {
+		for _, env := range proxytest.Envs {
+			for _, target := range proxytest.Targets {
+				t.Run(source.Name+"/"+env.Name+"/"+target.Name, func(t *testing.T) {
+					set.Reset()
+					proxytest.SetEnv(t, set, env, proxytest.TargetHost)
+					want := proxytest.Expect(set, source, env, target, proxytest.ByScheme, false)
 
-						wantTarget := net.JoinHostPort(proxyMatrixHost(stack), target.port)
-						for _, proxy := range proxies.all {
-							seen := proxy.seen()
-							if proxy.name == want {
-								if len(seen) != 1 || seen[0] != wantTarget {
-									t.Errorf("proxy %q saw %v, want exactly [%s]", proxy.name, seen, wantTarget)
-								}
-								continue
-							}
-							if len(seen) != 0 {
-								if want == "" {
-									t.Errorf("want a direct connection, but proxy %q saw %v", proxy.name, seen)
-								} else {
-									t.Errorf("want proxy %q, but proxy %q saw %v", want, proxy.name, seen)
-								}
-							}
-						}
-					})
-				}
+					dialer, err := ConfigureWebSocketProxy(&ws.Dialer{HandshakeTimeout: 3 * time.Second}, source.Config(set))
+					if err != nil {
+						t.Fatalf("ConfigureWebSocketProxy: %v", err)
+					}
+					scheme := "ws"
+					if target.Scheme == "https" {
+						scheme = "wss"
+					}
+					hostPort := net.JoinHostPort(proxytest.TargetHost, target.Port)
+					conn, _, err := dialer.Dial(scheme+"://"+hostPort+"/v1/realtime", nil)
+					if err == nil {
+						conn.Close()
+					}
+					proxytest.AssertRoute(t, set, want, hostPort, err)
+				})
 			}
 		}
 	}
@@ -880,48 +564,6 @@ func TestNetHTTPProxy_NoProxyConnectsDirectly(t *testing.T) {
 	if got, _ := proxy(proxied); got == nil || got.Host != "10.0.0.9:3128" {
 		t.Errorf("other host: proxy = %v, want 10.0.0.9:3128", got)
 	}
-}
-
-// newForwardProxy starts an HTTP proxy that serves handler for both proxy styles:
-// absolute-URI requests and CONNECT tunnels carrying plain HTTP requests. fasthttp's
-// proxy dialer tunnels every target with CONNECT, http:// ones included, so a test
-// proxy for the fasthttp-backed clients must speak both. handler sees r.URL.Host set
-// to the target (the port is dropped when it is 80).
-func newForwardProxy(t *testing.T, handler http.HandlerFunc) *httptest.Server {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodConnect {
-			handler(w, r)
-			return
-		}
-		target := strings.TrimSuffix(r.Host, ":80")
-		conn, buffered, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
-		reader := bufio.NewReader(io.MultiReader(buffered.Reader, conn))
-		for {
-			inner, err := http.ReadRequest(reader)
-			if err != nil {
-				return
-			}
-			inner.URL.Scheme = "http"
-			inner.URL.Host = target
-			recorder := httptest.NewRecorder()
-			handler(recorder, inner)
-			// Result leaves the length unknown, which Write turns into a
-			// close-delimited body; the tunnel stays open, so give it a length.
-			resp := recorder.Result()
-			resp.ContentLength = int64(recorder.Body.Len())
-			if err := resp.Write(conn); err != nil {
-				return
-			}
-		}
-	}))
-	t.Cleanup(server.Close)
-	return server
 }
 
 // TestConfigureProxy_EnvironmentNoProxyKeepsPrivateNetworkCheck pins that a target the
