@@ -319,3 +319,176 @@ func TestToBifrostListModelsResponseLegacyProviderSegments(t *testing.T) {
 		})
 	}
 }
+
+// Retired provider IDs must survive the active-only discovery loop, even when
+// the Hub returns no models. Calling a retired provider's converter directly
+// does not exercise the production path that previously dropped these IDs.
+func TestListModelsByKeyPreservesConfiguredLegacyProviderModels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		key            schemas.Key
+		expected       []string
+		alias          string
+		failCanonical  bool
+		bareModel      bool
+		failAll        bool
+		customProvider bool
+	}{
+		{
+			name:      "explicit allowlist preserves retired IDs and existing routing",
+			bareModel: true,
+			key: schemas.Key{Models: schemas.WhiteList{
+				"hyperbolic/org/model", "nebius/org/model", "sambanova/org/model",
+				"NeBiUs/org/case-model", "auto/org/auto-model", "deepinfra/org/active-model", "org/bare-model",
+			}},
+			expected: []string{
+				"huggingface/hyperbolic/org/model", "huggingface/nebius/org/model", "huggingface/sambanova/org/model",
+				"huggingface/NeBiUs/org/case-model", "huggingface/auto/org/auto-model", "huggingface/deepinfra/org/active-model",
+			},
+		},
+		{
+			name: "wildcard allowlist preserves a retired provider alias",
+			key: schemas.Key{
+				Models:  schemas.WhiteList{"*"},
+				Aliases: schemas.KeyAliases{"nebius/org/aliased-model": {ModelID: "org/original-model"}},
+			},
+			expected: []string{"huggingface/nebius/org/aliased-model"},
+			alias:    "org/original-model",
+		},
+		{
+			name: "partial discovery failure preserves retired IDs and auto",
+			key: schemas.Key{Models: schemas.WhiteList{
+				"hyperbolic/org/model", "nebius/org/model", "sambanova/org/model", "auto/org/auto-model",
+			}},
+			expected: []string{
+				"huggingface/hyperbolic/org/model", "huggingface/nebius/org/model", "huggingface/sambanova/org/model", "huggingface/auto/org/auto-model",
+			},
+			failCanonical: true,
+		},
+		{
+			name: "blacklist still excludes configured retired models",
+			key: schemas.Key{
+				Models:            schemas.WhiteList{"nebius/org/model", "sambanova/org/model"},
+				BlacklistedModels: schemas.BlackList{"nebius/org/model"},
+			},
+			expected: []string{"huggingface/sambanova/org/model"},
+		},
+		{
+			name:    "all discovery failures still return an error",
+			key:     schemas.Key{Models: schemas.WhiteList{"nebius/org/model"}},
+			failAll: true,
+		},
+		{
+			name:           "custom provider keeps its own outer prefix",
+			key:            schemas.Key{Models: schemas.WhiteList{"nebius/org/model", "auto/org/model", "deepinfra/org/model"}},
+			expected:       []string{"huggingface_custom/nebius/org/model", "huggingface_custom/auto/org/model", "huggingface_custom/deepinfra/org/model"},
+			customProvider: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var retiredRequests atomic.Int32
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/api/models", r.URL.Path)
+				if tt.failAll || (tt.failCanonical && r.URL.Query().Get("inference_provider") == string(INFERENCE_PROVIDERS[0])) {
+					w.WriteHeader(http.StatusInternalServerError)
+					_, err := w.Write([]byte(`{"error":"temporary Hub failure"}`))
+					assert.NoError(t, err)
+					return
+				}
+				switch r.URL.Query().Get("inference_provider") {
+				case "hyperbolic", "nebius", "sambanova":
+					retiredRequests.Add(1)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, err := w.Write([]byte(`[]`))
+				assert.NoError(t, err)
+			}))
+			defer server.Close()
+
+			provider := &HuggingFaceProvider{
+				client: &fasthttp.Client{
+					Dial: func(string) (net.Conn, error) {
+						return net.Dial("tcp", server.Listener.Addr().String())
+					},
+					TLSConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // Test server certificate.
+				},
+			}
+			if tt.customProvider {
+				provider.customProviderConfig = &schemas.CustomProviderConfig{CustomProviderKey: "huggingface_custom", BaseProviderType: schemas.HuggingFace}
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			tt.key.Value = *schemas.NewSecretVar("")
+			response, bifrostErr := provider.listModelsByKey(ctx, tt.key, &schemas.BifrostListModelsRequest{})
+
+			if tt.failAll {
+				require.NotNil(t, bifrostErr)
+				assert.Nil(t, response)
+				return
+			}
+			require.Nil(t, bifrostErr)
+			require.NotNil(t, response)
+			assert.Zero(t, retiredRequests.Load(), "preserving configured IDs must not query retired Hub providers")
+			ids := make([]string, 0, len(response.Data))
+			for _, model := range response.Data {
+				ids = append(ids, model.ID)
+				if tt.alias != "" {
+					require.NotNil(t, model.Alias)
+					assert.Equal(t, tt.alias, *model.Alias)
+				}
+			}
+			if tt.bareModel {
+				for _, inferenceProvider := range INFERENCE_PROVIDERS {
+					tt.expected = append(tt.expected, "huggingface/"+string(inferenceProvider)+"/org/bare-model")
+				}
+			}
+			assert.ElementsMatch(t, tt.expected, ids, "configured provider IDs must appear exactly once while bare IDs keep per-provider backfill")
+		})
+	}
+}
+
+func TestToBifrostListModelsResponseDiscoveredQualifiedAliases(t *testing.T) {
+	t.Parallel()
+	for _, aliasProvider := range []inferenceProvider{hyperbolic, nebius, sambanova, auto, deepInfra} {
+		t.Run(string(aliasProvider), func(t *testing.T) {
+			t.Parallel()
+			aliasKey := string(aliasProvider) + "/org/aliased-model"
+			aliases := schemas.KeyAliases{aliasKey: {ModelID: "org/original-model"}}
+			response := &HuggingFaceListModelsResponse{Models: []HuggingFaceModel{{
+				ID: "original", ModelID: "org/original-model", PipelineTag: "conversational",
+			}}}
+			var models []schemas.Model
+			var originalModels int
+			for _, provider := range INFERENCE_PROVIDERS {
+				result := response.ToBifrostListModelsResponse(schemas.HuggingFace, provider, schemas.WhiteList{"*"}, nil, aliases, false)
+				for _, model := range result.Data {
+					if model.Alias != nil {
+						models = append(models, model)
+					} else {
+						originalModels++
+					}
+				}
+			}
+			assert.Equal(t, len(INFERENCE_PROVIDERS), originalModels, "wildcard discovery still exposes the original model per active provider")
+			require.Equal(t, 1, len(models), "a qualified alias must belong to exactly one discovery pass")
+			assert.Equal(t, "huggingface/"+aliasKey, models[0].ID)
+			assert.Equal(t, "org/original-model", *models[0].Name)
+			assert.Equal(t, "org/original-model", *models[0].Alias)
+			assert.Equal(t, "original", *models[0].HuggingFaceID)
+			assert.Contains(t, models[0].SupportedMethods, string(schemas.ChatCompletionRequest))
+		})
+	}
+}
+
+func TestToBifrostListModelsResponseProviderNamedOrganization(t *testing.T) {
+	t.Parallel()
+	response := &HuggingFaceListModelsResponse{Models: []HuggingFaceModel{{
+		ID: "model", ModelID: "nebius/model", PipelineTag: "conversational",
+	}}}
+	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, schemas.WhiteList{"*"}, nil, nil, false)
+	require.Len(t, result.Data, 1)
+	assert.Equal(t, "huggingface/featherless-ai/nebius/model", result.Data[0].ID, "a real Hub organization is not an alias provider segment")
+}

@@ -187587,6 +187587,233 @@
           }
         }
       ]
+    },
+    {
+      "name": "144. Hugging Face configured provider model IDs (#7761 / PR #7908)",
+      "description": "Pins configured model ID compatibility after retired providers were removed from Hugging Face Hub discovery. Each case creates a unique custom Hugging Face provider with an env.HUGGING_FACE_API_KEY reference and deletes it afterward. The first case lists an explicit allowlist containing hyperbolic, nebius, sambanova, auto and active DeepInfra IDs. The second discovers a real DeepInfra model and maps five qualified aliases to it, proving populated Hub results use the same prefix ownership as backfilled entries. All requests are model metadata or temporary local gateway configuration; no inference calls are made. Offline Go regressions additionally pin partial discovery failures, all-failed errors, case-insensitive prefixes, blacklists and bare model IDs.",
+      "item": [
+        {
+          "name": "huggingface/nebius/harness/legacy-model configured allowlist - legacy provider model backfill - #7761",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var fixture = 'huggingface_legacy_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);",
+                  "pm.variables.set('hfConfiguredProvider', fixture); pm.variables.set('hfConfiguredProviderCreated', 'false');",
+                  "pm.variables.unset('hfConfiguredEntries'); pm.variables.unset('hfConfiguredAliasTarget');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "function call(method, path, body, callback) {",
+                  "  var request = {url: base + path, method: method, header: headers};",
+                  "  if (body) { request.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(request, function (err, response) {",
+                  "    pm.test('setup: ' + method + ' ' + path + ' succeeds', function () {",
+                  "      pm.expect(err, 'request failed: ' + String(err)).to.not.exist;",
+                  "      pm.expect(response && response.code, 'request failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "    });",
+                  "    if (err || !response || response.code !== 200) { return; }",
+                  "    callback(response);",
+                  "  });",
+                  "}",
+                  "function createFixture(key) {",
+                  "  call('POST', '/api/providers', {provider: fixture, custom_provider_config: {base_provider_type: 'huggingface'}}, function () {",
+                  "    pm.variables.set('hfConfiguredProviderCreated', 'true');",
+                  "    key.name = fixture + '_key'; key.value = 'env.HUGGING_FACE_API_KEY'; key.weight = 1;",
+                  "    call('POST', '/api/providers/' + fixture + '/keys', key, function () {});",
+                  "  });",
+                  "}",
+                  "var models = [\"hyperbolic/harness/legacy-model\",\"nebius/harness/legacy-model\",\"sambanova/harness/legacy-model\",\"auto/harness/legacy-model\",\"deepinfra/harness/legacy-model\"];",
+                  "pm.variables.set('hfConfiguredEntries', JSON.stringify(models));",
+                  "createFixture({models: models});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('configured retired, auto and active model IDs appear exactly once', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'model list missing: ' + text).to.be.an('array');",
+                  "  var entries = JSON.parse(pm.variables.get('hfConfiguredEntries'));",
+                  "  pm.expect(data.length, 'unexpected or duplicated configured IDs: ' + text).to.eql(entries.length);",
+                  "  entries.forEach(function (entry) {",
+                  "    var id = pm.variables.get('hfConfiguredProvider') + '/' + entry;",
+                  "    pm.expect(data.filter(function (model) { return model.id === id; }).length, 'configured ID missing or duplicated: ' + id + ': ' + text).to.eql(1);",
+                  "  });",
+                  "});",
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var headers = {}; var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "if (pm.variables.get('hfConfiguredProviderCreated') === 'true') {",
+                  "pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'DELETE', header: headers}, function (err, response) {",
+                  "  pm.test('cleanup: deleting the run-scoped Hugging Face provider succeeds', function () {",
+                  "    pm.expect(err, 'cleanup failed: ' + String(err)).to.not.exist;",
+                  "    pm.expect(response && response.code, 'cleanup failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "  });",
+                  "  pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'GET', header: headers}, function (lookupErr, lookupResponse) {",
+                  "    pm.test('cleanup: the run-scoped Hugging Face provider no longer exists', function () {",
+                  "      pm.expect(lookupErr, 'cleanup verification failed: ' + String(lookupErr)).to.not.exist;",
+                  "      pm.expect(lookupResponse && lookupResponse.code, 'provider remains after cleanup: ' + (lookupResponse ? lookupResponse.text() : 'no response')).to.eql(404);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{hfConfiguredProvider}}&page_size=0&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{hfConfiguredProvider}}"
+                },
+                {
+                  "key": "page_size",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "huggingface/nebius/harness/legacy-model qualified aliases to discovered DeepInfra model - legacy provider model backfill - #7761",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var fixture = 'huggingface_legacy_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);",
+                  "pm.variables.set('hfConfiguredProvider', fixture); pm.variables.set('hfConfiguredProviderCreated', 'false');",
+                  "pm.variables.unset('hfConfiguredEntries'); pm.variables.unset('hfConfiguredAliasTarget');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "function call(method, path, body, callback) {",
+                  "  var request = {url: base + path, method: method, header: headers};",
+                  "  if (body) { request.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(request, function (err, response) {",
+                  "    pm.test('setup: ' + method + ' ' + path + ' succeeds', function () {",
+                  "      pm.expect(err, 'request failed: ' + String(err)).to.not.exist;",
+                  "      pm.expect(response && response.code, 'request failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "    });",
+                  "    if (err || !response || response.code !== 200) { return; }",
+                  "    callback(response);",
+                  "  });",
+                  "}",
+                  "function createFixture(key) {",
+                  "  call('POST', '/api/providers', {provider: fixture, custom_provider_config: {base_provider_type: 'huggingface'}}, function () {",
+                  "    pm.variables.set('hfConfiguredProviderCreated', 'true');",
+                  "    key.name = fixture + '_key'; key.value = 'env.HUGGING_FACE_API_KEY'; key.weight = 1;",
+                  "    call('POST', '/api/providers/' + fixture + '/keys', key, function () {});",
+                  "  });",
+                  "}",
+                  "call('GET', '/v1/models?provider=huggingface&page_size=0&limit=10', null, function (response) {",
+                  "  var models = response.json().data || [];",
+                  "  var source = models.filter(function (model) { return !model.alias && typeof model.id === 'string' && model.id.indexOf('huggingface/deepinfra/') === 0; })[0];",
+                  "  pm.test('setup: a discovered DeepInfra model provides the alias target', function () { pm.expect(source, 'no DeepInfra model: ' + response.text()).to.exist; });",
+                  "  if (!source) { return; }",
+                  "  var target = source.id.slice('huggingface/deepinfra/'.length);",
+                  "  var entries = [\"hyperbolic/harness/legacy-model\",\"nebius/harness/legacy-model\",\"sambanova/harness/legacy-model\",\"auto/harness/legacy-model\",\"deepinfra/harness/legacy-model\"];",
+                  "  var aliases = {}; entries.forEach(function (entry) { aliases[entry] = {model_id: target}; });",
+                  "  pm.variables.set('hfConfiguredEntries', JSON.stringify(entries));",
+                  "  pm.variables.set('hfConfiguredAliasTarget', target);",
+                  "  createFixture({models: ['*'], aliases: aliases});",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('populated Hub models keep qualified aliases exactly once without extra provider segments', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'model list missing: ' + text).to.be.an('array');",
+                  "  var target = pm.variables.get('hfConfiguredAliasTarget');",
+                  "  var aliases = data.filter(function (model) { return model.alias === target; });",
+                  "  var entries = JSON.parse(pm.variables.get('hfConfiguredEntries'));",
+                  "  pm.expect(aliases.length, 'qualified aliases missing or incorrectly prefixed: ' + text).to.eql(entries.length);",
+                  "  entries.forEach(function (entry) {",
+                  "    var id = pm.variables.get('hfConfiguredProvider') + '/' + entry;",
+                  "    pm.expect(aliases.filter(function (model) { return model.id === id; }).length, 'qualified alias missing or duplicated: ' + id + ': ' + text).to.eql(1);",
+                  "  });",
+                  "});",
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var headers = {}; var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "if (pm.variables.get('hfConfiguredProviderCreated') === 'true') {",
+                  "pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'DELETE', header: headers}, function (err, response) {",
+                  "  pm.test('cleanup: deleting the run-scoped Hugging Face provider succeeds', function () {",
+                  "    pm.expect(err, 'cleanup failed: ' + String(err)).to.not.exist;",
+                  "    pm.expect(response && response.code, 'cleanup failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "  });",
+                  "  pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'GET', header: headers}, function (lookupErr, lookupResponse) {",
+                  "    pm.test('cleanup: the run-scoped Hugging Face provider no longer exists', function () {",
+                  "      pm.expect(lookupErr, 'cleanup verification failed: ' + String(lookupErr)).to.not.exist;",
+                  "      pm.expect(lookupResponse && lookupResponse.code, 'provider remains after cleanup: ' + (lookupResponse ? lookupResponse.text() : 'no response')).to.eql(404);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{hfConfiguredProvider}}&page_size=0&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{hfConfiguredProvider}}"
+                },
+                {
+                  "key": "page_size",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
