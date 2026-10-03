@@ -2805,6 +2805,10 @@
                     "exclude_system_prompt": {
                       "type": "boolean",
                       "description": "Exclude system prompt in cache key (default: false)"
+                    },
+                    "cache_tool_call_responses": {
+                      "type": "boolean",
+                      "description": "Persist responses that carry tool calls (chat tool_calls or Responses API function_call/custom_tool_call/computer_call/local_shell_call/mcp_call/mcp_approval_request items). Off by default: a replayed tool call runs in a later caller's agent loop with arguments chosen for someone else's prompt."
                     }
                   },
                   "required": ["dimension"],

@@ -73,9 +73,41 @@ func (plugin *Plugin) addStreamChunk(requestID string, chunk *StreamChunk) error
 	accumulator := accumulatorInterface.(*StreamAccumulator)
 	accumulator.mu.Lock()
 	defer accumulator.mu.Unlock()
-	accumulator.Chunks = append(accumulator.Chunks, chunk)
 	accumulator.LastSeenAt = chunk.Timestamp
+	if accumulator.Failed {
+		// The stream was marked failed (see failStreamAccumulator): nothing
+		// from it may be cached, so the chunk is dropped and only the arrival
+		// time is refreshed to keep the marker alive until the final chunk.
+		return nil
+	}
+	accumulator.Chunks = append(accumulator.Chunks, chunk)
 	return nil
+}
+
+// failStreamAccumulator marks the stream for requestID as failed: one of its
+// chunks must not be cached (a response carrying tool calls when the operator
+// has not opted in), and a replay missing even one chunk is wrong, so the
+// stream must never be flushed. addStreamChunk discards every later chunk and
+// processAccumulatedStream drops the entry instead of storing it. When the
+// failing chunk is the final one, nothing else will arrive to drop the
+// accumulator, so it is dropped here. Returns true on the first failure for
+// the stream so the caller can log exactly once.
+//
+// The failing chunk is still a chunk arrival, so LastSeenAt is refreshed:
+// the Failed marker has to outlive the reaper for as long as the stream
+// keeps producing chunks, or a later chunk would start a clean accumulator
+// and the final chunk would flush a partial entry.
+func (plugin *Plugin) failStreamAccumulator(requestID string, storageID string, isFinalChunk bool) (first bool) {
+	accumulator := plugin.getOrCreateStreamAccumulator(requestID, storageID, nil, nil, 0)
+	accumulator.mu.Lock()
+	first = !accumulator.Failed
+	accumulator.Failed = true
+	accumulator.LastSeenAt = time.Now()
+	accumulator.mu.Unlock()
+	if isFinalChunk {
+		plugin.cleanupStreamAccumulator(requestID)
+	}
+	return first
 }
 
 // processAccumulatedStream serializes and stores the accumulated chunks as a
@@ -90,6 +122,11 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 	accumulator.mu.Lock()
 	defer accumulator.mu.Unlock()
 	defer plugin.cleanupStreamAccumulator(requestID)
+
+	if accumulator.Failed {
+		plugin.logger.Debug("Stream for request %s was marked failed, skipping cache storage", requestID)
+		return nil
+	}
 
 	sort.SliceStable(accumulator.Chunks, func(i, j int) bool {
 		ai, bi := chunkSortKey(accumulator.Chunks[i])
