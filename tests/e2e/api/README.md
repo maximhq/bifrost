@@ -74,6 +74,141 @@ The cases are skipped unless `azureStreamPreambleFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Provider 5xx failover and 429 retry-hint propagation
+
+These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live
+provider calls. Run the following commands from the repository root.
+
+Start the fixture in one terminal:
+
+```bash
+node tests/e2e/api/runners/provider-error-fixture.mjs
+```
+
+Start a separate gateway in another terminal:
+
+```bash
+error_fixture_dir=$(mktemp -d)
+cp tests/e2e/api/provider_config/provider-error-fixture.config.json "$error_fixture_dir/config.json"
+go run ./transports/bifrost-http -app-dir "$error_fixture_dir" -host 127.0.0.1 -port 8790
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "153. Provider 5xx failover and 429 retry-hint propagation (provider error fixture)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1
+```
+
+The fixture answers by model name: `upstream-503` returns HTTP 503, `upstream-429` returns 429
+with `Retry-After: 7`, `upstream-429-ms` returns 429 with `retry-after-ms: 2500`, and
+`upstream-ok` returns a chat completion. Bifrost does not emit a `Retry-After` HTTP header; it
+carries the provider hint in the error body as `extra_fields.retry_after_ms`, which the cases
+assert. The fixture also counts hits per model (`GET /__hits`, `POST /__reset`), so a failover
+case can prove the primary was tried once and the fallback once.
+The same gateway config also registers an Azure key; the fixture answers model `azure-filtered` on
+`/openai/v1/chat/completions` with Azure `prompt_filter_results` and per-choice `content_filter_results`,
+which is how the dropped-annotation defect was measured.
+The cases are skipped unless `providerErrorFixture=1`.
+
+The fixture also serves the two datasheets a fresh gateway downloads on first start (the config's `framework.pricing` URLs point at it), including the model-parameters row that makes `gpt-5-pro` Responses-only, which is what makes folder 159's chat request convert. The run therefore needs no network. Starting the gateway with `HTTPS_PROXY=http://127.0.0.1:9` is a cheap proof: loopback is exempt from proxying, so only an accidental external call would fail.
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
+## Vertex endpoint selection and header forwarding
+
+These deterministic cases use a local TLS-intercepting proxy and an isolated gateway. No traffic
+leaves the machine and no Google credentials are used. Vertex hardcodes `https://<host>/...`, so the
+fixture is the gateway's HTTP proxy: it mints a throwaway CA, terminates TLS for whatever host the
+gateway CONNECTs to, records the decrypted request, and answers with a canned Gemini or Claude body.
+
+Start the fixture; it writes the gateway config (one Vertex key per region, a service account whose
+`token_uri` points back at the fixture, and the proxy plus the CA the gateway must trust):
+
+```bash
+vertex_fixture_dir=${TMPDIR:-/tmp}/bifrost-vertex-fixture
+mkdir -p "$vertex_fixture_dir"
+node tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir "$vertex_fixture_dir" --port 8792
+```
+
+Start an isolated gateway on that directory in another terminal (a shell variable does not carry across
+terminals, so set the same path there first):
+
+```bash
+vertex_fixture_dir=${TMPDIR:-/tmp}/bifrost-vertex-fixture
+go run ./transports/bifrost-http -app-dir "$vertex_fixture_dir" -host 127.0.0.1 -port 8793
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "160. Vertex endpoint selection and header forwarding (vertex endpoint fixture)" \
+  --env-var baseUrl=http://127.0.0.1:8793 \
+  --env-var vertexEndpointFixture=1
+```
+
+Keys are picked with `x-bf-api-key`. The cases assert the host, the `locations/<region>` path segment
+and the headers Vertex would have received: global, `us`/`eu` multi-region, `us-east5`, a regional key
+that stays single-region for Gemini, Claude promoted to the `us` pool from an unpinned
+`us-central1` key and kept on `us-central1` with `force_single_region`, the OAuth token path, the
+service-tier shared request type header (global endpoint only), and extra-header forwarding, which
+is how Provisioned Throughput spend-limit ids (`x-goog-spend-limit-id`) are sent.
+The fixture also serves the pricing and model-parameters datasheets a fresh gateway downloads on first start. The model-parameters row `claude-opus-4-7: { provider: vertex, vertex_multi_region_only: true }` is load-bearing: the promotion from an unpinned `us-central1` key to the `us` pool (160.7) is decided by that catalog flag, so without it exactly that case fails. As with the Bedrock fixture, start the gateway with `HTTPS_PROXY=http://127.0.0.1:9` to prove nothing leaves the machine.
+
+The cases are skipped unless `vertexEndpointFixture=1`.
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
+## Bedrock passthrough for operations without native routes
+
+These deterministic cases use a local TLS fixture and an isolated gateway. No traffic leaves the
+machine and no AWS credentials are used. The Bedrock provider honours per-service endpoint overrides and
+a trusted CA but not `proxy_config`, so the fixture is a TLS server the gateway is pointed at directly.
+It overrides every Bedrock service endpoint, and serves empty pricing datasheets, so the gateway
+starts offline.
+
+Start the fixture; it writes the gateway config (one Bedrock key with throwaway credentials in
+`us-west-2`, the endpoint overrides, and the fixture CA as `network_config.ca_cert_pem`):
+
+```bash
+bedrock_fixture_dir=${TMPDIR:-/tmp}/bifrost-bedrock-fixture
+mkdir -p "$bedrock_fixture_dir"
+node tests/e2e/api/runners/bedrock-endpoint-fixture.mjs --app-dir "$bedrock_fixture_dir" --port 8794
+```
+
+Start an isolated gateway on that directory in another terminal, setting `bedrock_fixture_dir` to the same
+path there first. Set `HTTPS_PROXY` to a dead port as a
+tripwire: the Bedrock client honours it and loopback is exempt, so only an accidental external call
+would fail, and it would fail closed:
+
+```bash
+bedrock_fixture_dir=${TMPDIR:-/tmp}/bifrost-bedrock-fixture
+HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 \
+  go run ./transports/bifrost-http -app-dir "$bedrock_fixture_dir" -host 127.0.0.1 -port 8797
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "161. Bedrock passthrough for operations without native routes (bedrock passthrough fixture)" \
+  --env-var baseUrl=http://127.0.0.1:8797 \
+  --env-var bedrockEndpointFixture=1
+```
+
+`/bedrock_passthrough` forwards exactly InvokeAgent, knowledge-base Retrieve (both
+bedrock-agent-runtime, fixture port 8796) and ApplyGuardrail (bedrock-runtime, fixture port 8798). The
+cases assert the request is SigV4 signed by the gateway for the key region, that caller credentials are
+not forwarded, that the upstream body, status, `Content-Type` and `X-Amzn-*` headers return verbatim,
+and that every other path, a traversal and a non-POST method are refused before any request is built.
+InvokeAgent is streamed: the fixture's `AGENTSLOW001` agent sends five event-stream pieces one second apart, and the fixture gateway sets `default_request_timeout_in_seconds` to 3 seconds. For a streaming request that setting bounds the connection, the request write and the wait for response headers; once headers arrive, `stream_idle_timeout_in_seconds` governs the body. So 161.12 shows that a run longer than 3 seconds is not cut off by a total-duration cap and that every piece arrives. It does not by itself show incremental delivery; the Go tests in `core/providers/bedrock/passthrough_test.go` pin that.
+The cases are skipped unless `bedrockEndpointFixture=1`.
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
 ## Contents
 
 ### V1 Endpoint Tests

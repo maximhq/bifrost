@@ -22,6 +22,8 @@ When you use passthrough endpoints, the request still flows through Bifrost core
   Default provider: `azure`
 - `/genai_passthrough`
   Default provider: `gemini` (with automatic Vertex detection for clients configured to use Vertex)
+- `/bedrock_passthrough`
+  Default provider: `bedrock` (restricted to three operations, see [Bedrock Passthrough](#bedrock-passthrough))
 
 ---
 
@@ -59,6 +61,21 @@ Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) is handled sep
 - Requires an Azure key with `endpoint` configured.
 - **`api-version` handling varies by route:**
   - `/openai/deployments/` routes: if the caller omits `api-version`, Bifrost injects a default (`2025-04-01-preview`). Pass your own `api-version` to override — for example, to pin to a GA version or use a specific preview version.
+
+### Bedrock Passthrough
+
+- Uses `bedrock` as the default provider.
+- **Not a general AWS proxy.** Bifrost forwards only the Bedrock operations it has no native route for, and refuses every other path, method or malformed identifier with a `400` before any request is built:
+
+  | Operation | Method and path (after `/bedrock_passthrough`) | AWS service host |
+  |---|---|---|
+  | InvokeAgent | `POST /agents/{agentId}/agentAliases/{agentAliasId}/sessions/{sessionId}/text` | `bedrock-agent-runtime` |
+  | Retrieve (knowledge base) | `POST /knowledgebases/{knowledgeBaseId}/retrieve` | `bedrock-agent-runtime` |
+  | ApplyGuardrail | `POST /guardrail/{guardrailId}/version/{version}/apply` | `bedrock-runtime` |
+
+- Identifiers follow the character sets AWS documents for each parameter: agent, alias, knowledge-base and guardrail ids are alphanumeric, a session id may also contain `.`, `_`, `:` and `-` (but never consists only of dots), and a guardrail version is `DRAFT` or a number from 1 to 8 digits. An ARN is not accepted in place of an id.
+- The host comes from the key's `region` (or its `endpoints` overrides). Credentials in the incoming request are never forwarded. `InvokeAgent` and `Retrieve` are always signed with the key's AWS credentials (SigV4, service `bedrock`), because AWS does not accept Bedrock API keys for Agents Runtime operations: a key that holds only an API key is refused with a `400` for those two operations, so select a key that has an access key and secret key or a role (for example with `x-bf-api-key`). `ApplyGuardrail` sends the key's Bedrock API key as a bearer token when it has one, and is SigV4-signed otherwise.
+- The AWS status and body come back unchanged, together with the response headers Bifrost forwards, including `Content-Type` and `X-Amzn-*` such as `X-Amzn-Errortype` and `X-Amzn-Requestid`. Transport-level headers (for example `Content-Length`, `Content-Encoding`, `Transfer-Encoding`, `Connection` and `Date`) and credential-bearing ones (`Set-Cookie`, anything that looks like an API key or secret, and `X-Amzn-Oidc-*`) are removed, so an upstream `ResourceNotFoundException` still reaches the caller with its exception type. `InvokeAgent` is forwarded to the client as AWS produces it, so a long agent run is not buffered and is not bound by the gateway's whole-response timeout (only a stalled connection ends it, via the stream idle timeout). `Retrieve` and `ApplyGuardrail` are returned as a single response.
 
 ### GenAI Passthrough
 
@@ -224,6 +241,20 @@ curl -X POST "http://localhost:8080/azure_passthrough/openai/deployments/gpt-4o/
 
 </Tab>
 </Tabs>
+
+### Bedrock Passthrough
+
+```bash
+curl -X POST "http://localhost:8080/bedrock_passthrough/knowledgebases/KB12345678/retrieve" \
+  -H "Content-Type: application/json" \
+  -d '{"retrievalQuery":{"text":"what is bifrost"}}'
+```
+
+```bash
+curl -X POST "http://localhost:8080/bedrock_passthrough/guardrail/gr1a2b3c4d5e/version/DRAFT/apply" \
+  -H "Content-Type: application/json" \
+  -d '{"source":"INPUT","content":[{"text":{"text":"hello"}}]}'
+```
 
 ### GenAI Passthrough (Gemini)
 
