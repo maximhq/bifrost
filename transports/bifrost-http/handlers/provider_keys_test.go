@@ -733,6 +733,60 @@ func TestValidateProviderKeyGithubCopilotFormats(t *testing.T) {
 			"",
 		},
 		{
+			// The key form always sends the App block, so a token key arrives with an empty one.
+			"direct token alongside an empty app config",
+			schemas.Key{Value: *schemas.NewSecretVar("tid=abc"), GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{}},
+			"",
+		},
+		{
+			"direct token alongside an app config with only github_domain",
+			schemas.Key{
+				Value: *schemas.NewSecretVar("tid=abc"),
+				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+					GithubDomain: *schemas.NewSecretVar("acme.ghe.com"),
+				},
+			},
+			"",
+		},
+		{
+			"no token and an empty app config",
+			schemas.Key{GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{}},
+			"github_copilot_key_config is required",
+		},
+		{
+			"whitespace-only token and no app config",
+			schemas.Key{Value: *schemas.NewSecretVar("   ")},
+			"github_copilot_key_config is required",
+		},
+		{
+			"whitespace-only app_id",
+			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
+				c.AppID = *schemas.NewSecretVar("  ")
+			})},
+			"github_copilot_key_config.app_id is required",
+		},
+		{
+			"installation_id longer than the provider accepts",
+			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
+				c.InstallationID = *schemas.NewSecretVar("123456789012345678901")
+			})},
+			"installation_id",
+		},
+		{
+			"repository_id of zero",
+			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
+				c.RepositoryID = *schemas.NewSecretVar("0")
+			})},
+			"repository_id",
+		},
+		{
+			"repository_id above the int64 range",
+			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
+				c.RepositoryID = *schemas.NewSecretVar("9223372036854775808")
+			})},
+			"repository_id",
+		},
+		{
 			// GitHub documents the JWT issuer as "the client ID or application ID", and says
 			// "use of the client ID is recommended". Client IDs look like Iv1.b507a08c87ecfe98,
 			// so a digits-only rule on app_id would reject the recommended configuration.

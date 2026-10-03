@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -775,6 +776,49 @@ func isDigits(s string) bool {
 	return true
 }
 
+// isGithubInstallationID and isGithubRepositoryID apply the same limits as the provider, so
+// an ID that saves here is one the provider accepts at request time.
+func isGithubInstallationID(s string) bool {
+	return isDigits(s) && len(s) <= 20
+}
+
+func isGithubRepositoryID(s string) bool {
+	if !isDigits(s) {
+		return false
+	}
+	id, err := strconv.ParseInt(s, 10, 64)
+	return err == nil && id > 0
+}
+
+// githubCopilotAppField is one of the four GitHub App credential fields of a Copilot key.
+type githubCopilotAppField struct {
+	name  string
+	value *schemas.SecretVar
+}
+
+// githubCopilotAppFields returns the GitHub App credential fields of config, or none when
+// config is nil.
+func githubCopilotAppFields(config *schemas.GithubCopilotKeyConfig) []githubCopilotAppField {
+	if config == nil {
+		return nil
+	}
+	return []githubCopilotAppField{
+		{"app_id", &config.AppID},
+		{"installation_id", &config.InstallationID},
+		{"repository_id", &config.RepositoryID},
+		{"private_key", &config.PrivateKey},
+	}
+}
+
+// isSecretVarPresent reports whether v carries a usable value. A literal that is only
+// whitespace is absent: core trims it and then skips the key.
+func isSecretVarPresent(v *schemas.SecretVar) bool {
+	if v.IsFromSecret() {
+		return v.IsSet()
+	}
+	return strings.TrimSpace(v.GetValue()) != ""
+}
+
 // isPEMPrivateKey reports whether s is an RSA private key Bifrost can actually sign an App
 // JWT with. GitHub issues App keys as PKCS#1 ("RSA PRIVATE KEY"); openssl can convert them
 // to PKCS#8 ("PRIVATE KEY").
@@ -934,22 +978,18 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		// supplied App config is checked either way: a half-filled block sitting behind a
 		// token persists silently and only surfaces later, when the token expires or is
 		// removed and the key falls back to credentials that were never valid.
-		if key.GithubCopilotKeyConfig == nil {
-			if key.Value.IsSet() {
+		//
+		// A block with none of the four credential fields is treated as absent. The key form
+		// always sends the block, so a token key arrives with an empty one.
+		appFields := githubCopilotAppFields(key.GithubCopilotKeyConfig)
+		if !slices.ContainsFunc(appFields, func(f githubCopilotAppField) bool { return isSecretVarPresent(f.value) }) {
+			if isSecretVarPresent(&key.Value) {
 				return nil
 			}
 			return fmt.Errorf("github_copilot_key_config is required for GitHub Copilot keys without a value")
 		}
-		for _, field := range []struct {
-			name  string
-			value schemas.SecretVar
-		}{
-			{"app_id", key.GithubCopilotKeyConfig.AppID},
-			{"installation_id", key.GithubCopilotKeyConfig.InstallationID},
-			{"repository_id", key.GithubCopilotKeyConfig.RepositoryID},
-			{"private_key", key.GithubCopilotKeyConfig.PrivateKey},
-		} {
-			if !field.value.IsSet() {
+		for _, field := range appFields {
+			if !isSecretVarPresent(field.value) {
 				return fmt.Errorf("github_copilot_key_config.%s is required for GitHub Copilot keys", field.name)
 			}
 		}
@@ -959,10 +999,10 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		//
 		// Environment and vault references are exempt: their values are not resolvable
 		// here, so checking them would reject every legitimate headless configuration.
-		if err := validateGithubCopilotLiteral("installation_id", &key.GithubCopilotKeyConfig.InstallationID, isDigits); err != nil {
+		if err := validateGithubCopilotLiteral("installation_id", &key.GithubCopilotKeyConfig.InstallationID, isGithubInstallationID); err != nil {
 			return err
 		}
-		if err := validateGithubCopilotLiteral("repository_id", &key.GithubCopilotKeyConfig.RepositoryID, isDigits); err != nil {
+		if err := validateGithubCopilotLiteral("repository_id", &key.GithubCopilotKeyConfig.RepositoryID, isGithubRepositoryID); err != nil {
 			return err
 		}
 		if err := validateGithubCopilotLiteral("private_key", &key.GithubCopilotKeyConfig.PrivateKey, isPEMPrivateKey); err != nil {
