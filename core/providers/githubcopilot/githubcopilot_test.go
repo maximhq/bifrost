@@ -1,6 +1,11 @@
 package githubcopilot
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -304,6 +309,57 @@ func TestParseCopilotError(t *testing.T) {
 
 		assert.Contains(t, bErr.Error.Message, "github copilot:")
 		assert.Contains(t, bErr.Error.Message, "(no detail)")
+	})
+}
+
+func TestListModels(t *testing.T) {
+	const catalog = `{"object":"list","data":[
+		{"id":"gpt-4.1","object":"model","policy":{"state":"enabled"},"capabilities":{"type":"chat"}},
+		{"id":"gpt-4o","object":"model","capabilities":{"type":"chat"}},
+		{"id":"claude-opus-5.5","object":"model","policy":{"state":"disabled"},"capabilities":{"type":"chat"}},
+		{"id":"text-embedding-3-small","object":"model","capabilities":{"type":"embeddings"}},
+		{"id":"gpt-41-copilot","object":"model","policy":{"state":"enabled"},"capabilities":{"type":"completion"}}
+	]}`
+
+	var mu sync.Mutex
+	var tokens []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		tokens = append(tokens, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, catalog)
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := NewGithubCopilotProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true},
+	}, nil)
+	require.NoError(t, err)
+
+	keys := []schemas.Key{
+		{ID: "one", Value: *schemas.NewSecretVar("token-one")},
+		{ID: "two", Value: *schemas.NewSecretVar("token-two")},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	response, bErr := provider.ListModels(ctx, keys, &schemas.BifrostListModelsRequest{
+		Provider:   schemas.GithubCopilot,
+		Unfiltered: true,
+	})
+	require.Nil(t, bErr)
+
+	t.Run("queries every key", func(t *testing.T) {
+		mu.Lock()
+		defer mu.Unlock()
+		assert.ElementsMatch(t, []string{"Bearer token-one", "Bearer token-two"}, tokens)
+	})
+
+	t.Run("skips models the provider cannot serve", func(t *testing.T) {
+		ids := map[string]bool{}
+		for _, model := range response.Data {
+			ids[model.ID] = true
+		}
+		assert.Equal(t, map[string]bool{"github-copilot/gpt-4.1": true, "github-copilot/gpt-4o": true}, ids)
 	})
 }
 

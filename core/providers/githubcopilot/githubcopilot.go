@@ -100,37 +100,69 @@ func (p *githubCopilotProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.GithubCopilot
 }
 
-// ListModels performs a list models request to the Copilot API.
-//
-// This cannot use HandleOpenAIListModelsRequest, which has no authHeader parameter and
-// builds its own Authorization from key.Value. Copilot needs the editor headers alongside
-// the bearer token, so each key is resolved and dispatched individually.
+// ListModels performs a list models request to the Copilot API for every key.
 func (p *githubCopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
 		return nil, configurationError("github copilot: no keys configured")
 	}
+	return providerUtils.HandleMultipleListModelsRequests(ctx, keys, request, p.listModelsByKey)
+}
 
-	creds, bErr := resolveCredentials(ctx, keys[0], p.exchangeClient, p.networkConfig.BaseURL, p.logger)
+// listModelsByKey lists the models that one key can use.
+//
+// This cannot use openai.ListModelsByKey. Copilot's response carries the policy and the
+// capability type of each model, and the OpenAI shape drops both, so models that the
+// account cannot use would be listed.
+func (p *githubCopilotProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
 	if bErr != nil {
 		return nil, bErr
 	}
 
-	// ListModelsByKey reads key.Value for the Authorization header, so hand it the
-	// resolved token rather than the stored credential.
-	authKey := keys[0]
-	authKey.Value = *schemas.NewSecretVar(creds.Token)
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
 
-	return openai.ListModelsByKey(
-		ctx,
-		p.client,
-		creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/models"),
-		authKey,
-		request != nil && request.Unfiltered,
-		p.mergeEditorHeaders(nil),
-		p.GetProviderKey(),
-		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
-	)
+	providerUtils.SetExtraHeaders(ctx, req, p.mergeEditorHeaders(nil), nil)
+
+	req.SetRequestURI(creds.BaseURL + providerUtils.GetPathFromContext(ctx, "/models"))
+	req.Header.SetMethod(fasthttp.MethodGet)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+creds.Token)
+
+	latency, bErr, wait := providerUtils.MakeRequestWithContext(ctx, p.client, req, resp)
+	defer wait()
+	if bErr != nil {
+		return nil, bErr
+	}
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.SetErrorLatency(parseCopilotError(resp), latency)
+	}
+
+	responseBody := append([]byte(nil), resp.Body()...)
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse)
+
+	copilotResponse := &copilotListModelsResponse{}
+	rawRequest, rawResponse, bErr := providerUtils.HandleProviderResponse(responseBody, copilotResponse, nil, sendBackRawRequest, sendBackRawResponse)
+	if bErr != nil {
+		return nil, providerUtils.SetErrorLatency(bErr, latency)
+	}
+
+	response := copilotResponse.toOpenAIListModelsResponse().ToBifrostListModelsResponse(p.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+	return response, nil
 }
 
 // mergeEditorHeaders overlays the editor identity onto the operator's extra headers.
