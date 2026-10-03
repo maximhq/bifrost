@@ -224,9 +224,9 @@ GitHub's published catalog.
 # 4. Cost tracking
 
 <Warning>
-**Bifrost logs $0 for every Copilot request today.** No `github-copilot` pricing rows exist
-in the Bifrost datasheet, so there is nothing for the cost engine to apply. That is a
-reporting gap, not free usage: GitHub still bills you.
+**Bifrost logs $0 for most Copilot models today.** The Bifrost datasheet has prices for only
+a few Copilot models, so for the others there is nothing for the cost engine to apply. That
+is a reporting gap, not free usage: GitHub still bills you.
 </Warning>
 
 Copilot bills **GitHub AI Credits** at 1 credit = $0.01, converted from token counts at
@@ -239,8 +239,8 @@ requests rather than credits.
 Bifrost's cost engine can express that shape: `input_cost_per_token`,
 `output_cost_per_token`, `cache_read_input_token_cost` and `cache_creation_input_token_cost`
 map onto GitHub's four token categories, so no new pricing field is needed. What is missing
-is the data. Until per-model rows are published, or you add
-<u>[custom pricing](/providers/custom-pricing)</u> for the models you use, cost stays $0.
+is the data. Until a priced row is published for a model, or you add
+<u>[custom pricing](/providers/custom-pricing)</u> for it, the cost of that model stays $0.
 
 See <u>[Models and pricing for GitHub Copilot](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)</u>
 for the current per-model rate card.
