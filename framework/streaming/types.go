@@ -180,8 +180,8 @@ type StreamAccumulator struct {
 	// buffer and transitions the gate to Ended.
 	gatePendingTerminal     bool
 	gateSeq                 int                              // monotonic, bumped on every GateSend
-	gateReplayBuf           []*schemas.BifrostStreamChunk    // wire-format chunks captured while paused
-	gateReplayBufBytes      int64                            // sum of MarshalJSON sizes of chunks in gateReplayBuf; capped by gateReplayBufMaxBytes
+	gateReplayBuf           []gateReplayEntry                // wire-format chunks captured while paused, each with its MarshalJSON size cached at append
+	gateReplayBufBytes      int64                            // sum of cached sizes in gateReplayBuf; capped by gateReplayBufMaxBytes
 	gateReplayEventInterval time.Duration                    // delay between buffered events after paced resume is armed
 	gateCond                *sync.Cond                       // wakes flusher on Resume / End / append-while-active
 	gateEndError            *schemas.BifrostError            // delivered as terminal chunk if EndStream(err) was called with non-nil

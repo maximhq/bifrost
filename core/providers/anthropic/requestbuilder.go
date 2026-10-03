@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -34,6 +35,12 @@ type AnthropicRequestBuildConfig struct {
 	// in both raw and typed paths. Used by Anthropic native count-tokens to
 	// strip max_tokens and temperature after typed conversion.
 	ExcludeFields []string
+
+	// IncludeFields maps JSON top-level keys to values set on the final body in
+	// both raw and typed paths, after ExcludeFields. Used by the Bedrock
+	// InvokeModel egress for amazon-bedrock-guardrailConfig, which has no
+	// slot in the Anthropic Messages schema.
+	IncludeFields map[string]any
 
 	// ValidateTools runs ValidateToolsForProvider before typed conversion,
 	// returning an error for any tool unsupported by the provider. Set true
@@ -104,19 +111,30 @@ type AnthropicProviderRequestDefaults struct {
 var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicProviderRequestDefaults{
 	schemas.Anthropic: {},
 	schemas.Azure:     {},
-	// Bedrock Mantle native-Anthropic endpoint (/anthropic/v1/messages): the
-	// request is the native Anthropic Messages body, so model stays in the body
-	// (set to the bare Bedrock model id), the version is sent as an
-	// "anthropic-version" HTTP header rather than a body field, and stream is a
-	// body field. Tool type versions are still remapped to the canonical pair
-	// the hosted Claude generation expects.
+	// Classic Bedrock InvokeModel / InvokeModelWithResponseStream, used by the
+	// Bedrock provider for Claude requests that need a feature Converse cannot
+	// deliver (today: compaction, see the InvokeModel section of bedrock/bedrock.go and #6825).
+	// Per the AWS Messages API reference
+	// (https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.html):
+	// the model is in the URL (no body field), streaming is selected by the URL
+	// (no stream field), anthropic_version must be "bedrock-2023-05-31", and beta
+	// features are opted into through the anthropic_beta body array. Tool type
+	// versions are remapped to the pair the hosted Claude generation expects, and
+	// URL image/document sources are inlined because AWS-hosted Claude has no URL
+	// fetcher (the Converse path already does the same).
 	schemas.Bedrock: {
-		RemapToolVersions: true,
+		DeleteModelField:          true,
+		DeleteStreamField:         true,
+		AddAnthropicVersion:       true,
+		AnthropicVersion:          "bedrock-2023-05-31",
+		RemapToolVersions:         true,
+		InjectBetaHeadersIntoBody: true,
+		InlineURLSources:          true,
 	},
-	// Bedrock Mantle shares the Bedrock native-Anthropic request shape (model in
-	// body, anthropic-version HTTP header, tool versions remapped). It has its own
-	// entry so its feature surface in ProviderFeatures can diverge from Bedrock's
-	// Converse path without coupling the two.
+	// Bedrock Mantle native-Anthropic endpoint (/anthropic/v1/messages): the
+	// request is the plain Anthropic Messages body (model in body, version as the
+	// anthropic-version HTTP header, stream as a body field), unlike classic
+	// Bedrock's InvokeModel shape above. Tool type versions are remapped.
 	schemas.BedrockMantle: {
 		RemapToolVersions: true,
 		// AWS-hosted Claude has no URL fetcher: a {"type":"url"} image or document
@@ -158,9 +176,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 	defaults := AnthropicProviderRequestDefaultsMap[cfg.Provider]
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
+		bifrostErr := providerUtils.NewBifrostOperationError(msg, err)
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			bifrostErr = badRequest
+		}
 		return providerUtils.EnrichError(
 			ctx,
-			providerUtils.NewBifrostOperationError(msg, err),
+			bifrostErr,
 			reqBody,
 			nil,
 			cfg.ShouldSendBackRawRequest,
@@ -173,6 +195,18 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
 		jsonBody = request.GetRawRequestBody()
+
+		// Server-side thread state is bound to the account that created it, and
+		// Bifrost's per-request key selection, retries, and fallbacks cannot keep
+		// a continuation on that account, so the field never goes upstream. The
+		// integration refuses thread continuations outright; a create request
+		// carries the full conversation and serves fine without the field.
+		if providerUtils.JSONFieldExists(jsonBody, "thread") {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thread")
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
 
 		if cfg.IsCountTokens {
 			// Token-counting mode: strip max_tokens / temperature and set model.
@@ -276,11 +310,19 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		// manually.
 		var probe AnthropicMessageRequest
 		if unmarshalErr := schemas.Unmarshal(jsonBody, &probe); unmarshalErr == nil {
-			AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
+			// Cloud bodies may no longer contain model; capability checks still need it.
+			probe.Model = capModel
+			_ = AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
 		}
 
 		for _, field := range cfg.ExcludeFields {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
@@ -413,6 +455,12 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
 	}
 
 	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
@@ -440,6 +488,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
+	}
+
+	jsonBody, err = normalizeBase64TextSources(jsonBody)
+	if err != nil {
+		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
 
 	if defaults.InlineURLSources {
@@ -480,9 +533,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 	defaults := AnthropicProviderRequestDefaultsMap[cfg.Provider]
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
+		bifrostErr := providerUtils.NewBifrostOperationError(msg, err)
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			bifrostErr = badRequest
+		}
 		return providerUtils.EnrichError(
 			ctx,
-			providerUtils.NewBifrostOperationError(msg, err),
+			bifrostErr,
 			reqBody,
 			nil,
 			cfg.ShouldSendBackRawRequest,
@@ -570,11 +627,19 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 		var probe AnthropicMessageRequest
 		if unmarshalErr := schemas.Unmarshal(jsonBody, &probe); unmarshalErr == nil {
-			AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
+			probe.Model = capModel
+
+			_ = AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
 		}
 
 		for _, field := range cfg.ExcludeFields {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
@@ -681,6 +746,12 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
 	}
 
 	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
@@ -702,6 +773,11 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		}
 	}
 
+	jsonBody, err = normalizeBase64TextSources(jsonBody)
+	if err != nil {
+		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+	}
+
 	if defaults.InlineURLSources {
 		jsonBody, err = InlineURLContentSources(ctx, jsonBody)
 		if err != nil {
@@ -719,4 +795,40 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 	}
 
 	return jsonBody, nil
+}
+
+// ProviderExtraFields keys under which a Bedrock native InvokeModel response keeps the
+// amazon-bedrock-guardrailAction / amazon-bedrock-trace fields AnthropicMessageResponse drops.
+const (
+	BedrockInvokeGuardrailActionKey = "invoke_guardrail_action"
+	BedrockInvokeGuardrailTraceKey  = "invoke_guardrail_trace"
+)
+
+// bedrockInvokeGuardrailOutcome reads the amazon-bedrock-guardrailAction and amazon-bedrock-trace
+// top-level fields of a native InvokeModel body or stream event. The trace is returned verbatim:
+// it has AWS's own shape, which the Converse-typed trace cannot represent.
+func bedrockInvokeGuardrailOutcome(body []byte) (action string, trace json.RawMessage) {
+	if a := providerUtils.GetJSONField(body, "amazon-bedrock-guardrailAction"); a.Exists() {
+		action = a.String()
+	}
+	if t := providerUtils.GetJSONField(body, "amazon-bedrock-trace"); t.Exists() {
+		trace = json.RawMessage(t.Raw)
+	}
+	return action, trace
+}
+
+// setBedrockInvokeGuardrailOutcome records a native InvokeModel guardrail outcome on the response.
+func setBedrockInvokeGuardrailOutcome(resp *schemas.BifrostResponsesResponse, action string, trace json.RawMessage) {
+	if action == "" && len(trace) == 0 {
+		return
+	}
+	if resp.ProviderExtraFields == nil {
+		resp.ProviderExtraFields = make(map[string]interface{}, 2)
+	}
+	if action != "" {
+		resp.ProviderExtraFields[BedrockInvokeGuardrailActionKey] = action
+	}
+	if len(trace) > 0 {
+		resp.ProviderExtraFields[BedrockInvokeGuardrailTraceKey] = trace
+	}
 }

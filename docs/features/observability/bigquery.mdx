@@ -129,6 +129,8 @@ export GCP_SERVICE_ACCOUNT_KEY='{"type":"service_account","project_id":"...", ..
 | `flush_interval_seconds` | `integer` | No | `5` | Interval between buffer flushes, in seconds. Must be `> 0`. |
 | `buffer_size` | `integer` | No | `500` | Max rows to buffer before forcing a flush. Must be `> 0`. |
 | `disable_content_logging` | `boolean` | No | `false` | When `true`, conversation content columns (`input_history`, `output_message`) are omitted. |
+| `excluded_attributes` | `string[]` | No | — | Column names to leave empty on every row. See [Excluding Columns](#excluding-columns). |
+| `export_raw_payloads` | `boolean` | No | `false` | When `true`, stores the raw provider request/response bodies in the `raw_request` and `raw_response` columns. Requires the provider's `store_raw_request_response`; suppressed by `disable_content_logging`. Bodies over 256 KB are dropped. Guardrail redaction still applies; raw bodies carry provider-specific fields the normalized view does not. |
 | `request_headers` | `string[]` | No | — | Request-header name patterns to capture into the `request_headers` column. Supports exact names and wildcards (`x-custom-*`, `*`). |
 | `custom_labels` | `object` | No | — | Arbitrary key-value pairs stored as JSON in the `labels` column. Values support `env.VAR_NAME`. |
 | `plugin_span_filter` | `object` | No | — | Controls which plugin spans contribute to the stored row. See [Plugin Span Filtering](#plugin-span-filtering). |
@@ -235,7 +237,7 @@ Each row corresponds to one trace — one full LLM request lifecycle. The column
 
 </Accordion>
 
-<Accordion title="Governance attribution (14 columns)">
+<Accordion title="Governance attribution (16 columns)">
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -246,6 +248,7 @@ Each row corresponds to one trace — one full LLM request lifecycle. The column
 | `customer_id` / `customer_name` | `STRING` | Customer. |
 | `business_unit_id` / `business_unit_name` | `STRING` | Business unit. |
 | `user_id` / `user_name` | `STRING` | User. |
+| `project_id` / `project_name` | `STRING` | Project the request was scoped to. Not to be confused with the `project_id` in this plugin's own config, which is the GCP project holding the dataset. |
 
 </Accordion>
 
@@ -410,9 +413,25 @@ Always filter on `timestamp` (the partition key) to prune partitions and keep qu
 
 ---
 
+## Excluding Columns
+
+Some columns are large and not needed downstream. `tools` is a common example. List the column names you want left empty on every row:
+
+```json
+{
+  "excluded_attributes": ["tools", "raw_request"]
+}
+```
+
+Because BigQuery writes typed columns, these are **column names** as they appear in your table (`tools`), not attribute names (`gen_ai.request.tools`).
+
+The column stays in the table schema and is simply left empty, so existing queries and views keep working. A name that does not match any column is ignored. `trace_id` and `timestamp` are required and cannot be excluded. The connector rejects a configuration that names either.
+
+This is different from [Plugin Span Filtering](#plugin-span-filtering), which chooses which plugin spans contribute to the `plugin_pre_latency_ms` and `plugin_post_latency_ms` columns.
+
 ## Plugin Span Filtering
 
-By default every plugin's pre- and post-hook execution contributes its latency to the stored row. Use `plugin_span_filter` inside the BigQuery plugin config to control which plugin spans count toward the flattened latency columns (`plugin_pre_latency_ms` / `plugin_post_latency_ms`).
+By default every plugin's pre- and post-hook execution contributes its latency to the stored row. Use `plugin_span_filter` inside the BigQuery plugin config to control which plugin spans count toward the flattened latency columns (`plugin_pre_latency_ms` / `plugin_post_latency_ms`). It selects whole spans by plugin name. To leave a column empty, see [Excluding Columns](#excluding-columns).
 
 **Via config.json** (inside the BigQuery plugin config):
 

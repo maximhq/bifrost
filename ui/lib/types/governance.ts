@@ -109,22 +109,37 @@ export interface VirtualKey {
 	rate_limit_id?: string;
 	is_active: boolean;
 	expires_at?: string | null; // ISO 8601 UTC timestamp; null or absent means never expires
+	// Tri-state: absent/null inherits client.delete_expired_virtual_keys, true/false override it.
+	delete_after_expire?: boolean | null;
 	previous_value_expires_at?: string | null; // When set, the pre-rotation value still authenticates until this time
 	rotated_at?: string | null; // Timestamp of the last value rotation
 	calendar_aligned?: boolean;
 	// When true, every provider is allowed; provider_configs remain optional per-provider overrides
 	allow_all_providers?: boolean;
+	// Tri-state: absent/null inherits client.disable_content_logging, true forces content off for
+	// this key's traffic, false forces it on for the log store.
+	disable_content_logging?: boolean | null;
 	created_at: string;
 	updated_at: string;
+	// The third owner a key can have, alongside a team and a customer. Business units are an
+	// enterprise table this model does not preload, so its name arrives on `business_unit` below.
+	business_unit_id?: string;
 	// Populated relationships
 	team?: Team;
 	customer?: Customer;
+	// Owning business unit, named by the enterprise build; absent in OSS and when unresolved.
+	business_unit?: { id: string; name: string };
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
 	// Read-only, server-computed: true when the VK is governed by an access profile.
 	// Lets the UI lock edits and show the managed-key notice without the separately
 	// RBAC-gated access-profile lookup.
 	is_access_profile_managed?: boolean;
+	// Read-only, server-computed: the user this key is assigned to, or null when it
+	// is assigned to a team, a customer, or nothing. Absent (rather than null) when
+	// the response came from a path that does not resolve assignees, so callers can
+	// tell "unassigned" from "unknown". Always null in OSS, which has no users.
+	assigned_user?: { id: string; name: string; email: string } | null;
 	config_hash?: string; // Present when config is synced from config.json
 }
 
@@ -221,12 +236,16 @@ export interface CreateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
+	// Third owner, mutually exclusive with team_id and customer_id (enterprise).
+	business_unit_id?: string;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
 	allow_all_providers?: boolean; // When true, all providers are allowed
 	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
+	disable_content_logging?: boolean; // Omit to inherit the client setting; true forces content off, false forces it on
+	delete_after_expire?: boolean; // Omit to inherit client.delete_expired_virtual_keys; true/false override it; requires expires_at
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -236,6 +255,8 @@ export interface UpdateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string | null;
 	customer_id?: string | null;
+	// Third owner, mutually exclusive with team_id and customer_id (enterprise); null clears it.
+	business_unit_id?: string | null;
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
@@ -243,6 +264,8 @@ export interface UpdateVirtualKeyRequest {
 	allow_all_providers?: boolean; // When true, all providers are allowed; omit to leave unchanged
 	reset_budget_usage?: boolean;
 	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
+	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
+	delete_after_expire?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged; a value requires an expiry
 }
 
 export interface BulkRotateVirtualKeysRequest {
@@ -331,6 +354,8 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
+	/** Enterprise-only owner kind; a key names at most one owner, so this ORs with the other two. */
+	business_unit_id?: string;
 	/** Enterprise-only: filters to virtual keys assigned to this user. */
 	user_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;
@@ -527,6 +552,8 @@ export interface PricingOverridePatch {
 	output_cost_per_token_above_272k_tokens?: number;
 	output_cost_per_token_above_272k_tokens_priority?: number;
 	output_cost_per_token_flex_above_272k_tokens?: number;
+	input_cost_per_token_above_272k_tokens_ultrafast?: number;
+	output_cost_per_token_above_272k_tokens_ultrafast?: number;
 	// Cache
 	cache_creation_input_token_cost?: number;
 	cache_read_input_token_cost?: number;
@@ -543,10 +570,13 @@ export interface PricingOverridePatch {
 	cache_read_input_token_cost_above_272k_tokens?: number;
 	cache_read_input_token_cost_above_272k_tokens_priority?: number;
 	cache_read_input_token_cost_flex_above_272k_tokens?: number;
+	cache_read_input_token_cost_above_272k_tokens_ultrafast?: number;
 	cache_creation_input_token_cost_above_272k_tokens?: number;
 	cache_creation_input_token_cost_flex?: number;
 	cache_creation_input_token_cost_flex_above_272k_tokens?: number;
+	cache_creation_input_token_cost_above_272k_tokens_ultrafast?: number;
 	cache_creation_input_token_cost_priority?: number;
+	cache_creation_input_token_cost_above_272k_tokens_priority?: number;
 	cache_creation_input_token_cost_ultrafast?: number;
 	cache_creation_input_token_cost_fast?: number;
 	cache_creation_input_token_cost_above_1hr_fast?: number;
@@ -602,7 +632,7 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_1080p?: number;
 	output_cost_per_video_per_second_4k?: number;
 	// Other
-	search_context_cost_per_query?: number;
+	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 	inference_geo_us_multiplier?: number;
@@ -610,6 +640,29 @@ export interface PricingOverridePatch {
 	// OCR
 	ocr_cost_per_page?: number;
 	annotation_cost_per_page?: number;
+	// Time of day
+	off_peak_cost_multiplier?: number;
+	peak_hours?: PeakHoursSchedule;
+}
+
+/**
+ * Recurring weekly windows during which a model is billed at its peak (base)
+ * rates. Any instant outside every window is off-peak and is discounted by
+ * `off_peak_cost_multiplier`.
+ */
+export interface PeakHoursSchedule {
+	/** IANA location name (e.g. "UTC", "Asia/Shanghai"). Empty means UTC. */
+	timezone?: string;
+	windows?: PeakHoursWindow[];
+}
+
+export interface PeakHoursWindow {
+	/** Weekdays, 0 = Sunday through 6 = Saturday. */
+	days: number[];
+	/** "HH:MM" in the schedule's timezone, inclusive. */
+	start: string;
+	/** "HH:MM" in the schedule's timezone, exclusive; <= start wraps midnight. */
+	end: string;
 }
 
 export interface PricingOverride {

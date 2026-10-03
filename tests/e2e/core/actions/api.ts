@@ -133,6 +133,77 @@ export const virtualKeysApi = {
 }
 
 /**
+ * Dashboard admin credentials as GET /api/config returns them. The password comes back
+ * redacted; sending that placeholder back in a PUT keeps the stored password.
+ */
+export interface DashboardAuthConfig {
+  admin_username: { value?: string; ref?: string; type?: string }
+  admin_password: { value?: string; ref?: string; type?: string }
+  is_enabled: boolean
+}
+
+/**
+ * Core config API helpers
+ */
+export const coreConfigApi = {
+  /**
+   * Get the core config as stored in the DB. auth_config is absent until the first admin
+   * account has been created.
+   */
+  async get(request: APIRequestContext) {
+    const response = await request.get(`${API_BASE}/config?from_db=true`)
+    return handleResponse<{ client_config: Record<string, unknown>; auth_config?: DashboardAuthConfig }>(
+      response,
+      'Get core config'
+    )
+  },
+
+  /**
+   * Switch dashboard auth on or off while keeping the stored admin credentials.
+   *
+   * The whole current config is sent back because PUT /api/config treats a missing
+   * client_config as all-zero values. While auth is off the request is not
+   * authenticated, so turning auth back on (or changing the credentials) must carry
+   * `currentPassword` (the stored admin password) or a setup token; the server answers
+   * 403 otherwise.
+   */
+  async setDashboardAuthEnabled(
+    request: APIRequestContext,
+    enabled: boolean,
+    proof: { currentPassword?: string; setupToken?: string } = {}
+  ) {
+    const current = await coreConfigApi.get(request)
+    if (!current.auth_config) {
+      throw new Error('Set dashboard auth failed: no admin account is stored on this instance')
+    }
+    const response = await request.put(`${API_BASE}/config`, {
+      data: {
+        ...current,
+        auth_config: {
+          admin_username: current.auth_config.admin_username,
+          admin_password: current.auth_config.admin_password,
+          is_enabled: enabled,
+          ...(proof.currentPassword ? { current_password: proof.currentPassword } : {}),
+          ...(proof.setupToken ? { setup_token: proof.setupToken } : {}),
+        },
+      },
+    })
+    return handleResponse(response, `Set dashboard auth ${enabled ? 'on' : 'off'}`)
+  },
+
+  /**
+   * Update client config fields, sending the current config back with the changes applied
+   */
+  async updateClientConfig(request: APIRequestContext, changes: Record<string, unknown>) {
+    const current = await coreConfigApi.get(request)
+    const response = await request.put(`${API_BASE}/config`, {
+      data: { client_config: { ...current.client_config, ...changes } },
+    })
+    return handleResponse(response, 'Update core config')
+  },
+}
+
+/**
  * Teams API helpers
  */
 export const teamsApi = {
@@ -191,6 +262,29 @@ export const customersApi = {
   async delete(request: APIRequestContext, id: string) {
     const response = await request.delete(`${API_BASE}/governance/customers/${id}`)
     return response.ok()
+  },
+}
+
+/**
+ * Feature flag API helpers
+ */
+export const featureFlagsApi = {
+  /**
+   * Get all feature flags
+   */
+  async getAll(request: APIRequestContext) {
+    const response = await request.get(`${API_BASE}/feature-flags`)
+    return handleResponse<{ flags: { id: string; enabled: boolean }[] }>(response, 'Get feature flags')
+  },
+
+  /**
+   * Turn a feature flag on or off
+   */
+  async set(request: APIRequestContext, id: string, enabled: boolean) {
+    const response = await request.put(`${API_BASE}/feature-flags/${id}`, {
+      data: { enabled },
+    })
+    return handleResponse(response, `Set feature flag ${id}`)
   },
 }
 

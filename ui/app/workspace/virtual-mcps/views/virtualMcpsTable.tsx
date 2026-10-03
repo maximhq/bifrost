@@ -30,7 +30,19 @@ import {
 } from "@/lib/store";
 import { VirtualMCP } from "@/lib/types/virtualMcps";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, Copy, Loader2, MoreHorizontal, Pencil, Plus, Search, Server, Trash2 } from "lucide-react";
+import {
+	Check,
+	ChevronLeft,
+	ChevronRight,
+	Copy,
+	Loader2,
+	MoreHorizontal,
+	Pencil,
+	Plus,
+	Search,
+	Server,
+	Trash2,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 interface VirtualMCPsTableProps {
@@ -66,7 +78,7 @@ export default function VirtualMCPsTable({
 	const canUpdate = useRbac(RbacResource.VirtualMCPs, RbacOperation.Update);
 	const canDelete = useRbac(RbacResource.VirtualMCPs, RbacOperation.Delete);
 
-	// Live clients, so "all tools" servers count their real tools and we can flag unreachable/stale ones.
+	// Live clients, so "all tools" servers count their real tools.
 	const { data: mcpClientsData, isLoading: clientsLoading, isError: clientsError } = useGetMCPClientsQuery({ limit: 1000 });
 	const clientById = useMemo(() => new Map((mcpClientsData?.clients ?? []).map((c) => [c.config.client_id, c])), [mcpClientsData]);
 
@@ -84,41 +96,6 @@ export default function VirtualMCPsTable({
 			return sum + (isAll ? (clientById.get(spec.mcp_client_id)?.tools?.length ?? 0) : spec.tool_names.length);
 		}, 0);
 
-	// A server is reachable only when it is present, enabled, and healthy; otherwise its tools are served
-	// from the last successful sync (or not at all). Also flags specific tools no longer offered by a live
-	// server (disabled at source).
-	const toolWarning = (row: VirtualMCP): string | null => {
-		// Until the client list loads (or if it failed), clientById is empty; don't flag every source
-		// as unreachable off missing data.
-		if (clientsLoading || clientsError) return null;
-		let unreachable = 0;
-		let unreachableServers = 0;
-		let disabledAtSource = 0;
-		for (const spec of row.tools ?? []) {
-			const client = clientById.get(spec.mcp_client_id);
-			const isAll = spec.tool_names.length === 1 && spec.tool_names[0] === "*";
-			const liveNames = client?.tools?.map((t) => t.name) ?? [];
-			const isReachable = !!client && !client.config.disabled && client.state === "healthy";
-			if (!isReachable) {
-				if (isAll) {
-					// A wildcard on an unreachable server has an unknown tool count when the client is gone;
-					// flag the server itself rather than count zero.
-					if (liveNames.length > 0) unreachable += liveNames.length;
-					else unreachableServers += 1;
-				} else {
-					unreachable += spec.tool_names.length;
-				}
-			} else if (!isAll) {
-				disabledAtSource += spec.tool_names.filter((n) => !liveNames.includes(n)).length;
-			}
-		}
-		if (unreachable === 0 && unreachableServers === 0 && disabledAtSource === 0) return null;
-		const parts: string[] = [];
-		if (unreachable > 0) parts.push(`${unreachable} ${unreachable === 1 ? "tool comes" : "tools come"} from an unreachable server (shown from the last successful sync)`);
-		if (unreachableServers > 0) parts.push(`${unreachableServers} source ${unreachableServers === 1 ? "server is" : "servers are"} unreachable`);
-		if (disabledAtSource > 0) parts.push(`${disabledAtSource} selected ${disabledAtSource === 1 ? "tool is" : "tools are"} disabled at source`);
-		return parts.join(" · ");
-	};
 	const [pendingDelete, setPendingDelete] = useState<VirtualMCP | null>(null);
 	const [pendingId, setPendingId] = useState<number | null>(null);
 	const [togglingIds, setTogglingIds] = useState<Set<number>>(new Set());
@@ -179,9 +156,7 @@ export default function VirtualMCPsTable({
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<PageTitle title="Virtual MCPs">
-				Bundle tools from your MCP servers into a single endpoint, then assign it to virtual keys.
-			</PageTitle>
+			<PageTitle title="Virtual MCPs">Bundle tools from your MCP servers into a single endpoint, then assign it to virtual keys.</PageTitle>
 
 			<div className="mb-4 flex items-center justify-between gap-3">
 				<div className="relative max-w-sm min-w-[200px] flex-1">
@@ -197,7 +172,7 @@ export default function VirtualMCPsTable({
 				</div>
 				<Button onClick={onCreate} data-testid="virtual-mcp-create-btn">
 					<Plus className="h-4 w-4" />
-					New Virtual MCP
+					Add Virtual MCP
 				</Button>
 			</div>
 
@@ -230,18 +205,16 @@ export default function VirtualMCPsTable({
 												<span className="text-muted-foreground text-sm">
 													No Virtual MCPs yet. Create one to bundle tools from your MCP servers into a single endpoint.
 												</span>
-												<Button variant="outline" size="sm" onClick={onCreate}>
+												<Button size="sm" onClick={onCreate}>
 													<Plus className="h-4 w-4" />
-													New Virtual MCP
+													Add Virtual MCP
 												</Button>
 											</div>
 										)}
 									</TableCell>
 								</TableRow>
 							) : (
-								virtualMcps.map((row) => {
-									const warning = toolWarning(row);
-									return (
+								virtualMcps.map((row) => (
 									<TableRow key={row.id} className="group">
 										<TableCell className="font-medium">{row.name}</TableCell>
 										<TableCell>
@@ -249,17 +222,7 @@ export default function VirtualMCPsTable({
 										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">{row.tools?.length ?? 0}</TableCell>
 										<TableCell className="text-muted-foreground text-sm">
-											<span className="flex items-center gap-1.5">
-												{clientsLoading ? "…" : clientsError ? "—" : includedToolCount(row)}
-												{warning && (
-													<Tooltip>
-														<TooltipTrigger asChild>
-															<AlertTriangle className="size-3.5 cursor-help text-amber-500" />
-														</TooltipTrigger>
-														<TooltipContent className="max-w-xs">{warning}</TooltipContent>
-													</Tooltip>
-												)}
-											</span>
+											{clientsLoading ? "…" : clientsError ? "—" : includedToolCount(row)}
 										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">{formatDate(row.created_at)}</TableCell>
 										<TableCell>
@@ -288,8 +251,7 @@ export default function VirtualMCPsTable({
 											/>
 										</TableCell>
 									</TableRow>
-									);
-								})
+								))
 							)}
 						</TableBody>
 					</Table>

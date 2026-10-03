@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -141,7 +142,7 @@ func runSSEStream(ctx *schemas.BifrostContext, client *fasthttp.Client, url stri
 
 	if err := DoStreamingRequest(ctx, client, req, resp); err != nil {
 		ReleaseStreamingResponse(ctx, resp)
-		return 0, fmt.Errorf("request failed: %w", err)
+		return 0, fmt.Errorf("%w: %w", errRequestFailed, err)
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
 		ReleaseStreamingResponse(ctx, resp)
@@ -217,10 +218,49 @@ type streamOutcome struct {
 	stuck  bool
 }
 
+// errRequestFailed marks a stream that failed before any response byte arrived.
+var errRequestFailed = errors.New("request failed")
+
+// fixtureSaturated reports whether a clean stream failed before any response
+// byte because the loopback fixture could not take the connection. The cancelled
+// load dials thousands of fresh sockets per second at one listener whose backlog
+// is kern.ipc.somaxconn (128 on macOS); when it overflows the kernel resets the
+// connect, and a socket accepted then dropped fails its first write with EPIPE.
+// That is the harness out of accept capacity, not the pool aliasing this test
+// guards, so cleanStream retries it. Anything after the headers (garbage frames,
+// a short stream, a parked reader) and any header parse failure never retries.
+func fixtureSaturated(err error) bool {
+	if !errors.Is(err, errRequestFailed) {
+		return false
+	}
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || (opErr.Op != "dial" && opErr.Op != "write") {
+		return false
+	}
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.EADDRNOTAVAIL) ||
+		(opErr.Op == "dial" && opErr.Timeout())
+}
+
+// maxFixtureRetries bounds how often one clean stream is retried on fixture
+// saturation, so a pool that never answers still fails the test.
+const maxFixtureRetries = 50
+
 // cleanStream runs one uncancelled stream and bounds it, so a desynced
 // connection surfaces as a reported failure instead of parking the test.
 // A healthy stream against the fixture server finishes well inside the bound.
+// Attempts the fixture itself could not accept are retried, see fixtureSaturated.
 func cleanStream(client *fasthttp.Client, url string, bound time.Duration) streamOutcome {
+	for retry := 0; ; retry++ {
+		got := cleanStreamOnce(client, url, bound)
+		if !fixtureSaturated(got.err) || retry == maxFixtureRetries {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func cleanStreamOnce(client *fasthttp.Client, url string, bound time.Duration) streamOutcome {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 

@@ -150,6 +150,80 @@ func TestModelCaps_SupportsFastMode(t *testing.T) {
 	})
 }
 
+// ModelCaps.SupportsNamespaceTools follows the same record-vs-fallback contract:
+// a datasheet row decides in either direction, and an absent row hands the
+// caller's per-provider default straight back.
+func TestModelCaps_SupportsNamespaceTools(t *testing.T) {
+	t.Run("OverrideHit", func(t *testing.T) {
+		model := "third-party-model-namespace-yes"
+		setCapabilityOverride(t, model, ModelCapabilities{SupportsNamespaceTools: new(true)})
+		assert.True(t, ResolveModelCaps(DeepSeek, model).SupportsNamespaceTools(false))
+	})
+
+	t.Run("OverrideExplicitFalse", func(t *testing.T) {
+		model := "gpt-model-namespace-no"
+		setCapabilityOverride(t, model, ModelCapabilities{SupportsNamespaceTools: new(false)})
+		assert.False(t, ResolveModelCaps(OpenAI, model).SupportsNamespaceTools(true))
+	})
+
+	t.Run("OverrideAbsent_CallerFallbackTakesOver", func(t *testing.T) {
+		assert.True(t, ResolveModelCaps(OpenAI, "gpt-5.4").SupportsNamespaceTools(true))
+		assert.False(t, ResolveModelCaps(OpenAI, "gpt-5.4").SupportsNamespaceTools(false))
+	})
+
+	t.Run("ZeroValue", func(t *testing.T) {
+		var caps ModelCaps
+		assert.False(t, caps.SupportsNamespaceTools(false))
+	})
+}
+
+// ModelCaps.ToolNameMaxLength: a row's tool_name_max_length replaces the caller's
+// per-provider default; absent hands the default back.
+func TestModelCaps_ToolNameMaxLength(t *testing.T) {
+	t.Run("RowWins", func(t *testing.T) {
+		model := "model-with-short-tool-names"
+		setCapabilityOverride(t, model, ModelCapabilities{ToolNameMaxLength: new(40)})
+		assert.Equal(t, 40, ResolveModelCaps(Anthropic, model).ToolNameMaxLength(128))
+	})
+	t.Run("AbsentFallsBack", func(t *testing.T) {
+		assert.Equal(t, 128, ResolveModelCaps(Anthropic, "no-row").ToolNameMaxLength(128))
+	})
+	t.Run("NonPositiveRowIgnored", func(t *testing.T) {
+		model := "model-with-bad-row"
+		setCapabilityOverride(t, model, ModelCapabilities{ToolNameMaxLength: new(0)})
+		assert.Equal(t, 64, ResolveModelCaps(OpenAI, model).ToolNameMaxLength(64))
+	})
+}
+
+// ModelCaps.ReservedToolNamespaces: a non-empty row replaces the caller's
+// hardcoded list outright; an absent or empty row hands the fallback back.
+func TestModelCaps_ReservedToolNamespaces(t *testing.T) {
+	fallback := []string{"web", "python"}
+
+	t.Run("RowReplacesFallback", func(t *testing.T) {
+		model := "mantle-model-reserved-row"
+		setCapabilityOverride(t, model, ModelCapabilities{ReservedToolNamespaces: []string{"only_this"}})
+		assert.Equal(t, []string{"only_this"}, ResolveModelCaps(BedrockMantle, model).ReservedToolNamespaces(fallback))
+	})
+
+	t.Run("EmptyRowFallsBack", func(t *testing.T) {
+		model := "mantle-model-empty-row"
+		setCapabilityOverride(t, model, ModelCapabilities{ReservedToolNamespaces: []string{}})
+		assert.Equal(t, fallback, ResolveModelCaps(BedrockMantle, model).ReservedToolNamespaces(fallback))
+	})
+
+	t.Run("AbsentRowFallsBack", func(t *testing.T) {
+		assert.Equal(t, fallback, ResolveModelCaps(BedrockMantle, "no-row").ReservedToolNamespaces(fallback))
+		assert.Nil(t, ResolveModelCaps(BedrockMantle, "no-row").ReservedToolNamespaces(nil))
+	})
+
+	t.Run("ZeroValue", func(t *testing.T) {
+		var caps ModelCaps
+		assert.Equal(t, fallback, caps.ReservedToolNamespaces(fallback))
+
+	})
+}
+
 // A row's effort ladder is taken verbatim over the caller's name-based fallback
 // and the base set — narrowing included, which is what the per-level booleans
 // this replaced could not express.
@@ -321,4 +395,57 @@ func TestResolveModelCaps_NormalizesRepeatedProviderPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The base-path split is not a preference: mantle answers a model on exactly one
+// of its two paths and 400s on the other, so every closed generation has to be
+// named. The datasheet leads so a new one is a published row, not a release.
+func TestResolveBedrockMantleBasePath(t *testing.T) {
+	t.Run("FamilyFallback", func(t *testing.T) {
+		cases := []struct {
+			model string
+			want  BedrockMantleBasePath
+		}{
+			{"openai.gpt-5.6-terra", BedrockMantleBasePathOpenAIV1},
+			{"openai.gpt-6-astra", BedrockMantleBasePathOpenAIV1},
+			{"gpt-6-astra", BedrockMantleBasePathOpenAIV1},
+			{"google.gemma-4-31b", BedrockMantleBasePathOpenAIV1},
+			{"xai.grok-4.3", BedrockMantleBasePathOpenAIV1},
+			{"openai.gpt-oss-120b", BedrockMantleBasePathV1},
+			{"openai.gpt-oss-safeguard-120b", BedrockMantleBasePathV1},
+			{"google.gemma-3-12b-it", BedrockMantleBasePathV1},
+			{"deepseek.v3.2", BedrockMantleBasePathV1},
+		}
+		for _, tc := range cases {
+			if got := ResolveBedrockMantleBasePath(tc.model); got != tc.want {
+				t.Errorf("ResolveBedrockMantleBasePath(%q) = %q, want %q", tc.model, got, tc.want)
+			}
+		}
+	})
+
+	// Both directions, so a published row can correct the fallback either way.
+	t.Run("DatasheetWinsOverFamily", func(t *testing.T) {
+		model := "openai.gpt-oss-120b" // fallback says v1
+		setCapabilityOverride(t, model, ModelCapabilities{BedrockMantleBasePath: BedrockMantleBasePathOpenAIV1})
+		if got := ResolveBedrockMantleBasePath(model); got != BedrockMantleBasePathOpenAIV1 {
+			t.Errorf("datasheet should promote to openai/v1, got %q", got)
+		}
+	})
+
+	t.Run("DatasheetCanDemote", func(t *testing.T) {
+		model := "openai.gpt-6-astra" // fallback says openai/v1
+		setCapabilityOverride(t, model, ModelCapabilities{BedrockMantleBasePath: BedrockMantleBasePathV1})
+		if got := ResolveBedrockMantleBasePath(model); got != BedrockMantleBasePathV1 {
+			t.Errorf("datasheet should demote to v1, got %q", got)
+		}
+	})
+
+	// A value shipped ahead of this binary must not win; the fallback still answers.
+	t.Run("UnrecognisedValueFallsBack", func(t *testing.T) {
+		model := "openai.gpt-6-astra"
+		setCapabilityOverride(t, model, ModelCapabilities{BedrockMantleBasePath: BedrockMantleBasePath("v3")})
+		if got := ResolveBedrockMantleBasePath(model); got != BedrockMantleBasePathOpenAIV1 {
+			t.Errorf("unrecognised value should fall back to openai/v1, got %q", got)
+		}
+	})
 }

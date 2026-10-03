@@ -79,7 +79,9 @@ Datadog officially supports agentless submission for [LLM Observability](https:/
 | `enable_llm_obs` | `bool` | No | `true` | Enable LLM Observability |
 | `group_traces_by_session` | `bool` | No | `false` | Group requests sharing the same `x-bf-session-id` into one APM trace (agent mode only). See [Grouping APM Traces by Session](#grouping-apm-traces-by-session) |
 | `disable_content_logging` | `bool` | No | `false` | Drop message content from APM spans and LLM Observability payloads. See [Controlling Exported Content](#controlling-exported-content) |
+| `excluded_attributes` | `string[]` | No | — | Span attribute names to leave out of exported spans. See [Excluding Attributes](#excluding-attributes) |
 | `request_headers` | `string[]` | No | - | Request-header name patterns to capture and attach to spans. Supports exact names and wildcards (`x-custom-*`, `*`) |
+| `metric_dimensions` | `string[]` | No | - | `x-bf-dim-*` dimension names to add as metric tags. See [Dimensions in Metrics](#dimensions-in-metrics) |
 | `agentless` | `bool` | No | `false` | Use agentless mode (direct API) |
 | `api_key` | `string` | Agentless only | - | Datadog API key (supports `env.VAR_NAME`) |
 | `site` | `string` | No | `datadoghq.com` | Datadog site/region |
@@ -406,6 +408,28 @@ For each LLM operation, the plugin sends to LLM Observability:
 
 ---
 
+## Dimensions in Metrics
+
+Per-request dimensions sent as `x-bf-dim-*` headers reach Datadog **APM spans automatically** — every span attribute becomes a tag, so `x-bf-dim-team: platform` appears as `team:platform` on the request span with no configuration.
+
+**Metrics are opt-in.** DogStatsD tags are not added unless the dimension is named in `metric_dimensions`:
+
+```json
+{
+  "metric_dimensions": ["team", "environment"]
+}
+```
+
+With that config, `x-bf-dim-team: platform` adds `team:platform` to every `bifrost.*` metric. A dimension not listed is ignored for metrics (it still reaches spans).
+
+<Warning>
+Dimension names and values are operator-defined and unbounded. Each name added here multiplies metric series by that dimension's distinct values, and every new tag key counts toward Datadog's custom-metric cardinality. List only low-cardinality dimensions — `environment` or `region`, not `user_id` or `request_id`.
+</Warning>
+
+<Note>
+Prometheus has the same opt-in model via its `custom_labels` setting. Per-user attribution without the cardinality cost is available from BigQuery columns or Splunk event fields.
+</Note>
+
 ## Metrics Reference
 
 The plugin emits the following metrics to Datadog:
@@ -414,7 +438,7 @@ The plugin emits the following metrics to Datadog:
 |--------|------|-------------|------|
 | `bifrost.requests.total` | Counter | Total LLM requests | provider, model, method |
 | `bifrost.success.total` | Counter | Successful requests | provider, model, method |
-| `bifrost.errors.total` | Counter | Failed requests | provider, model, method, reason |
+| `bifrost.errors.total` | Counter | Failed requests | provider, model, method, status_code, reason |
 | `bifrost.latency.seconds` | Histogram | Request latency distribution | provider, model, method |
 | `bifrost.tokens.input` | Counter | Input/prompt tokens consumed | provider, model |
 | `bifrost.tokens.output` | Counter | Output/completion tokens generated | provider, model |
@@ -423,7 +447,19 @@ The plugin emits the following metrics to Datadog:
 | `bifrost.cache.hits` | Counter | Cache hits | provider, model, cache_type |
 | `bifrost.stream.first_token_latency` | Histogram | Time to first token (streaming) | provider, model |
 | `bifrost.stream.inter_token_latency` | Histogram | Inter-token latency (streaming) | provider, model |
-| `bifrost.mcp.client.operation.duration` | Histogram | Duration of an MCP tool call (mirrors the OTel semconv `mcp.client.operation.duration`) | mcp_method, mcp_tool_name, network_transport, error_type, virtual_key_id, virtual_key_name, team_id, team_name, customer_id, customer_name, business_unit_id, business_unit_name |
+| `bifrost.mcp.client.operation.duration` | Histogram | Duration of an MCP tool call (mirrors the OTel semconv `mcp.client.operation.duration`) | mcp_method, mcp_tool_name, network_transport, error_type, virtual_key_id, virtual_key_name, team_id, team_name, customer_id, customer_name, business_unit_id, business_unit_name, project_id, project_name |
+
+### Error tags
+
+`bifrost.errors.total` carries two error dimensions, mirroring `bifrost_error_requests_total` on the [Prometheus](./prometheus#error-types) and [OTel](./otel) sides.
+
+`status_code` is the status the failure resolves to. For a failure answered over HTTP that is the status the caller received, and it includes the 500s Bifrost raises internally — a request that fails during conversion or on an unparseable provider response has no upstream status of its own. For an error delivered inside an already-committed stream the caller saw HTTP 200 and the error in the event body, so this is the status the failure would have carried, not the wire status. Alert on this.
+
+`reason` is a per-provider vocabulary kept for existing dashboards and is deprecated; it resolves from `bifrost.error.type`, then `gen_ai.error.type`, then `gen_ai.error.code`, then `unknown`. Prefer `status_code`, or the normalized `bifrost.error.type` on the span.
+
+<Note>
+Before Bifrost 2.2.2 these internally-raised failures were tagged `status_code:unknown`, so 5xx dashboards under-counted them. If you have alerts or dashboards keyed on `status_code:unknown`, repoint them — that value is now emitted only for a span carrying no status at all.
+</Note>
 
 ### Migrating from `bifrost.cost.usd`
 
@@ -452,7 +488,7 @@ All metrics include your configured `custom_tags` plus automatic tags for:
 
 When a routing rule references `complexity_tier`, two additional tags are set:
 - `complexity_tier` - The complexity tier the request was classified into: `SIMPLE`, `MEDIUM`, or `COMPLEX` (Datadog normalizes tag values to lowercase, so query as `simple`/`medium`/`complex`)
-- `complexity_mechanism` - How the tier was classified: `semantic`, or `skipped` when classification ran but produced no tier
+- `complexity_mechanism` - How the tier was determined: `semantic`, `jev`, `llm`, `session`, or `skipped` when classification produced no tier
 
 Use them to attribute cost, latency, and volume to classified complexity, e.g. `sum:bifrost.request.cost.usd{complexity_tier:complex} by {model}`. The raw complexity score is not exported as a metric tag because its cardinality is unbounded; it remains available in request logs and trace attributes.
 
@@ -502,7 +538,7 @@ Set `disable_content_logging: true` to stop message content from reaching Datado
 <Warning>
 This flag is **independent** of the global `client.disable_content_logging`, which governs the Bifrost log store only. Setting the client flag does not stop content from reaching Datadog. Set `disable_content_logging` on the Datadog connector as well.
 
-It also does **not** cover attribution identifiers. Metric tags continue to include `user_id`, `user_name`, `team_ids`, `team_names`, `customer_ids`, `customer_names`, `business_unit_ids`, and `business_unit_names`. If end-user identifiers are sensitive in your deployment, treat that as a separate concern from content logging.
+It also does **not** cover attribution identifiers. Metric tags continue to include `user_id`, `user_name`, `team_ids`, `team_names`, `customer_ids`, `customer_names`, `business_unit_ids`, `business_unit_names`, `project_id`, and `project_name`. If end-user identifiers are sensitive in your deployment, treat that as a separate concern from content logging.
 
 Values captured via `request_headers` are attached to spans regardless of this flag. Only enable header capture for headers you intend to export.
 </Warning>
@@ -526,9 +562,23 @@ Values captured via `request_headers` are attached to spans regardless of this f
 
 ---
 
+### Excluding Attributes
+
+Some span attributes are large and not needed downstream. Tool definitions are a common example. List the attribute names you want left out of exported spans:
+
+```json
+{
+  "excluded_attributes": ["gen_ai.request.tools"]
+}
+```
+
+Names are matched exactly, as they appear on the exported span. A name that does not match any attribute is ignored, so a typo silently has no effect. Check the spelling against a span you have already received.
+
+This is different from [Plugin Span Filtering](#plugin-span-filtering), which chooses which plugin **spans** to export. Use `excluded_attributes` to drop individual attributes from the spans you do export.
+
 ## Plugin Span Filtering
 
-By default every plugin's pre- and post-hook execution generates a span, which can bloat APM traces when many plugins are active (e.g. 8 built-in plugins × 2 hooks = 16 plugin spans per request). Use `plugin_span_filter` inside the Datadog plugin config to control which plugin spans are exported. This affects only the exported APM trace spans — plugin execution and metrics are unchanged.
+By default every plugin's pre- and post-hook execution generates a span, which can bloat APM traces when many plugins are active (e.g. 8 built-in plugins × 2 hooks = 16 plugin spans per request). Use `plugin_span_filter` inside the Datadog plugin config to control which plugin spans are exported. It selects whole spans by plugin name, not individual attributes. To drop an attribute, see [Excluding Attributes](#excluding-attributes). This affects only the exported APM trace spans; plugin execution and metrics are unchanged.
 
 **Via config.json** (inside the Datadog plugin config):
 

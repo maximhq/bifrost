@@ -99,6 +99,11 @@ func (p *CompatPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 	return nil
 }
 
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *CompatPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged.
 func (p *CompatPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
@@ -183,11 +188,10 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
-	if (shouldConvertParamsOverride && shouldConvertParamsOverrideEnabled) || p.config.ShouldConvertParams {
-		if applied := applyParameterConversion(modifiedReq); len(applied) > 0 {
-			ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("converted params for provider compatibility: %s", strings.Join(applied, ", ")))
-		}
-	}
+	// Namespace-tool flattening used to run here under should_convert_params. It moved
+	// to core dispatch (prepareResponsesRequest), where it applies to every provider
+	// whose wire lacks the namespace type and maps tool calls back on the response.
+	// The flag is still parsed so existing configs load; it no longer changes anything.
 
 	return modifiedReq, nil, nil
 }

@@ -45,6 +45,29 @@ var (
 	// each user manages their own auth and there is no shared upstream
 	// connection to "reconnect". Distinct from "not implemented".
 	ErrMCPReconnectNotApplicable = errors.New("reconnect is not applicable for this client type")
+	// ErrMCPClientNotFound signals that no MCP client is registered under the
+	// given ID. Callers that surface this to an operator should map it to a
+	// 404 rather than a generic failure.
+	ErrMCPClientNotFound = errors.New("mcp client not found")
+	// ErrMCPRefreshNotApplicable signals that an on-demand tool refresh is not
+	// meaningful for this client right now — it is disabled, its credential is
+	// confirmed dead, or it is still awaiting the one-time admin verification
+	// flow. The request is well-formed; the client is just not in a state
+	// where discovery means anything. Distinct from a discovery failure.
+	ErrMCPRefreshNotApplicable = errors.New("tool refresh is not applicable for this client's current state")
+)
+
+// MCPInboundBearerOmittedReason says why a request that presented an identity-provider token reached
+// token-exchange resolution without one to exchange. Only the auth layer that handled the inbound
+// credential knows the difference between a token it rejected and no token at all, and it records
+// the rejection under BifrostContextKeyMCPInboundBearerOmitted so the refusal a caller reads back
+// names the actual cause. A request with no record simply carried no token.
+type MCPInboundBearerOmittedReason string
+
+const (
+	// MCPInboundBearerRejected: the identity-provider token failed validation, so nothing verified
+	// could be exchanged on the caller's behalf.
+	MCPInboundBearerRejected MCPInboundBearerOmittedReason = "rejected"
 )
 
 // MCPAuthRequiredKind discriminates the kind of inline-401 auth flow surfaced
@@ -209,6 +232,11 @@ type MCPConfig struct {
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
 
+	// VirtualMCPs are Virtual MCP definitions declared in config.json: named bundles of tools from one
+	// or more MCP clients, served at /mcp/<endpoint_slug> and assignable to virtual keys. Reconciled
+	// into the config store at load. This is the canonical key; mcp.tool_groups is a deprecated alias.
+	VirtualMCPs []VirtualMCPConfig `json:"virtual_mcps,omitempty"`
+
 	// Function to fetch a new request ID for each tool call result message in agent mode,
 	// this is used to ensure that the tool call result messages are unique and can be tracked in plugins or by the user.
 	// This id is attached to ctx.Value(schemas.BifrostContextKeyRequestID) in the agent mode.
@@ -223,6 +251,35 @@ type MCPConfig struct {
 	// ReleasePluginPipeline releases a plugin pipeline back to the pool.
 	// This should be called after the plugin pipeline is no longer needed.
 	ReleasePluginPipeline func(pipeline interface{}) `json:"-"`
+}
+
+// VirtualMCPConfig is a Virtual MCP declared in config.json (mcp.virtual_mcps). It reconciles into a
+// Virtual MCP in the config store: a bundle of tools from one or more MCP clients, served at
+// /mcp/<endpoint_slug> and attachable to virtual keys.
+type VirtualMCPConfig struct {
+	// ID, when set, updates the Virtual MCP with this DB id rather than matching by name.
+	ID uint `json:"id,omitempty"`
+	// Name is the display name (required, unique).
+	Name string `json:"name"`
+	// EndpointSlug is the URL-safe path the Virtual MCP is served at (/mcp/<slug>). Honored on create
+	// only (immutable after); derived from the name when omitted. Unique across Virtual MCPs and MCP clients.
+	EndpointSlug string `json:"endpoint_slug,omitempty"`
+	// Description is free text.
+	Description *string `json:"description,omitempty"`
+	// Enabled defaults to true when omitted; a disabled Virtual MCP is not served.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Tools are the per-client tool specs the Virtual MCP exposes (required).
+	Tools []MCPToolSpecConfig `json:"tools"`
+	// VirtualKeyIDs are the virtual keys this Virtual MCP is attached to (reachable through them).
+	VirtualKeyIDs []string `json:"virtual_key_ids,omitempty"`
+}
+
+// MCPToolSpecConfig names a source MCP client (by id or name) and which of its tools a Virtual MCP
+// exposes: ["*"] = all (including future tools), [] = none, a named list = only those.
+type MCPToolSpecConfig struct {
+	MCPClientID   string   `json:"mcp_client_id,omitempty"`
+	MCPClientName string   `json:"mcp_client_name,omitempty"`
+	ToolNames     []string `json:"tool_names,omitempty"`
 }
 
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
@@ -278,6 +335,10 @@ type MCPToolManagerConfig struct {
 	MaxAgentDepth         int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
+	// MaxInstructionsPerClient bounds one server's forwarded instructions, in bytes. 0 is the default.
+	MaxInstructionsPerClient int `json:"max_instructions_per_client,omitempty"`
+	// MaxInstructionsTotal bounds the whole aggregate, in bytes. 0 is the default.
+	MaxInstructionsTotal int `json:"max_instructions_total,omitempty"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler so that tool_execution_timeout treats
@@ -317,6 +378,12 @@ func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
 const (
 	DefaultMaxAgentDepth        = 10
 	DefaultToolExecutionTimeout = 30 * time.Second
+
+	// Byte bounds on forwarded instructions. A gateway aggregating tens of upstreams can
+	// otherwise hand every caller an unbounded prefix, which on the inference path is billed
+	// on every request.
+	DefaultMaxInstructionsPerClient = 4096
+	DefaultMaxInstructionsTotal     = 16384
 )
 
 // CodeModeBindingLevel defines how tools are exposed in the VFS for code execution
@@ -326,6 +393,14 @@ const (
 	CodeModeBindingLevelServer CodeModeBindingLevel = "server"
 	CodeModeBindingLevelTool   CodeModeBindingLevel = "tool"
 )
+
+// MCPServerInstructions is one upstream's instructions, labeled with the client it came from.
+type MCPServerInstructions struct {
+	ClientName   string `json:"client_name"`
+	Instructions string `json:"instructions"`
+	// MaxLength is this server's own byte cap; 0 defers to the global one.
+	MaxLength int `json:"max_length,omitempty"`
+}
 
 // MCPAuthType defines the authentication type for MCP connections
 type MCPAuthType string
@@ -500,11 +575,13 @@ type MCPClientConfig struct {
 	// time. Ignored for per-user auth types (already always per-call
 	// regardless).
 	NeedsSessionStickiness *bool              `json:"needs_session_stickiness,omitempty"`
-	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`     // Per-client override for tool sync interval (0 = use global; negative values are rejected)
-	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"` // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
-	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`           // Tool pricing for each tool (cost per execution)
-	Disabled               bool               `json:"disabled"`                         // Whether the client is intentionally disabled (stops connection and workers)
-	ConfigHash             string             `json:"-"`                                // Config hash for reconciliation (not serialized)
+	RequirePublicTarget    bool               `json:"require_public_target,omitempty"`   // Server-set: registered without admin auth, so every dial must resolve to a public address
+	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global; negative values are rejected)
+	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
+	MaxInstructionsLength  int                `json:"max_instructions_length,omitempty"` // Per-client override for the forwarded instruction byte cap (0 = use global from tool_manager_config)
+	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)
+	Disabled               bool               `json:"disabled"`                          // Whether the client is intentionally disabled (stops connection and workers)
+	ConfigHash             string             `json:"-"`                                 // Config hash for reconciliation (not serialized)
 	// AllowByDefault opens the client to every caller that has not been assigned it explicitly: all
 	// of its tools, with no per-caller configuration. An explicit assignment for a caller decides for
 	// that caller instead, including one that grants no tool at all.
@@ -516,6 +593,9 @@ type MCPClientConfig struct {
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+	// DiscoveredInstructions is the upstream's initialize `instructions`, persisted for the
+	// same reason DiscoveredTools is: per-call clients hold no connection to re-read it from.
+	DiscoveredInstructions string `json:"-"`
 
 	// PendingOAuthConfig holds the inline `oauth_config` block declared in
 	// config.json for shared-OAuth MCP clients (auth_type == "oauth").
@@ -923,11 +1003,14 @@ type MCPClientState struct {
 	ToolMap         map[string]ChatTool      // Available tools mapped by name
 	ToolNameMapping map[string]string        // Maps sanitized_name -> original_mcp_name (e.g., "notion_search" -> "notion-search")
 	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
-	CancelFunc      context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
-	State           MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
-	LastFailure     *MCPConnectionFailure    `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
-	ConnGeneration  uint64                   `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastToolsHash   string                   `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
+	// ServerInstructions is the upstream's initialize `instructions`, as of the last handshake.
+	// Overwritten (never appended to) on reconnect, so dropping it upstream drops it here.
+	ServerInstructions string                `json:"server_instructions,omitempty"`
+	CancelFunc         context.CancelFunc    `json:"-"` // Cancel function for SSE connections (not serialized)
+	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
+	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
+	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
+	LastToolsHash      string                `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.

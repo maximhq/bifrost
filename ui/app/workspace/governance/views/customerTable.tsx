@@ -1,4 +1,6 @@
 import PageTitle from "@/components/pageTitle";
+import { DisabledReason, DisabledReasonMenuItem } from "@/components/ui/disabledReason";
+import { actionDisabledReason } from "@/lib/utils/governance";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
@@ -22,6 +24,7 @@ import { getErrorMessage, useDeleteCustomerMutation } from "@/lib/store";
 import { Customer, Team } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
+import { useEntityProfileLimits } from "@enterprise/components/access-profiles/fragments/entityAccessProfileSection";
 import { CustomerDetailSheet } from "@enterprise/components/user-groups/sheets/customerDetailSheet";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
@@ -65,8 +68,8 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
-				<DropdownMenuItem
-					disabled={!canUpdate}
+				<DisabledReasonMenuItem
+					reason={actionDisabledReason(canUpdate, "edit", "customers")}
 					data-testid={`customer-button-edit-${customer.id}`}
 					onSelect={(e) => {
 						e.stopPropagation();
@@ -79,7 +82,7 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 				>
 					<Edit className="h-4 w-4" />
 					Edit
-				</DropdownMenuItem>
+				</DisabledReasonMenuItem>
 				<DropdownMenuItem asChild className="cursor-pointer" data-testid={`customer-button-view-logs-${customer.id}`}>
 					<Link
 						to="/workspace/logs"
@@ -94,9 +97,9 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 						View logs
 					</Link>
 				</DropdownMenuItem>
-				<DropdownMenuItem
+				<DisabledReasonMenuItem
+					reason={actionDisabledReason(canDelete, "delete", "customers")}
 					variant="destructive"
-					disabled={!canDelete}
 					data-testid={`customer-button-delete-${customer.id}`}
 					onSelect={(e) => {
 						e.preventDefault();
@@ -108,7 +111,7 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 				>
 					<Trash2 className="h-4 w-4" />
 					Delete
-				</DropdownMenuItem>
+				</DisabledReasonMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -148,6 +151,8 @@ export default function CustomersTable({
 	const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update);
 	const hasDeleteAccess = useRbac(RbacResource.Customers, RbacOperation.Delete);
+	// The profile limits of the customers that hold an access profile (enterprise; empty otherwise).
+	const profileLimits = useEntityProfileLimits("customer", true);
 
 	const [deleteCustomer, { isLoading: isDeleting }] = useDeleteCustomerMutation();
 
@@ -246,10 +251,17 @@ export default function CustomersTable({
 									data-testid="customers-search-input"
 								/>
 							</div>
-							<Button className="ml-auto" data-testid="customer-button-create" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
-								<Plus className="h-4 w-4" />
-								Add Customer
-							</Button>
+							<DisabledReason reason={actionDisabledReason(hasCreateAccess, "create", "customers")} className="ml-auto">
+								<Button
+									className="ml-auto h-9"
+									data-testid="customer-button-create"
+									onClick={handleAddCustomer}
+									disabled={!hasCreateAccess}
+								>
+									<Plus className="h-4 w-4" />
+									Add Customer
+								</Button>
+							</DisabledReason>
 						</div>
 
 						<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="customer-table-container">
@@ -276,27 +288,32 @@ export default function CustomersTable({
 											const customerTeams = getTeamsForCustomer(customer.id);
 											const vkCount = customer.virtual_key_count ?? 0;
 
+											// A customer governed by an access profile has no limits of its own; its
+											// row shows the profile's.
+											const profile = profileLimits[customer.id];
+											const rateLimit = profile ? profile.rateLimit : customer.rate_limit;
+
 											// Budget calculations (most-exhausted budget drives the row highlight)
-											const budgets = customer.budgets ?? [];
+											const budgets = profile ? profile.budgets : (customer.budgets ?? []);
 											const isBudgetExhausted = budgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 
 											// Rate limit calculations
 											const isTokenLimitExhausted =
-												customer.rate_limit?.token_max_limit &&
-												customer.rate_limit.token_max_limit > 0 &&
-												customer.rate_limit.token_current_usage >= customer.rate_limit.token_max_limit;
+												rateLimit?.token_max_limit &&
+												rateLimit.token_max_limit > 0 &&
+												rateLimit.token_current_usage >= rateLimit.token_max_limit;
 											const isRequestLimitExhausted =
-												customer.rate_limit?.request_max_limit &&
-												customer.rate_limit.request_max_limit > 0 &&
-												customer.rate_limit.request_current_usage >= customer.rate_limit.request_max_limit;
+												rateLimit?.request_max_limit &&
+												rateLimit.request_max_limit > 0 &&
+												rateLimit.request_current_usage >= rateLimit.request_max_limit;
 											const isRateLimitExhausted = isTokenLimitExhausted || isRequestLimitExhausted;
 											const tokenPercentage =
-												customer.rate_limit?.token_max_limit && customer.rate_limit.token_max_limit > 0
-													? Math.min((customer.rate_limit.token_current_usage / customer.rate_limit.token_max_limit) * 100, 100)
+												rateLimit?.token_max_limit && rateLimit.token_max_limit > 0
+													? Math.min((rateLimit.token_current_usage / rateLimit.token_max_limit) * 100, 100)
 													: 0;
 											const requestPercentage =
-												customer.rate_limit?.request_max_limit && customer.rate_limit.request_max_limit > 0
-													? Math.min((customer.rate_limit.request_current_usage / customer.rate_limit.request_max_limit) * 100, 100)
+												rateLimit?.request_max_limit && rateLimit.request_max_limit > 0
+													? Math.min((rateLimit.request_current_usage / rateLimit.request_max_limit) * 100, 100)
 													: 0;
 
 											const isExhausted = isBudgetExhausted || isRateLimitExhausted;
@@ -363,6 +380,7 @@ export default function CustomersTable({
 																						</span>
 																					</div>
 																					<Progress
+																						aria-label="Budget usage"
 																						value={pct}
 																						className={cn(
 																							"bg-muted/70 dark:bg-muted/30 h-1.5",
@@ -392,19 +410,20 @@ export default function CustomersTable({
 														)}
 													</TableCell>
 													<TableCell className="min-w-[180px]">
-														{customer.rate_limit ? (
+														{rateLimit ? (
 															<div className="space-y-2.5">
-																{customer.rate_limit.token_max_limit && (
+																{rateLimit.token_max_limit && (
 																	<Tooltip>
 																		<TooltipTrigger asChild>
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4 text-xs">
-																					<span className="font-medium">{customer.rate_limit.token_max_limit.toLocaleString()} tokens</span>
+																					<span className="font-medium">{rateLimit.token_max_limit.toLocaleString()} tokens</span>
 																					<span className="text-muted-foreground">
-																						{formatResetDuration(customer.rate_limit.token_reset_duration || "1h")}
+																						{formatResetDuration(rateLimit.token_reset_duration || "1h")}
 																					</span>
 																				</div>
 																				<Progress
+																					aria-label="Token usage"
 																					value={tokenPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",
@@ -419,26 +438,27 @@ export default function CustomersTable({
 																		</TooltipTrigger>
 																		<TooltipContent>
 																			<p className="font-medium">
-																				{customer.rate_limit.token_current_usage.toLocaleString()} /{" "}
-																				{customer.rate_limit.token_max_limit.toLocaleString()} tokens
+																				{rateLimit.token_current_usage.toLocaleString()} / {rateLimit.token_max_limit.toLocaleString()}{" "}
+																				tokens
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
-																				Resets {formatResetDuration(customer.rate_limit.token_reset_duration || "1h")}
+																				Resets {formatResetDuration(rateLimit.token_reset_duration || "1h")}
 																			</p>
 																		</TooltipContent>
 																	</Tooltip>
 																)}
-																{customer.rate_limit.request_max_limit && (
+																{rateLimit.request_max_limit && (
 																	<Tooltip>
 																		<TooltipTrigger asChild>
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4 text-xs">
-																					<span className="font-medium">{customer.rate_limit.request_max_limit.toLocaleString()} req</span>
+																					<span className="font-medium">{rateLimit.request_max_limit.toLocaleString()} req</span>
 																					<span className="text-muted-foreground">
-																						{formatResetDuration(customer.rate_limit.request_reset_duration || "1h")}
+																						{formatResetDuration(rateLimit.request_reset_duration || "1h")}
 																					</span>
 																				</div>
 																				<Progress
+																					aria-label="Request usage"
 																					value={requestPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",
@@ -453,11 +473,11 @@ export default function CustomersTable({
 																		</TooltipTrigger>
 																		<TooltipContent>
 																			<p className="font-medium">
-																				{customer.rate_limit.request_current_usage.toLocaleString()} /{" "}
-																				{customer.rate_limit.request_max_limit.toLocaleString()} requests
+																				{rateLimit.request_current_usage.toLocaleString()} / {rateLimit.request_max_limit.toLocaleString()}{" "}
+																				requests
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
-																				Resets {formatResetDuration(customer.rate_limit.request_reset_duration || "1h")}
+																				Resets {formatResetDuration(rateLimit.request_reset_duration || "1h")}
 																			</p>
 																		</TooltipContent>
 																	</Tooltip>

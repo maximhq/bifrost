@@ -101,6 +101,51 @@ VertexKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     auth_credentials:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
+    force_single_region:
+      type: boolean
+      default: false
+      description: When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint.
+    aws_workload_identity:
+      type: object
+      description: >-
+        GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity,
+        ECS task role, EC2 instance profile, AWS_* env vars). Takes precedence over auth_credentials;
+        the two must not be combined. aws_role_arn is redacted in GET responses; the other fields are
+        identifiers and are returned in clear.
+      properties:
+        audience:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        service_account_email:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        token_lifetime_seconds:
+          type: integer
+          minimum: 600
+          maximum: 43200
+          description: Lifetime of the impersonated service-account token in seconds; only used with service_account_email. Default 3600. Lifetimes above 3600 require the target service account to be allowed by the organization policy constraint constraints/iam.allowServiceAccountCredentialLifetimeExtension; otherwise token generation fails.
+        aws_region:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        aws_role_arn:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+      required: [audience]
+      additionalProperties: false
+  # A key authenticates with either a credentials JSON or AWS workload identity federation, never
+  # both; mirrors the rule in transports/config.schema.json and the API's validation.
+  if:
+    required: [aws_workload_identity]
+  then:
+    properties:
+      auth_credentials:
+        anyOf:
+          - type: string
+            maxLength: 0
+          - type: object
+            properties:
+              value:
+                type: string
+                maxLength: 0
+              ref:
+                type: string
+                maxLength: 0
 
 BedrockKeyConfig:
   type: object
@@ -196,12 +241,12 @@ Key:
       type: array
       items:
         type: string
-      description: List of models this key can access (whitelist)
+      description: List of models this key can access (whitelist). `["*"]` allows every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name; an empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400. `blacklisted_models` wins over this list.
     blacklisted_models:
       type: array
       items:
         type: string
-      description: List of models this key cannot access (blacklist)
+      description: List of models this key cannot access (blacklist), which wins over `models`. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name; an empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     weight:
       type: number
       description: Weight for load balancing
@@ -304,6 +349,12 @@ CustomProviderConfig:
   properties:
     is_key_less:
       type: boolean
+    does_not_send_done_marker:
+      type: boolean
+      description: >-
+        Provider ends streams on finish_reason without sending a data: [DONE] marker.
+        Without this, a provider that also keeps the connection open leaves the stream
+        waiting for a marker it never sends.
     base_provider_type:
       $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     allowed_requests:
@@ -333,6 +384,8 @@ ProviderResponse:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    prompt_cache:
+      $ref: '#/PromptCacheConfig'
     provider_status:
       $ref: '#/ProviderStatus'
     status:
@@ -378,6 +431,41 @@ AddProviderRequest:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    prompt_cache:
+      $ref: '#/PromptCacheConfig'
+
+CacheControlInjectionPoint:
+  type: object
+  description: One place to add a cache breakpoint. Must set role, index, or both.
+  properties:
+    location:
+      type: string
+      enum: [message]
+    role:
+      type: string
+      enum: [system, developer, user, assistant]
+    index:
+      type: integer
+      description: Negative values count from the end, so -1 is the last message.
+
+PromptCacheConfig:
+  type: object
+  description: >-
+    Synthesize prompt-cache breakpoints for requests that carry none. Off by default.
+    Requests that already carry their own cache markers are never modified.
+  properties:
+    auto_inject:
+      type: boolean
+      description: Mark the first cacheable content block, keeping the cached prefix stable across agent turns.
+    ttl:
+      type: string
+      enum: ["1h"]
+      description: Lifetime for injected markers. Omit for the provider default.
+    cache_control_injection_points:
+      type: array
+      description: Target specific messages instead. When set, replaces auto_inject rather than adding to it.
+      items:
+        $ref: '#/CacheControlInjectionPoint'
 
 UpdateProviderRequest:
   type: object
@@ -397,6 +485,8 @@ UpdateProviderRequest:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    prompt_cache:
+      $ref: '#/PromptCacheConfig'
 
 ListProviderKeysResponse:
   type: object

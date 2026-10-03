@@ -7,10 +7,11 @@ import { getRegistrationLabel } from "../utils";
 export function OpenCodeHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
+	emptyMessage,
+	headers,
 	platform,
 	selectedServers,
 	serverScope,
-	virtualKey,
 }: HarnessInstallProps) {
 	const configPath = {
 		linux: "~/.config/opencode/opencode.json",
@@ -18,14 +19,15 @@ export function OpenCodeHarnessInstall({
 		windows: "%APPDATA%/opencode/opencode.json",
 	}[platform];
 
-	const config = useMemo(() => {
-		if (!virtualKey) return "";
-		return buildOpenCodeConfig({
-			clientConfig,
-			selectedServers: serverScope === "selected" ? selectedServers : undefined,
-			virtualKey,
-		});
-	}, [clientConfig, selectedServers, serverScope, virtualKey]);
+	const config = useMemo(
+		() =>
+			buildOpenCodeConfig({
+				clientConfig,
+				headers,
+				selectedServers: serverScope === "selected" ? selectedServers : undefined,
+			}),
+		[clientConfig, headers, selectedServers, serverScope],
+	);
 
 	return (
 		<HarnessCommandSection
@@ -33,7 +35,7 @@ export function OpenCodeHarnessInstall({
 			command={config}
 			controls={null}
 			copySuccessMessage="Config copied"
-			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
+			emptyMessage={emptyMessage}
 			harnessName="OpenCode"
 			label="Config"
 			logoSrc="/images/harness/opencode.svg"

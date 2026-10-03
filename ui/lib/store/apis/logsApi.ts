@@ -63,6 +63,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.stop_reasons && filters.stop_reasons.length > 0) {
 		params.stop_reasons = filters.stop_reasons.join(",");
 	}
+	if (filters.tool_call_names && filters.tool_call_names.length > 0) {
+		params.tool_call_names = filters.tool_call_names.join(",");
+	}
 	if (filters.complexity_tiers && filters.complexity_tiers.length > 0) {
 		params.complexity_tiers = filters.complexity_tiers.join(",");
 	}
@@ -80,6 +83,8 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	}
 	if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
 	if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
+	if (filters.min_cost !== undefined) params.min_cost = filters.min_cost;
+	if (filters.max_cost !== undefined) params.max_cost = filters.max_cost;
 	if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
 	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
@@ -143,9 +148,11 @@ export const logsApi = baseApi.injectEndpoints({
 				pagination: Pagination;
 				/** Grouped view: hide fallback-child rows so each chain lists as its root */
 				rootsOnly?: boolean;
+				/** Grouped view: collapse each session onto its earliest root row. Needs rootsOnly. */
+				groupSessions?: boolean;
 			}
 		>({
-			query: ({ filters, pagination, rootsOnly }) => ({
+			query: ({ filters, pagination, rootsOnly, groupSessions }) => ({
 				url: "/logs",
 				params: {
 					limit: pagination.limit,
@@ -153,6 +160,7 @@ export const logsApi = baseApi.injectEndpoints({
 					sort_by: pagination.sort_by,
 					order: pagination.order,
 					...(rootsOnly ? { roots_only: "true" } : {}),
+					...(groupSessions ? { group_sessions: "true" } : {}),
 					...buildFilterParams(filters),
 				},
 			}),
@@ -398,6 +406,7 @@ export const logsApi = baseApi.injectEndpoints({
 				routing_rules?: RoutingRule[];
 				routing_engines?: string[];
 				stop_reasons?: string[];
+				tool_call_names?: string[];
 				apps?: string[];
 				user_agents?: string[];
 				teams?: { id: string; name: string }[];

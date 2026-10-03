@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -56,6 +57,7 @@ type MetricsExporter struct {
 	// Bifrost metrics - histograms
 	upstreamLatencySeconds         *syncFloat64Histogram
 	overheadLatencyMicros          *syncFloat64Histogram
+	overheadComponentMicros        *syncFloat64Histogram
 	streamFirstTokenLatencySeconds *syncFloat64Histogram
 	streamInterTokenLatencySeconds *syncFloat64Histogram
 	requestRetries                 *syncFloat64Histogram
@@ -273,12 +275,10 @@ func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 		opts = append(opts, otlpmetrichttp.WithHeaders(config.Headers))
 	}
 
-	// HTTP metrics insecure mode disables TLS entirely (unlike the trace HTTP client
-	// which uses InsecureSkipVerify). buildTLSConfig is bypassed for that case.
-	if config.TLSCACert == "" && config.Insecure {
-		opts = append(opts, otlpmetrichttp.WithInsecure())
-	} else {
-		tlsConfig, err := buildTLSConfig(config.TLSCACert, false)
+	// The endpoint scheme decides the transport, so Insecure only relaxes certificate
+	// verification. The SDK rejects a TLS config on a plaintext endpoint.
+	if u, err := url.Parse(config.Endpoint); err == nil && u.Scheme == "https" {
+		tlsConfig, err := buildTLSConfig(config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
@@ -401,6 +401,14 @@ func (m *MetricsExporter) initMetrics() {
 	m.overheadLatencyMicros = &syncFloat64Histogram{
 		name:       "bifrost_overhead_latency_microseconds",
 		desc:       "Latency added by Bifrost itself, in microseconds: total request time minus time blocked on upstream providers",
+		unit:       "us",
+		meter:      m.meter,
+		boundaries: overheadLatencyBuckets,
+	}
+
+	m.overheadComponentMicros = &syncFloat64Histogram{
+		name:       "bifrost_overhead_component_microseconds",
+		desc:       "Bifrost overhead latency broken down by internal component (overhead_component attribute), in microseconds. Off by default; enable with overhead_breakdown_enabled. Requires tracing to be active",
 		unit:       "us",
 		meter:      m.meter,
 		boundaries: overheadLatencyBuckets,
@@ -545,6 +553,12 @@ func (m *MetricsExporter) RecordUpstreamLatency(ctx context.Context, latencySeco
 // the underlying accumulator already spans every retry and fallback.
 func (m *MetricsExporter) RecordOverheadLatency(ctx context.Context, overheadMicros float64, attrs ...attribute.KeyValue) {
 	m.overheadLatencyMicros.Record(ctx, overheadMicros, metric.WithAttributes(attrs...))
+}
+
+// RecordOverheadComponent records one component's share of overhead (µs). Caller passes
+// overhead_component plus the same base attrs as RecordOverheadLatency.
+func (m *MetricsExporter) RecordOverheadComponent(ctx context.Context, overheadMicros float64, attrs ...attribute.KeyValue) {
+	m.overheadComponentMicros.Record(ctx, overheadMicros, metric.WithAttributes(attrs...))
 }
 
 // RecordStreamFirstTokenLatency records first token latency metric

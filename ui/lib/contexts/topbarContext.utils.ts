@@ -11,11 +11,15 @@
  * comparison cannot tell "the page I replaced" from "the page that replaced
  * me".
  */
-/** One hop in a breadcrumb trail. `to` makes it a link; the last crumb (the
- * current page) normally has none. */
+/**
+ * One hop in a breadcrumb trail. `to` makes it a route link; `onSelect` makes
+ * it a callback for a parent view that lives in page state rather than at its
+ * own URL. The last crumb (the current page) normally has neither.
+ */
 export interface Breadcrumb {
 	label: string;
 	to?: string;
+	onSelect?: () => void;
 }
 
 /**
@@ -40,7 +44,28 @@ export interface TopbarTitleEntry {
 export function sameTitle(a: TopbarTitleValue | null, b: TopbarTitleValue | null): boolean {
 	if (a === b) return true;
 	if (!Array.isArray(a) || !Array.isArray(b)) return false;
-	return a.length === b.length && a.every((crumb, i) => crumb.label === b[i].label && crumb.to === b[i].to);
+	// A handler is compared by presence, never by identity: it is almost always a
+	// fresh closure per render, so comparing identity would defeat the guard,
+	// while ignoring it entirely would hide a crumb turning clickable. Keeping
+	// the *newest* closure reachable is useSetTopbarTitle's job, not this one's.
+	return (
+		a.length === b.length &&
+		a.every((crumb, i) => crumb.label === b[i].label && crumb.to === b[i].to && !!crumb.onSelect === !!b[i].onSelect)
+	);
+}
+
+/**
+ * Stable key for the effect that claims the title: two values with the same key
+ * are the same title as far as the topbar is concerned.
+ *
+ * A trail cannot simply be JSON.stringify'd — that drops handlers silently, so
+ * a crumb gaining or losing its onSelect would produce an unchanged key and the
+ * claim would never refire. Handlers are folded in as presence, matching
+ * sameTitle.
+ */
+export function titleKey(value: TopbarTitleValue | null): string | null {
+	if (!Array.isArray(value)) return value;
+	return JSON.stringify(value.map((crumb) => [crumb.label, crumb.to ?? null, crumb.onSelect ? 1 : 0]));
 }
 
 export const EMPTY_TITLE_ENTRY: TopbarTitleEntry = { value: null, owner: null };

@@ -23,6 +23,10 @@ The breakdown is populated automatically whenever logging is enabled. There is n
 
 ![Overhead breakdown in the log detail view](../../media/ui-log-detail-overhead-breakdown.png)
 
+<Note>
+This same per-component overhead can also be exported as a metric. Enable the opt-in `overhead_breakdown_enabled` toggle to emit `bifrost_overhead_component_microseconds`, a histogram that splits Bifrost's overhead by an `overhead_component` label. That label takes one of the same ten categories described below (`serialization`, `conversion`, `plugins`, `middleware`, `routing` for Key selection, `processing`, `networking`, `streaming` for Client delivery, `miscellaneous`, and `other`), so the metric and this UI breakdown agree, and summing the components for a given label set reconstructs the scalar `bifrost_overhead_latency_microseconds` total. See [Prometheus](/features/observability/prometheus#overhead-breakdown) and [OpenTelemetry](/features/observability/otel#overhead-breakdown). The metric is derived from completed trace spans, so like the breakdown here it only populates when tracing is active for the request.
+</Note>
+
 ---
 
 ## How it's measured
@@ -114,7 +118,6 @@ The internal request pipeline: the glue that moves a request through the core, a
 | Worker handoff | The goroutine-hop latency from the worker back to the caller |
 | Queue wait | Time the request waits in the provider queue before a worker picks it up |
 | Attribute population | Writing prompt and message attributes onto the LLM call span |
-| Miscellaneous | Pre-dispatch glue that sits on no other span: field re-reads, validation, MCP tool merge, channel-message setup |
 
 ### Networking
 
@@ -137,11 +140,12 @@ Streaming egress: sending chunks back to the client over the response socket.
 |------|------------------|
 | Client write | Writing streamed chunks back to the client |
 
-### Scheduling
+### Miscellaneous
 
 | Name | What it measures |
 |------|------------------|
-| Scheduling | Overhead not attributed to any single phase, mostly time spent passing the request between pipeline stages (a residual, see below) |
+| Miscellaneous | Small glue work that sits on no dedicated span: field re-reads, validation, MCP tool merge, channel-message setup |
+| Residual | Overhead not attributed to any single phase, mostly time spent passing the request between pipeline stages (a residual, see below) |
 
 ---
 
@@ -155,9 +159,9 @@ The **Provider processing** row is the provider's own server-side handling of th
 
 It varies by provider, and a larger value simply means more of that provider's handling is not itemized into finer rows. It is normally small.
 
-### Scheduling
+### Miscellaneous
 
-The **Scheduling** row is overhead that does not belong to any single measured phase, mostly the time the request spends being passed between the stages of the pipeline. It is normally small.
+The **Miscellaneous** category combines small glue work that sits on no dedicated span with the residual overhead that does not belong to any single measured phase, mostly the time the request spends being passed between the stages of the pipeline. It is normally small.
 
 <Note>
 Both residuals appear on **unary** (non-streaming) requests only. See below for why streaming excludes them.
@@ -169,7 +173,7 @@ Both residuals appear on **unary** (non-streaming) requests only. See below for 
 
 A streamed response is accounted for differently, because most of its time is spent waiting between chunks rather than doing Bifrost work. Two consequences:
 
-- **Provider processing and Scheduling are not shown.** For a stream, the time between chunks is off-CPU waiting, not Bifrost work, so these two residuals are left out to avoid mislabeling it.
+- **Provider processing and the Miscellaneous residual are not shown.** For a stream, the time between chunks is off-CPU waiting, not Bifrost work, so these two residuals are left out to avoid mislabeling it.
 - **Per-chunk work still appears in the usual rows.** Decoding each chunk shows up in **Response parse** (Serialization), converting chunks in **Stream convert (inbound)** and **Stream convert (outbound)** (Conversion), and writing chunks back to the client in **Client write** (Client delivery). A stream's numbers therefore read like a unary request's.
 
 ---
@@ -179,7 +183,7 @@ A streamed response is accounted for differently, because most of its time is sp
 - **Compare overhead against upstream first.** If a request feels slow but overhead is a thin sliver next to upstream, the time is the provider's, not Bifrost's.
 - **Look at the largest category.** It tells you where Bifrost spent most of its own time on the request, whether that is serialization, plugins, key selection, or networking.
 - **Drill into a category** with **View details** to see its member rows.
-- **Other** is a fallback for a row that has no assigned category, which is different from **Scheduling**: Scheduling is measured overhead that belonged to no single phase, whereas Other is a row that exists but has not been filed under a category. Every row Bifrost emits today maps to one of the nine categories, so Other is normally empty.
+- **Other** is a fallback for a row that has no assigned category, which is different from the **Miscellaneous** residual: that residual is measured overhead that belonged to no single phase, whereas Other is a row that exists but has not been filed under a category. Every row Bifrost emits today maps to one of the nine categories, so Other is normally empty.
 
 ---
 

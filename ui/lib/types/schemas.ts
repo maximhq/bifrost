@@ -108,15 +108,31 @@ export const azureKeyConfigSchema = z
 		},
 	);
 
+// Vertex AWS Workload Identity Federation block. The audience is the only mandatory field; the
+// service account, region and role hop are optional refinements of the exchange.
+export const vertexAWSWorkloadIdentitySchema = z.object({
+	audience: secretVarSchema.optional(),
+	service_account_email: secretVarSchema.optional(),
+	token_lifetime_seconds: z
+		.number()
+		.int("Token lifetime must be a whole number of seconds")
+		.min(600, "Token lifetime must be at least 600 seconds")
+		.max(43200, "Token lifetime must be at most 43200 seconds")
+		.optional(),
+	aws_region: secretVarSchema.optional(),
+	aws_role_arn: secretVarSchema.optional(),
+});
+
 // Vertex key config schema
 export const vertexKeyConfigSchema = z
 	.object({
-		_auth_type: z.enum(["service_account", "service_account_json", "api_key"]).optional(),
+		_auth_type: z.enum(["service_account", "service_account_json", "api_key", "aws_workload_identity"]).optional(),
 		project_id: secretVarSchema.optional(),
 		project_number: secretVarSchema.optional(),
 		region: secretVarSchema.optional(),
 		auth_credentials: secretVarSchema.optional(),
 		force_single_region: z.boolean().optional(),
+		aws_workload_identity: vertexAWSWorkloadIdentitySchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.project_id), {
 		message: "Project ID is required",
@@ -136,6 +152,33 @@ export const vertexKeyConfigSchema = z
 		},
 		{
 			message: "Auth Credentials is required for service account JSON authentication",
+			path: ["auth_credentials"],
+		},
+	)
+	.refine(
+		(data) => {
+			// The federation tab hides every other credential input, so the audience is what
+			// makes the key usable; without it the key would silently fall back to ADC.
+			if (data._auth_type === "aws_workload_identity") {
+				return isSecretVarSet(data.aws_workload_identity?.audience);
+			}
+			return true;
+		},
+		{
+			message: "Workload Identity Pool provider audience is required",
+			path: ["aws_workload_identity", "audience"],
+		},
+	)
+	.refine(
+		(data) => {
+			// Federation and a credentials JSON are two different identities; never send both.
+			if (isSecretVarSet(data.aws_workload_identity?.audience)) {
+				return !isSecretVarSet(data.auth_credentials);
+			}
+			return true;
+		},
+		{
+			message: "Remove the auth credentials JSON when using AWS workload identity",
 			path: ["auth_credentials"],
 		},
 	);
@@ -265,9 +308,21 @@ export const replicateKeyConfigSchema = z.object({
 // trusting the tag would let any malformed literal skip every check below.
 const isSecretVarRef = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => !!v?.ref?.trim();
 
+// A stored secret comes back from the API masked ("******" or "1234****...****5678"), and the
+// edit form round-trips that mask untouched so the server keeps the original. Judging the
+// mask's shape would fail every edit of a key whose credentials were not all retyped.
+//
+// isRedacted also treats env./vault. prefixes as hidden, but here references live in `ref`.
+// With no ref the server stores an "env.x" value as plain text, so it gets checked like one.
+const isSecretVarMasked = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	const value = v?.value ?? "";
+	if (value.startsWith("env.") || value.startsWith("vault.")) return false;
+	return isRedacted(value);
+};
+
 const isLiteralDigits = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
 	if (!isSecretVarSet(v)) return true; // presence is checked separately
-	if (isSecretVarRef(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
 	return /^\d+$/.test((v?.value ?? "").trim());
 };
 
@@ -283,7 +338,7 @@ const PEM_PRIVATE_KEY = /^-----BEGIN (RSA PRIVATE KEY|PRIVATE KEY)-----\s*\n([\s
 
 const isLiteralPEM = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
 	if (!isSecretVarSet(v)) return true;
-	if (isSecretVarRef(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
 	const body = (v?.value ?? "").replace(/\\n/g, "\n").trim();
 	const match = PEM_PRIVATE_KEY.exec(body);
 	// The back-reference makes BEGIN and END agree; the body must also carry something.
@@ -421,6 +476,7 @@ const aliasConfigObjectSchema = z.object({
 	// Replicate overrides
 	use_deployments_endpoint: z.boolean().optional(),
 	use_anthropic_endpoints: z.boolean().optional(),
+	use_openai_endpoints: z.boolean().optional(),
 });
 
 // The Go server emits the legacy string wire shape (`{"my-alias": "model-id"}`)
@@ -470,6 +526,7 @@ export const modelProviderKeySchema = z
 		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
+		use_openai_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
 	})
 	.refine(
@@ -758,6 +815,25 @@ export const openaiConfigFormSchema = z.object({
 
 export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
 
+// Prompt cache tab
+export const cacheControlInjectionPointSchema = z
+	.object({
+		location: z.literal("message"),
+		role: z.enum(["system", "developer", "user", "assistant"]).optional(),
+		index: z.number().int().optional(),
+	})
+	.refine((p) => p.role !== undefined || p.index !== undefined, {
+		message: "Set a role, an index, or both - a point with neither matches nothing",
+	});
+
+export const promptCacheFormSchema = z.object({
+	auto_inject: z.boolean(),
+	ttl: z.string().optional(),
+	cache_control_injection_points: z.array(cacheControlInjectionPointSchema).optional(),
+});
+
+export type PromptCacheFormSchema = z.infer<typeof promptCacheFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -792,6 +868,7 @@ export const allowedRequestsSchema = z.object({
 	video_remix: z.boolean(),
 	count_tokens: z.boolean(),
 	list_models: z.boolean(),
+	model_retrieve: z.boolean().optional(),
 	websocket_responses: z.boolean(),
 	realtime: z.boolean(),
 });
@@ -801,6 +878,8 @@ export const customProviderConfigSchema = z
 	.object({
 		base_provider_type: knownProviderSchema,
 		is_key_less: z.boolean().optional(),
+		does_not_send_done_marker: z.boolean().optional(),
+		wait_for_usage: z.boolean().optional(),
 		allowed_requests: allowedRequestsSchema.optional(),
 		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	})
@@ -822,6 +901,8 @@ export const formCustomProviderConfigSchema = z
 	.object({
 		base_provider_type: z.string().min(1, "Base provider type is required"),
 		is_key_less: z.boolean().optional(),
+		does_not_send_done_marker: z.boolean().optional(),
+		wait_for_usage: z.boolean().optional(),
 		allowed_requests: allowedRequestsSchema.optional(),
 		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	})
@@ -884,6 +965,7 @@ export const addProviderRequestSchema = z.object({
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
+	prompt_cache: promptCacheFormSchema.optional(),
 });
 
 // Update provider request schema
@@ -897,6 +979,7 @@ export const updateProviderRequestSchema = z.object({
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
+	prompt_cache: promptCacheFormSchema.optional(),
 });
 
 // Cache config schema
@@ -940,12 +1023,16 @@ export const coreConfigSchema = z.object({
 	disable_content_logging: z.boolean().default(false),
 	enforce_auth_on_inference: z.boolean().default(false),
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
+	delete_expired_virtual_keys: z.boolean().default(false),
+	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),
 	max_request_body_size_mb: z.number().min(1).default(100),
 	mcp_agent_depth: z.number().min(1).default(10),
 	mcp_tool_execution_timeout: z.number().min(1).default(30),
 	mcp_code_mode_binding_level: z.enum(["server", "tool"]).default("server"),
 	mcp_disable_auto_tool_inject: z.boolean().default(false),
+	mcp_max_instructions_per_client: z.number().int().min(0).default(0),
+	mcp_max_instructions_total: z.number().int().min(0).default(0),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
 });
 
@@ -1041,10 +1128,13 @@ export const otelConfigSchema = z
 		export_timeout: z.number().int().min(1).max(60).default(5),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
+		// Export per-component Bifrost overhead latency as a histogram.
+		overhead_breakdown_enabled: z.boolean().default(false),
 		metrics_endpoint: secretVarSchema.optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 		request_headers: z.array(z.string()).default([]),
 		disable_content_logging: z.boolean().default(false),
+		export_raw_payloads: z.boolean().default(false),
 		group_traces_by_session: z.boolean().default(false),
 		disable_root_span_content: z.boolean().default(false),
 	})
@@ -1231,6 +1321,8 @@ export const prometheusConfigSchema = z
 export const prometheusFormSchema = z
 	.object({
 		metrics_enabled: z.boolean().default(true),
+		overhead_breakdown_enabled: z.boolean().default(false),
+		user_labels_enabled: z.boolean().default(false),
 		push_gateway_enabled: z.boolean().default(false),
 		prometheus_config: prometheusConfigSchema,
 	})
@@ -1318,6 +1410,7 @@ export const mcpClientUpdateSchema = z
 		tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 		tool_sync_interval: z.number().min(0, "Tool sync interval must be 0 or a positive number of minutes").optional(), // 0 = use global, >0 = custom interval in minutes
 		tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
+		max_instructions_length: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server instruction byte cap
 		allowed_extra_headers: z
 			.array(z.string())
 			.optional()
@@ -1484,8 +1577,32 @@ export const budgetOverrideFormSchema = z
 		path: ["cycles"],
 	});
 
+// Proof of control for an auth_config change made while dashboard auth is disabled but an
+// admin account exists (SecurityView). PUT /api/config refuses such a change with 403 unless
+// it carries the stored admin password or the operator's setup token, so one of the two must
+// be filled in; the issue lands on current_password because that is the field shown first.
+// current_password is sent exactly as typed: the server compares it against the stored hash
+// byte for byte and the password policy allows spaces. The setup token is trimmed, matching
+// how the server reads the configured one.
+export const authProofOfControlSchema = z
+	.object({
+		current_password: z.string(),
+		setup_token: z.string().trim(),
+	})
+	.superRefine((data, ctx) => {
+		if (!data.current_password.trim() && !data.setup_token) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["current_password"],
+				message:
+					"Enter the current admin password to confirm this change. Dashboard protection is off, so this session is not signed in. If you do not know the password, use the setup token instead.",
+			});
+		}
+	});
+
 // Export type inference helpers
 export type SecretVar = z.infer<typeof secretVarSchema>;
+export type AuthProofOfControl = z.infer<typeof authProofOfControlSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
 export type ModelProviderKeySchema = z.infer<typeof modelProviderKeySchema>;
 export type NetworkConfigSchema = z.infer<typeof networkConfigSchema>;

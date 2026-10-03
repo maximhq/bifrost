@@ -30,6 +30,50 @@ const (
 	VirtualKeyPrefix = "sk-bf-"
 )
 
+// A team or a customer can carry budgets and a rate limit of its own. The enterprise build adds a
+// second way to govern the same entity - an access profile attached to it - and the two cannot both
+// apply, or the entity ends up with two caps on the same keys.
+//
+// Enterprise registers the check here, and the paths that write those limits ask before writing: the
+// team and customer update handlers, and the config reconcile that applies governance.budgets from
+// config.json. In the OSS build nothing is registered, so nothing is refused.
+const (
+	// The kinds of entity that can hold budgets and a rate limit of their own. A team or customer may
+	// hold several budgets; a business unit holds at most one.
+	LegacyLimitHolderTeam         = "team"
+	LegacyLimitHolderCustomer     = "customer"
+	LegacyLimitHolderBusinessUnit = "business_unit"
+)
+
+// LegacyLimitGuard names what already governs an entity's spend, or "" when nothing does. An error
+// means the question could not be answered; callers fail closed rather than write a second cap.
+type LegacyLimitGuard func(ctx context.Context, holderKind, holderID string) (governedBy string, err error)
+
+var (
+	legacyLimitGuardMu sync.RWMutex
+	legacyLimitGuard   LegacyLimitGuard
+)
+
+// RegisterLegacyLimitGuard installs the guard for this process. Passing nil clears it, which is how a
+// test puts the process back as it found it.
+func RegisterLegacyLimitGuard(guard LegacyLimitGuard) {
+	legacyLimitGuardMu.Lock()
+	legacyLimitGuard = guard
+	legacyLimitGuardMu.Unlock()
+}
+
+// LegacyLimitsGovernedBy names what already governs this entity's spend, or "" when nothing does -
+// including every build where no guard is registered.
+func LegacyLimitsGovernedBy(ctx context.Context, holderKind, holderID string) (string, error) {
+	legacyLimitGuardMu.RLock()
+	guard := legacyLimitGuard
+	legacyLimitGuardMu.RUnlock()
+	if guard == nil || holderID == "" {
+		return "", nil
+	}
+	return guard(ctx, holderKind, holderID)
+}
+
 // Config is the configuration for the governance plugin
 type Config struct {
 	IsVkMandatory         *bool     `json:"is_vk_mandatory"`
@@ -40,6 +84,7 @@ type Config struct {
 
 type InMemoryStore interface {
 	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
+	GetConfiguredProviderNames() []string
 	GetMCPClientsAllowedByDefault() map[string]string // clientID → clientName
 	GetMCPClientNames() map[string]string             // clientID → clientName, every client
 	// GetMCPClientBySlug resolves a client by its endpoint slug (for serving one client at /mcp/<slug>).
@@ -79,10 +124,13 @@ type AttributeRoutingEmbeddingCostPlugin interface {
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
 type GovernancePlugin struct {
-	ctx         context.Context
-	cancelFunc  context.CancelFunc
-	wg          sync.WaitGroup // Track active goroutines
-	cleanupOnce sync.Once      // Ensure cleanup happens only once
+	ctx              context.Context
+	cancelFunc       context.CancelFunc
+	wg               sync.WaitGroup // Track active goroutines
+	cleanupOnce      sync.Once      // Ensure cleanup happens only once
+	resetWorkersOnce sync.Once      // Ensure reset processing starts only once
+	lifecycleMutex   sync.Mutex     // Prevent reset startup and cleanup from overlapping
+	cleanedUp        bool
 
 	// Core components with clear separation of concerns
 	store    GovernanceStore // Pure data access layer
@@ -189,39 +237,6 @@ func Init(
 	// 3. Tracker (business logic owner, depends on store and resolver)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 
-	// 4. Perform startup reset check for any expired limits from downtime
-	// Use distributed lock to prevent race condition when multiple instances boot simultaneously
-	if configStore != nil {
-		lockManager := configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second))
-		lock, err := lockManager.NewLock("governance_startup_reset")
-		if err != nil {
-			logger.Warn("failed to create governance startup reset lock: %v", err)
-		} else {
-			// Acquire the lock
-			lockAcquired := true
-			lockWaitStart := time.Now()
-			if err := lock.LockWithRetry(ctx, 10); err != nil {
-				logger.Warn("failed to acquire governance startup reset lock, skipping startup reset: %v", err)
-				lockAcquired = false
-			}
-			logger.Info("[startup-timing] governance_startup_reset lock acquisition took %v (acquired=%t)", time.Since(lockWaitStart), lockAcquired)
-			// Only run startup resets if we successfully acquired the lock
-			if lockAcquired {
-				defer func() {
-					if err := lock.Unlock(ctx); err != nil && !errors.Is(err, configstore.ErrLockNotHeld) {
-						logger.Warn("failed to release governance startup reset lock: %v", err)
-					}
-				}()
-				resetStart := time.Now()
-				if err := tracker.PerformStartupResets(ctx); err != nil {
-					logger.Warn("startup reset failed: %v", err)
-					// Continue initialization even if startup reset fails (non-critical)
-				}
-				logger.Info("[startup-timing] PerformStartupResets took %v", time.Since(resetStart))
-			}
-		}
-	}
-
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
 		ctx:                   ctx,
@@ -288,23 +303,6 @@ func InitFromStore(
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
-	// Perform startup reset check for any expired limits from downtime
-	// Use distributed lock to prevent race condition when multiple instances boot simultaneously
-	if configStore != nil {
-		lockManager := configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second))
-		lock, err := lockManager.NewLock("governance_startup_reset")
-		if err != nil {
-			logger.Warn("failed to create governance startup reset lock: %v", err)
-		} else if err := lock.Lock(ctx); err != nil {
-			logger.Warn("failed to acquire governance startup reset lock, skipping startup reset: %v", err)
-		} else {
-			defer lock.Unlock(ctx)
-			if err := tracker.PerformStartupResets(ctx); err != nil {
-				logger.Warn("startup reset failed: %v", err)
-				// Continue initialization even if startup reset fails (non-critical)
-			}
-		}
-	}
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
 		ctx:                   ctx,
@@ -324,6 +322,46 @@ func InitFromStore(
 		disableAutoToolInject: disableAutoToolInject,
 	}
 	return plugin, nil
+}
+
+// StartResetWorkers resets expired counters after all governance state has been hydrated,
+// then starts periodic reset processing.
+func (p *GovernancePlugin) StartResetWorkers(ctx context.Context) {
+	p.resetWorkersOnce.Do(func() {
+		p.lifecycleMutex.Lock()
+		defer p.lifecycleMutex.Unlock()
+
+		if p.cleanedUp {
+			return
+		}
+
+		if p.configStore != nil {
+			lockManager := configstore.NewDistributedLockManager(p.configStore, p.logger, configstore.WithDefaultTTL(30*time.Second))
+			lock, err := lockManager.NewLock("governance_startup_reset")
+			if err != nil {
+				p.logger.Warn("failed to create governance startup reset lock: %v", err)
+			} else {
+				lockAcquired := true
+				lockWaitStart := time.Now()
+				if err := lock.LockWithRetry(ctx, 10); err != nil {
+					p.logger.Warn("failed to acquire governance startup reset lock, skipping startup reset: %v", err)
+					lockAcquired = false
+				}
+				p.logger.Info("[startup-timing] governance_startup_reset lock acquisition took %v (acquired=%t)", time.Since(lockWaitStart), lockAcquired)
+				if lockAcquired {
+					resetStart := time.Now()
+					if err := p.tracker.PerformStartupResets(ctx); err != nil {
+						p.logger.Warn("startup reset failed: %v", err)
+					}
+					p.logger.Info("[startup-timing] PerformStartupResets took %v", time.Since(resetStart))
+					if err := lock.Unlock(ctx); err != nil && !errors.Is(err, configstore.ErrLockNotHeld) {
+						p.logger.Warn("failed to release governance startup reset lock: %v", err)
+					}
+				}
+			}
+		}
+		p.tracker.startWorkers(p.ctx)
+	})
 }
 
 // GetName returns the name of the plugin
@@ -356,6 +394,11 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 // HTTPTransportPostHook intercepts requests after they are processed (governance decision point)
 // It modifies the response in-place and returns nil to continue
 func (p *GovernancePlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return nil
+}
+
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *GovernancePlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
 	return nil
 }
 
@@ -458,11 +501,16 @@ func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req 
 		return nil
 	}
 
+	// Only weighted candidates can be selected or offered as fallbacks, so a candidate without a
+	// weight is as excluded as one a budget refused. Name it for the same reason every other
+	// exclusion above is named: the counts below are otherwise impossible to reconcile from the trail.
 	weighted := make([]schemas.ProviderCandidate, 0, len(eligible))
 	for _, candidate := range eligible {
-		if candidate.Weight != nil {
-			weighted = append(weighted, candidate)
+		if candidate.Weight == nil {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: no weight assigned for model %s", candidate.Provider, modelStr))
+			continue
 		}
+		weighted = append(weighted, candidate)
 	}
 
 	if len(weighted) == 0 {
@@ -495,8 +543,16 @@ func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req 
 		selectedProvider = schemas.ModelProvider(weighted[0].Provider)
 	}
 
+	var weightedProviders []string
+	for _, candidate := range weighted {
+		weightedProviders = append(weightedProviders, candidate.Provider)
+	}
+
 	p.logger.Debug("[governance] Selected provider: %s", selectedProvider)
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Selected provider %s for model %s (from %d eligible: %v)", selectedProvider, modelStr, len(eligible), eligibleProviders))
+	// The pool selection actually ran over, which is `weighted` and not `eligible`: reporting the
+	// wider set would describe candidates the roll could never have landed on, and would not
+	// account for the fallbacks added below.
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Selected provider %s for model %s (from %d weighted: %v)", selectedProvider, modelStr, len(weighted), weightedProviders))
 
 	refinedModel := modelStr
 	// Refine the model for the selected provider
@@ -821,6 +877,19 @@ func unusablePermit(access schemas.Access) *EvaluationResult {
 	return nil
 }
 
+// refusal builds the error a governance decision refuses a request with.
+func refusal(result *EvaluationResult, statusCode int, errorType schemas.ErrorType) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		// Type stays the raw decision: it is the client-visible error contract.
+		Type:       new(string(result.Decision)),
+		StatusCode: new(statusCode),
+		Error: &schemas.ErrorField{
+			Message: result.Reason,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: errorType},
+	}
+}
+
 // decide turns a governance decision into what the caller gets back: the result, and the error to
 // refuse the request with when it was not allowed. Every step of Evaluate ends here, so a refusal
 // is marked on the request and mapped to a status in one place regardless of which step refused.
@@ -849,60 +918,30 @@ func (p *GovernancePlugin) decide(ctx *schemas.BifrostContext, result *Evaluatio
 	case DecisionAccessNotFound:
 		// The credential itself did not resolve, so this is a failure to authenticate rather than
 		// a permission the caller lacks.
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(401),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+		return result, refusal(result, 401, schemas.ErrorTypePolicyAccessDenied)
 
-	case DecisionAccessBlocked, DecisionModelBlocked, DecisionProviderBlocked:
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(403),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+	case DecisionAccessBlocked:
+		return result, refusal(result, 403, schemas.ErrorTypePolicyAccessDenied)
+
+	case DecisionModelBlocked:
+		return result, refusal(result, 403, schemas.ErrorTypePolicyModelBlocked)
+
+	case DecisionProviderBlocked:
+		return result, refusal(result, 403, schemas.ErrorTypePolicyProviderBlocked)
 
 	case DecisionRateLimited, DecisionTokenLimited, DecisionRequestLimited:
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(429),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+		return result, refusal(result, 429, schemas.ErrorTypePolicyRateLimited)
 
 	case DecisionBudgetExceeded:
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(402),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+		return result, refusal(result, 402, schemas.ErrorTypePolicyBudgetExceeded)
 
 	case DecisionMCPToolBlocked:
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(403),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+		return result, refusal(result, 403, schemas.ErrorTypePolicyToolBlocked)
 
 	case DecisionAccessUnresolved:
 		// A wiring fault, not a policy decision: the request reached evaluation without the grant
 		// every transport installs, so the deployment is misassembled rather than the caller refused.
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(500),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+		return result, refusal(result, 500, schemas.ErrorTypeBifrostInternal)
 
 	default:
 		// Fallback to deny for unknown decisions
@@ -1184,6 +1223,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
 
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	billingNonce := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce)
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -1263,7 +1303,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
 		}()
 	}
 
@@ -1322,7 +1362,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// disagree. What is left is a question about the tool, which the access answers whatever granted it.
 	// A request carrying no access is unrestricted and may execute any tool, as it always could.
 	access := ctx.Grant().Access()
-	if access != nil && !access.IsMCPToolAllowed(toolName) {
+	if access != nil && !access.IsMCPToolAllowed(toolName) && !hasMCPExecutionAuthorization(ctx, req) {
 		ctx.SetValue(governanceRejectedContextKey, true)
 		return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
 			Type:       bifrost.Ptr(string(DecisionMCPToolBlocked)),
@@ -1365,6 +1405,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	}
 
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	billingNonce := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce)
 
 	// Determine if request was successful
 	success := (resp != nil && bifrostErr == nil)
@@ -1402,10 +1443,20 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		budgets = grant.LimitsFrom(budgets, untrackedHolderKinds...)
 		rateLimits = grant.LimitsFrom(rateLimits, untrackedHolderKinds...)
 	}
+	// Record what the call answered to, the way PostLLMHook does for inference. The logging plugin
+	// reads these keys when it completes the tool log, so a tool call is attributable to the same
+	// budgets and rate limits it was billed against.
+	if budgetIDs := limitIDsOf(budgets); len(budgetIDs) > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
+	}
+	if rateLimitIDs := limitIDsOf(rateLimits); len(rateLimitIDs) > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
+	}
 	usageUpdate := &UsageUpdate{
 		Success:      success,
 		Cost:         toolCost,
 		RequestID:    requestID,
+		BillingNonce: billingNonce,
 		IsStreaming:  false,
 		IsFinalChunk: true,
 		HasUsageData: toolCost > 0, // Has usage data if we have a cost
@@ -1454,6 +1505,7 @@ func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req
 	}
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
+	stampVirtualKeyContentLogging(ctx, vk)
 	if vk.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
@@ -1481,6 +1533,10 @@ func (p *GovernancePlugin) PostMCPConnectionHook(ctx *schemas.BifrostContext, re
 func (p *GovernancePlugin) Cleanup() error {
 	var cleanupErr error
 	p.cleanupOnce.Do(func() {
+		p.lifecycleMutex.Lock()
+		defer p.lifecycleMutex.Unlock()
+
+		p.cleanedUp = true
 		if p.cancelFunc != nil {
 			p.cancelFunc()
 		}
@@ -1508,7 +1564,7 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -1581,6 +1637,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			TokensUsed:    int64(tokensUsed),
 			Cost:          cost,
 			RequestID:     requestID,
+			BillingNonce:  billingNonce,
 			IsStreaming:   isStreaming,
 			IsFinalChunk:  isFinalChunk,
 			HasUsageData:  tokensUsed > 0 || cost > 0,
@@ -1661,7 +1718,7 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 	if len(usage.ModelUsage) == 0 {
 		return nil
 	}
-	alreadyCharged := make(map[string]bool, len(usage.BudgetIDs)+len(usage.RateLimitIDs))
+	alreadyCharged := make(map[string]bool)
 	for _, id := range usage.BudgetIDs {
 		alreadyCharged["budget:"+id] = true
 	}

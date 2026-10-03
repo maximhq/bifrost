@@ -21,6 +21,7 @@ type VirtualKeyQueryParams struct {
 	Search                             string
 	CustomerID                         string
 	TeamID                             string
+	BusinessUnitID                     string // Enterprise-only owner kind; a key names at most one owner, so it ORs with the other two
 	UserID                             string // Enterprise-only: filters to VKs assigned to this user; matches nothing in OSS
 	SortBy                             string // name, budget_spent, created_at, status (default: created_at)
 	Order                              string // asc, desc (default: asc)
@@ -311,10 +312,10 @@ type ConfigStore interface {
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	// UpdateMCPClientTools is a targeted column update for
-	// discovered_tools_json/tool_name_mapping_json only — safe to call from
-	// a periodic background tool-sync without racing a concurrent full
-	// UpdateMCPClientConfig call over unrelated fields.
-	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error
+	// discovered_tools_json/tool_name_mapping_json/discovered_instructions only —
+	// safe to call from a periodic background tool-sync without racing a concurrent
+	// full UpdateMCPClientConfig call over unrelated fields.
+	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// MCP library catalog (synced + org-custom)
@@ -366,6 +367,12 @@ type ConfigStore interface {
 	// Governance config CRUD
 	GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error)
 	GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error)
+	// ListExpiredVirtualKeysForDeletion returns keys whose expiry has passed and whose
+	// delete_after_expire is true, or unset when includeUnset is true.
+	ListExpiredVirtualKeysForDeletion(ctx context.Context, now time.Time, includeUnset bool) ([]tables.TableVirtualKey, error)
+	// DeleteExpiredVirtualKey deletes the key only if it is still expired and eligible
+	// under the row lock, returning the deleted row, or nil when it no longer qualifies.
+	DeleteExpiredVirtualKey(ctx context.Context, id string, now time.Time, includeUnset bool) (*tables.TableVirtualKey, error)
 	GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) // leave ids empty to get all
 	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)
@@ -400,6 +407,9 @@ type ConfigStore interface {
 	// its uniqueness; UpdateVirtualMCP never changes the slug (immutable after creation).
 	CreateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
 	GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error)
+	// GetVirtualMCPByName resolves the unique name a declaration refers to. Returns ErrNotFound
+	// when nothing matches.
+	GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error)
 	GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error)
 	UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
 	DeleteVirtualMCP(ctx context.Context, id uint) error
@@ -416,7 +426,7 @@ type ConfigStore interface {
 	// Team CRUD
 	GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error)
 	GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error)
-	GetTeam(ctx context.Context, id string) (*tables.TableTeam, error)
+	GetTeam(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableTeam, error)
 	GetTeamByName(ctx context.Context, name string, customerID string) (*tables.TableTeam, error)
 	GetTeamBySourceID(ctx context.Context, sourceID string) (*tables.TableTeam, error)
 	CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
@@ -426,7 +436,7 @@ type ConfigStore interface {
 	// Customer CRUD
 	GetCustomers(ctx context.Context) ([]tables.TableCustomer, error)
 	GetCustomersPaginated(ctx context.Context, params CustomersQueryParams) ([]tables.TableCustomer, int64, error)
-	GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
+	GetCustomer(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableCustomer, error)
 	CreateCustomer(ctx context.Context, customer *tables.TableCustomer, tx ...*gorm.DB) error
 	UpdateCustomer(ctx context.Context, customer *tables.TableCustomer, tx ...*gorm.DB) error
 	DeleteCustomer(ctx context.Context, id string, tx ...*gorm.DB) error
@@ -473,7 +483,7 @@ type ConfigStore interface {
 
 	// Model config CRUD
 	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
-	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error)
+	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, tx ...*gorm.DB) ([]tables.TableModelConfig, error)
 	GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
 	GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error)
 	GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error)
@@ -967,6 +977,8 @@ type ConfigStore interface {
 	FinalizeCancelledSidekiqJob(ctx context.Context, id, runnerID, metadata string) error
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
 	// Batch jobs - mutable coordination state for delayed batch accounting
@@ -1003,10 +1015,12 @@ type ConfigStore interface {
 	DB() *gorm.DB
 
 	// ScopedDB returns the underlying DB bound to ctx with any
-	// QueryScope on ctx pre-applied. Use this in read paths that
+	// QueryScope on ctx pre-applied, or the caller's transaction when one is
+	// passed, so a read taken inside a transaction sees that transaction's own
+	// writes. The scope is applied either way. Use this in read paths that
 	// should respect caller-driven row visibility; use DB().WithContext(ctx)
 	// for writes and internal lookups that must bypass scoping.
-	ScopedDB(ctx context.Context) *gorm.DB
+	ScopedDB(ctx context.Context, tx ...*gorm.DB) *gorm.DB
 
 	// RunMigration opens a throwaway *gorm.DB against the same
 	// backing database, invokes fn with it, and closes the connection. Use

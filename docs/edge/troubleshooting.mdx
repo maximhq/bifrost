@@ -1,0 +1,117 @@
+---
+title: "Troubleshoot Edge setup"
+description: "Resolve configuration, sign-in, certificate, traffic-capture, and gateway failures during Edge onboarding."
+icon: "screwdriver-wrench"
+---
+
+Open **Diagnostics** from the Edge tray first. It reports the current service, account, configuration, certificate, traffic-capture, gateway, and MCP state, and provides a remedy for each failure. You can also download a support log archive from the Diagnostics window.
+
+## Configuration
+
+<AccordionGroup>
+  <Accordion title="The tray says configuration is required">
+    Edge does not have a Bifrost URL yet.
+
+    For a direct installation, select **Sign in**, enter the externally reachable HTTPS URL of the Bifrost deployment, wait for the agent to apply it, and select **Sign in** again.
+
+    For a managed installation, confirm `config.json` exists at the platform path and contains a non-empty `base_url`:
+
+    ```json
+    {
+      "base_url": "https://<your-bifrost-host>"
+    }
+    ```
+  </Accordion>
+  <Accordion title="Configuration changes are not reaching the device">
+    Edge applies central settings on the next poll. Check the configured poll interval and the **Configuration is up to date** check in Diagnostics.
+
+    If the last successful fetch is stale, confirm the device can reach the Bifrost URL. The agent continues using the last configuration it received while the connection is unavailable.
+  </Accordion>
+</AccordionGroup>
+
+## Sign-in and identity
+
+<AccordionGroup>
+  <Accordion title="Sign-in says user provisioning is not configured">
+    IdP sign-in is unavailable until a provider is enabled under **Governance → User Provisioning**. Configure and verify the provider, or use the virtual-key path if **Allow virtual key sign-in** is enabled.
+  </Accordion>
+  <Accordion title="The virtual key is not accepted">
+    Confirm the key is active and was entered without surrounding whitespace. Also confirm **Allow virtual key sign-in** is enabled in Edge Settings. The agent does not store a key that Bifrost rejects.
+  </Accordion>
+  <Accordion title="The device limit is reached">
+    The Bifrost license has no available Edge device seat. Remove an obsolete device registration if appropriate, or contact your Bifrost representative about the licensed limit, then retry sign-in.
+  </Accordion>
+  <Accordion title="The user signs in but has no usable policy or key">
+    Confirm that the Bifrost user resolves to an active virtual key. Check the user's role and access-profile assignment first. Edge can also resolve active keys assigned directly to the user, through a team, or through a team in the user's business unit.
+  </Accordion>
+</AccordionGroup>
+
+## Certificates and TLS
+
+<AccordionGroup>
+  <Accordion title="The certificate exists but traffic is passing through">
+    In Diagnostics, distinguish between these states:
+
+    - **Not added to the trust store:** use **Approve certificate** when offered, or correct the MDM certificate deployment.
+    - **Installed but not trusted:** on macOS, approve the administrator prompt or deploy the active CA as a device-scoped `com.apple.security.root` profile.
+    - **Trusted but remote signing is unavailable:** confirm the signed-in device can reach the Bifrost management server, then refresh certificate status.
+
+    Verify that the certificate fingerprint on the device or MDM profile matches the active SHA-256 fingerprint in Edge Settings. After correcting certificate trust, restart the computer before testing traffic.
+  </Accordion>
+  <Accordion title="An application reports TLS errors after the CA is trusted">
+    Confirm that the computer was restarted after the active CA was first trusted or last replaced. A full computer restart is required for CA certificate changes to take effect. After the restart, open the application and test again.
+  </Accordion>
+  <Accordion title="A macOS MDM deployment keeps requesting certificate approval">
+    Confirm that the certificate was deployed as a device-scoped trusted-root payload with type `com.apple.security.root`. A user-scoped profile or a generic PKCS#1/PEM payload installs the certificate without the machine-wide root trust Edge requires.
+
+    Also compare the deployed fingerprint with the active Edge CA. Replacing the CA requires an updated profile. After the active certificate is trusted, restart the computer before testing traffic.
+  </Accordion>
+</AccordionGroup>
+
+## Traffic capture and policy
+
+<AccordionGroup>
+  <Accordion title="The tray is connected but no traffic is captured">
+    Check Diagnostics for the first failing condition:
+
+    - Interception is switched off globally, locally, or by a scoped policy.
+    - No domains were received in configuration.
+    - The configured domains do not resolve on the device.
+    - The domains resolve but Edge could not install network routes.
+    - The active certificate is not ready.
+    - The test application or hostname is not in the supported/configured coverage.
+
+    For DNS failures, restore network name resolution and let Edge retry. If routes remain at zero, restart the Edge service and collect the support logs if the failure continues.
+  </Accordion>
+  <Accordion title="An app or MCP server is blocked before review">
+    Check **Allow pending apps and MCP servers** in Edge Settings. When it is disabled, pending items are blocked until an administrator approves them. Also check for a global, user, or team-scoped denied decision.
+  </Accordion>
+  <Accordion title="A policy change has not taken effect">
+    Wait for the next agent poll and confirm the configuration check in Diagnostics has a recent fetch time. User-scoped decisions override team and global decisions; inspect the applicable scoped overrides when the result differs from the global setting.
+  </Accordion>
+</AccordionGroup>
+
+## Gateway and service
+
+<AccordionGroup>
+  <Accordion title="The Bifrost gateway is unreachable">
+    Confirm the device can reach the configured HTTPS origin through the company firewall or proxy. Diagnostics shows the exact gateway URL and the most recent probe error.
+  </Accordion>
+  <Accordion title="The background service is not responding">
+    Reinstall Edge if Diagnostics reports that the service is not running with system privileges. Those privileges are required to create the network device and manage the system trust store.
+
+    Diagnostics remains available when the background service is down and can still export the local logs for support.
+  </Accordion>
+</AccordionGroup>
+
+## What to include in a support request
+
+Include:
+
+- Operating system, architecture, and Edge version
+- The failing Diagnostics check and its detail
+- The approximate time of the test request
+- Whether installation was direct or MDM-managed
+- The support log archive downloaded from Diagnostics
+
+The Diagnostics snapshot excludes access tokens, refresh tokens, virtual-key values, and CA private keys.

@@ -144,6 +144,38 @@ func TestHybrid_CreateAndFindByID(t *testing.T) {
 	assert.Contains(t, found.ContentSummary, "Hello, how are you?")
 }
 
+// TestHybrid_EmbeddingInputOffloaded pins that embedding_input leaves the DB row and is hydrated from the object.
+func TestHybrid_EmbeddingInputOffloaded(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	text := "embed me"
+	entry := &Log{
+		ID:        "emb-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "text-embedding-3-small",
+		Status:    "success",
+		Object:    "embedding",
+		EmbeddingInputParsed: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForOffload(t, inner, "emb-1")
+
+	dbRow, err := inner.FindByID(ctx, "emb-1")
+	require.NoError(t, err)
+	assert.Empty(t, dbRow.EmbeddingInput, "embedding_input must be offloaded, not kept in the DB row")
+
+	found, err := hybrid.FindByID(ctx, "emb-1")
+	require.NoError(t, err)
+	require.Len(t, found.EmbeddingInputParsed, 1, "embedding_input should be hydrated from object storage")
+	assert.Equal(t, text, *found.EmbeddingInputParsed[0].Content[0].Text)
+}
+
 func TestHybrid_EmptyPayloadSkipsUpload(t *testing.T) {
 	hybrid, _, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
@@ -531,7 +563,7 @@ func TestHybrid_ProcessMCPUploadSkipsMissingRowsWithEmptyStatus(t *testing.T) {
 }
 
 func TestHybrid_DeleteMCPToolLogsDeletesObjects(t *testing.T) {
-	hybrid, _, objStore := newTestHybrid(t)
+	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -547,7 +579,7 @@ func TestHybrid_DeleteMCPToolLogsDeletesObjects(t *testing.T) {
 		},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForMCPOffload(t, inner, entry.ID)
 
 	require.NoError(t, hybrid.DeleteMCPToolLogs(ctx, []string{entry.ID}))
 	assert.Equal(t, 0, objStore.Len())
@@ -588,7 +620,7 @@ func TestHybrid_PutFailureDropsUpload(t *testing.T) {
 }
 
 func TestHybrid_DeleteLog(t *testing.T) {
-	hybrid, _, objStore := newTestHybrid(t)
+	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -603,7 +635,7 @@ func TestHybrid_DeleteLog(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, entry.ID)
 	assert.Equal(t, 1, objStore.Len())
 
 	err := hybrid.DeleteLog(ctx, "del-1")

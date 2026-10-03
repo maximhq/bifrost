@@ -2,6 +2,7 @@ import type { ThroughputHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatFullTimestamp, formatTimestamp, formatTokensPerSecond, THROUGHPUT_COLOR } from "../../utils/chartUtils";
+import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -66,7 +67,7 @@ function ThroughputChartImpl({ data, chartType, startTime, endTime }: Throughput
 
 	return (
 		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
-			<ResponsiveContainer width="100%" height="100%">
+			<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
 						<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
@@ -96,7 +97,7 @@ function ThroughputChartImpl({ data, chartType, startTime, endTime }: Throughput
 							fill={THROUGHPUT_COLOR}
 							fillOpacity={0.9}
 							barSize={8}
-							radius={[2, 2, 0, 0]}
+							shape={barShape}
 						/>
 					</BarChart>
 				) : (

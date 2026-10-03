@@ -13,6 +13,12 @@ import { baseApi } from "./baseApi";
 // Helper function to build MCP histogram filter params
 function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string | number> {
 	const params: Record<string, string | number> = {};
+	if (filters.user_ids?.length) params.user_ids = filters.user_ids.join(",");
+	if (filters.team_ids?.length) params.team_ids = filters.team_ids.join(",");
+	if (filters.customer_ids?.length) params.customer_ids = filters.customer_ids.join(",");
+	if (filters.business_unit_ids?.length) params.business_unit_ids = filters.business_unit_ids.join(",");
+	if (filters.project_ids?.length) params.project_ids = filters.project_ids.join(",");
+	if (filters.device_ids?.length) params.device_ids = filters.device_ids.join(",");
 	if (filters.tool_names && filters.tool_names.length > 0) {
 		params.tool_names = filters.tool_names.join(",");
 	}
@@ -69,6 +75,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 				};
 
 				// Add filters to params if they exist
+				if (filters.user_ids?.length) params.user_ids = filters.user_ids.join(",");
+				if (filters.team_ids?.length) params.team_ids = filters.team_ids.join(",");
+				if (filters.customer_ids?.length) params.customer_ids = filters.customer_ids.join(",");
+				if (filters.business_unit_ids?.length) params.business_unit_ids = filters.business_unit_ids.join(",");
+				if (filters.project_ids?.length) params.project_ids = filters.project_ids.join(",");
+				if (filters.device_ids?.length) params.device_ids = filters.device_ids.join(",");
 				if (filters.tool_names && filters.tool_names.length > 0) {
 					params.tool_names = filters.tool_names.join(",");
 				}
@@ -125,6 +137,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 				const params: Record<string, string | number> = {};
 
 				// Add filters to params if they exist
+				if (filters.user_ids?.length) params.user_ids = filters.user_ids.join(",");
+				if (filters.team_ids?.length) params.team_ids = filters.team_ids.join(",");
+				if (filters.customer_ids?.length) params.customer_ids = filters.customer_ids.join(",");
+				if (filters.business_unit_ids?.length) params.business_unit_ids = filters.business_unit_ids.join(",");
+				if (filters.project_ids?.length) params.project_ids = filters.project_ids.join(",");
+				if (filters.device_ids?.length) params.device_ids = filters.device_ids.join(",");
 				if (filters.tool_names && filters.tool_names.length > 0) {
 					params.tool_names = filters.tool_names.join(",");
 				}

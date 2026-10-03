@@ -2,6 +2,78 @@
 
 End-to-end API tests for the Bifrost API using Postman collections and [Newman](https://www.npmjs.com/package/newman) (CLI).
 
+## Provider secret redaction
+
+The API management collection's `Provider Secret Redaction` folder covers every
+standard provider, including each provider's credential and alias fields. It uses
+disabled keys and a synthetic canary, with no inference requests. The script tests
+also compare the fixtures against the Go provider registry and secret-field definitions.
+
+The gateway process must have this exact environment variable set before startup:
+
+```bash
+export BIFROST_SECRET_REDACTION_CANARY=synthetic-secretvar-harness-canary-0123456789
+```
+
+Run the focused checks against your test gateway:
+
+```bash
+node tests/e2e/api/collections/collection-scripts.test.mjs
+newman run tests/e2e/api/collections/bifrost-api-management.postman_collection.json \
+  --folder "Provider Secret Redaction" \
+  --env-var base_url=http://localhost:8080 \
+  --timeout-script 120000
+```
+
+For an authenticated gateway, also pass `--env-var "admin_auth_header=$ADMIN_AUTH_HEADER"`.
+The folder forwards this header to its setup, assertion, and cleanup requests.
+The normal API runner runs both auth modes; the release API integration job and
+its local wrapper supply the canary before starting the gateway.
+
+Each case creates a uniquely named disabled key, checks create/get/list/update/delete
+responses, and verifies cleanup. Existing keys and providers are preserved; providers
+created by a case are deleted afterward. Missing fields, missing references, unset or
+mismatched canaries, unexpected HTTP statuses, and failed cleanup fail the test.
+Use only the documented synthetic canary, never a real credential.
+
+## Azure streaming preamble fallback
+
+These two deterministic cases use a local SSE fixture and an isolated gateway.
+They make no live provider calls. Run the following commands from the repository root.
+
+Start the fixture in one terminal:
+
+```bash
+node tests/e2e/api/runners/azure-stream-preamble-fixture.mjs
+```
+
+Start a separate gateway in another terminal:
+
+```bash
+azure_fixture_dir=$(mktemp -d)
+cp tests/e2e/api/provider_config/azure-stream-preamble.config.json "$azure_fixture_dir/config.json"
+go run ./transports/bifrost-http -app-dir "$azure_fixture_dir" -host 127.0.0.1 -port 8790
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "74. Azure streaming preamble fallback" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var azureStreamPreambleFixture=1
+```
+
+The fixture emits metadata followed by an error for `preamble-error`, then returns
+`hello` for the configured fallback, `preamble-success`. Azure paths (`/openai/v1/*`)
+fail with a rate limit; direct OpenAI paths (`/v1/*`) fail with `server_is_overloaded`
+and no HTTP status, as a real overloaded OpenAI stream does. For both providers, Chat
+Completions and Responses must return only the successful attempt's events and a
+terminal result.
+The cases are skipped unless `azureStreamPreambleFixture=1`.
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
 ## Contents
 
 ### V1 Endpoint Tests
@@ -179,6 +251,27 @@ expected result. Keep this list in sync when adding to it:
   authentication" in the unauthenticated pass.
 - `Clear Cache by Cache ID / by Key (Coverage Probe)` may answer 405 — the routes
   are not implemented yet.
+- `Add Provider` and `Update Proxy Config` may answer 403 with "requires an
+  authenticated admin session" in the unauthenticated pass only: a provider
+  base URL or the global proxy URL chooses where Bifrost dials out, so the
+  server refuses to store it without a genuine admin session. Each request's
+  own test asserts the 403 there and the 2xx in the authenticated pass; the
+  dependent `Get / Update / Delete Provider` requests skip when the create was
+  refused.
+- `Add MCP Client`, `Create MCP Client (vMCP setup)` and
+  `Add MCP Client (unresolvable host)` may answer 403 in the unauthenticated
+  pass only: the e2e MCP server is on loopback (`http://localhost:3001/`) and an
+  unresolvable name cannot be classified, and neither may be registered without
+  an admin session. `Reconnect / Update / Delete MCP Client` and the Virtual MCP
+  requests that need the setup client skip when its registration was refused.
+  `Add MCP Client (unsupported connection_type)` answers 400 in both passes, and
+  `Add MCP Client (unresolvable host)` answers 500 ("failed to connect") in the
+  authenticated pass, where the registration is allowed but cannot connect.
+- `Test Webhook Endpoint` may answer 403 in the unauthenticated pass only: the
+  endpoint is created with `allow_private_network: true`, and a test delivery
+  to such an endpoint needs an admin session. Authenticated it answers 200 with
+  the delivery outcome (`delivered: false`, since nothing listens on the
+  receiver port).
 
 Resource names are stamped with `Date.now()` so the collection can run twice in
 one invocation (the runner replays it with dashboard auth enabled).
@@ -202,6 +295,46 @@ BIFROST_API_EXTRA_COLLECTION=/path/to/extra.postman_collection.json \
 The default run loads no extra collections. Downstream repos pass their own
 collections at run time, so the shared management requests live here while
 assertions specific to those repos stay with them.
+
+### Request guard tests
+
+`collections/bifrost-v1-request-guards.postman_collection.json` pins what the
+management and gateway surface refuses over the API, and that nothing was
+persisted as a side effect: `file://` and unreachable catalog URLs on
+`PUT /api/config`, MCP client registrations with an unsupported
+`connection_type` or a loopback/unresolvable target, proxy / provider /
+provider-key endpoint changes that need an admin session, the OAuth2 issuance
+endpoints while `mcp_server_auth_mode` is `headers`, malformed passthrough
+paths and unknown `x-model-provider` values, a zstd body declaring an oversized
+window (`fixtures/zstd-window-512mib.zst`), the on-demand test delivery of a
+private-network webhook, and `auth_config` updates that must prove the stored
+admin password. It is hermetic (no provider is contacted) and has no
+collection-level 2xx gate: every request asserts its exact status.
+
+`runners/run-newman-api-tests.sh` runs it as its own newman invocation after
+auth is restored to disabled and before the governance suites; set
+`BIFROST_E2E_SKIP_REQUEST_GUARDS=1` to skip it. To run it standalone against a
+gateway with dashboard auth disabled (from this directory, so newman finds the
+zstd fixture):
+
+```bash
+BIFROST_BASE_URL=http://localhost:8080 ./runners/individual/run-newman-request-guards-tests.sh
+
+# With a stored admin account whose password you know: also runs the
+# "Dashboard auth update" folder, which re-enables auth with that password and
+# disables it again. Create the account first if needed:
+#   BIFROST_E2E_SETUP_TOKEN=<token> node runners/set-auth-config.mjs enable
+#   BIFROST_E2E_AUTH_HEADER="Bearer $(printf 'admin:<password>' | base64)" node runners/set-auth-config.mjs disable
+BIFROST_BASE_URL=http://localhost:8080 BIFROST_E2E_ADMIN_EXISTS=1 \
+  BIFROST_E2E_ADMIN_USERNAME=admin BIFROST_E2E_ADMIN_PASSWORD='<password>' \
+  ./runners/individual/run-newman-request-guards-tests.sh --json
+```
+
+Without `BIFROST_E2E_ADMIN_EXISTS=1` that folder reports a single named
+"skipped" test and sends nothing. The "Provider endpoint changes" folder's
+key-endpoint case targets the `azure` provider (part of the shared
+`tests/config.json` profile); on a gateway without it the request asserts the
+404 from the provider lookup instead, as recorded by the preceding check.
 
 **Retry logic (CI)**
 When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the V1 collection is retried up to 3 times before moving to the next request. This helps with flaky tests in CI. The runner passes the value through to Newman when the environment variable is set (e.g. `CI=1 ./runners/run-newman-inference-tests.sh --env openai` or `CI=true ./runners/run-newman-inference-tests.sh --env openai`). Retry attempts are logged to the console as `[RETRY] Request "..." failed (attempt n/3). Retrying...`.
@@ -354,6 +487,55 @@ Run locally (from this directory):
 # options: --port <port> (default 8090), --mcp-port <port> (default 3001), --html, --json, --verbose, --bail
 ```
 
+### Warp Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-v1-warp.postman_collection.json` | Asks Warp (the dashboard log-analysis agent) standard questions — incident RCA, errors, spend, latency, org breakdowns, conversation search, calendar windows, drill-down, follow-up chains — checks it declines what it cannot do (charts, files, and every write action) with the feature-request link instead of chart code or tool loops, and probes its guardrails: out-of-scope refusals, instruction overrides, a prompt injection planted in log content, and the two-questions-in-a-row cap. Also pins request validation (400/413) and SSE framing. **Generated — do not hand-edit.** |
+| `runners/build-warp-collection.mjs` | Generator for the collection above. The case table (question + expectations) is the source of truth. |
+| `runners/lib/warp-case.mjs` | Case driver embedded in the collection: answers Warp's `ask_user` questions the way the dashboard does, carries follow-up chains, retries a missed case once. Unit tests: `runners/lib/warp-case.test.mjs`. |
+| `runners/individual/run-newman-warp-tests.sh` | Recreates a throwaway Postgres database, boots Bifrost with the `warp` flag on, seeds it with `tests/cmd/seed/warpseed`, and runs the collection. |
+
+This runner **boots its own server on its own database** (`bifrost_warp_e2e` by
+default): Warp answers questions about every row in the logs table, so any other
+traffic would change the answers. `warpseed -reset-db` recreates the database
+before boot; a second `warpseed` run after boot inserts a fixed-seed week of logs
+(an 18-minute anthropic `overloaded_error` incident, 20 scattered failures, a
+quieter prior week, lopsided team/user/app/customer splits, and pinned slowest,
+most-expensive and prompt-injection rows) and writes the facts the checks need
+(incident window, pinned row ids) to an env file handed to newman.
+
+It is **live and paid**: Warp's agent loop and its embeddings call OpenAI through
+`env.OPENAI_API_KEY` (default `gpt-5.6-luna` and `text-embedding-3-small`; override with `WARP_MODEL`). Locally you
+can skip the key and set `WARP_UPSTREAM_BIFROST=http://localhost:8080` instead: the test
+server then sends its OpenAI calls to that Bifrost's `/openai` route with a placeholder
+key, and that instance uses its own configured OpenAI key (it only forwards a caller's
+key when `allow_direct_keys` is on and the request sends `x-bf-direct-key`). Answers
+come from a model, so checks are structural (no agent error, the expected tools ran,
+the expected filter was applied) plus keyword checks against seeded facts, and each
+question case is retried once before it fails. Request validation and SSE framing
+make no model call and never retry.
+
+It needs Postgres and Weaviate (both in `tests/docker-compose.yml`) and a built
+`bifrost-http` binary. CI runs it from `.github/workflows/scripts/test-api-integrations.sh`.
+
+```bash
+make run-warp-test                                  # builds tmp/bifrost-http first
+make run-warp-test BINARY=tmp/bifrost-http FOLDER="Guardrails"
+# or directly, from this directory:
+./runners/individual/run-newman-warp-tests.sh --binary /path/to/bifrost-http
+# options: --port <port> (default 8093), --folder <name> (repeatable; Setup always runs), --html, --json, --verbose, --bail
+# env: OPENAI_API_KEY or WARP_UPSTREAM_BIFROST, POSTGRES_HOST/PORT/USER/PASSWORD, WARP_DB, WEAVIATE_HOST (default localhost:9000), WARP_MODEL, WARP_SEED
+```
+
+To change a question or its checks, edit `runners/build-warp-collection.mjs` and
+regenerate:
+
+```bash
+node runners/build-warp-collection.mjs
+node runners/lib/warp-case.test.mjs
+```
+
 ### Test Success Criteria
 
 A request **passes** if either:
@@ -470,3 +652,109 @@ The collection and supporting files are maintained under `docs/openapi/`. To ref
 - `runners/run-newman-inference-tests.sh` ← `docs/openapi/run-newman-inference-tests.sh`
 - `provider_config/*.postman_environment.json` and `provider_config/README.md` ← `docs/openapi/provider_config/` (if syncing from docs)
 - `fixtures/*` ← `docs/openapi/fixtures/`
+
+## Video costing checks
+
+Video is priced at **settlement**, not at submission. `POST /v1/videos` returns a queued job with no
+cost, and minutes later a settler writes a *second* log row carrying the real figure. Neither newman
+nor a Go unit test can verify that — one has no way to wait minutes for an out-of-band row, the other
+has no provider. `runners/run-video-costing.mjs` does the whole loop:
+
+```
+submit -> poll to terminal -> wait for the settlement row -> assert the billed cost
+```
+
+The expected figures in `fixtures/video-costing-cases.json` are the providers' **own published
+rates**, so a red case means Bifrost disagrees with a price list.
+
+| Path | Description |
+|------|-------------|
+| `fixtures/video-costing-cases.json` | One case per line of the video-costing checklist: request body, expected dimensions, expected rate. |
+| `runners/run-video-costing.mjs` | The runner: submit, poll, wait for settlement, assert, report. |
+| `runners/lib/video-costing.mjs` | Pure verdict logic — band resolution, expected cost, which row is the cost row. |
+| `runners/lib/video-costing.test.mjs` | Unit tests for the above. No network, no Bifrost, no credentials. Runs under `make test-harness-runner-lib`. |
+
+### Running
+
+```bash
+# What each case covers. No network.
+make list-video-costing-cases
+
+# Everything, against a local Bifrost.
+make run-video-costing-test
+
+# One provider group, against hosted Bifrost with a virtual key.
+make run-video-costing-test ARGS="--group Runware --base-url https://<host> --vk sk-bf-..."
+
+# Print what would run without spending money on generations.
+make run-video-costing-test ARGS="--dry-run"
+```
+
+Exit code is 1 if any case fails, so it drops into CI unchanged once the rates are filled in.
+
+### Flags
+
+| Flag | Meaning |
+|------|---------|
+| `--base-url` | Target Bifrost. Defaults to `http://localhost:8080`. |
+| `--vk` | Virtual key for the inference calls. Required against hosted. |
+| `--api-key` | Management API key, sent as `x-bf-api-key`, for reading `/api/logs`. |
+| `--header "X-Foo: bar"` | Extra headers on every call; comma-separate for several. |
+| `--group` / `--provider` / `--case` | Run a subset. |
+| `--concurrency` | Cases in flight at once (default 3). Every case is a real paid generation. |
+| `--seed-pricing` | Write each case's expected rate as a global pricing override before running. |
+| `--include-optional` | Also run cases marked `optional` (they depend on provoking a provider failure). |
+| `--config-db-url` | Postgres URL for the configstore, which unlocks the job-row checks. |
+| `--dry-run` / `--list` | Show what would run, and stop. |
+| `--out` | Report path. Defaults to `newman-reports/video-costing-report.json`. |
+
+### Why `--seed-pricing` exists
+
+The resolution-band pricing keys (`output_cost_per_video_per_second_{480p,720p,1024p,1080p,4k}`) are
+wired in Bifrost but **not yet published to the upstream datasheet feed**. Without a rate, every
+banded case settles *unpriceable* (cost `NULL`) and proves nothing. `--seed-pricing` writes each
+case's own expected rate as a global pricing override first, so the run measures Bifrost's band
+selection and arithmetic rather than the feed's contents. Drop the flag once the feed publishes them.
+
+### Cases marked `needs_rate`
+
+Runway and Replicate cases ship with `rate_per_second: null` and are reported as **skipped**, not
+passed. Their official rates have not been sourced from provider docs yet (Runway prices in credits,
+Replicate ids are version-pinned), and a made-up number in a billing test is worse than no test. Fill
+in `expect.cost.rate_per_second` and delete `needs_rate` to activate them.
+
+### Reading a failure
+
+Each case reports independent checks, so the report names the property that broke rather than one
+opaque boolean:
+
+```
+OpenAI
+  ✘ sora-2-pro at 1080p (3 of 3 rates) $2.4
+      cost: billed $2.4, wanted $5.6 (0.7/s x 8s x 1)
+```
+
+The checks, in the order they run: `submitted`, `terminal`, `expected-status`, `one-settlement-row`,
+`seconds`, `size`, `output-count`, `band`, `incomplete-flag`, `priced`, `cost`, plus
+`settlement-path-parity` and `job-params.*` where a case asks for them.
+
+Two are worth calling out:
+
+- **`one-settlement-row`** fails on 0 *or* 2+. Two rows means the deterministic-id idempotency key
+  broke, which would double-bill and double-report to governance — a different bug from a wrong rate.
+- **`seconds` / `size`** are asserted separately from `cost` so a bad dimension merge (provider
+  returned 5s for a requested 4s and we priced the request) fails on its own check instead of
+  silently moving the cost target.
+
+### Notes on specific cases
+
+- **`settle_via: "sweeper"`** deliberately does not poll. Calling retrieve settles the job inline, so
+  polling would make the sweeper path untestable. That case waits for the row to appear on its own,
+  and `compare_cost_with` cross-checks that both paths bill the identical figure.
+- **`runway-retrieve-404-stops-polling`** asserts on *latency*, not just the status code — an
+  internally retried 404 blows through the `expect_fast_ms` ceiling.
+- **`runway-seedance25-input-seconds`** is expected to fail on price even once its rate is filled in.
+  Runway bills seedance for input seconds *plus* output seconds and Bifrost has an output-only
+  per-second model, so video-to-video under-bills. Run it to measure the gap.
+- **`expect_job_params`** (the Gemini cases) needs `--config-db-url`; without it those checks report
+  as skipped rather than failing, so every other check still works against hosted Bifrost.

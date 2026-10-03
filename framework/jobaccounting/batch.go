@@ -861,3 +861,122 @@ func firstNonZero(values ...int) int {
 	}
 	return 0
 }
+
+// batchRowRole distinguishes the two kinds of row that carry batch accounting.
+type batchRowRole int
+
+const (
+	// batchRowRoleNone is any row that is not a batch accounting row.
+	batchRowRoleNone batchRowRole = iota
+	// batchRowRoleAggregate is the single settlement row that owns the batch's bill.
+	batchRowRoleAggregate
+	// batchRowRoleEcho is a /results HTTP call's own log row, which carries a
+	// read-only copy of the aggregate row's price for display.
+	batchRowRoleEcho
+)
+
+// batchRowRoleOf classifies a row that carries per-model batch usage.
+//
+// A repeated /results fetch gets its own row stamped with the settled breakdowns,
+// and its object is "batch_results" just like the settlement row's — so repricing
+// both as owners billed the batch once per fetch. Only the aggregate row's id is
+// derived from (provider, batch id), which separates them exactly.
+func batchRowRoleOf(entry *logstore.Log) batchRowRole {
+	if entry.BatchDebugParsed == nil && entry.BatchDebug != "" {
+		if err := entry.DeserializeFields(); err != nil {
+			return batchRowRoleNone
+		}
+	}
+	if entry.Object != string(schemas.BatchResultsRequest) ||
+		entry.BatchDebugParsed == nil ||
+		entry.BatchDebugParsed.Accounting == nil ||
+		len(entry.BatchDebugParsed.Accounting.ModelBreakdowns) == 0 {
+		return batchRowRoleNone
+	}
+	if entry.BatchDebugParsed.Accounting.Echo {
+		return batchRowRoleEcho
+	}
+	// Rows written before the echo marker existed are classified by id. Without a
+	// batch id there is nothing to derive the aggregate id from, so keep the
+	// pre-split behaviour of treating the row as the owner.
+	batchID := entry.BatchDebugParsed.BatchID
+	if batchID == "" {
+		return batchRowRoleAggregate
+	}
+	if entry.ID == AccountingLogID(ProviderJobKindBatch, schemas.ModelProvider(entry.Provider), batchID) {
+		return batchRowRoleAggregate
+	}
+	return batchRowRoleEcho
+}
+
+// RepriceFromLog recomputes a settled batch's cost from its per-model breakdowns
+// rather than the row's single blended usage. A batch can span models, and the
+// row's Model is "mixed" in that case — a literal with no catalog entry — so the
+// generic path prices it at zero forever. Repricing per model is how settlement
+// priced each result item in the first place.
+func (s *BatchSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManager) (*RepricedCost, error) {
+	role := batchRowRoleOf(entry)
+	if role == batchRowRoleNone {
+		return nil, nil
+	}
+	// An echo row reprices only to refresh what it displays; the bill stays on the
+	// aggregate row alone.
+	isEcho := role == batchRowRoleEcho
+
+	accounting := entry.BatchDebugParsed.Accounting
+	scopes := PricingScopesForLog(entry)
+	// The row's Object is always "batch_results", which normalizes to "chat" — so
+	// repricing by it alone charged every batch at chat rates and could never find
+	// an embedding model's catalog entry at all. Settlement now records the batch's
+	// endpoint, so use the same endpoint→request-type mapping it priced with. Rows
+	// written before that field existed have no endpoint; they keep the old behavior
+	// rather than being guessed at.
+	requestType := schemas.RequestType(entry.Object)
+	if endpoint := entry.BatchDebugParsed.Endpoint; endpoint != "" {
+		requestType = BatchRequestType(schemas.BatchEndpoint(endpoint))
+	}
+
+	var total float64
+	priced := 0
+	for model, breakdown := range accounting.ModelBreakdowns {
+		usage := breakdown.Usage
+		details := pricing.CalculateBatchCostDetailsForUsage(&usage, schemas.ModelProvider(entry.Provider), model, requestType, &scopes)
+		if details.Priced {
+			cost := details.Cost
+			breakdown.Cost = &cost
+			total += cost
+			priced++
+		} else {
+			breakdown.Cost = nil
+		}
+		accounting.ModelBreakdowns[model] = breakdown
+	}
+	if priced == 0 {
+		return nil, fmt.Errorf("%w: no batch rate for any model on log %s", ErrPricingInputsUnavailable, entry.ID)
+	}
+	// Recovering some of the cost is worth persisting — refusing to write anything
+	// would leave the operator with nothing — but the total must not present itself
+	// as whole while models are still rateless. Settlement uses the same flag for
+	// the same reason, so the two agree on what the number means.
+	//
+	// Only ever set, never cleared: the flag can also stand for usage that is not in
+	// ModelBreakdowns at all (rows whose model the provider never named, rows lost to
+	// parse errors), and repricing the breakdowns that did land says nothing about
+	// those. Clearing it here would close a gap this pass cannot see.
+	if priced < len(accounting.ModelBreakdowns) {
+		accounting.Incomplete = true
+	}
+	if isEcho {
+		refreshed := total
+		accounting.Cost = &refreshed
+		// Stamp the marker while the row is being rewritten anyway, so a row written
+		// before it existed stops relying on the id comparison to be classified.
+		accounting.Echo = true
+	}
+
+	batchDebugJSON, err := sonic.Marshal(entry.BatchDebugParsed)
+	if err != nil {
+		return nil, fmt.Errorf("serialize batch_debug for log %s: %w", entry.ID, err)
+	}
+	return &RepricedCost{Cost: total, DebugJSON: string(batchDebugJSON), DebugColumn: "batch_debug", DisplayOnly: isEcho}, nil
+}

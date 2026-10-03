@@ -156,3 +156,18 @@ func TestVirtualMCP_Paginated(t *testing.T) {
 	require.Len(t, found, 1)
 	assert.Equal(t, "Research", found[0].Name)
 }
+
+func TestVirtualMCP_GetByName(t *testing.T) {
+	ctx := context.Background()
+	store := setupVirtualMCPTestStore(t)
+
+	def := &tables.TableVirtualMCP{Name: "Platform Tools", Enabled: true}
+	require.NoError(t, store.CreateVirtualMCP(ctx, def))
+
+	got, err := store.GetVirtualMCPByName(ctx, "Platform Tools")
+	require.NoError(t, err)
+	assert.Equal(t, def.ID, got.ID)
+
+	_, err = store.GetVirtualMCPByName(ctx, "Nope")
+	assert.ErrorIs(t, err, ErrNotFound)
+}

@@ -18,6 +18,9 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/maximhq/bifrost/framework/queryscope"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -418,6 +421,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_model_config_scope_columns"}, run: migrationAddModelConfigScopeColumns},
 	{IDs: []string{"migrate_provider_governance_to_model_configs"}, run: migrationMigrateProviderGovernanceToModelConfigs},
 	{IDs: []string{"add_budget_model_config_id_column"}, run: migrationAddBudgetModelConfigIDColumn},
+	{IDs: []string{"add_vertex_aws_workload_identity_column"}, run: migrationAddVertexAWSWorkloadIdentityColumn},
 	{IDs: []string{"add_model_config_calendar_aligned_column"}, run: migrationAddModelConfigCalendarAlignedColumn},
 	{IDs: []string{"migrate_virtual_key_governance_to_model_configs"}, run: migrationMigrateVirtualKeyGovernanceToModelConfigs},
 	{IDs: []string{"add_customer_calendar_aligned_column"}, run: migrationAddCustomerCalendarAlignedColumn},
@@ -437,6 +441,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_model_pricing_is_deprecated_column"}, run: migrationAddModelPricingIsDeprecatedColumn},
 	{IDs: []string{"add_mcp_client_tool_execution_timeout_column"}, run: migrationAddMCPClientToolExecutionTimeoutColumn},
 	{IDs: []string{"add_virtual_key_expires_at_column"}, run: migrationAddVirtualKeyExpiresAtColumn},
+	{IDs: []string{"add_virtual_key_delete_after_expire_column"}, run: migrationAddVirtualKeyDeleteAfterExpireColumn},
+	{IDs: []string{"add_client_config_delete_expired_virtual_keys_column"}, run: migrationAddClientConfigDeleteExpiredVirtualKeysColumn},
 	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 	{IDs: []string{"add_flex_and_cache_creation_272k_pricing_columns"}, run: migrationAddFlexAndCacheCreation272kPricingColumns},
@@ -490,6 +496,185 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_endpoint_slug"}, run: migrationAddMCPClientEndpointSlug},
 	{IDs: []string{"add_allow_all_providers_to_virtual_key"}, run: migrationAddAllowAllProvidersToVirtualKey},
 	{IDs: []string{"backfill_vk_allow_all_providers_hash"}, run: migrationBackfillVirtualKeyAllowAllProvidersHash},
+	{IDs: []string{"add_prompt_cache_json_column"}, run: migrationAddPromptCacheJSONColumn},
+	{IDs: []string{"add_hidden_request_types_json_column"}, run: migrationAddHiddenRequestTypesJSONColumn},
+	{IDs: []string{"add_use_openai_endpoints_column"}, run: migrationAddUseOpenAIEndpointsColumn},
+	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
+	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
+	{IDs: []string{"widen_oauth2_client_controlled_columns"}, run: migrationWidenOAuth2ClientControlledColumns},
+	{IDs: []string{"add_virtual_key_business_unit_column"}, run: migrationAddVirtualKeyBusinessUnitColumn},
+	{IDs: []string{"add_mcp_discovered_instructions_column"}, run: migrationAddMCPDiscoveredInstructionsColumn},
+	{IDs: []string{"add_mcp_instruction_cap_columns"}, run: migrationAddMCPInstructionCapColumns},
+	{IDs: []string{"add_mcp_client_max_instructions_length_column"}, run: migrationAddMCPClientMaxInstructionsLengthColumn},
+	{IDs: []string{"add_mcp_client_require_public_target_column"}, run: migrationAddMCPClientRequirePublicTargetColumn},
+	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
+	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
+	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
+	{IDs: []string{"add_warp_log_embedding_columns"}, run: migrationAddWarpLogEmbeddingColumns},
+	{IDs: []string{"add_warp_temperature_reasoning_columns"}, run: migrationAddWarpTemperatureReasoningColumns},
+	{IDs: []string{"add_virtual_key_disable_content_logging_column"}, run: migrationAddVirtualKeyDisableContentLoggingColumn},
+	{IDs: []string{"add_ttft_timeout_ms_column_to_routing_targets"}, run: migrationAddTTFTTimeoutMsColumnToRoutingTargets},
+	{IDs: []string{"add_web_search_cost_per_request_column"}, run: migrationAddWebSearchCostPerRequestColumn},
+	{IDs: []string{"move_pricing_override_search_context_to_web_search"}, run: migrationMovePricingOverrideSearchContextToWebSearch},
+	{IDs: []string{"add_warp_additional_models_column"}, run: migrationAddWarpAdditionalModelsColumn},
+	{IDs: []string{"add_vk_provider_config_virtual_key_id_index"}, run: migrationAddVKProviderConfigVirtualKeyIDIndex},
+	{IDs: []string{"add_value_hash_and_token_hash_indexes"}, run: migrationAddValueHashAndTokenHashIndexes},
+	{IDs: []string{"add_vk_mcp_configs_mcp_client_id_index"}, run: migrationAddVKMCPConfigsMCPClientIDIndex},
+	{IDs: []string{"add_vk_provider_config_provider_and_key_indexes"}, run: migrationAddVKProviderConfigProviderAndKeyIndexes},
+	{IDs: []string{"add_virtual_keys_created_at_id_index"}, run: migrationAddVirtualKeysCreatedAtIDIndex},
+	{IDs: []string{"add_batch_jobs_due_index"}, run: migrationAddBatchJobsDueIndex},
+	{IDs: []string{"make_mcp_oauth_flows_state_unique"}, run: migrationMakeMCPOauthFlowsStateUnique},
+	{IDs: []string{"add_ultrafast_above_272k_pricing_columns"}, run: migrationAddUltrafastAbove272kPricingColumns},
+	{IDs: []string{"add_priority_above_272k_cache_creation_pricing_column"}, run: migrationAddPriorityAbove272kCacheCreationPricingColumn},
+}
+
+// warpLogEmbeddingColumns are the semantic-search configuration columns added
+// so Warp can embed and search stored logs.
+var warpLogEmbeddingColumns = []string{
+	"embedding_provider",
+	"embedding_model",
+	"embedding_api_key_id",
+	"embedding_dimension",
+	"log_vector_store_namespace",
+	"semantic_search_threshold",
+	"semantic_search_limit",
+	"retired_log_vector_store_namespaces",
+}
+
+func migrationAddWarpLogEmbeddingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_log_embedding_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// AutoMigrate on the full model re-verifies every column, index and
+			// association TableWarpConfig has ever grown, not just the ones this
+			// migration is meant to add - the wrong blast radius for a step that
+			// applied migration IDs and never re-runs. Adding just the intended
+			// columns is what every other column-only migration in this file does.
+			for _, column := range warpLogEmbeddingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableWarpConfig{}, column); err != nil {
+					return fmt.Errorf("add %s column: %w", column, err)
+				}
+			}
+			// Backfilled, not left to the column default. A column added to a
+			// table that already has a row arrives NULL there, and these are
+			// scanned into plain Go strings - where database/sql refuses a NULL
+			// outright on Postgres. The whole configuration read then fails on
+			// exactly the deployments that had Warp set up before this migration.
+			for _, column := range []string{"embedding_provider", "embedding_model", "embedding_api_key_id", "log_vector_store_namespace"} {
+				if !tx.Migrator().HasColumn(&tables.TableWarpConfig{}, column) {
+					continue
+				}
+				statement := fmt.Sprintf("UPDATE %s SET %s = '' WHERE %s IS NULL",
+					quoteSQLiteIdentifier(tables.TableWarpConfig{}.TableName()),
+					quoteSQLiteIdentifier(column), quoteSQLiteIdentifier(column))
+				if err := tx.Exec(statement).Error; err != nil {
+					return fmt.Errorf("backfill warp %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping embedding configuration would lose operator settings", migrationName)
+		},
+	})
+}
+
+// warpTemperatureReasoningColumns are the sampling-override columns added so
+// an operator can override the model's sampling behavior instead of Warp
+// silently running every deployment at whatever default the provider applies.
+var warpTemperatureReasoningColumns = []string{
+	"temperature",
+	"reasoning_effort",
+}
+
+// migrationAddWarpTemperatureReasoningColumns adds the temperature and
+// reasoning_effort columns, so an operator can override the model's sampling
+// behavior instead of Warp silently running every deployment at whatever
+// default the provider happens to apply.
+func migrationAddWarpTemperatureReasoningColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_temperature_reasoning_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Same reasoning as migrationAddWarpLogEmbeddingColumns above: only the
+			// two columns this migration owns, not a full-model AutoMigrate.
+			for _, column := range warpTemperatureReasoningColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableWarpConfig{}, column); err != nil {
+					return fmt.Errorf("add %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping a configured temperature or reasoning effort would lose operator settings", migrationName)
+		},
+	})
+}
+
+// migrationAddWarpAdditionalModelsColumn adds the list of models an operator
+// exposes beside Warp's default, so the panel can offer more than one.
+//
+// It arrives NULL on an existing row, which reads as "no additional models":
+// the deployment keeps running on the one provider and model it already had.
+func migrationAddWarpAdditionalModelsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_additional_models_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			// Only the column this migration owns, not a full-model AutoMigrate;
+			// see migrationAddWarpLogEmbeddingColumns.
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "additional_models"); err != nil {
+				return fmt.Errorf("add additional_models column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: the default model lives in its own columns, so dropping
+			// this costs the extra choices and leaves Warp answering.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "additional_models")
+		},
+	})
+}
+
+// migrationAddWarpHistoryRetentionDaysColumn adds Warp's own retention setting.
+//
+// A separate step rather than an edit to add_warp_config_table, for the reason
+// the api_key_id migration above spells out: applied ids are recorded and never
+// re-run, so a database that already created the table would keep the old
+// column list forever and every write naming the new one would fail.
+//
+// It arrives zero on existing rows, and zero means "not set" - resolved to
+// schemas.WarpDefaultHistoryRetentionDays on read. That indirection is the
+// whole safety property here: read literally, a fresh column would expire every
+// saved chat on the deployment the first time the sweep ran.
+func migrationAddWarpHistoryRetentionDaysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_history_retention_days_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := tx.WithContext(ctx).AutoMigrate(&tables.TableWarpConfig{}); err != nil {
+				return fmt.Errorf("failed to add warp history_retention_days column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible, unlike the api_key_id migration: this column replaced
+			// nothing and holds a number an operator can set again, so dropping it
+			// costs a preference rather than data.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "history_retention_days")
+		},
+	})
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -694,6 +879,80 @@ func migrationAddBatchJobsAttributionColumns(ctx context.Context, db *gorm.DB, l
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
+}
+
+// migrationAddWarpAPIKeyIDColumn reshapes warp_config from storing a secret to
+// storing a reference to one of the provider's existing keys.
+//
+// This is a separate step rather than an edit to the migration above because
+// applied migration IDs are recorded and never re-run: any database that already
+// created the table keeps the old columns forever, and a write naming the new
+// one fails with a SQL error the API can only report as a 500.
+func migrationAddWarpAPIKeyIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_api_key_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// AutoMigrate adds api_key_id; it never drops, so the retired columns
+			// are handled separately below.
+			if err := tx.AutoMigrate(&tables.TableWarpConfig{}); err != nil {
+				return fmt.Errorf("failed to add warp api_key_id column: %w", err)
+			}
+			for _, column := range []string{"api_key", "encryption_status"} {
+				if !tx.Migrator().HasColumn(&tables.TableWarpConfig{}, column) {
+					continue
+				}
+				// Blank the value before attempting the drop, and treat this as the
+				// step that actually matters. api_key held a credential, and GORM's
+				// SQLite driver returns nil from DropColumn without dropping
+				// anything - so a drop-only migration would leave the secret at rest
+				// while reporting success. Clearing it works on every dialect.
+				if err := tx.Exec(fmt.Sprintf("UPDATE %s SET %s = NULL",
+					quoteSQLiteIdentifier(tables.TableWarpConfig{}.TableName()),
+					quoteSQLiteIdentifier(column))).Error; err != nil {
+					return fmt.Errorf("failed to clear warp %s column: %w", column, err)
+				}
+				// Then drop it where the dialect can. A failure here is not fatal:
+				// the column is already empty, and an unused nullable column is
+				// cosmetic.
+				if err := dropColumnIfExists(tx, logger, &tables.TableWarpConfig{}, column); err != nil {
+					logger.Warn("[configstore] could not drop retired warp column %s (cleared instead): %v", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackWarpAPIKeyIDColumn(ctx, tx, logger)
+		},
+	})
+}
+
+// rollbackWarpAPIKeyIDColumn refuses. The forward migration clears the api_key
+// credential it replaced - deliberately, since GORM's SQLite driver reports a
+// successful DropColumn without dropping anything, so blanking the value is the
+// step that actually removes the secret. That makes the move one-way: dropping
+// api_key_id would leave Warp with neither a usable credential nor the
+// reference that replaced it. Failing preserves the migration record.
+func rollbackWarpAPIKeyIDColumn(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_warp_api_key_id_column is non-rollbackable: the forward migration clears the api_key credential it replaced, so dropping api_key_id would leave Warp with no usable credential and no reference to one; the column is additive and older binaries safely ignore it")
+}
+
+func migrationAddWarpConfigTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_config_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableWarpConfig{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableWarpConfig{})
+		},
+	})
 }
 
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -7446,6 +7705,39 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB, logger
 	return nil
 }
 
+// migrationAddPromptCacheJSONColumn adds the prompt_cache_json column to the provider
+// table, backing ProviderConfig.PromptCache.
+//
+// Provider config is stored as one text column per sub-struct rather than a single
+// JSON blob, so a new config struct needs its own column. Without this the field
+// round-trips through the API and the UI but is dropped at the database boundary.
+func migrationAddPromptCacheJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_prompt_cache_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "PromptCacheJSON"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "prompt_cache_json"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_prompt_cache_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddPromptVariablesColumns adds variables_json column to prompt_sessions and prompt_versions
 func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_prompt_variables_columns"
@@ -11348,6 +11640,58 @@ func migrationAddOAuth2IssuanceTables(ctx context.Context, db *gorm.DB, logger s
 	return nil
 }
 
+// migrationWidenOAuth2ClientControlledColumns widens the OAuth2 authorization
+// server columns whose values come from the client, from varchar to text:
+// oauth2_authorize_requests.state and .scope, oauth2_clients.client_name and
+// .scope, and oauth2_refresh_tokens.scope (the registered scope flows unchanged
+// into the latter two). RFC 6749 §4.1.1 puts no bound on state and §3.3 none on
+// scope; RFC 7591 §2 bounds neither client_name nor scope. Clients do pack
+// connector context into state, and on Postgres the varchar(512) bound turned every such
+// /oauth2/authorize call into an opaque server_error — SQLite never enforced it.
+// The request header block (server.read_buffer_size) remains the effective upper
+// bound. Postgres-only: SQLite has no ALTER COLUMN TYPE and needs none. Fresh
+// installs already create these columns as text from the struct tags, so the
+// ALTERs are harmless no-ops there.
+func migrationWidenOAuth2ClientControlledColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "widen_oauth2_client_controlled_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			targets := []struct {
+				model  any
+				table  string
+				column string
+			}{
+				{&tables.TableOAuth2AuthorizeRequest{}, "oauth2_authorize_requests", "state"},
+				{&tables.TableOAuth2AuthorizeRequest{}, "oauth2_authorize_requests", "scope"},
+				{&tables.TableOAuth2Client{}, "oauth2_clients", "client_name"},
+				{&tables.TableOAuth2Client{}, "oauth2_clients", "scope"},
+				{&tables.TableOAuth2RefreshToken{}, "oauth2_refresh_tokens", "scope"},
+			}
+			for _, target := range targets {
+				if !tx.Migrator().HasColumn(target.model, target.column) {
+					continue
+				}
+				stmt := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE TEXT", target.table, target.column)
+				if err := tx.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("failed to widen column %s.%s: %w", target.table, target.column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
 func migrationAddMCPClientToolExecutionTimeoutColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_mcp_client_tool_execution_timeout_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -11484,6 +11828,52 @@ func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, log
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "expires_at")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigDeleteExpiredVirtualKeysColumn adds delete_expired_virtual_keys to config_client.
+func migrationAddClientConfigDeleteExpiredVirtualKeysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_delete_expired_virtual_keys_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "delete_expired_virtual_keys")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "delete_expired_virtual_keys")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyDeleteAfterExpireColumn adds the nullable delete_after_expire
+// column to governance_virtual_keys. NULL inherits client.delete_expired_virtual_keys.
+// No index: the daily cleanup scan already filters on expires_at and touches few rows.
+func migrationAddVirtualKeyDeleteAfterExpireColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_delete_after_expire_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "delete_after_expire")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "delete_after_expire")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
@@ -12166,19 +12556,15 @@ func migrationCreateMCPOauthFlowsTable(ctx context.Context, db *gorm.DB, logger 
 			// 1) Create mcp_oauth_flows if it doesn't already exist. Wholly
 			// new as of this migration, same as mcp_oauth_tokens before it —
 			// this check is normally true on every deployment that reaches
-			// this step. TableMCPOauthFlow.State deliberately carries a
-			// plain (non-unique) index in its struct tag rather than
-			// uniqueIndex: CreateTable would otherwise build a unique index
-			// as part of table creation, before the backfill in step 2 runs.
-			// Step 3 below adds the real unique index after the backfill
-			// instead — the same create-after-backfill ordering
-			// migrationMergeOauthTokenTables needed for its partial unique
-			// indexes, applied here even though (unlike that migration) a
-			// real collision isn't expected: oauth_user_sessions.state
-			// already carries its own uniqueIndex today, so a straight copy
-			// of already-distinct values into an empty destination table
-			// can't collide against itself. Applied anyway rather than
-			// relying on that reasoning holding forever.
+			// this step. TableMCPOauthFlow.State now declares
+			// uniqueIndex:idx_mcp_oauth_flows_state, so CreateTable builds the
+			// unique index before the backfill in step 2. That cannot collide:
+			// oauth_user_sessions.state carries its own uniqueIndex, so a
+			// straight copy of already-distinct values into an empty table
+			// stays distinct. The tag used to declare a plain index under the
+			// same name, which turned step 3 into a no-op and left state
+			// non-unique; migrationMakeMCPOauthFlowsStateUnique repairs those
+			// databases.
 			if !mg.HasTable(&tables.TableMCPOauthFlow{}) {
 				logger.Info("[configstore] %s: creating table TableMCPOauthFlow", migrationName)
 				if err := mg.CreateTable(&tables.TableMCPOauthFlow{}); err != nil {
@@ -12215,9 +12601,8 @@ func migrationCreateMCPOauthFlowsTable(ctx context.Context, db *gorm.DB, logger 
 				}
 			}
 
-			// 3) Unique index on state, created after the backfill above —
-			// see the field comment on TableMCPOauthFlow.State and the note
-			// in step 1 for why this can't come from the struct tag.
+			// 3) Unique index on state. A no-op when CreateTable already built
+			// it from the struct tag; see the note in step 1.
 			if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_oauth_flows_state ON mcp_oauth_flows (state)`).Error; err != nil {
 				return fmt.Errorf("create unique index on mcp_oauth_flows.state: %w", err)
 			}
@@ -12971,6 +13356,46 @@ func migrationAddUltrafastPricingColumns(ctx context.Context, db *gorm.DB, logge
 	return nil
 }
 
+// migrationAddUltrafastAbove272kPricingColumns adds the OpenAI Ultrafast rates
+// for prompts above 272k tokens. The fields are nullable so catalogs without them
+// keep the flat Ultrafast rate as the fallback.
+func migrationAddUltrafastAbove272kPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_ultrafast_above_272k_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"input_cost_per_token_above_272k_tokens_ultrafast",
+		"output_cost_per_token_above_272k_tokens_ultrafast",
+		"cache_read_input_token_cost_above_272k_tokens_ultrafast",
+		"cache_creation_input_token_cost_above_272k_tokens_ultrafast",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
 // migrationAddImageSizeQualityPricingColumns adds the per-size and joint
 // size+quality per-image output rate columns to the model pricing table.
 func migrationAddImageSizeQualityPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -13304,6 +13729,8 @@ func rollbackProviderJobKindColumns(ctx context.Context, db *gorm.DB) error {
 // A missing index and an INVALID one both report false: the caller wants to know
 // "can I rely on this", and an INVALID index — the residue of an interrupted
 // CREATE INDEX CONCURRENTLY — answers no while still occupying the name.
+// Only the table visible on the current search_path counts: a same-named table
+// in another schema of the same database must not make a missing index look present.
 func postgresIndexIsValid(tx *gorm.DB, table, index string) (bool, error) {
 	var valid bool
 	err := tx.Raw(`
@@ -13311,7 +13738,7 @@ func postgresIndexIsValid(tx *gorm.DB, table, index string) (bool, error) {
 		FROM pg_class pc
 		JOIN pg_index pi ON pi.indrelid = pc.oid
 		JOIN pg_class ic ON ic.oid = pi.indexrelid
-		WHERE pc.relname = ? AND ic.relname = ?
+		WHERE pc.relname = ? AND ic.relname = ? AND pg_catalog.pg_table_is_visible(pc.oid)
 	`, table, index).Scan(&valid).Error
 	return valid, err
 }
@@ -13427,4 +13854,1286 @@ func migrationAddGithubCopilotConfigColumns(ctx context.Context, db *gorm.DB, lo
 // columns are additive, so an older binary ignores them and there is nothing to undo.
 func rollbackGithubCopilotConfigColumns(*gorm.DB) error {
 	return fmt.Errorf("add_github_copilot_config_columns is non-rollbackable: dropping the github_copilot_* columns would permanently delete every stored GitHub App private key, which GitHub only issues once and cannot re-supply; the columns are additive and older binaries safely ignore them")
+}
+
+// migrationAddHiddenRequestTypesJSONColumn adds the hidden_request_types_json column to
+// config_client so hidden request types can be edited from the UI as well as config.json.
+// Existing rows get an empty list; a value in config.json's client section reconciles in on boot.
+func migrationAddHiddenRequestTypesJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_hidden_request_types_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "HiddenRequestTypesJSON"); err != nil {
+				return fmt.Errorf("failed to add hidden_request_types_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "hidden_request_types_json"); err != nil {
+				return fmt.Errorf("failed to drop hidden_request_types_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddUseOpenAIEndpointsColumn adds the use_openai_endpoints column to the config_keys table.
+func migrationAddUseOpenAIEndpointsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_use_openai_endpoints_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "use_openai_endpoints"); err != nil {
+				return fmt.Errorf("failed to add use_openai_endpoints column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "use_openai_endpoints"); err != nil {
+				return fmt.Errorf("failed to drop use_openai_endpoints column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("failed to run migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddTimeOfDayPricingColumns adds the peak/off-peak pricing columns to
+// governance_model_pricing. Providers such as DeepSeek bill the same model at
+// two different rates depending on the time of day; off_peak_cost_multiplier
+// scales usage-based charges outside the windows declared in peak_hours.
+func migrationAddTimeOfDayPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_time_of_day_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"off_peak_cost_multiplier",
+		"peak_hours",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationMigrateVKStandaloneLimitsToModelConfigs cleans up the bad state
+// produced by the config.json standalone-limits flow when combined with UI edits:
+//
+//  1. Standalone budgets (virtual_key_id set, model_config_id nil) owned by a VK
+//     are re-pointed into the VK's top-level model config (scope=virtual_key,
+//     model_name=*), creating that model config if it doesn't exist yet. Usage
+//     (current_usage, last_reset) is preserved — only the ownership FK moves.
+//
+//  2. Orphaned duplicate rate limit rows created by the UI (UUID IDs, referenced
+//     by a VK-scoped model config) are deleted and the model config is re-pointed
+//     to the original config.json-created rate limit (the one still on vk.rate_limit_id),
+//     preserving its usage counters. The VK's rate_limit_id column is then cleared
+//     since ownership now lives on the model config.
+func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "migrate_vk_standalone_limits_to_model_configs"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// --- Part 1: adopt standalone VK budgets into VK-scoped model configs ---
+
+			// Find all budgets owned directly by a VK (old config.json flow).
+			type standaloneVKBudget struct {
+				ID            string
+				VirtualKeyID  string
+				MaxLimit      float64
+				ResetDuration string
+				CurrentUsage  float64
+				LastReset     time.Time
+				ConfigHash    string
+			}
+			var standaloneBudgets []standaloneVKBudget
+			if err := tx.Raw(`
+				SELECT id, virtual_key_id, max_limit, reset_duration, current_usage, last_reset, config_hash
+				FROM governance_budgets
+				WHERE virtual_key_id IS NOT NULL AND model_config_id IS NULL
+			`).Scan(&standaloneBudgets).Error; err != nil {
+				return fmt.Errorf("failed to query standalone VK budgets: %w", err)
+			}
+
+			// Group by VK ID.
+			budgetsByVK := make(map[string][]standaloneVKBudget)
+			for _, b := range standaloneBudgets {
+				budgetsByVK[b.VirtualKeyID] = append(budgetsByVK[b.VirtualKeyID], b)
+			}
+
+			for vkID, budgets := range budgetsByVK {
+				// Look up whether this VK has a direct rate_limit_id that also needs moving.
+				var vkRateLimitID *string
+				if err := tx.Raw(`SELECT rate_limit_id FROM governance_virtual_keys WHERE id = ?`, vkID).Scan(&vkRateLimitID).Error; err != nil {
+					return fmt.Errorf("failed to query VK %s rate_limit_id: %w", vkID, err)
+				}
+
+				// Find or create the VK's top-level model config (scope=virtual_key, model_name=*).
+				var mcID string
+				err := tx.Raw(`
+					SELECT id FROM governance_model_configs
+					WHERE scope = 'virtual_key' AND scope_id = ? AND model_name = '*' AND provider IS NULL
+					LIMIT 1
+				`, vkID).Scan(&mcID).Error
+				if err != nil {
+					return fmt.Errorf("failed to query model config for VK %s: %w", vkID, err)
+				}
+
+				if mcID == "" {
+					mcID = uuid.NewString()
+					now := time.Now()
+					if err := tx.Exec(`
+						INSERT INTO governance_model_configs (id, model_name, scope, scope_id, created_at, updated_at)
+						VALUES (?, '*', 'virtual_key', ?, ?, ?)
+					`, mcID, vkID, now, now).Error; err != nil {
+						return fmt.Errorf("failed to create model config for VK %s: %w", vkID, err)
+					}
+					logger.Info("[configstore] %s: created model config %s for VK %s", migrationName, mcID, vkID)
+				}
+
+				// If the VK has a rate limit not yet on the MC, move it now so Part 3's
+				// NOT EXISTS doesn't skip this VK (Part 3 excludes VKs that already have an MC).
+				if vkRateLimitID != nil {
+					res := tx.Exec(`
+						UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ? AND rate_limit_id IS NULL
+					`, *vkRateLimitID, mcID)
+					if res.Error != nil {
+						return fmt.Errorf("failed to set rate_limit_id on model config %s: %w", mcID, res.Error)
+					}
+					// Only drop the VK reference when the model config took ownership.
+					// Otherwise leave it so Part 2 can pick the canonical row and delete the duplicate.
+					if res.RowsAffected > 0 {
+						if err := tx.Exec(`UPDATE governance_virtual_keys SET rate_limit_id = NULL WHERE id = ?`, vkID).Error; err != nil {
+							return fmt.Errorf("failed to clear VK %s rate_limit_id: %w", vkID, err)
+						}
+						logger.Info("[configstore] %s: moved rate limit %s from VK %s onto model config %s", migrationName, *vkRateLimitID, vkID, mcID)
+					}
+				}
+
+				// Re-point each budget's ownership from virtual_key_id to model_config_id.
+				ids := make([]string, len(budgets))
+				for i, b := range budgets {
+					ids[i] = b.ID
+				}
+				if err := tx.Exec(`
+					UPDATE governance_budgets
+					SET model_config_id = ?, virtual_key_id = NULL
+					WHERE id IN ? AND virtual_key_id = ?
+				`, mcID, ids, vkID).Error; err != nil {
+					return fmt.Errorf("failed to re-point budgets for VK %s: %w", vkID, err)
+				}
+				logger.Info("[configstore] %s: re-pointed %d budget(s) for VK %s into model config %s", migrationName, len(ids), vkID, mcID)
+			}
+
+			// --- Part 2: deduplicate rate limit rows ---
+			// Find VK-scoped model configs that have a rate_limit_id, where the owning
+			// VK also has a different rate_limit_id set directly (the config.json row).
+			type dupRateLimit struct {
+				MCID          string
+				MCRateLimitID string
+				VKID          string
+				VKRateLimitID string
+			}
+			var dups []dupRateLimit
+			if err := tx.Raw(`
+				SELECT mc.id AS mc_id, mc.rate_limit_id AS mc_rate_limit_id,
+				       vk.id AS vk_id, vk.rate_limit_id AS vk_rate_limit_id
+				FROM governance_model_configs mc
+				JOIN governance_virtual_keys vk ON vk.id = mc.scope_id
+				WHERE mc.scope = 'virtual_key'
+				  AND mc.model_name = '*'
+				  AND mc.provider IS NULL
+				  AND mc.rate_limit_id IS NOT NULL
+				  AND vk.rate_limit_id IS NOT NULL
+				  AND mc.rate_limit_id != vk.rate_limit_id
+			`).Scan(&dups).Error; err != nil {
+				return fmt.Errorf("failed to query duplicate rate limits: %w", err)
+			}
+
+			for _, d := range dups {
+				// Re-point the model config to the canonical config.json row (vk.rate_limit_id),
+				// preserving its usage. The UUID row (mc.rate_limit_id) is the orphan to delete.
+				orphanID := d.MCRateLimitID
+				canonicalID := d.VKRateLimitID
+
+				if err := tx.Exec(`
+					UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ?
+				`, canonicalID, d.MCID).Error; err != nil {
+					return fmt.Errorf("failed to re-point model config %s to canonical rate limit: %w", d.MCID, err)
+				}
+
+				// Delete the orphaned UUID rate limit row.
+				if err := tx.Exec(`DELETE FROM governance_rate_limits WHERE id = ?`, orphanID).Error; err != nil {
+					return fmt.Errorf("failed to delete orphaned rate limit %s: %w", orphanID, err)
+				}
+				logger.Info("[configstore] %s: VK %s — replaced orphan rate limit %s with canonical %s", migrationName, d.VKID, orphanID, canonicalID)
+
+				// Clear vk.rate_limit_id — ownership now lives on the model config.
+				if err := tx.Exec(`UPDATE governance_virtual_keys SET rate_limit_id = NULL WHERE id = ?`, d.VKID).Error; err != nil {
+					return fmt.Errorf("failed to clear VK %s rate_limit_id: %w", d.VKID, err)
+				}
+			}
+
+			// For VKs that only have rate_limit_id set directly (no model config yet
+			// and no duplicate), move the reference onto a model config so future UI
+			// edits use the single-row path.
+			type vkOnlyRL struct {
+				VKID          string
+				VKRateLimitID string
+			}
+			var vkOnlyRLs []vkOnlyRL
+			if err := tx.Raw(`
+				SELECT vk.id AS vk_id, vk.rate_limit_id AS vk_rate_limit_id
+				FROM governance_virtual_keys vk
+				WHERE vk.rate_limit_id IS NOT NULL
+				  AND NOT EXISTS (
+					SELECT 1 FROM governance_model_configs mc
+					WHERE mc.scope = 'virtual_key' AND mc.scope_id = vk.id
+					  AND mc.model_name = '*' AND mc.provider IS NULL
+				  )
+			`).Scan(&vkOnlyRLs).Error; err != nil {
+				return fmt.Errorf("failed to query VKs with standalone rate limits: %w", err)
+			}
+
+			for _, v := range vkOnlyRLs {
+				mcID := uuid.NewString()
+				now := time.Now()
+				if err := tx.Exec(`
+					INSERT INTO governance_model_configs (id, model_name, scope, scope_id, rate_limit_id, created_at, updated_at)
+					VALUES (?, '*', 'virtual_key', ?, ?, ?, ?)
+				`, mcID, v.VKID, v.VKRateLimitID, now, now).Error; err != nil {
+					return fmt.Errorf("failed to create model config for VK %s: %w", v.VKID, err)
+				}
+				if err := tx.Exec(`UPDATE governance_virtual_keys SET rate_limit_id = NULL WHERE id = ?`, v.VKID).Error; err != nil {
+					return fmt.Errorf("failed to clear VK %s rate_limit_id: %w", v.VKID, err)
+				}
+				logger.Info("[configstore] %s: moved rate limit %s from VK %s into new model config %s", migrationName, v.VKRateLimitID, v.VKID, mcID)
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyBusinessUnitColumn adds business_unit_id to governance_virtual_keys, the
+// third owner a key can have alongside a team and a customer. A business unit is an enterprise
+// table this module does not model, so the column is a bare indexed varchar with no foreign key:
+// what it points at is resolved by whoever owns business units, and a deployment without them
+// simply never writes it.
+func migrationAddVirtualKeyBusinessUnitColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_business_unit_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "business_unit_id"); err != nil {
+				return fmt.Errorf("failed to add business_unit_id column: %w", err)
+			}
+			// Every request made with a key owned by a business unit walks this column, and AddColumn
+			// does not create indexes from struct tags.
+			if !mg.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_business_unit_id") {
+				if err := mg.CreateIndex(&tables.TableVirtualKey{}, "BusinessUnitID"); err != nil {
+					return fmt.Errorf("failed to create index on governance_virtual_keys.business_unit_id: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// The index belongs to the column and goes with it.
+			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "business_unit_id")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyDisableContentLoggingColumn adds disable_content_logging to
+// governance_virtual_keys: the key's own tri-state say on content logging. The column is nullable
+// with no default because NULL is a meaning of its own (inherit the client setting), so every
+// existing key comes out of the migration inheriting exactly as it did before.
+func migrationAddVirtualKeyDisableContentLoggingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_disable_content_logging_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "disable_content_logging"); err != nil {
+				return fmt.Errorf("failed to add disable_content_logging column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_virtual_key_disable_content_logging_column is non-rollbackable: dropping disable_content_logging would permanently delete every virtual key's content-logging decision and silently revert content-off keys to logging content; the column is additive and older binaries safely ignore it")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddTTFTTimeoutMsColumnToRoutingTargets adds the nullable ttft_timeout_ms
+// column to routing_targets. Existing targets keep NULL (no TTFT deadline), and
+// GenerateRoutingRuleHash only hashes the field when it is set, so no
+// config_hash backfill is needed.
+func migrationAddTTFTTimeoutMsColumnToRoutingTargets(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_ttft_timeout_ms_column_to_routing_targets"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableRoutingTarget{}, "ttft_timeout_ms"); err != nil {
+				return fmt.Errorf("failed to add column ttft_timeout_ms: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableRoutingTarget{}, "ttft_timeout_ms"); err != nil {
+				return fmt.Errorf("failed to drop column ttft_timeout_ms: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPDiscoveredInstructionsColumn adds the discovered_instructions column to the
+// MCP client table. Per-call auth types (per-user OAuth, per-user headers, token exchange) hold
+// no persistent connection, so — exactly like discovered_tools_json beside it — their
+// instructions have to survive a restart here or be lost until the next admin verification.
+func migrationAddMCPDiscoveredInstructionsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_discovered_instructions_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "discovered_instructions")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "discovered_instructions")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp discovered instructions migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPInstructionCapColumns adds the two byte bounds on forwarded MCP instructions to
+// the client config table. Both default to 0, which the core reads as "use the built-in default",
+// so existing rows keep exactly the limits they ran with before.
+func migrationAddMCPInstructionCapColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_instruction_cap_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"mcp_max_instructions_per_client", "mcp_max_instructions_total"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range []string{"mcp_max_instructions_per_client", "mcp_max_instructions_total"} {
+				if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp instruction cap migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWebSearchCostPerRequestColumn adds web_search_cost_per_request, seeded from search_context_cost_per_query.
+func migrationAddWebSearchCostPerRequestColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_web_search_cost_per_request_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, "web_search_cost_per_request"); err != nil {
+				return fmt.Errorf("failed to add column web_search_cost_per_request: %w", err)
+			}
+			// Existing rows would bill web search at $0 until the next datasheet sync.
+			if err := tx.Model(&tables.TableModelPricing{}).
+				Where("web_search_cost_per_request IS NULL AND search_context_cost_per_query IS NOT NULL").
+				Update("web_search_cost_per_request", gorm.Expr("search_context_cost_per_query")).Error; err != nil {
+				return fmt.Errorf("failed to backfill web_search_cost_per_request: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "web_search_cost_per_request"); err != nil {
+				return fmt.Errorf("failed to drop column web_search_cost_per_request: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationMovePricingOverrideSearchContextToWebSearch renames search_context_cost_per_query to web_search_cost_per_request in override patches.
+func migrationMovePricingOverrideSearchContextToWebSearch(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "move_pricing_override_search_context_to_web_search"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			var rows []struct {
+				ID               string
+				PricingPatchJSON string
+			}
+			if err := tx.Table(tables.TablePricingOverride{}.TableName()).
+				Select("id, pricing_patch_json").
+				Where("pricing_patch_json LIKE ?", "%search_context_cost_per_query%").
+				Scan(&rows).Error; err != nil {
+				return fmt.Errorf("failed to load pricing overrides: %w", err)
+			}
+			for _, row := range rows {
+				legacy := gjson.Get(row.PricingPatchJSON, "search_context_cost_per_query")
+				if !legacy.Exists() {
+					continue
+				}
+				patch := row.PricingPatchJSON
+				var err error
+				// An explicit web_search_cost_per_request wins over the legacy rate.
+				if !gjson.Get(patch, "web_search_cost_per_request").Exists() {
+					if patch, err = sjson.SetRaw(patch, "web_search_cost_per_request", legacy.Raw); err != nil {
+						return fmt.Errorf("failed to set web_search_cost_per_request on override %s: %w", row.ID, err)
+					}
+				}
+				if patch, err = sjson.Delete(patch, "search_context_cost_per_query"); err != nil {
+					return fmt.Errorf("failed to drop search_context_cost_per_query on override %s: %w", row.ID, err)
+				}
+				if err := tx.Table(tables.TablePricingOverride{}.TableName()).
+					Where("id = ?", row.ID).
+					UpdateColumn("pricing_patch_json", patch).Error; err != nil {
+					return fmt.Errorf("failed to update override %s: %w", row.ID, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientMaxInstructionsLengthColumn adds the per-client instruction byte cap to
+// the MCP client table. Defaults to 0, which means "use the global cap", so existing clients
+// keep exactly the limit they ran with before.
+func migrationAddMCPClientMaxInstructionsLengthColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_max_instructions_length_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "max_instructions_length")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "max_instructions_length")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client max instructions length migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientRequirePublicTargetColumn adds the flag recording that an MCP client
+// was registered over the management API with no credential check, which restricts every
+// later dial to public addresses. Defaults to false: existing rows keep the dial policy they
+// ran with, since nothing on record says how they were registered.
+func migrationAddMCPClientRequirePublicTargetColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_require_public_target_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "require_public_target")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "require_public_target")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client require public target migration: %s", err.Error())
+	}
+	return nil
+}
+
+// postgresIndexOnTable looks up index name among the indexes of table (the
+// table visible on the current search_path). It returns the index's
+// schema-qualified name and whether it is valid, or found=false when table has
+// no index of that name. Index names are unique per schema, not per database, so
+// a bare name can also resolve to another table's index or another schema's;
+// callers drop by the qualified name returned here, never by the bare name.
+func postgresIndexOnTable(tx *gorm.DB, table, name string) (qualified string, valid, found bool, err error) {
+	var rows []struct {
+		Qualified string
+		Valid     bool
+	}
+	err = tx.Raw(`
+		SELECT quote_ident(n.nspname) || '.' || quote_ident(ic.relname) AS qualified, pi.indisvalid AS valid
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		JOIN pg_namespace n ON n.oid = ic.relnamespace
+		WHERE pc.relname = ? AND ic.relname = ? AND pg_catalog.pg_table_is_visible(pc.oid)
+	`, table, name).Scan(&rows).Error
+	if err != nil || len(rows) == 0 {
+		return "", false, false, err
+	}
+	return rows[0].Qualified, rows[0].Valid, true, nil
+}
+
+// ensureIndexConcurrently creates index name on table with the given column
+// definition without blocking writes. On postgres it runs CREATE [UNIQUE] INDEX
+// CONCURRENTLY, which cannot run inside a transaction, so callers must use a
+// migration with UseTransaction=false. An INVALID index left by an interrupted
+// concurrent build still occupies the name and would make IF NOT EXISTS a silent
+// no-op, so it is dropped and rebuilt; only an index on table itself is ever
+// dropped, by its schema-qualified name. SQLite has no concurrent build and uses
+// the plain form. Identifier arguments are migration-controlled constants, never input.
+func ensureIndexConcurrently(tx *gorm.DB, table, name, definition string, unique bool) error {
+	return ensurePartialIndexConcurrently(tx, table, name, definition, "", unique)
+}
+
+// ensurePartialIndexConcurrently is ensureIndexConcurrently with an optional
+// predicate: a non-empty where builds a partial index (CREATE INDEX ... WHERE
+// where), which both Postgres and SQLite support. An empty where builds a full
+// index. The same no-transaction requirement applies on postgres.
+func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where string, unique bool) error {
+	kind := "INDEX"
+	if unique {
+		kind = "UNIQUE INDEX"
+	}
+	predicate := ""
+	if where != "" {
+		predicate = " WHERE " + where
+	}
+	if tx.Dialector.Name() != "postgres" {
+		return tx.Exec(fmt.Sprintf("CREATE %s IF NOT EXISTS %s ON %s (%s)%s", kind, name, table, definition, predicate)).Error
+	}
+	qualified, valid, found, err := postgresIndexOnTable(tx, table, name)
+	if err != nil {
+		return fmt.Errorf("check index %s: %w", name, err)
+	}
+	if found && valid {
+		return nil
+	}
+	if found {
+		if err := tx.Exec(fmt.Sprintf("DROP INDEX CONCURRENTLY IF EXISTS %s", qualified)).Error; err != nil {
+			return fmt.Errorf("drop invalid index %s: %w", qualified, err)
+		}
+	}
+	return tx.Exec(fmt.Sprintf("CREATE %s CONCURRENTLY IF NOT EXISTS %s ON %s (%s)%s", kind, name, table, definition, predicate)).Error
+}
+
+// dropIndexConcurrently is the rollback counterpart of ensureIndexConcurrently: it
+// drops index name on table without blocking writes on postgres, by its
+// schema-qualified name and only when table has it, and with the plain form on SQLite.
+func dropIndexConcurrently(tx *gorm.DB, table, name string) error {
+	if tx.Dialector.Name() != "postgres" {
+		return tx.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", name)).Error
+	}
+	qualified, _, found, err := postgresIndexOnTable(tx, table, name)
+	if err != nil {
+		return fmt.Errorf("check index %s: %w", name, err)
+	}
+	if !found {
+		return nil
+	}
+	return tx.Exec(fmt.Sprintf("DROP INDEX CONCURRENTLY IF EXISTS %s", qualified)).Error
+}
+
+// migrationAddVKProviderConfigVirtualKeyIDIndex indexes
+// governance_virtual_key_provider_configs.virtual_key_id. Every provider-config
+// preload, per-VK lookup, and the ON DELETE CASCADE check of every virtual key
+// delete filters on this column; without an index each one scans the whole table
+// (100k-500k rows at 100k keys). Built concurrently so the upgrade never blocks writes.
+func migrationAddVKProviderConfigVirtualKeyIDIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vk_provider_config_virtual_key_id_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, vkProviderConfigVirtualKeyIDIndexMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// vkProviderConfigVirtualKeyIDIndexMigration builds the migration applied by
+// migrationAddVKProviderConfigVirtualKeyIDIndex, so tests exercise the same
+// Migrate and Rollback callbacks the upgrade runs.
+func vkProviderConfigVirtualKeyIDIndexMigration(ctx context.Context, id string) *migrator.Migration {
+	return &migrator.Migration{
+		ID: id,
+		Migrate: func(tx *gorm.DB) error {
+			return ensureIndexConcurrently(tx.WithContext(ctx), "governance_virtual_key_provider_configs",
+				"idx_vk_provider_configs_virtual_key_id", "virtual_key_id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropIndexConcurrently(tx.WithContext(ctx), "governance_virtual_key_provider_configs", "idx_vk_provider_configs_virtual_key_id")
+		},
+	}
+}
+
+// hashIndexSpec describes one credential-hash column whose tag-declared UNIQUE
+// index upgraded databases never received.
+type hashIndexSpec struct {
+	table  string
+	column string
+	unique string
+}
+
+// hashIndexSpecs lists the hash columns migrationAddEncryptionColumns added with
+// addColumnIfNotExists, which adds the column but never builds its tag index.
+var hashIndexSpecs = []hashIndexSpec{
+	{table: "governance_virtual_keys", column: "value_hash", unique: "idx_virtual_key_value_hash"},
+	{table: "sessions", column: "token_hash", unique: "idx_session_token_hash"},
+}
+
+// hashIndexExists reports whether index name exists and is usable on table.
+func hashIndexExists(tx *gorm.DB, table, name string) (bool, error) {
+	if tx.Dialector.Name() == "postgres" {
+		return postgresIndexIsValid(tx, table, name)
+	}
+	var n int64
+	err := tx.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name = ?", table, name).Scan(&n).Error
+	return n > 0, err
+}
+
+// countDuplicateHashes returns how many distinct non-NULL values of column occur
+// more than once in table, which is what would make a UNIQUE build fail.
+func countDuplicateHashes(tx *gorm.DB, table, column string) (int64, error) {
+	var n int64
+	err := tx.Raw(fmt.Sprintf(
+		"SELECT COUNT(*) FROM (SELECT %s FROM %s WHERE %s IS NOT NULL GROUP BY %s HAVING COUNT(*) > 1) dup",
+		column, table, column, column)).Scan(&n).Error
+	return n, err
+}
+
+// hashNormalizeBatchSize bounds how many rows one empty-hash normalization
+// statement touches. A variable only so tests can exercise several batches.
+var hashNormalizeBatchSize = 10000
+
+// normalizeEmptyHashes sets column to NULL wherever it is the empty string,
+// walking the primary key in batches of hashNormalizeBatchSize so no single
+// statement locks every matching row. Each batch updates one id range and
+// commits on its own (the migration runs without a transaction). The cursor
+// keeps the id's own type, since the tables it runs on key by string (virtual
+// keys) and by integer (sessions). Identifiers are migration constants.
+func normalizeEmptyHashes(tx *gorm.DB, table, column string) error {
+	var cursor any
+	for {
+		selectSQL := fmt.Sprintf("SELECT id FROM %s WHERE %s = ''", table, column)
+		args := []any{}
+		if cursor != nil {
+			selectSQL += " AND id > ?"
+			args = append(args, cursor)
+		}
+		selectSQL += " ORDER BY id LIMIT ?"
+		args = append(args, hashNormalizeBatchSize)
+		rows, err := tx.Raw(selectSQL, args...).Rows()
+		if err != nil {
+			return err
+		}
+		var ids []any
+		for rows.Next() {
+			var id any
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			if b, ok := id.([]byte); ok {
+				id = string(b)
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		last := ids[len(ids)-1]
+		updateSQL := fmt.Sprintf("UPDATE %s SET %s = NULL WHERE %s = '' AND id <= ?", table, column, column)
+		updateArgs := []any{last}
+		if cursor != nil {
+			updateSQL += " AND id > ?"
+			updateArgs = append(updateArgs, cursor)
+		}
+		if err := tx.Exec(updateSQL, updateArgs...).Error; err != nil {
+			return err
+		}
+		cursor = last
+		if len(ids) < hashNormalizeBatchSize {
+			return nil
+		}
+	}
+}
+
+// ensureHashIndex builds the UNIQUE lookup index for one hash column, or a
+// non-unique fallback when existing duplicates make UNIQUE impossible. The
+// fallback keeps auth lookups indexed without blocking startup; the duplicates
+// themselves are left for an operator, and the warning names the table and count.
+// An empty-string hash is normalized to NULL first (the value migrationAddEncryptionColumns chose):
+// a row without a value has no hash, and NULLs never collide in a UNIQUE index.
+func ensureHashIndex(tx *gorm.DB, logger schemas.Logger, spec hashIndexSpec) error {
+	exists, err := hashIndexExists(tx, spec.table, spec.unique)
+	if err != nil {
+		return fmt.Errorf("check index %s: %w", spec.unique, err)
+	}
+	if exists {
+		return nil
+	}
+	if err := normalizeEmptyHashes(tx, spec.table, spec.column); err != nil {
+		return fmt.Errorf("normalize empty %s.%s: %w", spec.table, spec.column, err)
+	}
+	dups, err := countDuplicateHashes(tx, spec.table, spec.column)
+	if err != nil {
+		return fmt.Errorf("count duplicate %s.%s: %w", spec.table, spec.column, err)
+	}
+	if dups == 0 {
+		buildErr := ensureIndexConcurrently(tx, spec.table, spec.unique, spec.column, true)
+		if buildErr == nil {
+			return nil
+		}
+		// A concurrent writer can add a duplicate between the count and the build.
+		// Recount: only a real duplicate justifies the fallback, anything else is a
+		// genuine failure the migration must report.
+		dups, err = countDuplicateHashes(tx, spec.table, spec.column)
+		if err != nil || dups == 0 {
+			return fmt.Errorf("create unique index %s: %w", spec.unique, buildErr)
+		}
+		if err := dropIndexConcurrently(tx, spec.table, spec.unique); err != nil {
+			return fmt.Errorf("drop failed unique index %s: %w", spec.unique, err)
+		}
+	}
+	nonUnique := spec.unique + "_nonunique"
+	logger.Warn("[configstore] %s has %d duplicated %s values; building non-unique index %s instead of unique %s. Remove the duplicates and rebuild %s as UNIQUE.",
+		spec.table, dups, spec.column, nonUnique, spec.unique, spec.unique)
+	return ensureIndexConcurrently(tx, spec.table, nonUnique, spec.column, false)
+}
+
+// migrationAddValueHashAndTokenHashIndexes builds the lookup indexes that the
+// struct tags declare on governance_virtual_keys.value_hash and
+// sessions.token_hash. Upgraded databases got both columns from
+// migrationAddEncryptionColumns, whose addColumnIfNotExists never builds tag
+// indexes, so every VK auth by hash and every session lookup scanned the whole
+// table. Both indexes are UNIQUE, matching fresh installs; if existing duplicate
+// hashes make that impossible, a non-unique *_nonunique index is built instead and
+// a warning is logged, so a data problem never blocks startup. Built concurrently.
+func migrationAddValueHashAndTokenHashIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_value_hash_and_token_hash_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, valueHashAndTokenHashIndexesMigration(ctx, migrationName, logger)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// valueHashAndTokenHashIndexesMigration builds the migration applied by
+// migrationAddValueHashAndTokenHashIndexes, so tests exercise its callbacks.
+func valueHashAndTokenHashIndexesMigration(ctx context.Context, migrationName string, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, spec := range hashIndexSpecs {
+				if err := ensureHashIndex(tx, logger, spec); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: on a fresh install the struct tags build these unique lookup indexes before the migration runs, and the ledger cannot tell which indexes it created, so dropping them could remove the schema's own auth lookup indexes", migrationName)
+		},
+	}
+}
+
+// migrationAddVKMCPConfigsMCPClientIDIndex indexes
+// governance_virtual_key_mcp_configs.mcp_client_id. The only other index is
+// UNIQUE(virtual_key_id, mcp_client_id), which cannot serve a lookup by client, so
+// deleting or reconciling one MCP client scanned every VK assignment row.
+func migrationAddVKMCPConfigsMCPClientIDIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vk_mcp_configs_mcp_client_id_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return ensureIndexConcurrently(tx.WithContext(ctx), "governance_virtual_key_mcp_configs",
+				"idx_vk_mcp_configs_mcp_client_id", "mcp_client_id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropIndexConcurrently(tx.WithContext(ctx), "governance_virtual_key_mcp_configs", "idx_vk_mcp_configs_mcp_client_id")
+		},
+	}); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddVKProviderConfigProviderAndKeyIndexes indexes
+// governance_virtual_key_provider_configs.provider and
+// governance_virtual_key_provider_config_keys.table_key_id. Provider updates and
+// deletes find every VK config of one provider, and key removal finds every join
+// row of one key; table_key_id is only the second column of the join table's
+// primary key, so neither lookup had a usable index.
+func migrationAddVKProviderConfigProviderAndKeyIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vk_provider_config_provider_and_key_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := ensureIndexConcurrently(tx, "governance_virtual_key_provider_configs",
+				"idx_vk_provider_configs_provider", "provider", false); err != nil {
+				return err
+			}
+			return ensureIndexConcurrently(tx, "governance_virtual_key_provider_config_keys",
+				"idx_vkpc_keys_table_key_id", "table_key_id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropIndexConcurrently(tx, "governance_virtual_key_provider_configs", "idx_vk_provider_configs_provider"); err != nil {
+				return err
+			}
+			return dropIndexConcurrently(tx, "governance_virtual_key_provider_config_keys", "idx_vkpc_keys_table_key_id")
+		},
+	}); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddVirtualKeysCreatedAtIDIndex indexes governance_virtual_keys on
+// (created_at, id), the exact keyset the all-VK loaders page by. With only the
+// single-column created_at index, each page re-read the index from its start and
+// filtered, so loading N keys cost O(N^2) index reads.
+func migrationAddVirtualKeysCreatedAtIDIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_keys_created_at_id_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return ensureIndexConcurrently(tx.WithContext(ctx), "governance_virtual_keys",
+				"idx_virtual_keys_created_at_id", "created_at, id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropIndexConcurrently(tx.WithContext(ctx), "governance_virtual_keys", "idx_virtual_keys_created_at_id")
+		},
+	}); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// batchJobsDueBackfillBatchSize is how many batch_jobs rows one backfill UPDATE
+// touches. A variable only so tests can exercise several batches on a few rows.
+var batchJobsDueBackfillBatchSize = 10000
+
+// backfillTerminalBatchJobsNextCheckAt clears next_check_at on jobs already in a
+// terminal accounting status, walking the primary key in batches so no single
+// statement locks the whole table. Each batch commits on its own (the migration
+// runs without a transaction); re-running is safe because the WHERE clause only
+// matches rows that still need clearing.
+func backfillTerminalBatchJobsNextCheckAt(tx *gorm.DB) error {
+	terminal := []string{tables.ProviderJobAccountingStatusAccounted, tables.ProviderJobAccountingStatusUnpriceable}
+	cursor := ""
+	for {
+		var ids []string
+		if err := tx.Table("batch_jobs").
+			Where("id > ? AND next_check_at IS NOT NULL AND accounting_status IN ?", cursor, terminal).
+			Order("id ASC").
+			Limit(batchJobsDueBackfillBatchSize).
+			Pluck("id", &ids).Error; err != nil {
+			return fmt.Errorf("select terminal batch_jobs after %q: %w", cursor, err)
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		inClause, arg := queryscope.InStrings(tx, "id", ids)
+		if err := tx.Exec("UPDATE batch_jobs SET next_check_at = NULL WHERE "+inClause+" AND accounting_status IN ?", arg, terminal).Error; err != nil {
+			return fmt.Errorf("clear next_check_at on terminal batch_jobs: %w", err)
+		}
+		cursor = ids[len(ids)-1]
+		if len(ids) < batchJobsDueBackfillBatchSize {
+			return nil
+		}
+	}
+}
+
+// migrationAddBatchJobsDueIndex keeps the sweeper's due-job scan proportional to
+// the jobs that can still be due. finishProviderJob used to leave next_check_at
+// set on accounted and unpriceable jobs, so ListDueProviderJobs re-read every
+// finished job ever recorded on each sweep. This clears next_check_at on existing
+// terminal rows (in primary-key batches) and builds the partial index
+// idx_batch_jobs_due (kind, next_check_at) WHERE next_check_at IS NOT NULL, which
+// then only holds live jobs. Built concurrently.
+func migrationAddBatchJobsDueIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_batch_jobs_due_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, batchJobsDueIndexMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// batchJobsDueIndexMigration builds the migration applied by
+// migrationAddBatchJobsDueIndex, so tests exercise its callbacks.
+func batchJobsDueIndexMigration(ctx context.Context, migrationName string) *migrator.Migration {
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := backfillTerminalBatchJobsNextCheckAt(tx); err != nil {
+				return err
+			}
+			return ensurePartialIndexConcurrently(tx, "batch_jobs", "idx_batch_jobs_due",
+				"kind, next_check_at", "next_check_at IS NOT NULL", false)
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: it cleared next_check_at on accounted and unpriceable batch jobs, which dropping idx_batch_jobs_due cannot restore", migrationName)
+		},
+	}
+}
+
+// oauthFlowStateIndex is the lookup index on mcp_oauth_flows.state, and
+// oauthFlowStateTempIndex the UNIQUE index built beside it before the swap.
+const (
+	oauthFlowStateIndex     = "idx_mcp_oauth_flows_state"
+	oauthFlowStateTempIndex = "idx_mcp_oauth_flows_state_unique"
+)
+
+// indexState describes one index as the state-uniqueness migration needs it.
+type indexState struct {
+	exists bool
+	unique bool
+	valid  bool
+}
+
+// describeIndex reports whether index name exists on table, whether it is
+// UNIQUE, and (on Postgres) whether it is valid. SQLite indexes are always valid.
+func describeIndex(tx *gorm.DB, table, name string) (indexState, error) {
+	if tx.Dialector.Name() == "postgres" {
+		var row struct {
+			Count  int64
+			Unique bool
+			Valid  bool
+		}
+		err := tx.Raw(`
+			SELECT COUNT(*) AS count, COALESCE(bool_and(pi.indisunique), false) AS "unique", COALESCE(bool_and(pi.indisvalid), false) AS valid
+			FROM pg_class pc
+			JOIN pg_index pi ON pi.indrelid = pc.oid
+			JOIN pg_class ic ON ic.oid = pi.indexrelid
+			WHERE pc.relname = ? AND ic.relname = ? AND pg_catalog.pg_table_is_visible(pc.oid)
+		`, table, name).Scan(&row).Error
+		return indexState{exists: row.Count > 0, unique: row.Unique, valid: row.Valid}, err
+	}
+	var rows []struct {
+		Name   string
+		Unique int
+	}
+	if err := tx.Raw(fmt.Sprintf("PRAGMA index_list(%s)", table)).Scan(&rows).Error; err != nil {
+		return indexState{}, err
+	}
+	for _, r := range rows {
+		if r.Name == name {
+			return indexState{exists: true, unique: r.Unique == 1, valid: true}, nil
+		}
+	}
+	return indexState{}, nil
+}
+
+// renameOauthFlowStateTempIndex gives the built UNIQUE temp index the final
+// name. Postgres renames it in place, a catalog-only change. SQLite has no
+// ALTER INDEX ... RENAME, so it builds the final UNIQUE index (cheap: flows are
+// short-lived and few) and drops the temp one.
+func renameOauthFlowStateTempIndex(tx *gorm.DB) error {
+	if tx.Dialector.Name() == "postgres" {
+		return tx.Exec(fmt.Sprintf("ALTER INDEX %s RENAME TO %s", oauthFlowStateTempIndex, oauthFlowStateIndex)).Error
+	}
+	if err := tx.Exec(fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON mcp_oauth_flows (state)", oauthFlowStateIndex)).Error; err != nil {
+		return err
+	}
+	return tx.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", oauthFlowStateTempIndex)).Error
+}
+
+// keepNonUniqueOauthFlowState is the duplicate fallback: it logs the duplicate
+// count, drops any leftover temp index, and makes sure the non-unique lookup
+// index still exists, so OAuth callbacks keep an indexed lookup by state.
+func keepNonUniqueOauthFlowState(tx *gorm.DB, logger schemas.Logger, dups int64) error {
+	logger.Warn("[configstore] mcp_oauth_flows has %d duplicated state values; keeping the non-unique %s. To enforce uniqueness, remove the duplicated rows, delete the migrations row with id make_mcp_oauth_flows_state_unique, and restart: the migration then runs again.",
+		dups, oauthFlowStateIndex)
+	if err := dropIndexConcurrently(tx, "mcp_oauth_flows", oauthFlowStateTempIndex); err != nil {
+		return fmt.Errorf("drop index %s: %w", oauthFlowStateTempIndex, err)
+	}
+	return ensureIndexConcurrently(tx, "mcp_oauth_flows", oauthFlowStateIndex, "state", false)
+}
+
+// makeOauthFlowStateUnique converts idx_mcp_oauth_flows_state to UNIQUE without
+// blocking writes: it builds a UNIQUE temp index concurrently, drops the old
+// index, and renames the temp one into place. Each step is detected on re-entry,
+// so a run interrupted between the drop and the rename finishes on the next start.
+// Before checking for duplicates it deletes the expired pending or claiming
+// copies of duplicated states, rows DeleteExpiredOauthUserSessions would delete
+// anyway. Any duplicate left after that keeps the non-unique index (see
+// keepNonUniqueOauthFlowState) instead of failing startup.
+func makeOauthFlowStateUnique(tx *gorm.DB, logger schemas.Logger) error {
+	const table = "mcp_oauth_flows"
+	if !tx.Migrator().HasTable(table) {
+		return nil
+	}
+	final, err := describeIndex(tx, table, oauthFlowStateIndex)
+	if err != nil {
+		return fmt.Errorf("inspect index %s: %w", oauthFlowStateIndex, err)
+	}
+	if final.exists && final.unique && final.valid {
+		return dropIndexConcurrently(tx, "mcp_oauth_flows", oauthFlowStateTempIndex)
+	}
+	temp, err := describeIndex(tx, table, oauthFlowStateTempIndex)
+	if err != nil {
+		return fmt.Errorf("inspect index %s: %w", oauthFlowStateTempIndex, err)
+	}
+	if !final.exists && temp.exists && temp.unique && temp.valid {
+		return renameOauthFlowStateTempIndex(tx)
+	}
+
+	if err := tx.Exec(`DELETE FROM mcp_oauth_flows
+		WHERE expires_at < ? AND status IN ('pending', 'claiming')
+		AND state IN (SELECT state FROM mcp_oauth_flows GROUP BY state HAVING COUNT(*) > 1)`, time.Now()).Error; err != nil {
+		return fmt.Errorf("delete expired duplicate oauth flows: %w", err)
+	}
+	dups, err := countDuplicateHashes(tx, table, "state")
+	if err != nil {
+		return fmt.Errorf("count duplicate mcp_oauth_flows.state: %w", err)
+	}
+	if dups > 0 {
+		return keepNonUniqueOauthFlowState(tx, logger, dups)
+	}
+	if buildErr := ensureIndexConcurrently(tx, table, oauthFlowStateTempIndex, "state", true); buildErr != nil {
+		// A concurrent writer can add a duplicate between the count and the build.
+		// Only a real duplicate justifies the fallback.
+		dups, err = countDuplicateHashes(tx, table, "state")
+		if err != nil || dups == 0 {
+			return fmt.Errorf("create unique index %s: %w", oauthFlowStateTempIndex, buildErr)
+		}
+		return keepNonUniqueOauthFlowState(tx, logger, dups)
+	}
+	if final.exists {
+		if err := dropIndexConcurrently(tx, "mcp_oauth_flows", oauthFlowStateIndex); err != nil {
+			return fmt.Errorf("drop index %s: %w", oauthFlowStateIndex, err)
+		}
+	}
+	return renameOauthFlowStateTempIndex(tx)
+}
+
+// migrationMakeMCPOauthFlowsStateUnique makes mcp_oauth_flows.state UNIQUE on
+// databases where it is not. The state column's struct tag used to declare a
+// plain index named idx_mcp_oauth_flows_state, so CreateTable built it
+// non-unique and the later CREATE UNIQUE INDEX IF NOT EXISTS of the same name in
+// migrationCreateMCPOauthFlowsTable was a no-op: one CSRF state could map to
+// more than one flow. See makeOauthFlowStateUnique for the concurrent swap and
+// the duplicate fallback. Rollback refuses with an error: the migration deletes
+// expired duplicate pending/claiming flows and swaps in a UNIQUE index, and
+// neither can be restored.
+func migrationMakeMCPOauthFlowsStateUnique(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "make_mcp_oauth_flows_state_unique"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, mcpOauthFlowsStateUniqueMigration(ctx, migrationName, logger)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// mcpOauthFlowsStateUniqueMigration builds the migration applied by
+// migrationMakeMCPOauthFlowsStateUnique, so tests exercise the same Migrate and
+// Rollback callbacks the upgrade runs.
+func mcpOauthFlowsStateUniqueMigration(ctx context.Context, migrationName string, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return makeOauthFlowStateUnique(tx.WithContext(ctx), logger)
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: it deletes expired duplicate pending/claiming oauth flows and replaces the state index with a UNIQUE one, and neither can be restored", migrationName)
+		},
+	}
+}
+
+// migrationAddVertexAWSWorkloadIdentityColumn adds the vertex_aws_workload_identity_json column to
+// the config_keys table. It holds the JSON-serialized aws_workload_identity block of a Vertex key
+// (GCP Workload Identity Federation from an AWS identity), encrypted like the other key secrets.
+func migrationAddVertexAWSWorkloadIdentityColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vertex_aws_workload_identity_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "vertex_aws_workload_identity_json"); err != nil {
+				return fmt.Errorf("failed to add vertex_aws_workload_identity_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackVertexAWSWorkloadIdentityColumn(ctx, tx, logger)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running vertex aws workload identity column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// rollbackVertexAWSWorkloadIdentityColumn is the down path of add_vertex_aws_workload_identity_column.
+// It refuses: the column holds operator-entered Vertex federation configuration, so dropping it would
+// permanently delete those keys' authentication settings. The column is additive and older binaries
+// safely ignore it, which is the same contract the other non-rollbackable operator-settings columns use.
+func rollbackVertexAWSWorkloadIdentityColumn(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_vertex_aws_workload_identity_column is non-rollbackable: dropping vertex_aws_workload_identity_json would permanently delete the AWS workload identity configuration of every Vertex key that uses it; the column is additive and older binaries safely ignore it")
+}
+
+// migrationAddPriorityAbove272kCacheCreationPricingColumn adds the OpenAI
+// Priority/Fast cache-write rate for prompts above 272k tokens. The input,
+// output, and cache-read >272k priority columns already exist; this is the
+// one the datasheet publishes that the table had no home for. Nullable so
+// catalogs without it keep the flat priority cache-write rate as the fallback.
+func migrationAddPriorityAbove272kCacheCreationPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_priority_above_272k_cache_creation_pricing_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	column := "cache_creation_input_token_cost_above_272k_tokens_priority"
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
+				return fmt.Errorf("failed to add column %s: %w", column, err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
+				return fmt.Errorf("failed to drop column %s: %w", column, err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
 }

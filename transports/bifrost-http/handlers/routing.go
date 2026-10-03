@@ -73,6 +73,10 @@ type complexityStatusResponse struct {
 	// that drifts from the gateway's. It is the editable half only; the fixed
 	// tier-name reinforcement is appended server-side and never exposed.
 	LLMDefaultPrompt string `json:"llm_default_prompt,omitempty"`
+	// JevDefaults is the shipped Jev per-tier criteria, served for the same
+	// reason as LLMDefaultPrompt. The fixed question, decision rule, and
+	// context rule are never exposed because they are not editable.
+	JevDefaults configstore.ComplexityJevGuidanceDefaults `json:"jev_defaults"`
 }
 
 // RoutingHandler manages HTTP requests for routing rules and complexity analyzer config.
@@ -136,36 +140,58 @@ type RoutingTarget struct {
 	Model    *string `json:"model,omitempty"`    // nil = use incoming model
 	KeyID    *string `json:"key_id,omitempty"`   // nil = no key pin
 	Weight   float64 `json:"weight"`             // must be > 0; all weights must sum to 1
+
+	TTFTTimeoutMs *int `json:"ttft_timeout_ms,omitempty"` // nil or 0 = no TTFT deadline
 }
 
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
 type CreateRoutingRuleRequest struct {
-	Name          string          `json:"name" validate:"required"`
-	Description   string          `json:"description,omitempty"`
-	Enabled       *bool           `json:"enabled,omitempty"`    // nil = use DB default (true)
-	ChainRule     *bool           `json:"chain_rule,omitempty"` // nil = use DB default (false)
-	CelExpression string          `json:"cel_expression"`
-	Targets       []RoutingTarget `json:"targets"` // Required; weights must sum to 1
-	Fallbacks     []string        `json:"fallbacks,omitempty"`
-	Scope         string          `json:"scope,omitempty"` // Defaults to "global" if not provided
-	ScopeID       *string         `json:"scope_id,omitempty"`
-	Query         map[string]any  `json:"query,omitempty"`
-	Priority      int             `json:"priority,omitempty"` // Defaults to 0 if not provided
+	Name          string                              `json:"name" validate:"required"`
+	Description   string                              `json:"description,omitempty"`
+	Enabled       *bool                               `json:"enabled,omitempty"`    // nil = use DB default (true)
+	ChainRule     *bool                               `json:"chain_rule,omitempty"` // nil = use DB default (false)
+	CelExpression string                              `json:"cel_expression"`
+	Targets       []RoutingTarget                     `json:"targets"` // Required; weights must sum to 1
+	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
+	Scope         string                              `json:"scope,omitempty"` // Defaults to "global" if not provided
+	ScopeID       *string                             `json:"scope_id,omitempty"`
+	Query         map[string]any                      `json:"query,omitempty"`
+	Priority      int                                 `json:"priority,omitempty"` // Defaults to 0 if not provided
 }
 
 // UpdateRoutingRuleRequest represents the request body for updating a routing rule
 type UpdateRoutingRuleRequest struct {
-	Name          *string         `json:"name,omitempty"`
-	Description   *string         `json:"description,omitempty"`
-	Enabled       *bool           `json:"enabled,omitempty"`
-	ChainRule     *bool           `json:"chain_rule,omitempty"`
-	CelExpression *string         `json:"cel_expression,omitempty"`
-	Targets       []RoutingTarget `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
-	Fallbacks     []string        `json:"fallbacks,omitempty"`
-	Query         map[string]any  `json:"query,omitempty"`
-	Priority      *int            `json:"priority,omitempty"`
-	Scope         *string         `json:"scope,omitempty"`
-	ScopeID       *string         `json:"scope_id,omitempty"`
+	Name          *string                             `json:"name,omitempty"`
+	Description   *string                             `json:"description,omitempty"`
+	Enabled       *bool                               `json:"enabled,omitempty"`
+	ChainRule     *bool                               `json:"chain_rule,omitempty"`
+	CelExpression *string                             `json:"cel_expression,omitempty"`
+	Targets       []RoutingTarget                     `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
+	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
+	Query         map[string]any                      `json:"query,omitempty"`
+	Priority      *int                                `json:"priority,omitempty"`
+	Scope         *string                             `json:"scope,omitempty"`
+	ScopeID       *string                             `json:"scope_id,omitempty"`
+}
+
+// maxRoutingTTFTTimeoutMs caps a target's TTFT deadline; it mirrors
+// ttft_timeout_ms's maximum in config.schema.json.
+const maxRoutingTTFTTimeoutMs = 300000
+
+// validateRoutingTTFTTimeout checks a target's ttft_timeout_ms; nil and 0 mean "no deadline".
+func validateRoutingTTFTTimeout(ms *int) error {
+	if ms != nil && (*ms < 0 || *ms > maxRoutingTTFTTimeoutMs) {
+		return fmt.Errorf("ttft_timeout_ms must be between 1 and %d (0 disables it)", maxRoutingTTFTTimeoutMs)
+	}
+	return nil
+}
+
+// nilIfZero normalizes a 0 ("no deadline") ttft_timeout_ms to nil so it is stored as NULL.
+func nilIfZero(ms *int) *int {
+	if ms == nil || *ms == 0 {
+		return nil
+	}
+	return ms
 }
 
 // validRoutingScopes contains the allowed scope values for routing rules
@@ -254,6 +280,9 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 		if t.KeyID != nil && *t.KeyID != "" && (t.Provider == nil || *t.Provider == "") {
 			return fmt.Errorf("key_id requires provider to be set")
 		}
+		if err := validateRoutingTTFTTimeout(t.TTFTTimeoutMs); err != nil {
+			return err
+		}
 
 		// Canonicalise identity: lowercase provider/model, treat nil == "".
 		provider := ""
@@ -282,16 +311,17 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 	return nil
 }
 
-// validateRoutingFallbacks ensures each fallback parses to a non-empty known provider via
-// schemas.ParseModelString (e.g. "openai/gpt-4o", or "azure/" to use the incoming model).
-func validateRoutingFallbacks(fallbacks []string) error {
+// validateRoutingFallbacks ensures each fallback names a known provider. The legacy string form only
+// splits on a known prefix, so an unknown one surfaces as an empty provider; the object form carries
+// the provider verbatim, so it is checked against the registry explicitly to match.
+func validateRoutingFallbacks(fallbacks []configstoreTables.RoutingFallback) error {
 	for i, fb := range fallbacks {
-		if strings.TrimSpace(fb) == "" {
-			return fmt.Errorf("fallbacks[%d] must not be empty", i)
+		provider := strings.TrimSpace(string(fb.Provider))
+		if provider == "" || !schemas.IsKnownProvider(provider) {
+			return fmt.Errorf("fallbacks[%d] %q is invalid: must use a known provider prefix (e.g. \"openai/gpt-4o\" or \"azure/\" for the incoming model)", i, fb.String())
 		}
-		provider, _ := schemas.ParseModelString(fb, "")
-		if provider == "" {
-			return fmt.Errorf("fallbacks[%d] %q is invalid: must use a known provider prefix (e.g. \"openai/gpt-4o\" or \"azure/\" for the incoming model)", i, fb)
+		if fb.ProviderKeyName != nil && strings.TrimSpace(*fb.ProviderKeyName) != "" {
+			return fmt.Errorf("fallbacks[%d] provider_key_name is a config.json-only field; send key_id over the API", i)
 		}
 	}
 	return nil
@@ -422,7 +452,7 @@ func (h *RoutingHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to get semantic complexity status: %v", err))
 		return
 	}
-	response := complexityStatusResponse{SemanticStatusInfo: status}
+	response := complexityStatusResponse{SemanticStatusInfo: status, JevDefaults: configstore.DefaultComplexityJevGuidance()}
 	// The llm classifier state rides the same endpoint and must not be able to
 	// fail the whole response.
 	if llmStatus, llmErr := h.routingManager.GetComplexityLLMStatus(ctx); llmErr != nil {
@@ -626,10 +656,11 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 	targets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
 	for _, t := range req.Targets {
 		targets = append(targets, configstoreTables.TableRoutingTarget{
-			Provider: t.Provider,
-			Model:    t.Model,
-			KeyID:    t.KeyID,
-			Weight:   t.Weight,
+			Provider:      t.Provider,
+			Model:         t.Model,
+			KeyID:         t.KeyID,
+			Weight:        t.Weight,
+			TTFTTimeoutMs: nilIfZero(t.TTFTTimeoutMs),
 		})
 	}
 
@@ -732,10 +763,11 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		newTargets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
 		for _, t := range req.Targets {
 			newTargets = append(newTargets, configstoreTables.TableRoutingTarget{
-				Provider: t.Provider,
-				Model:    t.Model,
-				KeyID:    t.KeyID,
-				Weight:   t.Weight,
+				Provider:      t.Provider,
+				Model:         t.Model,
+				KeyID:         t.KeyID,
+				Weight:        t.Weight,
+				TTFTTimeoutMs: nilIfZero(t.TTFTTimeoutMs),
 			})
 		}
 		rule.Targets = newTargets

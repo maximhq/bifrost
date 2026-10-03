@@ -513,13 +513,26 @@ Code Mode tools can be auto-executed in [Agent Mode](./agent-mode), but with **a
 
 ### How Validation Works
 
-When `executeToolCode` is called in agent mode:
+Validation happens at two points, and only the second one is the actual security guarantee:
 
-1. Bifrost parses the Python code
-2. Extracts all `serverName.toolName()` calls
-3. Checks each call against `tools_to_auto_execute` for that server
-4. If ALL calls are allowed → auto-execute
-5. If ANY call is not allowed → return to user for approval
+1. **Pre-flight (heuristic, decides whether to ask before running).** When `executeToolCode` is
+   called in agent mode, Bifrost scans the generated code's source text for `serverName.toolName()`
+   calls and checks each against `tools_to_auto_execute` for that server. If every call it can
+   identify is allowed, the code runs immediately without prompting; otherwise it's returned to
+   the user for approval first. This is a best-effort scan over source text, not a full parse - it
+   can only recognize the literal `server.tool(...)` call shape.
+2. **At each tool call, while the code is running (authoritative).** Every time the running code
+   actually invokes a tool - however it was referenced, including indirection a text scan can't
+   see, like `getattr(server, name)(...)` or a dispatch table - Bifrost checks that specific tool
+   again before making the call. When the code is running unattended in the agent loop, a tool
+   not in `tools_to_auto_execute` is refused at that moment, regardless of how it was called or
+   whether the pre-flight scan let the code run without asking. This is what makes the guarantee
+   below hold even for code the pre-flight step couldn't fully analyze. If a plugin pre-hook
+   rewrites the tool name, the rewritten name is the one checked.
+
+Code that was returned for approval and then executed by your application (for example through
+`/v1/mcp/tool/execute`) is not held to `tools_to_auto_execute`: approving it is the human
+decision that list asks for. Every nested call is still limited to `tools_to_execute`.
 
 **Example:**
 ```json
@@ -612,7 +625,7 @@ The effect is most visible at large scale: with **508 tools across 16 servers**,
   <Card title="Agent Mode" icon="robot" href="./agent-mode">
     Combine Code Mode with auto-execution
   </Card>
-  <Card title="MCP Gateway Mode" icon="server" href="./gateway">
+  <Card title="MCP Gateway Mode" icon="server" href="./overview#bifrost-as-an-mcp-gateway">
     Expose your tools to external clients
   </Card>
 </CardGroup>

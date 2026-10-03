@@ -1,5 +1,5 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
-import { virtualKeysApi } from '../../core/actions/api'
+import { coreConfigApi, virtualKeysApi } from '../../core/actions/api'
 import type { VirtualKeysPage } from './pages/virtual-keys.page'
 import {
     createVirtualKeyData,
@@ -17,6 +17,22 @@ type VirtualKeyApiResponse = {
     name: string
     value: string
   }
+}
+
+type VirtualKeyListApiResponse = {
+  virtual_keys: Array<{
+    id: string
+    name: string
+    expires_at?: string | null
+    delete_after_expire?: boolean
+  }>
+}
+
+async function findVirtualKeyByName(request: Parameters<typeof virtualKeysApi.getAll>[0], name: string) {
+  const list = (await virtualKeysApi.getAll(request)) as VirtualKeyListApiResponse
+  const vk = list.virtual_keys.find((candidate) => candidate.name === name)
+  expect(vk, `virtual key ${name} should exist`).toBeDefined()
+  return vk!
 }
 
 type BulkRotateVirtualKeysApiResponse = {
@@ -267,6 +283,129 @@ test.describe('Virtual Keys', () => {
       expect(vkExists).toBe(true)
     })
   })
+
+  test.describe('Virtual Key Expiry', () => {
+    test('should hide the delete-after-expire checkbox until an expiry is picked', async ({ virtualKeysPage }) => {
+      await virtualKeysPage.createBtn.click()
+      await expect(virtualKeysPage.sheet).toBeVisible()
+
+      await expect(virtualKeysPage.deleteAfterExpireCheckbox).toHaveCount(0)
+      await virtualKeysPage.page.getByTestId('vk-expiry-preset-24-hours').click()
+      await expect(virtualKeysPage.deleteAfterExpireCheckbox).toBeVisible()
+      await virtualKeysPage.page.getByTestId('vk-expiry-never').click()
+      await expect(virtualKeysPage.deleteAfterExpireCheckbox).toHaveCount(0)
+    })
+
+    test('should persist delete-after-expire with the expiry and clear it with the expiry', async ({
+      virtualKeysPage,
+      request,
+    }) => {
+      // With the client default on, a ticked box matches it and stores no override,
+      // so pin the default off for the explicit true assertions below.
+      const initialDefault = (await coreConfigApi.get(request)).client_config.delete_expired_virtual_keys ?? false
+      await coreConfigApi.updateClientConfig(request, { delete_expired_virtual_keys: false })
+      try {
+        // Reload so the sheet reads the pinned default.
+        await virtualKeysPage.goto()
+
+        const vkData = createVirtualKeyData({
+          name: `Auto Delete VK ${Date.now()}`,
+          expiryPreset: '24 hours',
+          deleteAfterExpire: true,
+        })
+
+        createdVKs.push(vkData.name)
+        await virtualKeysPage.createVirtualKey(vkData)
+
+        const created = await findVirtualKeyByName(request, vkData.name)
+        expect(created.expires_at).toBeTruthy()
+        expect(created.delete_after_expire).toBe(true)
+
+        // Unticking the box keeps the expiry but drops the flag.
+        await virtualKeysPage.editVirtualKey(vkData.name, { deleteAfterExpire: false })
+        const unticked = await findVirtualKeyByName(request, vkData.name)
+        expect(unticked.expires_at).toBeTruthy()
+        expect(unticked.delete_after_expire ?? false).toBe(false)
+
+        // Re-tick, then clearing the expiry resets the flag server-side.
+        await virtualKeysPage.editVirtualKey(vkData.name, { deleteAfterExpire: true })
+        expect((await findVirtualKeyByName(request, vkData.name)).delete_after_expire).toBe(true)
+
+        await virtualKeysPage.editVirtualKey(vkData.name, { expiryPreset: 'Never' })
+        const cleared = await findVirtualKeyByName(request, vkData.name)
+        expect(cleared.expires_at ?? null).toBeNull()
+        expect(cleared.delete_after_expire ?? false).toBe(false)
+      } finally {
+        await coreConfigApi.updateClientConfig(request, { delete_expired_virtual_keys: initialDefault })
+      }
+    })
+
+    test('should reject delete_after_expire without an expiry through the API', async ({ request }) => {
+      const response = await request.post('/api/governance/virtual-keys', {
+        data: {
+          name: `API No Expiry VK ${Date.now()}`,
+          delete_after_expire: true,
+        },
+      })
+      expect(response.status()).toBe(400)
+      expect(await response.text()).toContain('delete_after_expire requires expires_at')
+    })
+
+    test('should follow the client default and store only explicit overrides', async ({ virtualKeysPage, request }) => {
+      const initialDefault = (await coreConfigApi.get(request)).client_config.delete_expired_virtual_keys ?? false
+      await coreConfigApi.updateClientConfig(request, { delete_expired_virtual_keys: true })
+      try {
+        // Reload so the sheet reads the new default.
+        await virtualKeysPage.goto()
+
+        // With the default on, a fresh key with an expiry starts with the switch on.
+        await virtualKeysPage.createBtn.click()
+        await expect(virtualKeysPage.sheet).toBeVisible()
+        await virtualKeysPage.page.getByTestId('vk-expiry-preset-24-hours').click()
+        await expect(virtualKeysPage.deleteAfterExpireCheckbox).toHaveAttribute('data-state', 'checked')
+        await virtualKeysPage.cancelBtn.click()
+
+        // Leaving the switch at the default stores no per-key value: the key inherits.
+        const inherits = createVirtualKeyData({ name: `Inherit Delete VK ${Date.now()}`, expiryPreset: '24 hours' })
+        createdVKs.push(inherits.name)
+        await virtualKeysPage.createVirtualKey(inherits)
+        const inheritsVK = await findVirtualKeyByName(request, inherits.name)
+        expect(inheritsVK.expires_at).toBeTruthy()
+        expect(inheritsVK.delete_after_expire ?? null).toBeNull()
+
+        // Turning the switch off against the default stores an explicit false.
+        await virtualKeysPage.editVirtualKey(inherits.name, { deleteAfterExpire: false })
+        expect((await findVirtualKeyByName(request, inherits.name)).delete_after_expire).toBe(false)
+
+        // Turning it back on matches the default again, so the override is cleared.
+        await virtualKeysPage.editVirtualKey(inherits.name, { deleteAfterExpire: true })
+        expect((await findVirtualKeyByName(request, inherits.name)).delete_after_expire ?? null).toBeNull()
+      } finally {
+        await coreConfigApi.updateClientConfig(request, { delete_expired_virtual_keys: initialDefault })
+      }
+    })
+
+    test('should accept null to reset delete_after_expire to inherit through the API', async ({ request }) => {
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+      const name = `API Inherit Reset VK ${Date.now()}`
+      const created = (await virtualKeysApi.create(request, {
+        name,
+        expires_at: expiresAt,
+        delete_after_expire: false,
+      })) as VirtualKeyApiResponse
+      createdVKs.push(name)
+      expect((await findVirtualKeyByName(request, name)).delete_after_expire).toBe(false)
+
+      await virtualKeysApi.update(request, created.virtual_key.id, { delete_after_expire: null })
+      expect((await findVirtualKeyByName(request, name)).delete_after_expire ?? null).toBeNull()
+
+      const response = await request.put(`/api/governance/virtual-keys/${created.virtual_key.id}`, {
+        data: { expires_at: '', delete_after_expire: true },
+      })
+      expect(response.status()).toBe(400)
+      expect(await response.text()).toContain('delete_after_expire requires expires_at')
+    })
+  })
 })
 
 // Track created VKs for management tests
@@ -345,6 +484,34 @@ test.describe('Virtual Key Management', () => {
 
     const vkExists = await virtualKeysPage.virtualKeyExists(vkName)
     expect(vkExists).toBe(true)
+  })
+
+  test('should set and clear content logging for a virtual key', async ({ virtualKeysPage }) => {
+    const vkName = `Content Logging VK ${Date.now()}`
+    const vkData = createVirtualKeyData({
+      name: vkName,
+      contentLogging: 'disabled',
+    })
+
+    managementVKs.push(vkName)
+    await virtualKeysPage.createVirtualKey(vkData)
+
+    // The choice made on create is what the editor shows when the key is reopened.
+    await virtualKeysPage.viewVirtualKey(vkName)
+    expect(await virtualKeysPage.getContentLogging()).toBe('disabled')
+    await virtualKeysPage.closeSheet()
+
+    // Back to inherit: the update sends null, and the editor must not read that as "off".
+    await virtualKeysPage.editVirtualKey(vkName, { contentLogging: 'inherit' })
+    await virtualKeysPage.viewVirtualKey(vkName)
+    expect(await virtualKeysPage.getContentLogging()).toBe('inherit')
+    await virtualKeysPage.closeSheet()
+
+    // And the third state is a decision of its own, distinct from inherit.
+    await virtualKeysPage.editVirtualKey(vkName, { contentLogging: 'enabled' })
+    await virtualKeysPage.viewVirtualKey(vkName)
+    expect(await virtualKeysPage.getContentLogging()).toBe('enabled')
+    await virtualKeysPage.closeSheet()
   })
 
   test('should delete virtual key', async ({ virtualKeysPage }) => {
@@ -699,6 +866,53 @@ test.describe('Provider Management', () => {
 
     // Close sheet (handled by afterEach as well)
     await virtualKeysPage.closeSheet()
+  })
+
+  test('should reflect blocked models in the collapsed access summary', async ({ virtualKeysPage, request }) => {
+    const vkName = `Blocked Models Summary VK ${Date.now()}`
+    await virtualKeysApi.create(request, {
+      name: vkName,
+      is_active: true,
+      provider_configs: [
+        {
+          provider: 'openai',
+          allowed_models: ['*'],
+          blacklisted_models: ['gpt-4o', 'gpt-4o-mini'],
+          key_ids: ['*'],
+        },
+      ],
+    })
+    providerVKs.push(vkName)
+
+    await virtualKeysPage.goto()
+    await virtualKeysPage.viewVirtualKey(vkName)
+
+    const summary = await virtualKeysPage.getProviderAccessSummary(0)
+    await expect(summary).toContainText('All models · 2 models blocked')
+  })
+
+  test('should summarize a blocked wildcard as all models blocked', async ({ virtualKeysPage, request }) => {
+    const vkName = `Blocked Wildcard Summary VK ${Date.now()}`
+    await virtualKeysApi.create(request, {
+      name: vkName,
+      is_active: true,
+      provider_configs: [
+        {
+          provider: 'openai',
+          allowed_models: ['*'],
+          blacklisted_models: ['*'],
+          key_ids: ['*'],
+        },
+      ],
+    })
+    providerVKs.push(vkName)
+
+    await virtualKeysPage.goto()
+    await virtualKeysPage.viewVirtualKey(vkName)
+
+    const summary = await virtualKeysPage.getProviderAccessSummary(0)
+    await expect(summary).toContainText('All models blocked')
+    await expect(summary).not.toContainText('All models ·')
   })
 
   test('should update provider-specific budget', async ({ virtualKeysPage }) => {

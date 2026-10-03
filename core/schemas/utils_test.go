@@ -134,3 +134,44 @@ func TestSanitizeImageURLAcceptsDataURLWithParameters(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid data URL format")
 }
+
+// TestIsGPT56ModelRequiresRevisionBoundary pins both halves of the family check.
+// The substring form is deliberate - catalog ids carry region and vendor
+// namespaces, so a prefix test would miss them - but the needle has to end on a
+// revision boundary, or a later dot-revision such as gpt-5.60 is mistaken for a
+// member of the family and is handed a prompt_cache_breakpoint it never declared.
+func TestIsGPT56ModelRequiresRevisionBoundary(t *testing.T) {
+	for _, model := range []string{
+		"gpt-5.6",
+		"GPT-5.6",
+		"azure/eu/gpt-5.6",
+		"openai.gpt-5.6-terra",
+		"gpt-5.6-mini",
+	} {
+		assert.True(t, IsGPT56Model(model), "expected %q to resolve as gpt-5.6 family", model)
+	}
+
+	for _, model := range []string{
+		"gpt-5.60",
+		"gpt-5.61-preview",
+		"azure/eu/gpt-5.65",
+		"gpt-5.5",
+		"gpt-5",
+	} {
+		assert.False(t, IsGPT56Model(model), "expected %q NOT to resolve as gpt-5.6 family", model)
+	}
+}
+
+// TestModelSupportsPromptCacheBreakpointCoversGPT6 pins that the breakpoint fallback,
+// and the prompt-caching fallback built on it, include the gpt-6 family.
+func TestModelSupportsPromptCacheBreakpointCoversGPT6(t *testing.T) {
+	for _, model := range []string{"gpt-5.6-sol", "gpt-6-astra", "azure/gpt-6-astra", "openai.gpt-6-astra"} {
+		assert.True(t, ModelSupportsPromptCacheBreakpoint(model), model)
+	}
+	for _, model := range []string{"gpt-5.5", "gpt-5", "gpt-4o"} {
+		assert.False(t, ModelSupportsPromptCacheBreakpoint(model), model)
+	}
+	assert.True(t, ModelSupportsPromptCaching(OpenAI, "gpt-6-astra"))
+	assert.True(t, ModelSupportsPromptCaching(BedrockMantle, "openai.gpt-6-astra"))
+	assert.False(t, ModelSupportsPromptCaching(OpenAI, "gpt-5.5"))
+}

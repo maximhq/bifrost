@@ -247,6 +247,51 @@ func TestAuthenticate_JWTPath(t *testing.T) {
 		require.Error(t, h.authenticate(ctx, bifrostCtx))
 	})
 
+	// A bearer an upstream auth layer verified against its own identity provider is a JWT this
+	// server never issued: its key id is not the signing key's. The user that layer stamped is the
+	// settled identity, so the token is not verified again here.
+	idpToken := mintTestToken(t, priv, "idp-key-id", func(c jwt.MapClaims) {
+		c["sub"] = "idp-subject"
+	})
+
+	t.Run("both mode: a bearer an upstream auth layer authenticated is accepted as the stamped user", func(t *testing.T) {
+		store := &mockOAuth2Store{signingKey: key}
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, true))
+
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+idpToken)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
+
+		require.NoError(t, h.authenticate(ctx, bifrostCtx))
+		assert.Equal(t, "user-1", stringFromCtx(bifrostCtx, schemas.BifrostContextKeyUserID))
+		assert.Empty(t, ctx.Response.Header.Peek("WWW-Authenticate"))
+	})
+
+	t.Run("both mode: a bearer no upstream auth layer authenticated is refused on its key id", func(t *testing.T) {
+		store := &mockOAuth2Store{signingKey: key}
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, true))
+
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+idpToken)
+
+		err := h.authenticate(ctx, bifrostCtx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown key id")
+	})
+
+	t.Run("oauth strict mode verifies the bearer even when an identity is stamped upstream", func(t *testing.T) {
+		store := &mockOAuth2Store{signingKey: key}
+		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, true))
+
+		ctx, bifrostCtx := newRequestCtx()
+		ctx.Request.Header.Set("Authorization", "Bearer "+idpToken)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
+
+		err := h.authenticate(ctx, bifrostCtx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown key id")
+	})
+
 	t.Run("session JWT is rejected when auth is enforced", func(t *testing.T) {
 		store := &mockOAuth2Store{signingKey: key}
 		h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, true))

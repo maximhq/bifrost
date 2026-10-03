@@ -70,6 +70,12 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 				if extraConfig.MetricsEnabled != nil {
 					telConfig.MetricsEnabled = extraConfig.MetricsEnabled
 				}
+				if extraConfig.OverheadBreakdownEnabled != nil {
+					telConfig.OverheadBreakdownEnabled = extraConfig.OverheadBreakdownEnabled
+				}
+				if extraConfig.UserLabelsEnabled != nil {
+					telConfig.UserLabelsEnabled = extraConfig.UserLabelsEnabled
+				}
 			}
 		}
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)
@@ -95,9 +101,14 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
 		inMemoryStore := &GovernanceInMemoryStore{Config: bifrostConfig}
-		return governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
+		governancePlugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
 			bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog,
 			bifrostConfig.MCPCatalog, inMemoryStore)
+		if err != nil {
+			return nil, err
+		}
+		governancePlugin.StartResetWorkers(ctx)
+		return governancePlugin, nil
 
 	case routing.PluginName:
 		routingConfig, err := MarshalPluginConfig[routing.Config](pluginConfig)

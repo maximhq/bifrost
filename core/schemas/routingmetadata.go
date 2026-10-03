@@ -4,8 +4,8 @@ package schemas
 //
 // BifrostRoutingMetadata is the request-scoped accounting handoff for internal
 // calls made by the routing plugin: a semantic classification embed, an llm
-// classifier chat completion, or both when semantic classification produces
-// no tier and the llm fallback runs. It is not general routing-decision
+// classifier chat completion, a Jev decision, or a semantic embed followed by
+// one configured classifier fallback. It is not general routing-decision
 // metadata such as the selected tier, rule, provider, or model.
 //
 // Classification runs once in PreRequestHook, before provider execution, while
@@ -71,11 +71,9 @@ func InitialAttemptRoutingMetadataFromContext(ctx *BifrostContext) (*BifrostRout
 }
 
 // AppendRoutingCallOnContext appends one billable routing-classification call
-// to ctx. A request may append up to two calls — a semantic classification
-// embed and, only when semantic classification produced no tier, an llm
-// classifier completion — so a second call adds to the first rather than
-// replacing it, unlike a single-slot overwrite that would silently drop
-// whichever call wrote first.
+// to ctx. A request may append a semantic embed and one configured classifier
+// fallback, so this adds each call rather than replacing the first and losing
+// its usage.
 func AppendRoutingCallOnContext(ctx *BifrostContext, call BifrostRoutingCall) bool {
 	if ctx == nil || !validRoutingCall(call) {
 		return false
@@ -89,6 +87,7 @@ func AppendRoutingCallOnContext(ctx *BifrostContext, call BifrostRoutingCall) bo
 	return true
 }
 
+// validRoutingCall rejects missing or negative usage before request accounting.
 func validRoutingCall(call BifrostRoutingCall) bool {
 	return call.ProviderUsed != nil && call.ModelUsed != nil && call.InputTokens != nil &&
 		*call.InputTokens >= 0 && (call.OutputTokens == nil || *call.OutputTokens >= 0)

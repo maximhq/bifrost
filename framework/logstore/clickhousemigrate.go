@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -223,13 +225,85 @@ func clickhouseReconcileColumns(ctx context.Context, db *gorm.DB, model any, tab
 }
 
 // chLogsTTL derives the logs/mcp_tool_logs TTL clause from the configured
-// retention. Values < 1 leave TTL unset (the LogsCleaner still prunes via
-// DeleteLogsBatch).
+// retention. Values < 1 return "" which means the TTL is not managed by
+// Bifrost: new tables get none and existing tables keep whatever they have
+// (the LogsCleaner still prunes with one lightweight delete per run).
 func chLogsTTL(retentionDays int) string {
 	if retentionDays < 1 {
 		return ""
 	}
 	return fmt.Sprintf("toDateTime(created_at) + INTERVAL %d DAY", retentionDays)
+}
+
+// chTTLClauseDaysRe matches the clause form chLogsTTL and the fixed backstops
+// emit for CREATE TABLE / MODIFY TTL.
+var chTTLClauseDaysRe = regexp.MustCompile(`^toDateTime\(created_at\) \+ INTERVAL (\d+) DAY$`)
+
+// chTTLEngineFullDaysRe matches the normalized form ClickHouse stores in
+// system.tables.engine_full: `INTERVAL n DAY` becomes `toIntervalDay(n)`.
+var chTTLEngineFullDaysRe = regexp.MustCompile(`TTL toDateTime\(created_at\) \+ toIntervalDay\((\d+)\)`)
+
+func chTTLDaysFromMatch(re *regexp.Regexp, s string) (int, bool) {
+	m := re.FindStringSubmatch(s)
+	if m == nil {
+		return 0, false
+	}
+	days, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return days, true
+}
+
+// chTTLDaysFromClause returns the retention days a TTL clause built by
+// chLogsTTL (or a fixed backstop) encodes. ok is false for "" and for any
+// expression Bifrost does not manage.
+func chTTLDaysFromClause(ttl string) (days int, ok bool) {
+	return chTTLDaysFromMatch(chTTLClauseDaysRe, ttl)
+}
+
+// chTTLDaysFromEngineFull returns the retention days currently applied to a
+// table, read from system.tables.engine_full. ok is false when the table has
+// no TTL or one Bifrost did not write.
+func chTTLDaysFromEngineFull(engineFull string) (days int, ok bool) {
+	return chTTLDaysFromMatch(chTTLEngineFullDaysRe, engineFull)
+}
+
+// clickhouseReconcileTTL brings an existing table's TTL in line with wantTTL.
+// CREATE TABLE IF NOT EXISTS never updates the TTL of a table that already
+// exists, so before this a changed logs_store.retention_days silently did
+// nothing (#7098). An empty wantTTL means "unmanaged" and leaves the table
+// alone, so a TTL an operator applied by hand survives restarts.
+//
+// materialize_ttl_after_modify = 0 keeps the ALTER metadata-only. The default
+// would submit a MATERIALIZE TTL mutation that rewrites every part holding
+// expired rows, on every pod's first boot, which is the exact heavyweight
+// rewrite this code path exists to avoid. Expired rows are dropped by the
+// regular TTL merges instead.
+func clickhouseReconcileTTL(ctx context.Context, db *gorm.DB, table, cluster, wantTTL string, logger schemas.Logger) error {
+	wantDays, managed := chTTLDaysFromClause(wantTTL)
+	if !managed {
+		return nil
+	}
+	var engineFull string
+	if err := db.WithContext(ctx).
+		Raw("SELECT engine_full FROM system.tables WHERE database = currentDatabase() AND name = ?", table).
+		Scan(&engineFull).Error; err != nil {
+		return fmt.Errorf("clickhouse: read %s engine definition: %w", table, err)
+	}
+	if haveDays, ok := chTTLDaysFromEngineFull(engineFull); ok && haveDays == wantDays {
+		return nil
+	}
+	onCluster := ""
+	if cluster != "" {
+		onCluster = fmt.Sprintf(" ON CLUSTER `%s`", chEscapeIdentifier(cluster))
+	}
+	stmt := fmt.Sprintf("ALTER TABLE `%s`%s MODIFY TTL %s SETTINGS materialize_ttl_after_modify = 0", table, onCluster, wantTTL)
+	logger.Info("[logstore] clickhouse: setting %s TTL to %d days", table, wantDays)
+	if err := db.WithContext(ctx).Exec(stmt).Error; err != nil {
+		return fmt.Errorf("clickhouse: modify %s TTL: %w", table, err)
+	}
+	return nil
 }
 
 // clickhouseMigrationStep is one per-table migration: create the table if
@@ -257,7 +331,10 @@ func migrationClickHouseLogsTable(ctx context.Context, db *gorm.DB, cluster stri
 	}, cluster); err != nil {
 		return fmt.Errorf("clickhouse: create logs table: %w", err)
 	}
-	return clickhouseReconcileColumns(ctx, db, &Log{}, "logs", cluster, logger)
+	if err := clickhouseReconcileColumns(ctx, db, &Log{}, "logs", cluster, logger); err != nil {
+		return err
+	}
+	return clickhouseReconcileTTL(ctx, db, "logs", cluster, chLogsTTL(retentionDays), logger)
 }
 
 // migrationClickHouseMCPToolLogsTable creates the mcp_tool_logs table and
@@ -277,7 +354,10 @@ func migrationClickHouseMCPToolLogsTable(ctx context.Context, db *gorm.DB, clust
 	}, cluster); err != nil {
 		return fmt.Errorf("clickhouse: create mcp_tool_logs table: %w", err)
 	}
-	return clickhouseReconcileColumns(ctx, db, &MCPToolLog{}, "mcp_tool_logs", cluster, logger)
+	if err := clickhouseReconcileColumns(ctx, db, &MCPToolLog{}, "mcp_tool_logs", cluster, logger); err != nil {
+		return err
+	}
+	return clickhouseReconcileTTL(ctx, db, "mcp_tool_logs", cluster, chLogsTTL(retentionDays), logger)
 }
 
 // migrationClickHouseAsyncJobsTable creates the async_jobs table and reconciles
@@ -294,7 +374,10 @@ func migrationClickHouseAsyncJobsTable(ctx context.Context, db *gorm.DB, cluster
 	}, cluster); err != nil {
 		return fmt.Errorf("clickhouse: create async_jobs table: %w", err)
 	}
-	return clickhouseReconcileColumns(ctx, db, &AsyncJob{}, "async_jobs", cluster, logger)
+	if err := clickhouseReconcileColumns(ctx, db, &AsyncJob{}, "async_jobs", cluster, logger); err != nil {
+		return err
+	}
+	return clickhouseReconcileTTL(ctx, db, "async_jobs", cluster, "toDateTime(created_at) + INTERVAL 7 DAY", logger)
 }
 
 // migrationClickHouseWebhookDeliveriesTable creates the webhook_deliveries
@@ -311,7 +394,56 @@ func migrationClickHouseWebhookDeliveriesTable(ctx context.Context, db *gorm.DB,
 	}, cluster); err != nil {
 		return fmt.Errorf("clickhouse: create webhook_deliveries table: %w", err)
 	}
-	return clickhouseReconcileColumns(ctx, db, &WebhookDelivery{}, "webhook_deliveries", cluster, logger)
+	if err := clickhouseReconcileColumns(ctx, db, &WebhookDelivery{}, "webhook_deliveries", cluster, logger); err != nil {
+		return err
+	}
+	return clickhouseReconcileTTL(ctx, db, "webhook_deliveries", cluster, chLogsTTL(retentionDays), logger)
+}
+
+// migrationClickHouseWarpConversationTables creates Warp's saved-chat tables.
+//
+// No TTL clause, and that is deliberate rather than an omission. Every other
+// table here expires on logs_store.retention_days, which is the wrong number
+// for this content: Warp history has its own warp.history_retention_days, and
+// that setting is not reachable from a log-store migration. Borrowing the logs
+// figure would silently delete somebody's saved chats on a schedule nobody
+// chose, so age-based expiry runs from the application instead, through
+// DeleteWarpConversationsOlderThan.
+//
+// warp_conversations orders by (owner_id, id). id alone is not enough: every
+// read filters on owner_id, and with id leading, the primary key could prune
+// nothing - the list and prune queries scanned across all owners, and grew with
+// the number of owners rather than with any one owner's history.
+// PruneWarpConversations caps rows per owner, which bounds nothing in total.
+//
+// owner_id can lead safely because it never changes. It is server-derived, no
+// reachable Warp write path alters it, and the whole row is re-inserted on every
+// edit (ClickHouse has no cheap UPDATE) - so (owner_id, id) is still the dedup
+// identity ReplacingMergeTree collapses onto, exactly as id alone was. What
+// would break the identity is putting a mutable column such as updated_at
+// ahead of id, which would leave every edit behind as a distinct row.
+//
+// warp_messages can afford the leading conversation_id because it never
+// changes, so (conversation_id, id) is still unique per message - and it is the
+// predicate every read uses.
+func migrationClickHouseWarpConversationTables(ctx context.Context, db *gorm.DB, cluster string, _ int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating tables warp_conversations, warp_messages")
+	if err := clickhouseCreateTable(ctx, db, &WarpConversation{}, chTableOpts{
+		table:   "warp_conversations",
+		orderBy: "(owner_id, id)",
+	}, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create warp_conversations table: %w", err)
+	}
+	if err := clickhouseReconcileColumns(ctx, db, &WarpConversation{}, "warp_conversations", cluster, logger); err != nil {
+		return err
+	}
+	if err := clickhouseCreateTable(ctx, db, &WarpMessage{}, chTableOpts{
+		table:   "warp_messages",
+		orderBy: "(conversation_id, id)",
+	}, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create warp_messages table: %w", err)
+	}
+	return clickhouseReconcileColumns(ctx, db, &WarpMessage{}, "warp_messages", cluster, logger)
 }
 
 // clickhouseMigrationSteps lists the per-table migrations in execution order,
@@ -321,6 +453,7 @@ var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseMCPToolLogsTable,
 	migrationClickHouseAsyncJobsTable,
 	migrationClickHouseWebhookDeliveriesTable,
+	migrationClickHouseWarpConversationTables,
 }
 
 // triggerClickHouseMigrations runs all registered ClickHouse table migrations

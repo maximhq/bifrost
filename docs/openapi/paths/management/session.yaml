@@ -1,6 +1,15 @@
 login:
   post:
     operationId: login
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Login
     description: |
       Authenticates a user and returns a session token.
@@ -43,14 +52,25 @@ login:
 logout:
   post:
     operationId: logout
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Logout
-    description: Logs out the current user and invalidates the session token.
+    description: |
+      Logs out the current user and invalidates the session token.
     tags:
       - Session
     # Authenticated like every management endpoint (management API key), and the
     # dashboard additionally calls it with its HTTPOnly session cookie.
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
       - SessionCookieAuth: []
     responses:
       '200':
@@ -69,8 +89,18 @@ logout:
 is-auth-enabled:
   get:
     operationId: isAuthEnabled
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Check if authentication is enabled
-    description: Returns whether authentication is enabled and if the current token is valid.
+    description: |
+      Returns whether authentication is enabled and if the current token is valid.
     tags:
       - Session
     # Public: callable before login so the UI can decide whether to prompt for
@@ -89,6 +119,15 @@ is-auth-enabled:
 ws-ticket:
   post:
     operationId: issueWSTicket
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Issue WebSocket ticket
     description: |
       Issues a short-lived ticket for authenticating WebSocket connections.
@@ -100,6 +139,7 @@ ws-ticket:
     # opening a WebSocket connection.
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
       - SessionCookieAuth: []
     responses:
       '200':

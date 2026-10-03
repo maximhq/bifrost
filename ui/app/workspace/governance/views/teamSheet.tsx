@@ -284,6 +284,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 		const submittableBudgets = formData.budgets
 			.filter((r) => r.maxLimit !== undefined && r.maxLimit !== null)
 			.map((r) => ({
+				id: team?.budgets?.some((budget) => budget.id === r.id) ? r.id : undefined,
 				max_limit: r.maxLimit as number,
 				reset_duration: r.resetDuration,
 				// Only quarterly windows may carry a quarter definition; the API rejects it elsewhere.
@@ -531,8 +532,8 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 											Align to calendar cycle
 										</Label>
 										<p className="text-muted-foreground text-xs">
-											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date. Quarterly budgets always align to fiscal quarter starts.
-											Applies to durations of a day or longer.
+											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+											Quarterly budgets always align to fiscal quarter starts. Applies to durations of a day or longer.
 										</p>
 									</div>
 									<Switch

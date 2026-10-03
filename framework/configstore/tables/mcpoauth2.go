@@ -63,13 +63,14 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 		c.Status = "pending"
 	}
 
-	if encrypt.IsEnabled() {
-		if c.ClientSecret != nil && !c.ClientSecret.IsFromSecret() && c.ClientSecret.Val != "" {
-			if err := encryptString(&c.ClientSecret.Val); err != nil {
-				return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
-			}
-			c.EncryptionStatus = EncryptionStatusEncrypted
+	// Stamp the status whenever a secret is present, not only when it was ciphered:
+	// encryptSecretVar leaves env/vault refs alone, and leaving such a row
+	// 'plain_text' makes the startup backfill re-select it forever.
+	if encrypt.IsEnabled() && c.ClientSecret.IsSet() {
+		if err := encryptSecretVar(c.ClientSecret); err != nil {
+			return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
 		}
+		c.EncryptionStatus = EncryptionStatusEncrypted
 	}
 	return nil
 }
@@ -292,14 +293,14 @@ type TableMCPOauthFlow struct {
 	ID            string `gorm:"type:varchar(255);primaryKey" json:"id"`                  // Flow UUID
 	MCPClientID   string `gorm:"type:varchar(255);not null;index" json:"mcp_client_id"`   // Which MCP server this auth is for
 	OauthConfigID string `gorm:"type:varchar(255);not null;index" json:"oauth_config_id"` // Template OAuth config (holds client_id, token_url, etc.)
-	// State carries a plain (non-unique) index in the struct tag rather than
-	// uniqueIndex: the migration that creates this table needs to run its
-	// oauth_user_sessions backfill before a unique index on state exists (a
-	// gorm-tag-driven uniqueIndex would instead be created as part of
-	// CreateTable, ahead of the backfill) — see that migration for the
-	// ordering rationale. The real uniqueness is enforced there via a raw
-	// CREATE UNIQUE INDEX issued after the backfill completes.
-	State            string    `gorm:"type:varchar(255);index;not null" json:"-"`               // CSRF state token sent to OAuth provider
+	// State is the CSRF state token sent to the OAuth provider. It is UNIQUE:
+	// one state maps to exactly one flow. The tag used to declare a plain index
+	// under this same name, which made the raw CREATE UNIQUE INDEX IF NOT EXISTS
+	// in the table's creation migration a no-op; migrationMakeMCPOauthFlowsStateUnique
+	// converts those databases. The oauth_user_sessions backfill copies
+	// already-unique states into an empty table, so building the unique index at
+	// CreateTable time cannot collide.
+	State            string    `gorm:"type:varchar(255);uniqueIndex:idx_mcp_oauth_flows_state;not null" json:"-"`
 	RedirectURI      string    `gorm:"type:text" json:"-"`                                      // Per-request redirect URI used in authorize step
 	CodeVerifier     string    `gorm:"type:text" json:"-"`                                      // PKCE code verifier (kept secret)
 	SessionID        string    `gorm:"type:varchar(255);index" json:"session_id,omitempty"`     // Session-mode identity: client-asserted x-bf-mcp-session-id. Empty for admin/vk/user mode rows. Stored plaintext (not a bearer credential; same trust model as a VK value).
