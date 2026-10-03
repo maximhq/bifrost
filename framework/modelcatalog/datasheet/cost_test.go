@@ -2824,6 +2824,40 @@ func TestCalculateCost_ImageProviderComputedCostPassthrough(t *testing.T) {
 	assert.Equal(t, 0.02, s.CalculateCost(resp, nil))
 }
 
+// Transcription usage is rebuilt into a new BifrostLLMUsage before pricing, so the
+// provider-reported cost has to be carried over for the short circuit to see it.
+// The usage is OpenRouter's voxtral response: billed per second, with a fixed
+// prompt token count that says nothing about the audio length.
+func TestCalculateCost_TranscriptionProviderComputedCostPassthrough(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:                      "mistralai/voxtral-mini-transcribe-2602",
+		Provider:                   "openrouter",
+		Mode:                       "audio_transcription",
+		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001), // deliberately unlike the reported cost
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+
+	var usage schemas.TranscriptionUsage
+	require.NoError(t, json.Unmarshal([]byte(`{"seconds":31,"total_tokens":202,"input_tokens":6,"output_tokens":196,"cost":0.001705}`), &usage))
+	extra := schemas.BifrostResponseExtraFields{
+		RequestType: schemas.TranscriptionRequest,
+		RoutingInfo: routingInfoFor(schemas.OpenRouter, pricing.Model),
+	}
+
+	resp := &schemas.BifrostResponse{
+		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{Usage: &usage, ExtraFields: extra},
+	}
+	assert.InDelta(t, 0.001705, s.CalculateCost(resp, nil), 1e-12)
+
+	extra.RequestType = schemas.TranscriptionStreamRequest
+	streamResp := &schemas.BifrostResponse{
+		TranscriptionStreamResponse: &schemas.BifrostTranscriptionStreamResponse{Usage: &usage, ExtraFields: extra},
+	}
+	assert.InDelta(t, 0.001705, s.CalculateCost(streamResp, nil), 1e-12)
+}
+
 // Video/3D provider-reported cost hangs off VideoGenerationResponse.Usage.Cost. Runware reports an
 // exact per-task price (and 3D has no datasheet rate), so the reported cost must win verbatim.
 func TestCalculateCost_VideoProviderComputedCostPassthrough(t *testing.T) {
