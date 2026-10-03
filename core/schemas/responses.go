@@ -1891,11 +1891,12 @@ func (rc *ResponsesMessageContent) UnmarshalJSON(data []byte) error {
 type ResponsesMessageContentBlockType string
 
 const (
-	ResponsesInputMessageContentBlockTypeText      ResponsesMessageContentBlockType = "input_text"
-	ResponsesInputMessageContentBlockTypeImage     ResponsesMessageContentBlockType = "input_image"
-	ResponsesInputMessageContentBlockTypeFile      ResponsesMessageContentBlockType = "input_file"
-	ResponsesInputMessageContentBlockTypeAudio     ResponsesMessageContentBlockType = "input_audio"
-	ResponsesInputMessageContentBlockTypeContainer ResponsesMessageContentBlockType = "input_container" // Anthropic-only: file staged into the code-execution container input dir
+	ResponsesInputMessageContentBlockTypeText          ResponsesMessageContentBlockType = "input_text"
+	ResponsesInputMessageContentBlockTypeImage         ResponsesMessageContentBlockType = "input_image"
+	ResponsesInputMessageContentBlockTypeFile          ResponsesMessageContentBlockType = "input_file"
+	ResponsesInputMessageContentBlockTypeAudio         ResponsesMessageContentBlockType = "input_audio"
+	ResponsesInputMessageContentBlockTypeContainer     ResponsesMessageContentBlockType = "input_container" // Anthropic-only: file staged into the code-execution container input dir
+	ResponsesInputMessageContentBlockTypeToolReference ResponsesMessageContentBlockType = "tool_reference"  // Anthropic-only: deferred tool loaded by a client tool_result (custom tool search)
 
 	ResponsesOutputMessageContentTypeText      ResponsesMessageContentBlockType = "output_text"
 	ResponsesOutputMessageContentTypeRefusal   ResponsesMessageContentBlockType = "refusal"
@@ -1922,6 +1923,7 @@ type ResponsesMessageContentBlock struct {
 	FileID    *string                          `json:"file_id,omitempty"` // Reference to uploaded file
 	Text      *string                          `json:"text,omitempty"`
 	Signature *string                          `json:"signature,omitempty"` // Signature of the content (for reasoning)
+	ToolName  *string                          `json:"tool_name,omitempty"` // Deferred tool named by a tool_reference block
 	// EncryptedContent is required on reasoning content blocks during history replay.
 	// OpenAI returns it alongside summary_text blocks; it must be echoed back verbatim.
 	EncryptedContent *string `json:"encrypted_content,omitempty"`
