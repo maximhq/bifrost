@@ -482,7 +482,8 @@ func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
 }
 
 // TestToOpenAIChatRequest_StripsUnsupportedSamplingParams pins that sampling fields
-// OpenAI rejects at the effective reasoning effort are dropped for OpenAI and Azure.
+// OpenAI rejects at the effective reasoning effort are dropped for OpenAI, Azure, and
+// the Bedrock surfaces serving OpenAI's first-party models.
 func TestToOpenAIChatRequest_StripsUnsupportedSamplingParams(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -499,6 +500,10 @@ func TestToOpenAIChatRequest_StripsUnsupportedSamplingParams(t *testing.T) {
 		{name: "gpt-5.6 keeps while effort none", model: "gpt-5.6", effort: "none", stripped: false},
 		{name: "gpt-5.6 strips once reasoning is on", model: "gpt-5.6", effort: "low", stripped: true},
 		{name: "non-reasoning model keeps", model: "gpt-4o", stripped: false},
+		{name: "mantle gpt-5.5 strips", provider: schemas.BedrockMantle, model: "openai.gpt-5.5", stripped: true},
+		{name: "mantle gpt-5.6 keeps while effort none", provider: schemas.BedrockMantle, model: "openai.gpt-5.6", effort: "none", stripped: false},
+		{name: "bedrock gpt-6-astra strips", provider: schemas.Bedrock, model: "openai.gpt-6-astra", effort: "low", stripped: true},
+		{name: "mantle gpt-oss keeps", provider: schemas.BedrockMantle, model: "openai.gpt-oss-120b", effort: "high", stripped: false},
 	}
 
 	for _, tt := range tests {

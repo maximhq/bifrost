@@ -3609,6 +3609,47 @@ func TestToOpenAIResponsesRequest_AlwaysReasoningModels(t *testing.T) {
 		req := convert(schemas.Groq, "openai/gpt-oss-120b", &schemas.ResponsesParameters{Temperature: schemas.Ptr(0.2)})
 		require.NotNil(t, req.Temperature)
 	})
+
+	t.Run("bedrock_hosts_gate_first_party_openai_models", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			provider schemas.ModelProvider
+			model    string
+			effort   string
+			stripped bool
+		}{
+			{name: "mantle gpt-5.5 omitted effort", provider: schemas.BedrockMantle, model: "openai.gpt-5.5", stripped: true},
+			{name: "mantle gpt-5.4 omitted effort defaults to none", provider: schemas.BedrockMantle, model: "openai.gpt-5.4", stripped: false},
+			{name: "mantle gpt-5.6 effort none", provider: schemas.BedrockMantle, model: "openai.gpt-5.6", effort: "none", stripped: false},
+			{name: "mantle gpt-5.6 effort low", provider: schemas.BedrockMantle, model: "openai.gpt-5.6", effort: "low", stripped: true},
+			{name: "bedrock gpt-6-astra", provider: schemas.Bedrock, model: "openai.gpt-6-astra", stripped: true},
+			{name: "mantle gpt-oss keeps", provider: schemas.BedrockMantle, model: "openai.gpt-oss-120b", effort: "high", stripped: false},
+			{name: "bedrock gpt-oss keeps", provider: schemas.Bedrock, model: "openai.gpt-oss-20b", effort: "high", stripped: false},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				params := &schemas.ResponsesParameters{
+					Temperature: schemas.Ptr(0.2),
+					TopLogProbs: schemas.Ptr(3),
+					Include:     []string{"message.output_text.logprobs"},
+				}
+				if tt.effort != "" {
+					params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr(tt.effort)}
+				}
+				req := convert(tt.provider, tt.model, params)
+				if tt.stripped {
+					require.Nil(t, req.Temperature)
+					require.Nil(t, req.TopLogProbs)
+					require.Empty(t, req.Include)
+				} else {
+					require.NotNil(t, req.Temperature)
+					require.NotNil(t, req.TopLogProbs)
+					require.Equal(t, []string{"message.output_text.logprobs"}, req.Include)
+				}
+				require.NotNil(t, params.Temperature, "caller's params must not be mutated")
+			})
+		}
+	})
 }
 
 // TestReasoningContentBlocksGateReadsDatasheet covers the datasheet side of the
