@@ -3,8 +3,6 @@ package utils
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -731,24 +729,28 @@ func tunnelProxy(t *testing.T, upstreamAddr string) string {
 	return "http://" + listener.Addr().String()
 }
 
-// TestInheritedSkipTLSVerify_OnlyCoversProxiedTraffic pins what an inherited global
-// skip_tls_verify covers: TLS sessions through the proxy (a TLS-inspecting proxy
-// presents its own certificates), never a no_proxy host the provider reaches directly,
-// which must still pass certificate verification. The provider's own
-// network_config.insecure_skip_verify still turns verification off everywhere, and its
-// network_config.ca_cert_pem is trusted for direct hosts.
-func TestInheritedSkipTLSVerify_OnlyCoversProxiedTraffic(t *testing.T) {
+// TestInheritedSkipTLSVerify_OnlyCoversTheProxyHop pins what an inherited global
+// skip_tls_verify covers in the provider stacks: only the certificate of an https://
+// proxy itself. Every target is verified, through the proxy as much as directly, so a
+// TLS-inspecting proxy cannot pass off a forged provider certificate; its CA
+// (ca_cert_pem) is how such a proxy is trusted. network_config.ca_cert_pem is trusted for
+// targets, and the provider's own network_config.insecure_skip_verify still turns target
+// verification off.
+func TestInheritedSkipTLSVerify_OnlyCoversTheProxyHop(t *testing.T) {
 	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	t.Cleanup(target.Close)
 	targetCA := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: target.Certificate().Raw}))
-	proxyURL := tunnelProxy(t, target.Listener.Addr().String())
-	_, targetPort, _ := net.SplitHostPort(target.Listener.Addr().String())
-	// Through the proxy, the target is named by a host (example.com is on the test
-	// certificate), as a provider endpoint is; directly, it is the 127.0.0.1 listener.
-	proxiedURL := "https://example.com:" + targetPort
+	httpProxy := tunnelProxy(t, target.Listener.Addr().String())
+	// httptest signs every server with the same certificate, so this proxy and the
+	// target share one untrusted certificate: a CA for one is a CA for both.
+	httpsProxy, _ := tunnelHTTPSProxy(t, target.Listener.Addr().String())
 
-	inherited := func(noProxy string) *schemas.ProxyConfig {
-		return &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxyURL), NoProxy: noProxy, SkipTLSVerify: true}
+	inherited := func(proxyURL, noProxy, ca string) *schemas.ProxyConfig {
+		pc := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxyURL), NoProxy: noProxy, SkipTLSVerify: true}
+		if ca != "" {
+			pc.CACertPEM = schemas.NewSecretVar(ca)
+		}
+		return pc
 	}
 	withCA := schemas.DefaultNetworkConfig
 	withCA.CACertPEM = schemas.NewSecretVar(targetCA)
@@ -757,15 +759,16 @@ func TestInheritedSkipTLSVerify_OnlyCoversProxiedTraffic(t *testing.T) {
 
 	for _, tc := range []struct {
 		name    string
-		url     string
 		proxy   *schemas.ProxyConfig
 		network schemas.NetworkConfig
 		wantErr bool
 	}{
-		{"through the proxy: skipped", proxiedURL, inherited("127.0.0.1"), schemas.DefaultNetworkConfig, false},
-		{"no_proxy host: verified", target.URL, inherited("127.0.0.1"), schemas.DefaultNetworkConfig, true},
-		{"no_proxy host with network_config CA: verified against it", target.URL, inherited("127.0.0.1"), withCA, false},
-		{"no_proxy host with the provider's own insecure_skip_verify", target.URL, inherited("127.0.0.1"), ownSkip, false},
+		{"http proxy: the target is still verified", inherited(httpProxy, "", ""), schemas.DefaultNetworkConfig, true},
+		{"https proxy: the hop is skipped, the target is still verified", inherited(httpsProxy, "", ""), schemas.DefaultNetworkConfig, true},
+		{"https proxy with the proxy CA: hop and target trusted", inherited(httpsProxy, "", targetCA), schemas.DefaultNetworkConfig, false},
+		{"no_proxy host: verified", inherited(httpProxy, "127.0.0.1", ""), schemas.DefaultNetworkConfig, true},
+		{"network_config CA: the target is trusted", inherited(httpProxy, "", ""), withCA, false},
+		{"the provider's own insecure_skip_verify", inherited(httpProxy, "", ""), ownSkip, false},
 	} {
 		t.Run("fasthttp/"+tc.name, func(t *testing.T) {
 			client := ConfigureProxy(&fasthttp.Client{}, tc.proxy, testLogger{})
@@ -775,33 +778,54 @@ func TestInheritedSkipTLSVerify_OnlyCoversProxiedTraffic(t *testing.T) {
 			resp := fasthttp.AcquireResponse()
 			defer fasthttp.ReleaseRequest(req)
 			defer fasthttp.ReleaseResponse(resp)
-			req.SetRequestURI(tc.url)
+			req.SetRequestURI(target.URL)
 			err := client.DoTimeout(req, resp, 5*time.Second)
+			if err == nil && resp.StatusCode() != http.StatusOK {
+				err = fmt.Errorf("target answered %d %q", resp.StatusCode(), resp.Body())
+			}
 			assertCertOutcome(t, err, tc.wantErr)
+			assertHopSkipped(t, tc.name, err)
 		})
 	}
 
 	for _, tc := range []struct {
 		name    string
-		url     string
 		proxy   *schemas.ProxyConfig
 		wantErr bool
 	}{
-		{"through the proxy: skipped", proxiedURL, inherited("127.0.0.1"), false},
-		{"no_proxy host: verified", target.URL, inherited("127.0.0.1"), true},
+		{"http proxy: the target is still verified", inherited(httpProxy, "", ""), true},
+		{"https proxy: the hop is skipped, the target is still verified", inherited(httpsProxy, "", ""), true},
+		{"https proxy with the proxy CA: hop and target trusted", inherited(httpsProxy, "", targetCA), false},
+		{"no_proxy host: verified", inherited(httpProxy, "127.0.0.1", ""), true},
 	} {
 		t.Run("net/http/"+tc.name, func(t *testing.T) {
 			proxy, tlsConfig, err := NetHTTPProxy(tc.proxy)
 			if err != nil {
 				t.Fatal(err)
 			}
-			client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: proxy, TLSClientConfig: tlsConfig}}
-			resp, err := client.Get(tc.url)
+			transport := &http.Transport{Proxy: proxy, TLSClientConfig: tlsConfig}
+			if dial := HTTPSProxyTunnelDial(tc.proxy, (&net.Dialer{}).DialContext); dial != nil {
+				transport.Proxy = nil
+				transport.DialContext = dial
+			}
+			client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+			resp, err := client.Get(target.URL)
 			if err == nil {
 				resp.Body.Close()
 			}
 			assertCertOutcome(t, err, tc.wantErr)
+			assertHopSkipped(t, tc.name, err)
 		})
+	}
+}
+
+// assertHopSkipped checks, for a row whose https:// proxy hop is skipped, that a failure
+// came from the target's certificate and not from the proxy handshake.
+func assertHopSkipped(t *testing.T, name string, err error) {
+	t.Helper()
+	if err != nil && strings.Contains(name, "hop is skipped") &&
+		(strings.Contains(err.Error(), "proxy TLS handshake") || strings.Contains(err.Error(), "proxyconnect")) {
+		t.Fatalf("the https proxy's own certificate was checked although skip_tls_verify is set: %v", err)
 	}
 }
 
@@ -814,36 +838,10 @@ func assertCertOutcome(t *testing.T, err error, wantCertErr bool) {
 		return
 	}
 	if err == nil {
-		t.Fatal("a direct no_proxy host with an untrusted certificate was accepted: verification was skipped")
+		t.Fatal("a target with an untrusted certificate was accepted: target verification was skipped")
 	}
 	if !strings.Contains(err.Error(), "certificate") {
 		t.Fatalf("want a certificate verification error, got %v", err)
-	}
-}
-
-// TestScopeSkipVerify_ByServerName pins the hostname rule of scopeSkipVerify: a host on
-// no_proxy is verified (hostname included), any other host is the proxy's to skip.
-func TestScopeSkipVerify_ByServerName(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	t.Cleanup(server.Close)
-	selfSigned := server.Certificate()
-	scoped := scopeSkipVerify(&tls.Config{InsecureSkipVerify: true}, "direct.example, .internal.example")
-
-	for _, tc := range []struct {
-		serverName string
-		wantErr    bool
-	}{
-		{"proxied.example", false},
-		{"direct.example", true},
-		{"api.internal.example", true},
-	} {
-		err := scoped.VerifyConnection(tls.ConnectionState{ServerName: tc.serverName, PeerCertificates: []*x509.Certificate{selfSigned}})
-		if (err != nil) != tc.wantErr {
-			t.Errorf("%s: err = %v, want error %v", tc.serverName, err, tc.wantErr)
-		}
-	}
-	if scopeSkipVerify(&tls.Config{InsecureSkipVerify: true}, "").VerifyConnection != nil {
-		t.Error("with no no_proxy list the proxy's skip covers everything")
 	}
 }
 

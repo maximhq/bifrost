@@ -89,18 +89,6 @@ harness_build_gateway
 proxy_setup "$WORK_DIR/proxies"
 proxy_start
 
-# The system roots plus the proxy CA. Go honours SSL_CERT_FILE on Linux, which is how
-# the global-https cell trusts its proxy there (the global proxy has no CA field).
-CA_BUNDLE="$WORK_DIR/ca-bundle.pem"
-: > "$CA_BUNDLE"
-for system_bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
-  if [ -f "$system_bundle" ]; then
-    cat "$system_bundle" >> "$CA_BUNDLE"
-    break
-  fi
-done
-cat "$PROXY_DIR/ca.pem" >> "$CA_BUNDLE"
-
 if [ "${PROXY_E2E_STRICT_EGRESS:-0}" = "1" ]; then
   if [ "$(uname -s)" != "Linux" ]; then
     echo "❌ PROXY_E2E_STRICT_EGRESS=1 needs Linux (iptables owner match)" >&2
@@ -150,9 +138,6 @@ seed_cell() {
     global)
       jq 'del(.providers[].proxy_config)' "$config" > "$config.tmp"
       gateway_env="$gateway_env HTTPS_PROXY=$INFRA_PROXY HTTP_PROXY=$INFRA_PROXY"
-      if [ "$kind" = "https" ] && [ "$(uname -s)" = "Linux" ]; then
-        gateway_env="$gateway_env SSL_CERT_FILE=$CA_BUNDLE"
-      fi
       ;;
     provider)
       jq --arg type "$([ "$kind" = socks5 ] && echo socks5 || echo http)" \
@@ -182,18 +167,15 @@ api_curl() {
 
 # enable_global_proxy <kind> turns the global proxy on for Inference and API traffic.
 enable_global_proxy() {
-  local kind="$1" skip_verify=false
-  if [ "$kind" = "https" ] && [ "$(uname -s)" != "Linux" ]; then
-    # Go ignores SSL_CERT_FILE on macOS and the global proxy has no CA field, so a
-    # local run can only trust the private proxy CA by skipping verification.
-    echo "⚠️  global-https on $(uname -s): skip_tls_verify=true (Linux runs verify the proxy through SSL_CERT_FILE)"
-    skip_verify=true
-  fi
+  local kind="$1" ca=""
+  # An https:// global proxy is trusted through its CA (ca_cert_pem), the way an
+  # operator configures a private proxy; skip_tls_verify stays off.
+  [ "$kind" = "https" ] && ca="$(cat "$PROXY_DIR/ca.pem")"
   local payload
   payload="$(jq -n --arg type "$([ "$kind" = socks5 ] && echo socks5 || echo http)" \
     --arg url "$(cell_proxy_url "$kind")" --arg user "$PROXY_USER" --arg pass "$PROXY_PASS" \
-    --arg no_proxy "$NO_PROXY_LIST" --argjson skip "$skip_verify" \
-    '{enabled: true, type: $type, url: $url, username: $user, password: $pass, no_proxy: $no_proxy, timeout: 30, skip_tls_verify: $skip, enable_for_scim: false, enable_for_inference: true, enable_for_api: true}')"
+    --arg no_proxy "$NO_PROXY_LIST" --arg ca "$ca" \
+    '{enabled: true, type: $type, url: $url, username: $user, password: $pass, no_proxy: $no_proxy, timeout: 30, skip_tls_verify: false, ca_cert_pem: $ca, enable_for_scim: false, enable_for_inference: true, enable_for_api: true}')"
   api_curl -X PUT -H "Content-Type: application/json" --data "$payload" "$BASE_URL/api/proxy-config" >/dev/null
   local stored
   stored="$(api_curl "$BASE_URL/api/proxy-config")"
