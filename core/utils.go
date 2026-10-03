@@ -432,6 +432,15 @@ func extraHeaderSpanAttribute(name string, values []string) (any, bool) {
 }
 
 func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
+	// This write is load-bearing for every ClearValue below it, not just for the
+	// witness it parks. ClearValue shadows a parent's value through this context's
+	// OWN value map, and NewBifrostContext leaves that map unallocated until
+	// something is written; on a fresh derived context every ClearValue is
+	// therefore a no-op and the caller's values - their direct key, api-key id and
+	// extra headers among them - stay visible to the sub-request. SetValue
+	// allocates the map, so it has to come first. The egress type assertion treats
+	// the nil it parks here as no witness at all.
+	ctx.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, nil)
 	// Key routing.
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
 	ctx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)
@@ -452,18 +461,6 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
-	// Inbound-dialect witness. Written as an explicit nil shadow rather than
-	// with ClearValue: ClearValue only shadows a parent's value through this
-	// context's OWN value map, and NewBifrostContext leaves that map
-	// unallocated until something is written to it, so on a fresh derived
-	// context it is a no-op and Value still reads the caller's witness through
-	// to the parent. PrepareContextForInternalRequest happens to allocate the
-	// map first (it writes the skip-pipeline marker), but this helper is public
-	// and documented to shed on its own -- a plugin whose sub-request should
-	// run the plugin pipeline calls it directly, and that path must shed too.
-	// SetValue allocates the map, and the egress type assertion treats the nil
-	// it parks there as no witness at all.
-	ctx.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, nil)
 }
 
 // PrepareContextForInternalRequest marks ctx as an internal sub-request issued
