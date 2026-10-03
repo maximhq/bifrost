@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -322,4 +324,117 @@ func TestAuthorizeCodeModeToolCall(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func TestConvertMCPToolToBifrostSchema_MetadataIsolation(t *testing.T) {
+	var upstream discoveredMCPTool
+	require.NoError(t, json.Unmarshal([]byte(`{"name":"edge","inputSchema":{"type":"object","additionalProperties":false,"properties":{"a":{"type":"array"}},"x-input":true},"outputSchema":{},"annotations":{"readOnlyHint":true}}`), &upstream))
+	tool := convertMCPToolToBifrostSchema(&upstream.Tool, defaultLogger)
+	require.JSONEq(t, `{"type":"object","additionalProperties":false,"properties":{"a":{"type":"array"}},"x-input":true}`, string(tool.MCPToolSchema.InputSchema))
+	require.Equal(t, "{}", string(tool.MCPToolSchema.OutputSchema))
+	require.NotContains(t, upstream.InputSchema.Properties["a"].(map[string]any), "items", "provider normalization must not mutate upstream")
+	*upstream.Annotations.ReadOnlyHint = false
+	upstream.RawInputSchema[0] = '['
+	require.True(t, *tool.Annotations.ReadOnlyHint)
+	require.Equal(t, byte('{'), tool.MCPToolSchema.InputSchema[0])
+	wire, err := json.Marshal(tool)
+	require.NoError(t, err)
+	require.NotContains(t, string(wire), "MCPToolSchema")
+	require.NotContains(t, string(wire), "outputSchema")
+	require.NotContains(t, string(wire), "x-input")
+	require.NotContains(t, string(wire), "annotations")
+	// The provider-facing contract still uses the old projection and array fix.
+	require.JSONEq(t, `{"type":"object","properties":{"a":{"type":"array","items":{}}}}`, mustJSONParams(t, tool.Function.Parameters))
+}
+func mustJSONParams(t *testing.T, p *schemas.ToolFunctionParameters) string {
+	t.Helper()
+	b, err := json.Marshal(p)
+	require.NoError(t, err)
+	return string(b)
+}
+
+// Scripted transport preserves the SDK connection seam without any network.
+type schemaListTransport struct {
+	fakeCallToolTransport
+	results []json.RawMessage
+	ids     map[string]bool
+}
+
+func (s *schemaListTransport) SendRequest(_ context.Context, r transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+	if r.Method != "tools/list" {
+		panic("unexpected request")
+	}
+	if s.ids == nil {
+		s.ids = map[string]bool{}
+	}
+	id := r.ID.String()
+	if s.ids[id] {
+		panic("duplicate request id")
+	}
+	s.ids[id] = true
+	data := s.results[0]
+	if len(s.results) > 1 {
+		s.results = s.results[1:]
+	}
+	return &transport.JSONRPCResponse{JSONRPC: "2.0", ID: r.ID, Result: data}, nil
+}
+func TestMCPSchemaPreservationRejectsMalformedPages(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		results []json.RawMessage
+		want    string
+	}{
+		{"null_schema", []json.RawMessage{[]byte(`{"tools":[{"name":"t","inputSchema":null}]}`)}, "schema must be an object"},
+		{"malformed_json", []json.RawMessage{[]byte(`{"tools":`)}, "failed to unmarshal"},
+		{"cursor_loop", []json.RawMessage{[]byte(`{"tools":[],"nextCursor":"again"}`)}, "repeated tools/list cursor"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := &schemaListTransport{results: tc.results}
+			c := client.NewClient(tr, client.WithSession())
+			_, err := listToolsPreservingSchemas(context.Background(), c, mcp.ListToolsRequest{})
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+func TestMCPSchemaPreservationBooleanSchemas(t *testing.T) {
+	for _, raw := range []string{
+		`{"name":"boolean","inputSchema":true,"outputSchema":false}`,
+		`{"name":"boolean","inputSchema":false,"outputSchema":true}`,
+		`{"name":"union","inputSchema":{"type":["object","null"],"if":{"properties":{"x":false}},"then":{"unevaluatedProperties":false},"else":true,"dependentSchemas":{"x":{"required":["y"]}}},"outputSchema":false}`,
+		`{"name":"boolean","inputSchema":{"type":"object","properties":{"enabled":false},"additionalProperties":true},"outputSchema":{}}`,
+	} {
+		var tool discoveredMCPTool
+		require.NoError(t, json.Unmarshal([]byte(raw), &tool))
+		var wire map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(raw), &wire))
+		got := convertMCPToolToBifrostSchema(&tool.Tool, defaultLogger)
+		require.JSONEq(t, string(wire["inputSchema"]), string(got.MCPToolSchema.InputSchema))
+		require.JSONEq(t, string(wire["outputSchema"]), string(got.MCPToolSchema.OutputSchema))
+		b, err := json.Marshal(got)
+		require.NoError(t, err)
+		require.NotContains(t, string(b), "outputSchema")
+	}
+}
+
+// TestMCPSchemaProviderProjectionDefaults checks that richer raw schemas never
+// produce an empty provider type, without changing the downstream MCP contract.
+func TestMCPSchemaProviderProjectionDefaults(t *testing.T) {
+	for _, input := range []string{`true`, `false`, `{}`, `{"properties":{"x":{"type":"string"}}}`, `{"type":["object","null"]}`, `{"type":"object","required":false}`} {
+		t.Run(input, func(t *testing.T) {
+			var tool discoveredMCPTool
+			require.NoError(t, json.Unmarshal([]byte(`{"name":"projection","inputSchema":`+input+`}`), &tool))
+			got := convertMCPToolToBifrostSchema(&tool.Tool, defaultLogger)
+			require.Equal(t, "object", got.Function.Parameters.Type)
+			require.JSONEq(t, input, string(got.MCPToolSchema.InputSchema))
+			wire, err := json.Marshal(got)
+			require.NoError(t, err)
+			require.Contains(t, string(wire), `"type":"object"`)
+			require.NotContains(t, string(wire), `"type":""`)
+		})
+	}
+	var missing discoveredMCPTool
+	require.NoError(t, json.Unmarshal([]byte(`{"name":"missing"}`), &missing))
+	require.Empty(t, missing.InputSchema.Type)
+	require.Nil(t, missing.RawInputSchema)
 }
