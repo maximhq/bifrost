@@ -8,10 +8,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // RedactURLForError reduces a resource URL to the part that is safe to echo back in an
@@ -64,6 +67,13 @@ func sanitizeFetchError(err error, redacted string) error {
 // transition addresses). The IP check runs at dial time (not just lookup time)
 // so DNS rebinding does not bypass it. Redirect targets are subject to the same
 // scheme + dial-time IP validation.
+//
+// Proxy: when ctx carries the serving provider's proxy config
+// (schemas.BifrostContextKeyProviderProxyConfig, set by bifrost on every attempt),
+// the fetch leaves through that proxy, the same egress as the provider's inference
+// traffic. The target host is still refused if it resolves to a non-public address;
+// see network.NewSSRFSafeTransport for how the check works once the dial goes to a
+// proxy. With no proxy configured the fetch connects directly, as before.
 func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType string, encoded string, err error) {
 	const maxBytes int64 = 25 * 1024 * 1024
 
@@ -79,21 +89,9 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 		return "", "", fmt.Errorf("unsupported URL scheme %q (only http/https allowed)", parsed.Scheme)
 	}
 
-	transport := &http.Transport{
-		DialContext: network.SSRFSafeDialContext(10 * time.Second),
-	}
-	client := &http.Client{
-		Timeout:   20 * time.Second,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
-			}
-			if len(via) >= 10 {
-				return fmt.Errorf("stopped after 10 redirects")
-			}
-			return nil
-		},
+	client, err := fetchClientFor(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to fetch from %q: %w", redacted, err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceURL, nil)
@@ -126,4 +124,79 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 	}
 
 	return mediaType, base64.StdEncoding.EncodeToString(body), nil
+}
+
+// proxyEnvVars are the variables golang.org/x/net/http/httpproxy reads.
+var proxyEnvVars = []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"}
+
+// fetchClients holds one http.Client per distinct proxy, so connections are pooled
+// across fetches instead of a fresh transport being built per call. Keyed by
+// fetchClientKeyFor; the set is bounded by the number of distinct proxy configs.
+var fetchClients sync.Map // fetchClientKey -> *http.Client
+
+// fetchClientFor returns the client for the proxy config carried on ctx, or the
+// direct client when there is none.
+func fetchClientFor(ctx context.Context) (*http.Client, error) {
+	proxyConfig, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig)
+	key := fetchClientKeyFor(proxyConfig)
+	if cached, ok := fetchClients.Load(key); ok {
+		return cached.(*http.Client), nil
+	}
+	proxy, tlsConfig, err := NetHTTPProxy(proxyConfig)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{
+		Timeout:   20 * time.Second,
+		Transport: network.NewSSRFSafeTransport(10*time.Second, proxy, tlsConfig),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			return nil
+		},
+	}
+	actual, _ := fetchClients.LoadOrStore(key, client)
+	return actual.(*http.Client), nil
+}
+
+// fetchClientKey is the set of resolved values that change which client a fetch needs.
+// It is a comparable struct used directly as the cache key: the values already live in
+// memory on the provider's ProxyConfig, so keying by them exposes nothing new, and no
+// hashing is needed. Everything that NetHTTPProxy treats as "no proxy" maps to the
+// zero key.
+type fetchClientKey struct {
+	proxyType schemas.ProxyType
+	url       string
+	username  string
+	password  string
+	caCertPEM string
+	// env holds the proxy variables for type "environment": EnvProxyFunc reads them
+	// when the client is built, so the values it read are part of which client this is.
+	env string
+}
+
+func fetchClientKeyFor(proxyConfig *schemas.ProxyConfig) fetchClientKey {
+	if proxyConfig == nil || proxyConfig.Type == "" || proxyConfig.Type == schemas.NoProxy {
+		return fetchClientKey{}
+	}
+	key := fetchClientKey{
+		proxyType: proxyConfig.Type,
+		url:       proxyConfig.URL.GetValue(),
+		username:  proxyConfig.Username.GetValue(),
+		password:  proxyConfig.Password.GetValue(),
+		caCertPEM: proxyConfig.CACertPEM.GetValue(),
+	}
+	if proxyConfig.Type == schemas.EnvProxy {
+		var env strings.Builder
+		for _, name := range proxyEnvVars {
+			env.WriteString(os.Getenv(name))
+			env.WriteByte(0)
+		}
+		key.env = env.String()
+	}
+	return key
 }
