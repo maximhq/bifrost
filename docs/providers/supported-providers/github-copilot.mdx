@@ -27,7 +27,7 @@ documented and stable.
 | Operation | Non-Streaming | Streaming | Endpoint |
 | --------- | ------------- | --------- | -------- |
 | Chat Completions | ✅ | ✅ | `/chat/completions` |
-| Responses API | ✅ | ✅ | converted through `/chat/completions` |
+| Responses API | ✅ | ✅ | `/responses`, or converted through `/chat/completions` |
 | List Models | ✅ | - | `/models` |
 | Text Completions | ❌ | ❌ | - |
 | Embeddings | ❌ | - | - |
@@ -205,8 +205,10 @@ agentic stream is the exposed case.
 
 # 2. Responses API
 
-Converted through chat completions, so it works on every account regardless of whether your
-plan exposes a native Responses endpoint.
+Sent to Copilot's native Responses endpoint. Copilot serves that endpoint only for some
+models. When Copilot answers that a model is not served there, Bifrost converts the request
+through chat completions and remembers the result for that model, so later requests skip the
+failed call.
 
 ---
 
