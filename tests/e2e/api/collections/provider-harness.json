@@ -187372,6 +187372,163 @@
           }
         }
       ]
+    },
+    {
+      "name": "142. Gemini embeddings request-level taskType and title fan-out (#7812) (gemini-embedding-tasktype)",
+      "description": "Issue #7812: a /v1/embeddings request to gemini-embedding-001 with several inputs and a request-level taskType (and/or title) must embed EVERY input with that task type. v2.2.4 applied it to the first entry only (the converter deleted the key from a map shared across the loop); after the multimodal-embedding refactor the Gemini-native extra-param spelling `taskType`/`title` was dropped from every entry, and with x-bf-passthrough-extra-params it leaked to the batch top level, where Gemini rejects unknown fields. Nothing errors in the silent case: the vectors come from the wrong embedding space (RETRIEVAL_QUERY instead of RETRIEVAL_DOCUMENT), so the response body cannot tell right from wrong. Both rows therefore assert on extra_fields.raw_request: taskType and title present on each of the three requests[] entries and absent at the top level. 142.A1 is the reporter's exact shape (OpenAI SDK extra_body => camelCase extra params; red pre-fix). 142.A2 is the first-class snake_case task_type/title, pinned so the two spellings cannot drift apart. Run with PROVIDER=gemini FEATURE=\"gemini-embedding-tasktype\".",
+      "item": [
+        {
+          "name": "142.A Request-level task type fans out to every :batchEmbedContents entry",
+          "item": [
+            {
+              "name": "142.A1 gemini/gemini-embedding-001 - request-level taskType extra param reaches every requests[] entry - #7812",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-request",
+                    "value": "true"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": [\n    \"Biodegradable Hydraulic Ester Fluid 46\",\n    \"stainless steel ball valves\",\n    \"contract manufacturing of injection moulded parts\"\n  ],\n  \"dimensions\": 256,\n  \"taskType\": \"RETRIEVAL_DOCUMENT\",\n  \"title\": \"Industrial catalogue\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #7812: a request-level taskType / title (Gemini-native extra params, the OpenAI SDK extra_body spelling) on /v1/embeddings must reach EVERY requests[] entry of",
+                      "// :batchEmbedContents. Pre-fix the extra-param spelling was dropped from every entry (and, with",
+                      "// x-bf-passthrough-extra-params, leaked to the batch top level where Gemini returns 400).",
+                      "// raw_request is the only place the per-entry fan-out is visible: a vector comes back either way.",
+                      "var txt = pm.response.text() || '';",
+                      "pm.test('embedding succeeds', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 300)).to.eql(200);",
+                      "});",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('three inputs return three vectors', function () {",
+                      "  pm.expect(data.length, 'wrong vector count: ' + txt.slice(0, 300)).to.eql(3);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});",
+                      "var rr = (j.extra_fields || {}).raw_request;",
+                      "pm.test('taskType and title ride every requests[] entry, not the batch top level', function () {",
+                      "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                      "  pm.expect(rr.requests, 'raw_request.requests missing').to.be.an('array').with.lengthOf(3);",
+                      "  for (var i = 0; i < rr.requests.length; i++) {",
+                      "    pm.expect(rr.requests[i].taskType, 'requests[' + i + '].taskType was dropped - #7812').to.eql('RETRIEVAL_DOCUMENT');",
+                      "    pm.expect(rr.requests[i].title, 'requests[' + i + '].title was dropped - #7812').to.eql('Industrial catalogue');",
+                      "  }",
+                      "  pm.expect(rr.taskType, 'taskType leaked to the batch top level').to.be.undefined;",
+                      "  pm.expect(rr.title, 'title leaked to the batch top level').to.be.undefined;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "142.A2 gemini/gemini-embedding-001 - request-level task_type and title fan out to every requests[] entry - #7812",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-request",
+                    "value": "true"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": [\n    \"Biodegradable Hydraulic Ester Fluid 46\",\n    \"stainless steel ball valves\",\n    \"contract manufacturing of injection moulded parts\"\n  ],\n  \"dimensions\": 256,\n  \"task_type\": \"RETRIEVAL_DOCUMENT\",\n  \"title\": \"Industrial catalogue\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #7812: a request-level task_type / title (first-class snake_case) on /v1/embeddings must reach EVERY requests[] entry of",
+                      "// :batchEmbedContents. Pre-fix the extra-param spelling was dropped from every entry (and, with",
+                      "// x-bf-passthrough-extra-params, leaked to the batch top level where Gemini returns 400).",
+                      "// raw_request is the only place the per-entry fan-out is visible: a vector comes back either way.",
+                      "var txt = pm.response.text() || '';",
+                      "pm.test('embedding succeeds', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 300)).to.eql(200);",
+                      "});",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('three inputs return three vectors', function () {",
+                      "  pm.expect(data.length, 'wrong vector count: ' + txt.slice(0, 300)).to.eql(3);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});",
+                      "var rr = (j.extra_fields || {}).raw_request;",
+                      "pm.test('taskType and title ride every requests[] entry, not the batch top level', function () {",
+                      "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                      "  pm.expect(rr.requests, 'raw_request.requests missing').to.be.an('array').with.lengthOf(3);",
+                      "  for (var i = 0; i < rr.requests.length; i++) {",
+                      "    pm.expect(rr.requests[i].taskType, 'requests[' + i + '].taskType was dropped - #7812').to.eql('RETRIEVAL_DOCUMENT');",
+                      "    pm.expect(rr.requests[i].title, 'requests[' + i + '].title was dropped - #7812').to.eql('Industrial catalogue');",
+                      "  }",
+                      "  pm.expect(rr.taskType, 'taskType leaked to the batch top level').to.be.undefined;",
+                      "  pm.expect(rr.title, 'title leaked to the batch top level').to.be.undefined;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
     }
   ]
 }
