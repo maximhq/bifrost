@@ -182,6 +182,10 @@ func converseRoles(messages []bedrock.BedrockMessage) string {
 // into the assistant message being built, while tool_use-then-text has a tool call
 // AND buffered reasoning pending at the same time, which is the case that used to
 // emit the tool use in front of the reasoning block that preceded it.
+//
+// The same conversion runs for a bare Claude id. Governance selects Bedrock after
+// ToBifrostResponsesRequest, so a model string with no bedrock/ prefix still has
+// to keep signed blocks in place.
 func TestAnthropicIngressBedrockPreservesInterleavedThinkingOrder(t *testing.T) {
 	think := func(step int) map[string]any {
 		return map[string]any{
@@ -233,63 +237,70 @@ func TestAnthropicIngressBedrockPreservesInterleavedThinkingOrder(t *testing.T) 
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var assistantBlocks []map[string]any
-			for step := 0; step < 2; step++ {
-				assistantBlocks = append(assistantBlocks, tt.order(step)...)
-			}
-
-			body, err := json.Marshal(map[string]any{
-				"model":      "bedrock/us.anthropic.claude-opus-4-8",
-				"max_tokens": 4096,
-				"thinking":   map[string]any{"type": "adaptive"},
-				"tools": []map[string]any{{
-					"name":         "get_weather",
-					"description":  "look up the weather",
-					"input_schema": map[string]any{"type": "object"},
-				}},
-				"messages": []map[string]any{
-					{"role": "user", "content": []map[string]any{{"type": "text", "text": "run the tool twice"}}},
-					{"role": "assistant", "content": assistantBlocks},
-					{"role": "user", "content": []map[string]any{
-						{"type": "tool_result", "tool_use_id": "toolu_01Step00", "content": "sunny"},
-						{"type": "tool_result", "tool_use_id": "toolu_01Step01", "content": "windy"},
-					}},
-				},
-			})
-			require.NoError(t, err)
-
-			var ingressReq anthropic.AnthropicMessageRequest
-			require.NoError(t, json.Unmarshal(body, &ingressReq))
-
-			ctx := &schemas.BifrostContext{}
-			converseReq, err := bedrock.ToBedrockResponsesRequest(ctx, ingressReq.ToBifrostResponsesRequest(ctx))
-			require.NoError(t, err)
-
-			require.Len(t, converseReq.Messages, 3, "roles: %s", converseRoles(converseReq.Messages))
-			turn := converseReq.Messages[1]
-			require.Equal(t, bedrock.BedrockMessageRoleAssistant, turn.Role)
-
-			got := make([]string, 0, len(turn.Content))
-			for _, block := range turn.Content {
-				switch {
-				case block.ReasoningContent != nil && block.ReasoningContent.ReasoningText != nil:
-					sig := ""
-					if block.ReasoningContent.ReasoningText.Signature != nil {
-						sig = *block.ReasoningContent.ReasoningText.Signature
-					}
-					got = append(got, "reasoning:"+sig)
-				case block.Text != nil:
-					got = append(got, "text:"+*block.Text)
-				case block.ToolUse != nil:
-					got = append(got, "toolUse:"+block.ToolUse.ToolUseID)
-				default:
-					got = append(got, "other")
+	// claude-opus-5-5 has no provider prefix. Routing can still select Bedrock
+	// after the Anthropic ingress converts messages.
+	for _, model := range []string{
+		"bedrock/us.anthropic.claude-opus-4-8",
+		"claude-opus-5-5",
+	} {
+		for _, tt := range tests {
+			t.Run(model+"/"+tt.name, func(t *testing.T) {
+				var assistantBlocks []map[string]any
+				for step := 0; step < 2; step++ {
+					assistantBlocks = append(assistantBlocks, tt.order(step)...)
 				}
-			}
-			require.Equal(t, tt.want, got, "interleaved turn must reach Bedrock in the order the client sent it")
-		})
+
+				body, err := json.Marshal(map[string]any{
+					"model":      model,
+					"max_tokens": 4096,
+					"thinking":   map[string]any{"type": "adaptive"},
+					"tools": []map[string]any{{
+						"name":         "get_weather",
+						"description":  "look up the weather",
+						"input_schema": map[string]any{"type": "object"},
+					}},
+					"messages": []map[string]any{
+						{"role": "user", "content": []map[string]any{{"type": "text", "text": "run the tool twice"}}},
+						{"role": "assistant", "content": assistantBlocks},
+						{"role": "user", "content": []map[string]any{
+							{"type": "tool_result", "tool_use_id": "toolu_01Step00", "content": "sunny"},
+							{"type": "tool_result", "tool_use_id": "toolu_01Step01", "content": "windy"},
+						}},
+					},
+				})
+				require.NoError(t, err)
+
+				var ingressReq anthropic.AnthropicMessageRequest
+				require.NoError(t, json.Unmarshal(body, &ingressReq))
+
+				ctx := &schemas.BifrostContext{}
+				converseReq, err := bedrock.ToBedrockResponsesRequest(ctx, ingressReq.ToBifrostResponsesRequest(ctx))
+				require.NoError(t, err)
+
+				require.Len(t, converseReq.Messages, 3, "roles: %s", converseRoles(converseReq.Messages))
+				turn := converseReq.Messages[1]
+				require.Equal(t, bedrock.BedrockMessageRoleAssistant, turn.Role)
+
+				got := make([]string, 0, len(turn.Content))
+				for _, block := range turn.Content {
+					switch {
+					case block.ReasoningContent != nil && block.ReasoningContent.ReasoningText != nil:
+						sig := ""
+						if block.ReasoningContent.ReasoningText.Signature != nil {
+							sig = *block.ReasoningContent.ReasoningText.Signature
+						}
+						got = append(got, "reasoning:"+sig)
+					case block.Text != nil:
+						got = append(got, "text:"+*block.Text)
+					case block.ToolUse != nil:
+						got = append(got, "toolUse:"+block.ToolUse.ToolUseID)
+					default:
+						got = append(got, "other")
+					}
+				}
+				require.Equal(t, tt.want, got, "interleaved turn must reach Bedrock in the order the client sent it")
+			})
+		}
 	}
 }
 
