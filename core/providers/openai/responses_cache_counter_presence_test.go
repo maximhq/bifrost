@@ -93,14 +93,37 @@ func TestResponsesStreamCacheCounterKnownnessBoundary(t *testing.T) {
 			if bifrostErr != nil {
 				t.Fatalf("stream setup failed: %v", bifrostErr)
 			}
-			collectChunks(t, stream)
+			chunks := collectChunks(t, stream)
 
-			known, present := ctx.Value(schemas.BifrostContextKeyRawResponsesCacheCountersKnown).(bool)
-			if present != tt.wantPresent {
-				t.Fatalf("raw cache-counter knownness present = %t, want %t", present, tt.wantPresent)
+			// The terminal event is the only frame that can know the answer, so the
+			// field is expected on that chunk and nil on every one before it. A
+			// stream that truncates before a terminal event therefore reports nil
+			// throughout, which is the "unknown, not false" case.
+			var carrying []int
+			var known *bool
+			for i, chunk := range chunks {
+				if chunk.BifrostResponsesStreamResponse == nil {
+					continue
+				}
+				if v := chunk.BifrostResponsesStreamResponse.ExtraFields.RawResponsesCacheCountersKnown; v != nil {
+					carrying = append(carrying, i)
+					known = v
+				}
 			}
-			if present && known != tt.wantKnown {
-				t.Fatalf("raw cache-counter knownness = %t, want %t", known, tt.wantKnown)
+			if !tt.wantPresent {
+				if len(carrying) != 0 {
+					t.Fatalf("expected no chunk to carry the fact, got it on chunk index(es) %v", carrying)
+				}
+				return
+			}
+			if len(carrying) != 1 {
+				t.Fatalf("expected exactly one chunk to carry the fact, got %d (index(es) %v)", len(carrying), carrying)
+			}
+			if carrying[0] != len(chunks)-1 {
+				t.Fatalf("the fact landed on chunk %d of %d; want the terminal chunk", carrying[0], len(chunks))
+			}
+			if *known != tt.wantKnown {
+				t.Fatalf("raw cache-counter knownness = %t, want %t", *known, tt.wantKnown)
 			}
 		})
 	}
@@ -155,12 +178,15 @@ func TestLargeRequestPassthroughPreservesRawCacheCounterPresence(t *testing.T) {
 			if bifrostErr != nil {
 				t.Fatalf("large-payload Responses request failed: %v", bifrostErr)
 			}
-			known, ok := ctx.Value(schemas.BifrostContextKeyRawResponsesCacheCountersKnown).(bool)
-			if !ok || known != tt.want {
-				t.Fatalf("raw cache-counter knownness = (%t, %t), want (%t, true)", known, ok, tt.want)
-			}
 			if response == nil {
 				t.Fatal("expected a typed response")
+			}
+			known := response.ExtraFields.RawResponsesCacheCountersKnown
+			if known == nil {
+				t.Fatal("raw cache-counter knownness is nil; want it recorded at the passthrough boundary")
+			}
+			if *known != tt.want {
+				t.Fatalf("raw cache-counter knownness = %t, want %t", *known, tt.want)
 			}
 			normalized := response.WithDefaults()
 			if normalized.Usage == nil || normalized.Usage.InputTokensDetails == nil {
