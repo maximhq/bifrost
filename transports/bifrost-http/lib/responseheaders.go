@@ -7,6 +7,7 @@ package lib
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -92,8 +93,28 @@ func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 	})
 }
 
+// ForwardProviderResponseHeader writes an upstream header without replacing
+// correlation IDs already established by the gateway. The provider's IDs remain
+// available in core response metadata. If no gateway ID exists, forwarding keeps
+// its previous behavior. Explicit transport plugin header edits are unaffected.
+func ForwardProviderResponseHeader(ctx *fasthttp.RequestCtx, key, value string) {
+	if (strings.EqualFold(key, "x-request-id") || strings.EqualFold(key, "x-bifrost-trace-id")) &&
+		len(ctx.Response.Header.Peek(key)) > 0 {
+		return
+	}
+	ctx.Response.Header.Set(key, value)
+}
+
+// ForwardProviderResponseHeaders forwards upstream headers using the gateway's
+// correlation-ID precedence. Callers retain their existing framing filters.
+func ForwardProviderResponseHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
+	for key, value := range headers {
+		ForwardProviderResponseHeader(ctx, key, value)
+	}
+}
+
 // ApplyBifrostResponseHeaders writes both the upstream provider response
-// headers (forwarded verbatim) and the bifrost-level `x-bifrost-*` routing
+// headers (preserving gateway correlation IDs) and the bifrost-level `x-bifrost-*` routing
 // identity headers onto the fasthttp response. Empty fields are skipped so
 // the headers never appear with a blank value. Safe to call when the caller
 // didn't populate `extra` — the zero value for ExtraFields produces no
@@ -107,9 +128,7 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 			defer t.EndSpan(h, schemas.SpanStatusOk, "")
 		}
 	}
-	for key, value := range extra.ProviderResponseHeaders {
-		ctx.Response.Header.Set(key, value)
-	}
+	ForwardProviderResponseHeaders(ctx, extra.ProviderResponseHeaders)
 	if extra.Provider != "" {
 		ctx.Response.Header.Set(HeaderBifrostProvider, string(extra.Provider))
 	}

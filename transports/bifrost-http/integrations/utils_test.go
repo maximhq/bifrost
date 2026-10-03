@@ -347,6 +347,42 @@ func TestSendStreamError_ForwardsProviderHeaders(t *testing.T) {
 	assert.Equal(t, "ValidationException", string(ctx.Response.Header.Peek("x-amzn-errortype")))
 }
 
+func TestSendError_ProviderHeadersPreserveCorrelation(t *testing.T) {
+	router := newTestGenericRouter()
+	converter := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} { return err }
+	for _, streaming := range []bool{false, true} {
+		name := "unary"
+		if streaming {
+			name = "stream setup"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Response.Header.Set("x-request-id", "gateway-request")
+			ctx.Response.Header.Set("x-bifrost-trace-id", "gateway-trace")
+			bifrostCtx := newTestBifrostContext()
+			bifrostCtx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{
+				"X-Request-ID": "provider-request", "X-Bifrost-Trace-ID": "provider-trace",
+				"x-amzn-requestid": "provider-specific-request",
+			})
+			bifrostErr := &schemas.BifrostError{
+				StatusCode: ptr(fasthttp.StatusTooManyRequests),
+				Error:      &schemas.ErrorField{Message: "offline upstream limit"},
+			}
+			if streaming {
+				router.sendStreamError(ctx, bifrostCtx, RouteConfig{ErrorConverter: converter}, bifrostErr)
+			} else {
+				router.sendError(ctx, bifrostCtx, converter, bifrostErr)
+			}
+			assert.Equal(t, fasthttp.StatusTooManyRequests, ctx.Response.StatusCode())
+			assert.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
+			assert.Contains(t, string(ctx.Response.Body()), "offline upstream limit")
+			assert.Equal(t, "gateway-request", string(ctx.Response.Header.Peek("x-request-id")))
+			assert.Equal(t, "gateway-trace", string(ctx.Response.Header.Peek("x-bifrost-trace-id")))
+			assert.Equal(t, "provider-specific-request", string(ctx.Response.Header.Peek("x-amzn-requestid")))
+		})
+	}
+}
+
 // TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders verifies that
 // large-response early returns (speech audio, transcription, image bytes)
 // carry the routed-identity headers even though they skip the common footer
@@ -355,6 +391,12 @@ func TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders(t *testing.T) {
 	router := newTestGenericRouter()
 	ctx := &fasthttp.RequestCtx{}
 	bifrostCtx := newTestBifrostContext()
+	ctx.Response.Header.Set("x-request-id", "gateway-request")
+	ctx.Response.Header.Set("x-bifrost-trace-id", "gateway-trace")
+	bifrostCtx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{
+		"X-Request-ID": "provider-request", "X-Bifrost-Trace-ID": "provider-trace",
+		"x-ratelimit-remaining": "17",
+	})
 	bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseReader, io.NopCloser(strings.NewReader("audio-bytes")))
 
@@ -378,4 +420,8 @@ func TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders(t *testing.T) {
 	assert.Equal(t, "openai", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoProvider)))
 	assert.Equal(t, "tts-1", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoModel)))
 	assert.Equal(t, "openai-key", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoKey)))
+	assert.Equal(t, "gateway-request", string(ctx.Response.Header.Peek("x-request-id")))
+	assert.Equal(t, "gateway-trace", string(ctx.Response.Header.Peek("x-bifrost-trace-id")))
+	assert.Equal(t, "17", string(ctx.Response.Header.Peek("x-ratelimit-remaining")))
+	assert.Equal(t, "audio-bytes", string(ctx.Response.Body()), "large response body still streams unchanged")
 }
