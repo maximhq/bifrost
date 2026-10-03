@@ -1131,9 +1131,11 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	provider, model, _ := req.GetRequestFields()
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
-		RequestType: req.RequestType,
-		Provider:    provider,
-		Model:       model}
+		RequestType:      req.RequestType,
+		Provider:         provider,
+		Model:            model,
+		OpaqueBatchInput: isOpaqueBatchInput(req),
+	}
 	// A batch create fans out to many completions, each naming its own model, so
 	// every model it will run is evaluated before the request itself. Each pass
 	// settles that model's limits on the access and checks them; the request's own
@@ -1161,6 +1163,16 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	return req, nil, nil
+}
+
+// isOpaqueBatchInput reports whether a batch create's work is an uploaded file or blob rather than
+// inline requests, so the models it will run are not visible on the request.
+func isOpaqueBatchInput(req *schemas.BifrostRequest) bool {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil || len(req.BatchCreateRequest.Requests) > 0 {
+		return false
+	}
+	batch := req.BatchCreateRequest
+	return batch.InputFileID != "" || (batch.InputBlob != nil && strings.TrimSpace(*batch.InputBlob) != "")
 }
 
 // BatchCreateModels returns every distinct model an inline batch create will run,
