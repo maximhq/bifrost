@@ -1014,8 +1014,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		if samplingParamUnsupported(caps, schemas.FieldTopP, capModel, effort) {
 			req.ResponsesParameters.TopP = nil
 		}
-		// Only OpenAI hosts gate these; third-party gpt-oss hosts accept them.
-		if base := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider); base == schemas.OpenAI || base == schemas.Azure {
+		// Only hosts serving OpenAI's own models gate these; third-party gpt-oss hosts accept them.
+		if enforcesOpenAISamplingRules(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel) {
 			if samplingParamUnsupported(caps, schemas.FieldTemperature, capModel, effort) {
 				req.ResponsesParameters.Temperature = nil
 			}
@@ -1099,6 +1099,21 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	}
 
 	return req
+}
+
+// enforcesOpenAISamplingRules reports whether the upstream rejects the sampling fields
+// samplingParamUnsupported gates (temperature, top_logprobs, logprobs) the way OpenAI does.
+// Bedrock and Bedrock Mantle serve OpenAI's first-party models (gpt-5.x, gpt-6.x) and answer
+// those fields with the same 400; gpt-oss is open-weight and, like on other third-party hosts,
+// accepts them.
+func enforcesOpenAISamplingRules(base schemas.ModelProvider, model string) bool {
+	switch base {
+	case schemas.OpenAI, schemas.Azure:
+		return true
+	case schemas.Bedrock, schemas.BedrockMantle:
+		return !strings.Contains(strings.ToLower(model), "gpt-oss")
+	}
+	return false
 }
 
 // samplingParamUnsupported reports whether the model rejects a sampling field

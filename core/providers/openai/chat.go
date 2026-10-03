@@ -186,6 +186,14 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.ChatParameters.Prediction = prediction
 		return openaiReq
+	case schemas.Bedrock, schemas.BedrockMantle:
+		// OpenAI-compatible Bedrock surfaces serve OpenAI's first-party models, which
+		// reject the same sampling fields they do on OpenAI.
+		openaiReq.filterOpenAISpecificParameters(caps)
+		if enforcesOpenAISamplingRules(bifrostReq.Provider, capModel) {
+			openaiReq.stripUnsupportedSamplingParams(caps)
+		}
+		return openaiReq
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
