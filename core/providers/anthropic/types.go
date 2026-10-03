@@ -2093,6 +2093,14 @@ type AnthropicUsage struct {
 	Speed                    *string                       `json:"speed,omitempty"`                 // "fast" or "standard" — which speed was actually served (fast mode research preview)
 	InferenceGeo             *string                       `json:"inference_geo,omitempty"`         // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	Iterations               []AnthropicUsage              `json:"iterations,omitempty"`            // Iterations statistics
+
+	// absentPromptCounters names the prompt-side counters this usage object must
+	// render as ABSENT rather than as zero, because the upstream event it
+	// describes reported none. Unexported and zero by default: every usage object
+	// Bifrost builds itself reports every counter, exactly as before. Only the
+	// streaming `message_delta` egress sets it, from raw field-presence evidence
+	// recorded at the upstream SSE boundary. See streamdeltausage.go.
+	absentPromptCounters uint8
 }
 
 // AnthropicOutputTokensDetails breaks down output_tokens for extended-thinking responses.
@@ -2281,6 +2289,15 @@ type AnthropicStreamDelta struct {
 	Container *AnthropicResponseContainer `json:"container,omitempty"`
 	// SafeguardResults carries Claude Code's auto-mode verdicts on the final message_delta.
 	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
+
+	// requireStopFields renders the two MESSAGE-level stop fields explicitly --
+	// `stop_reason` as a JSON null when it is unset -- because a streaming
+	// `message_delta` frame's delta object declares both of them as required and
+	// nullable, and the supported clients read `delta.stop_reason` unguarded.
+	// Unexported and zero by default: a content_block_delta, and any frame built
+	// with a stop reason of its own, renders exactly as before. Only the
+	// streaming message_delta egress sets it. See streamdeltaframe.go.
+	requireStopFields bool
 }
 
 // ==================== MODEL TYPES ====================
