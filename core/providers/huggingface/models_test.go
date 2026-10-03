@@ -231,6 +231,9 @@ func TestToBifrostListModelsResponse_BackfillEnrichesHuggingFaceIDOnlyWhenMethod
 	assert.Nil(t, got.SupportedMethods)
 }
 
+// TestListModelsByKeyDiscoversDeepInfraWithoutRetiredProviders pins the Hub
+// request set as well as the discovered model IDs, so dropped provider errors
+// cannot hide stale catalogue entries.
 func TestListModelsByKeyDiscoversDeepInfraWithoutRetiredProviders(t *testing.T) {
 	t.Parallel()
 
@@ -276,6 +279,9 @@ func TestListModelsByKeyDiscoversDeepInfraWithoutRetiredProviders(t *testing.T) 
 	assert.Equal(t, "huggingface/deepinfra/Qwen/Qwen3.8-27B", response.Data[0].ID)
 }
 
+// TestToBifrostListModelsResponseAllowlistWithDeepInfraProviderSegment checks
+// that a DeepInfra-qualified allowlist ID is emitted only by its own provider
+// pass and keeps a single inference-provider prefix.
 func TestToBifrostListModelsResponseAllowlistWithDeepInfraProviderSegment(t *testing.T) {
 	t.Parallel()
 	allowlist := schemas.WhiteList{"deepinfra/Qwen/Qwen3.8-27B"}
@@ -296,6 +302,9 @@ func TestToBifrostListModelsResponseAllowlistWithDeepInfraProviderSegment(t *tes
 	})
 }
 
+// TestToBifrostListModelsResponseLegacyProviderSegments preserves legacy ID
+// interpretation even though retired providers are no longer queried by the Hub
+// discovery loop.
 func TestToBifrostListModelsResponseLegacyProviderSegments(t *testing.T) {
 	t.Parallel()
 	for _, legacy := range []inferenceProvider{hyperbolic, nebius, sambanova} {
