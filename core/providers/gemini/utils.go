@@ -2240,9 +2240,12 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 			} else if message.Content.ContentBlocks != nil {
 				for _, block := range message.Content.ContentBlocks {
 					if block.Text != nil {
-						parts = append(parts, &Part{
-							Text: *block.Text,
-						})
+						// An empty text block would marshal to a `{}` part, which Gemini rejects.
+						if *block.Text != "" {
+							parts = append(parts, &Part{
+								Text: *block.Text,
+							})
+						}
 					} else if block.File != nil {
 						// Handle file blocks - use FileURL if available (uploaded file)
 						if block.File.FileURL != nil && *block.File.FileURL != "" {
@@ -2446,6 +2449,12 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 			}
 			contents = append(contents, content)
 		}
+	}
+
+	// System messages made only of empty text leave a partless systemInstruction, which
+	// Gemini rejects; omit it instead.
+	if systemInstruction != nil && len(systemInstruction.Parts) == 0 {
+		systemInstruction = nil
 	}
 
 	return contents, systemInstruction, nil
