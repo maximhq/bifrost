@@ -187021,6 +187021,219 @@
           }
         }
       ]
+    },
+    {
+      "name": "141. Gemini image + transcription ExtraParams survive fallback and retry attempts (#7826) (extra-params-fallback)",
+      "description": "Issue #7826. The Gemini image and transcription converters (ToGeminiImageGenerationRequest, ToGeminiImageEditRequest, ToImagenImageGenerationRequest, ToImagenImageEditRequest, ToGeminiTranscriptionRequest in core/providers/gemini) assigned the Bifrost request's ExtraParams map to the outbound request and then deleted the keys they mapped into typed fields (safetySettings, cachedContent, labels; the Imagen parameter set). The map was shared, so the deletes also removed those keys from the Bifrost request. Converters run once per retry and once per fallback attempt on the same request (prepareFallbackRequest copies the struct shallowly, so the Params pointer and its map are shared), so from the second attempt on the request was sent without them. Both the gemini and vertex providers use these converters. #7138 fixed the same aliasing for chat and Responses.\n\nProduction path pinned here: POST /v1/images/generations and /v1/audio/transcriptions with a primary model that does not exist and a single valid fallback. Gemini 404s the primary after conversion already ran, Bifrost re-converts the same request for the fallback, and x-bf-send-back-raw-request echoes the fallback attempt's provider body in extra_fields.raw_request.\n\nCases: (1) gemini/gemini-2.5-flash-image: raw_request of the fallback attempt still carries safetySettings. (2) vertex/gemini-2.5-flash-image: same, plus labels. (3) [EXPECT-4XX] gemini/gemini-2.5-flash transcription with a bogus cached_content: multipart values are strings so cached_content is the only typed key reachable on this route; the fallback attempt must still carry it, which Gemini rejects. Red before the fix (200, the clip is transcribed without the cache ref), green after.\n\nThe two Imagen converters (ToImagenImageGenerationRequest / ToImagenImageEditRequest) are pinned by Go unit tests in core/providers/gemini/images_test.go only: the shared harness profile has no Imagen model.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash-image image generation keeps safetySettings on the fallback attempt after an invalid primary model (/v1/images/generations) - #7826",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pins #7826: the Gemini image converter deleted the ExtraParams keys it mapped into typed",
+                  "// fields (safetySettings / cachedContent / labels) from the *shared* source map, so the second",
+                  "// conversion of the same request - every retry and every fallback attempt - ran without them.",
+                  "// The primary model does not exist, Gemini 404s it, the fallback re-converts the same request.",
+                  "// x-bf-send-back-raw-request echoes the body of the attempt that answered, i.e. the fallback's.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('served by the fallback instead of failing on the primary', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 300)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('routing headers name the fallback, not the primary', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.equal('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index')).to.equal('1');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.equal('gemini-2.5-flash-image');",
+                  "});",
+                  "var body; try { body = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                  "pm.test('returns an image', function () {",
+                  "  var d = body.data;",
+                  "  pm.expect(d, 'no data: ' + txt.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(!!(d[0].url || d[0].b64_json), 'no asset returned').to.be.true;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "pm.test('raw_request of the fallback attempt still carries the mapped extra params', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request was not honored: ' + txt.slice(0, 300)).to.not.be.undefined;",
+                  "  pm.expect(rr, 'raw_request present but null').to.not.be.null;",
+                  "  var asText = typeof rr === 'string' ? rr : JSON.stringify(rr);",
+                  "  pm.expect(asText, 'safetySettings was dropped from the fallback attempt - the primary conversion deleted it from the shared ExtraParams map: ' + asText.slice(0, 400)).to.include('\"safetySettings\"');",
+                  "  pm.expect(asText, 'the safety category did not reach the provider body').to.include('HARM_CATEGORY_DANGEROUS_CONTENT');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-0.0-does-not-exist-image\",\n  \"fallbacks\": [\n    \"gemini/gemini-2.5-flash-image\"\n  ],\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"safetySettings\": [\n    {\n      \"category\": \"HARM_CATEGORY_DANGEROUS_CONTENT\",\n      \"threshold\": \"BLOCK_ONLY_HIGH\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image image generation keeps safetySettings and labels on the fallback attempt after an invalid primary model (/v1/images/generations) - #7826",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pins #7826: the Gemini image converter deleted the ExtraParams keys it mapped into typed",
+                  "// fields (safetySettings / cachedContent / labels) from the *shared* source map, so the second",
+                  "// conversion of the same request - every retry and every fallback attempt - ran without them.",
+                  "// The primary model does not exist, Gemini 404s it, the fallback re-converts the same request.",
+                  "// x-bf-send-back-raw-request echoes the body of the attempt that answered, i.e. the fallback's.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('served by the fallback instead of failing on the primary', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 300)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('routing headers name the fallback, not the primary', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.equal('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index')).to.equal('1');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.equal('gemini-2.5-flash-image');",
+                  "});",
+                  "var body; try { body = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                  "pm.test('returns an image', function () {",
+                  "  var d = body.data;",
+                  "  pm.expect(d, 'no data: ' + txt.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(!!(d[0].url || d[0].b64_json), 'no asset returned').to.be.true;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "pm.test('raw_request of the fallback attempt still carries the mapped extra params', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request was not honored: ' + txt.slice(0, 300)).to.not.be.undefined;",
+                  "  pm.expect(rr, 'raw_request present but null').to.not.be.null;",
+                  "  var asText = typeof rr === 'string' ? rr : JSON.stringify(rr);",
+                  "  pm.expect(asText, 'safetySettings was dropped from the fallback attempt - the primary conversion deleted it from the shared ExtraParams map: ' + asText.slice(0, 400)).to.include('\"safetySettings\"');",
+                  "  pm.expect(asText, 'labels was dropped from the fallback attempt - the primary conversion deleted it from the shared ExtraParams map: ' + asText.slice(0, 400)).to.include('\"labels\"');",
+                  "  pm.expect(asText, 'the safety category did not reach the provider body').to.include('HARM_CATEGORY_DANGEROUS_CONTENT');",
+                  "  pm.expect(asText, 'the label value did not reach the provider body').to.include('extra-params-fallback');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-0.0-does-not-exist-image\",\n  \"fallbacks\": [\n    \"vertex/gemini-2.5-flash-image\"\n  ],\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"safetySettings\": [\n    {\n      \"category\": \"HARM_CATEGORY_DANGEROUS_CONTENT\",\n      \"threshold\": \"BLOCK_ONLY_HIGH\"\n    }\n  ],\n  \"labels\": {\n    \"bifrost-harness\": \"extra-params-fallback\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] gemini/gemini-2.5-flash transcription keeps cached_content on the fallback attempt: the bogus cache ref must reach Gemini and be rejected (/v1/audio/transcriptions) - #7826",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pins #7826 on the transcription converter. Multipart form values are strings, so",
+                  "// cached_content is the only key this route maps into a typed field. A bogus cache ref is",
+                  "// the only way to observe it: when the fallback attempt still carries cachedContent, Gemini",
+                  "// rejects the request (4xx, and Bifrost returns the primary's 404 once every fallback failed).",
+                  "// Before the fix the primary conversion deleted cached_content from the shared ExtraParams",
+                  "// map, the fallback transcribed the clip without it, and the request came back 200.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the fallback attempt still carried cached_content, so Gemini rejected the bogus cache ref', function () {",
+                  "  pm.expect(pm.response.code, 'got ' + pm.response.code + ' - a 2xx means the fallback attempt was sent without cached_content: ' + txt.slice(0, 300)).to.be.within(400, 499);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/gemini-0.0-does-not-exist",
+                  "type": "text"
+                },
+                {
+                  "key": "fallbacks",
+                  "value": "gemini/gemini-2.5-flash",
+                  "type": "text"
+                },
+                {
+                  "key": "cached_content",
+                  "value": "cachedContents/bifrost-harness-does-not-exist",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
