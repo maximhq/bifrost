@@ -36,25 +36,104 @@ func streamErrorStatus(errType string) int {
 	return fasthttp.StatusBadGateway
 }
 
+// anthropicErrorTypes is the set of error.type values Anthropic documents for its
+// error envelope (https://docs.claude.com/en/api/errors).
+var anthropicErrorTypes = map[string]struct{}{
+	"invalid_request_error": {},
+	"authentication_error":  {},
+	"billing_error":         {},
+	"permission_error":      {},
+	"not_found_error":       {},
+	"conflict_error":        {},
+	"request_too_large":     {},
+	"rate_limit_error":      {},
+	"api_error":             {},
+	"timeout_error":         {},
+	"overloaded_error":      {},
+}
+
+// googleStatusToAnthropicErrorType maps the google.rpc.Code names that the Gemini and
+// Vertex providers surface as Error.Type onto Anthropic error types.
+var googleStatusToAnthropicErrorType = map[string]string{
+	"INVALID_ARGUMENT":    "invalid_request_error",
+	"FAILED_PRECONDITION": "invalid_request_error",
+	"OUT_OF_RANGE":        "invalid_request_error",
+	"UNAUTHENTICATED":     "authentication_error",
+	"PERMISSION_DENIED":   "permission_error",
+	"NOT_FOUND":           "not_found_error",
+	"RESOURCE_EXHAUSTED":  "rate_limit_error",
+	"UNAVAILABLE":         "overloaded_error",
+	"DEADLINE_EXCEEDED":   "api_error",
+	"INTERNAL":            "api_error",
+}
+
+// anthropicErrorTypeForStatus derives an Anthropic error type from an HTTP status.
+func anthropicErrorTypeForStatus(status int) string {
+	switch status {
+	case fasthttp.StatusBadRequest, fasthttp.StatusUnprocessableEntity:
+		return "invalid_request_error"
+	case fasthttp.StatusUnauthorized:
+		return "authentication_error"
+	case fasthttp.StatusPaymentRequired:
+		return "billing_error"
+	case fasthttp.StatusForbidden:
+		return "permission_error"
+	case fasthttp.StatusNotFound:
+		return "not_found_error"
+	case fasthttp.StatusConflict:
+		return "conflict_error"
+	case fasthttp.StatusRequestEntityTooLarge:
+		return "request_too_large"
+	case fasthttp.StatusTooManyRequests:
+		return "rate_limit_error"
+	case fasthttp.StatusGatewayTimeout:
+		return "timeout_error"
+	case 529:
+		return "overloaded_error"
+	}
+	if status >= 400 && status < 500 {
+		// Anthropic uses invalid_request_error for 4xx statuses without a dedicated type.
+		return "invalid_request_error"
+	}
+	return "api_error"
+}
+
+// anthropicErrorType picks the error.type for the Anthropic error envelope. Clients
+// branch on this field, so it must be one of Anthropic's documented types and agree
+// with the HTTP status the error is sent with. Bifrost's own wire-level types
+// (request_cancelled, request_timed_out, ...) are kept as-is.
+func anthropicErrorType(bifrostErr *schemas.BifrostError) string {
+	errType := ""
+	if bifrostErr.Error != nil && bifrostErr.Error.Type != nil {
+		errType = *bifrostErr.Error.Type
+	}
+	if _, ok := anthropicErrorTypes[errType]; ok {
+		return errType
+	}
+	if mapped, ok := googleStatusToAnthropicErrorType[errType]; ok {
+		return mapped
+	}
+	switch errType {
+	case schemas.RequestCancelled, schemas.RequestTimedOut, schemas.RequestDropped,
+		schemas.ProviderConnectionFailed, schemas.NoKeySupportsModel:
+		return errType
+	}
+	if bifrostErr.StatusCode != nil || errType == "" {
+		return anthropicErrorTypeForStatus(bifrostErr.EffectiveHTTPStatus())
+	}
+	// Unrecognized type and no status to go on (e.g. a mid-stream provider error).
+	return "api_error"
+}
+
 // ToAnthropicChatCompletionError converts a BifrostError to AnthropicMessageError
 func ToAnthropicChatCompletionError(bifrostErr *schemas.BifrostError) *AnthropicMessageError {
 	if bifrostErr == nil {
 		return nil
 	}
 
-	// Safely extract type and message from nested error
-	errorType := "api_error"
-	message := bifrostErr.GetErrorString()
-	if bifrostErr.Error != nil {
-		if bifrostErr.Error.Type != nil && *bifrostErr.Error.Type != "" {
-			errorType = *bifrostErr.Error.Type
-		}
-	}
-
-	// Handle nested error fields with nil checks
 	errorStruct := AnthropicMessageErrorStruct{
-		Type:    errorType,
-		Message: message,
+		Type:    anthropicErrorType(bifrostErr),
+		Message: bifrostErr.GetErrorString(),
 	}
 
 	return &AnthropicMessageError{

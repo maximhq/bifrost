@@ -10,6 +10,7 @@ import (
 
 func TestToAnthropicChatCompletionError(t *testing.T) {
 	strPtr := func(s string) *string { return &s }
+	intPtr := func(i int) *int { return &i }
 
 	tests := []struct {
 		name         string
@@ -23,8 +24,9 @@ func TestToAnthropicChatCompletionError(t *testing.T) {
 			expectNil: true,
 		},
 		{
-			name: "nil ErrorField.Type defaults to api_error",
+			name: "nil Type on internal error without status is api_error",
 			input: &schemas.BifrostError{
+				IsBifrostError: true,
 				Error: &schemas.ErrorField{
 					Type:    nil,
 					Message: "connection failed",
@@ -33,14 +35,25 @@ func TestToAnthropicChatCompletionError(t *testing.T) {
 			expectedType: "api_error",
 		},
 		{
-			name: "empty string Type defaults to api_error",
+			name: "empty Type on internal error without status is api_error",
 			input: &schemas.BifrostError{
+				IsBifrostError: true,
 				Error: &schemas.ErrorField{
 					Type:    strPtr(""),
-					Message: "rate limited",
+					Message: "boom",
 				},
 			},
 			expectedType: "api_error",
+		},
+		{
+			name:         "nil Error field on internal error is api_error",
+			input:        &schemas.BifrostError{IsBifrostError: true, Error: nil},
+			expectedType: "api_error",
+		},
+		{
+			name:         "nil Error field on non-bifrost error follows its 400 status",
+			input:        &schemas.BifrostError{Error: nil},
+			expectedType: "invalid_request_error",
 		},
 		{
 			name: "valid Type is preserved",
@@ -53,7 +66,15 @@ func TestToAnthropicChatCompletionError(t *testing.T) {
 			expectedType: "rate_limit_error",
 		},
 		{
-			name: "internal Type is preserved",
+			name: "valid Type wins over status",
+			input: &schemas.BifrostError{
+				StatusCode: intPtr(529),
+				Error:      &schemas.ErrorField{Type: strPtr("overloaded_error"), Message: "overloaded"},
+			},
+			expectedType: "overloaded_error",
+		},
+		{
+			name: "bifrost wire Type is preserved",
 			input: &schemas.BifrostError{
 				Error: &schemas.ErrorField{
 					Type:    strPtr("request_cancelled"),
@@ -63,12 +84,81 @@ func TestToAnthropicChatCompletionError(t *testing.T) {
 			expectedType: "request_cancelled",
 		},
 		{
-			name: "nil Error field defaults to api_error",
+			name: "validation error without Type is invalid_request_error",
 			input: &schemas.BifrostError{
-				Error: nil,
+				StatusCode: intPtr(400),
+				Error:      &schemas.ErrorField{Message: "Invalid JSON"},
 			},
+			expectedType: "invalid_request_error",
+		},
+		{
+			name:         "unsupported operation is invalid_request_error",
+			input:        providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, schemas.Ollama),
+			expectedType: "invalid_request_error",
+		},
+		{
+			name: "gRPC INVALID_ARGUMENT maps to invalid_request_error",
+			input: &schemas.BifrostError{
+				StatusCode: intPtr(400),
+				Error:      &schemas.ErrorField{Type: strPtr("INVALID_ARGUMENT"), Message: "bad"},
+			},
+			expectedType: "invalid_request_error",
+		},
+		{
+			name:         "gRPC FAILED_PRECONDITION maps to invalid_request_error",
+			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("FAILED_PRECONDITION")}},
+			expectedType: "invalid_request_error",
+		},
+		{
+			name:         "gRPC UNAUTHENTICATED maps to authentication_error",
+			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("UNAUTHENTICATED")}},
+			expectedType: "authentication_error",
+		},
+		{
+			name:         "gRPC PERMISSION_DENIED maps to permission_error",
+			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("PERMISSION_DENIED")}},
+			expectedType: "permission_error",
+		},
+		{
+			name:         "gRPC NOT_FOUND maps to not_found_error",
+			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("NOT_FOUND")}},
+			expectedType: "not_found_error",
+		},
+		{
+			name:         "gRPC RESOURCE_EXHAUSTED maps to rate_limit_error",
+			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("RESOURCE_EXHAUSTED")}},
+			expectedType: "rate_limit_error",
+		},
+		{
+			name:         "gRPC UNAVAILABLE maps to overloaded_error",
+			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("UNAVAILABLE")}},
+			expectedType: "overloaded_error",
+		},
+		{
+			name:         "gRPC INTERNAL maps to api_error",
+			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("INTERNAL")}},
 			expectedType: "api_error",
 		},
+		{
+			name: "unknown Type falls back to status",
+			input: &schemas.BifrostError{
+				StatusCode: intPtr(403),
+				Error:      &schemas.ErrorField{Type: strPtr("gemini_api_error"), Message: "denied"},
+			},
+			expectedType: "permission_error",
+		},
+		{
+			name:         "unknown Type without status is api_error",
+			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("server_error")}},
+			expectedType: "api_error",
+		},
+		{name: "status 401", input: &schemas.BifrostError{StatusCode: intPtr(401)}, expectedType: "authentication_error"},
+		{name: "status 404", input: &schemas.BifrostError{StatusCode: intPtr(404)}, expectedType: "not_found_error"},
+		{name: "status 413", input: &schemas.BifrostError{StatusCode: intPtr(413)}, expectedType: "request_too_large"},
+		{name: "status 422", input: &schemas.BifrostError{StatusCode: intPtr(422)}, expectedType: "invalid_request_error"},
+		{name: "status 429", input: &schemas.BifrostError{StatusCode: intPtr(429)}, expectedType: "rate_limit_error"},
+		{name: "status 502", input: &schemas.BifrostError{StatusCode: intPtr(502)}, expectedType: "api_error"},
+		{name: "status 529", input: &schemas.BifrostError{StatusCode: intPtr(529)}, expectedType: "overloaded_error"},
 	}
 
 	for _, tt := range tests {
