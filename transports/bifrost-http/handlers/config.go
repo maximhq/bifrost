@@ -1125,15 +1125,18 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// The stored config feeds the bypass gate, the destination check and the password
+	// placeholder below; read it once.
+	existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
+		return
+	}
+
 	// Under the fail-open bypass (dashboard auth disabled/unconfigured), refuse to point the
 	// global proxy somewhere new or to stop verifying its TLS: either lets whoever runs the
 	// proxy read the provider credentials of every proxied request.
 	if isAuthBypassed(ctx) {
-		existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
-		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
-			return
-		}
 		if changed := globalProxyInterceptionChanges(existingConfig, payload); len(changed) > 0 {
 			SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing the global proxy (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
 			return
@@ -1150,6 +1153,20 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 			if payload.URL == "" {
 				SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
 				return
+			}
+			// Every proxied request carries its provider credentials to this host, so the
+			// proxy URL follows the same destination rule as a provider base URL. Private
+			// and loopback hosts stay allowed (a self-hosted egress proxy is the normal
+			// setup); link-local and unspecified addresses never are.
+			// The check resolves the hostname, so it runs only for a new destination: a
+			// changed URL, or the proxy being enabled. Resending the stored URL of an
+			// enabled proxy while editing another field must not depend on DNS.
+			destinationChanged := existingConfig == nil || !existingConfig.Enabled || existingConfig.URL != payload.URL
+			if destinationChanged {
+				if err := bifrost.ValidateExternalURL(payload.URL, true); err != nil {
+					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid proxy URL: %v", err))
+					return
+				}
 			}
 			// Validate timeout if provided
 			if payload.Timeout < 0 {
@@ -1179,11 +1196,6 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 
 	// Handle password - if it's "<redacted>", keep the existing password
 	if payload.Password == "<redacted>" {
-		existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
-		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
-			return
-		}
 		if existingConfig != nil {
 			payload.Password = existingConfig.Password
 		} else {
