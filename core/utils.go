@@ -430,6 +430,12 @@ func restoreProviderResponseHeaders(ctx *schemas.BifrostContext, headers map[str
 //     raw or streamed body instead of marshaling the internal request, route
 //     it to the caller's endpoint path instead of the internal request's own,
 //     and forward the caller's headers on a call the caller doesn't own.
+//   - Inbound-dialect witness: the surface an Anthropic Messages caller sent
+//     natively (their own thinking mode and sampling scalars), recorded at
+//     ingress so the Anthropic egress can rebuild what the neutral request
+//     shape cannot carry. Inherited, it would answer a plugin's own Sonnet 5.5
+//     request with the caller's parameters rather than the ones that request
+//     actually carries.
 //
 // Deliberately not cleared: tracing/observability keys (the sub-request
 // should stay tied to the caller's trace) and
@@ -480,6 +486,18 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+	// Inbound-dialect witness. Written as an explicit nil shadow rather than
+	// with ClearValue: ClearValue only shadows a parent's value through this
+	// context's OWN value map, and NewBifrostContext leaves that map
+	// unallocated until something is written to it, so on a fresh derived
+	// context it is a no-op and Value still reads the caller's witness through
+	// to the parent. PrepareContextForInternalRequest happens to allocate the
+	// map first (it writes the skip-pipeline marker), but this helper is public
+	// and documented to shed on its own -- a plugin whose sub-request should
+	// run the plugin pipeline calls it directly, and that path must shed too.
+	// SetValue allocates the map, and the egress type assertion treats the nil
+	// it parks there as no witness at all.
+	ctx.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, nil)
 }
 
 // PrepareContextForInternalRequest marks ctx as an internal sub-request issued
