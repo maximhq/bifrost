@@ -25,6 +25,14 @@ models:
       description: Token for pagination
       schema:
         type: string
+    - name: tags
+      in: query
+      description: >-
+        Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag
+        are returned. Pagination applies to the filtered list. Not forwarded to providers.
+        An invalid tag is rejected with a 400.
+      schema:
+        type: string
     responses:
       '200':
         description: Successful response

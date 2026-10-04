@@ -47,6 +47,21 @@ func (mc *ModelCatalog) GetModelTags(provider schemas.ModelProvider, model strin
 	return slices.Clone((*index)[provider][model])
 }
 
+// ApplyModelTags sets model.Tags from the overlay, looking the model up by the name in its
+// "provider/model" ID and then by its alias. Tags are owned by the gateway: whatever the field
+// held before (for example something decoded from an upstream list-models body) is replaced.
+func (mc *ModelCatalog) ApplyModelTags(model *schemas.Model) {
+	if model == nil {
+		return
+	}
+	provider, name := schemas.ParseModelString(model.ID, "")
+	tags := mc.GetModelTags(provider, name)
+	if tags == nil && model.Alias != nil {
+		tags = mc.GetModelTags(provider, *model.Alias)
+	}
+	model.Tags = tags
+}
+
 // NewTestCatalogWithConfigStore is NewTestCatalog backed by a config store, so tests in other
 // packages can exercise ReloadModelTags without a full Init (which syncs pricing over the
 // network).

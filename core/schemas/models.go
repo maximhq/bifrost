@@ -187,6 +187,10 @@ type Model struct {
 	// the 24-hour pricing sync.
 	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
 
+	// Tags are operator-assigned labels on the model (for example "prod", "approved-for-pii"),
+	// filled by the gateway from its model tags, never from a provider response.
+	Tags []string `json:"tags,omitempty"`
+
 	OwnedBy          *string  `json:"owned_by,omitempty"`
 	SupportedMethods []string `json:"supported_methods,omitempty"`
 

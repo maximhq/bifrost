@@ -53,3 +53,38 @@ func TestModelTagsOverlay(t *testing.T) {
 	require.Error(t, mc.ReloadModelTags(ctx))
 	assert.Equal(t, []string{"prod"}, mc.GetModelTags(schemas.Anthropic, "claude-sonnet-4-5"), "a failed reload keeps the last good overlay")
 }
+
+func TestApplyModelTags(t *testing.T) {
+	mc := &ModelCatalog{configStore: &fakeModelTagsStore{tags: map[string]map[string][]string{
+		"openai": {"gpt-5.1": {"prod"}, "gpt-5.1-2026-01-01": {"pinned"}},
+	}}}
+	require.NoError(t, mc.ReloadModelTags(context.Background()))
+
+	byID := &schemas.Model{ID: "openai/gpt-5.1", Tags: []string{"from-upstream"}}
+	mc.ApplyModelTags(byID)
+	assert.Equal(t, []string{"prod"}, byID.Tags, "gateway tags replace whatever the field held")
+
+	alias := "gpt-5.1-2026-01-01"
+	byAlias := &schemas.Model{ID: "openai/my-deployment", Alias: &alias}
+	mc.ApplyModelTags(byAlias)
+	assert.Equal(t, []string{"pinned"}, byAlias.Tags, "the alias is the fallback lookup")
+
+	untagged := &schemas.Model{ID: "openai/o3", Tags: []string{"from-upstream"}}
+	mc.ApplyModelTags(untagged)
+	assert.Nil(t, untagged.Tags)
+
+	var nilCatalog *ModelCatalog
+	cleared := &schemas.Model{ID: "openai/gpt-5.1", Tags: []string{"from-upstream"}}
+	nilCatalog.ApplyModelTags(cleared)
+	assert.Nil(t, cleared.Tags, "without a catalog a model carries no tags")
+	nilCatalog.ApplyModelTags(nil)
+}
+
+func TestGetModelInfoIncludesTags(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	mc.configStore = &fakeModelTagsStore{tags: map[string]map[string][]string{"anthropic": {"claude-opus-5": {"prod"}}}}
+	require.NoError(t, mc.ReloadModelTags(context.Background()))
+	info := mc.GetModelInfo(schemas.Anthropic, "claude-opus-5")
+	require.NotNil(t, info)
+	assert.Equal(t, []string{"prod"}, info.Tags)
+}

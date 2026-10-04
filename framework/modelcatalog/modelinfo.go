@@ -39,6 +39,7 @@ func (mc *ModelCatalog) GetModelInfo(provider schemas.ModelProvider, model strin
 	if params := mc.datasheet.GetSupportedParameters(model); len(params) > 0 {
 		info.SupportedParameters = params
 	}
+	info.Tags = mc.GetModelTags(provider, model)
 	return info
 }
 

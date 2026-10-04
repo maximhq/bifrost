@@ -62,6 +62,13 @@ Model:
       type: array
       items:
         type: string
+    tags:
+      type: array
+      description: >-
+        Operator-assigned tags on the model (see PUT /api/models/tags). Omitted when the model
+        has none. Never taken from the provider's response.
+      items:
+        type: string
 
 Architecture:
   type: object

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -24,6 +25,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -952,10 +954,17 @@ func (h *CompletionHandler) applyListModelsProviderFilter(bifrostCtx *schemas.Bi
 }
 
 // listModels handles GET /v1/models - Process list models requests
-// If provider is not specified, lists all models from all configured providers
+// If provider is not specified, lists all models from all configured providers.
+// tags=a,b keeps only models carrying every listed tag; it is handled here and not
+// forwarded to providers.
 func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
+	tagFilters, err := parseTagsFilter(ctx.QueryArgs())
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
@@ -984,12 +993,19 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		PageSize:  pageSize,
 		PageToken: pageToken,
 	}
+	// Pages must be cut after the tag filter, or a page could come back short or empty while
+	// matching models exist further on. So a filtered listing is fetched whole and paginated
+	// below, once the non-matching models are gone.
+	if len(tagFilters) > 0 {
+		bifrostListModelsReq.PageSize = 0
+		bifrostListModelsReq.PageToken = ""
+	}
 
 	// Pass-through unknown query params for provider-specific features
 	extraParams := map[string]interface{}{}
 	for k, v := range ctx.QueryArgs().All() {
 		s := string(k)
-		if s != "provider" && s != "page_size" && s != "page_token" {
+		if s != "provider" && s != "page_size" && s != "page_token" && s != "tags" {
 			extraParams[s] = string(v)
 		}
 	}
@@ -1015,6 +1031,10 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	enrichListModelsResponse(resp, h.config.ModelCatalog)
+	if resp != nil && len(tagFilters) > 0 {
+		resp.Data = slices.DeleteFunc(resp.Data, func(m schemas.Model) bool { return !tables.HasAllTags(m.Tags, tagFilters) })
+		resp = resp.ApplyPagination(pageSize, pageToken)
+	}
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
@@ -1072,7 +1092,11 @@ func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
 // enrichModelRetrieveResponse applies the same catalog metadata list models applies,
 // so one model reads the same either way.
 func enrichModelRetrieveResponse(resp *schemas.BifrostModelRetrieveResponse, catalog *modelcatalog.ModelCatalog) {
-	if resp == nil || catalog == nil {
+	if resp == nil {
+		return
+	}
+	catalog.ApplyModelTags(&resp.Model)
+	if catalog == nil {
 		return
 	}
 
@@ -1087,6 +1111,12 @@ func enrichModelRetrieveResponse(resp *schemas.BifrostModelRetrieveResponse, cat
 func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {
 	if resp == nil || len(resp.Data) == 0 {
 		return
+	}
+
+	// Tags are applied even without a catalog (nil-safe), so a model never carries
+	// anything but gateway-assigned tags.
+	for i := range resp.Data {
+		catalog.ApplyModelTags(&resp.Data[i])
 	}
 
 	if catalog == nil {
