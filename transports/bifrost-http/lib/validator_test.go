@@ -1562,6 +1562,128 @@ func TestValidateConfigSchema_VertexKeyConfig_MissingRegion(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity(t *testing.T) {
+	// A federation block with only an audience is the minimal valid shape.
+	validConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"aws_workload_identity": {
+								"audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/eks/providers/aws",
+								"service_account_email": "vertex@my-gcp-project.iam.gserviceaccount.com",
+								"token_lifetime_seconds": 1800,
+								"aws_region": "us-east-1",
+								"aws_role_arn": "env.VERTEX_AWS_ROLE_ARN"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected Vertex key with aws_workload_identity to pass validation, got: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity_MissingAudience(t *testing.T) {
+	invalidConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"aws_workload_identity": {
+								"service_account_email": "vertex@my-gcp-project.iam.gserviceaccount.com"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Error("expected aws_workload_identity without 'audience' to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity_UnknownField(t *testing.T) {
+	invalidConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"aws_workload_identity": {
+								"audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/eks/providers/aws",
+								"pool_id": "eks"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Error("expected unknown field inside aws_workload_identity to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity_ExcludesAuthCredentials(t *testing.T) {
+	// Federation and a credentials JSON are two different identities; the schema must refuse both at once.
+	invalidConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"auth_credentials": "{\"type\":\"service_account\"}",
+							"aws_workload_identity": {
+								"audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/eks/providers/aws"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Error("expected auth_credentials alongside aws_workload_identity to fail validation")
+	}
+
+	// An empty auth_credentials string, as written by the UI when it clears the JSON tab, is fine.
+	emptyCredentials := strings.Replace(invalidConfig, `"auth_credentials": "{\"type\":\"service_account\"}"`, `"auth_credentials": ""`, 1)
+	if err := ValidateConfigSchema([]byte(emptyCredentials), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected empty auth_credentials alongside aws_workload_identity to pass validation, got: %v", err)
+	}
+}
+
 // =============================================================================
 // Bedrock Key Config Required Fields Tests
 // Note: Bedrock provider uses a special key schema that extends base_key
@@ -1920,6 +2042,31 @@ func TestSchemaLogsStoreWriterConfig(t *testing.T) {
 				t.Fatal("config should be invalid")
 			}
 		})
+	}
+}
+
+// TestSchemaPostgresSessionTimeouts pins that both Postgres stores accept the
+// runtime-pool session timeouts postgresconn.Config reads (statement_timeout,
+// idle_in_transaction_session_timeout) with every value time.ParseDuration takes
+// there, including the documented "0" and negative values that keep the server
+// default, and still reject values it would refuse at startup.
+func TestSchemaPostgresSessionTimeouts(t *testing.T) {
+	compiled := compileSchema(t)
+	for _, store := range []string{"config_store", "logs_store"} {
+		for _, field := range []string{"statement_timeout", "idle_in_transaction_session_timeout"} {
+			for _, value := range []string{"30s", "60s", "1m30s", "1.5s", "0", "-1s", "+1s"} {
+				config := postgresStoreConfig(store, fmt.Sprintf(`"password": "secret", %q: %q`, field, value))
+				if err := validateConfig(t, compiled, config); err != nil {
+					t.Errorf("%s.config.%s = %q should be valid, got: %v", store, field, value, err)
+				}
+			}
+			for _, value := range []string{"30", "abc", "", "5 s"} {
+				config := postgresStoreConfig(store, fmt.Sprintf(`"password": "secret", %q: %q`, field, value))
+				if err := validateConfig(t, compiled, config); err == nil {
+					t.Errorf("%s.config.%s = %q should be rejected", store, field, value)
+				}
+			}
+		}
 	}
 }
 
@@ -3631,6 +3778,38 @@ func TestSchemaVirtualMCPByName(t *testing.T) {
 			}
 			if !tc.valid && err == nil {
 				t.Error("expected rejection")
+			}
+		})
+	}
+}
+
+// TestValidateConfigSchema_IssuerURLRequiredForDiscovery pins the schema's own
+// statement of the load-time invariant: enabling OAuth discovery without a
+// pinned issuer_url is rejected by the schema, not only by validateClientConfig.
+func TestValidateConfigSchema_IssuerURLRequiredForDiscovery(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	t.Setenv(ConfigSchemaURLEnv, schemaPath)
+
+	for _, tc := range []struct {
+		name    string
+		config  string
+		wantErr bool
+	}{
+		{"oauth without issuer_url", `{"client":{"mcp_server_auth_mode":"oauth"}}`, true},
+		{"both without issuer_url", `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{}}}`, true},
+		{"oauth with issuer_url", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://issuer.example.com"}}}`, false},
+		{"headers without issuer_url", `{"client":{"mcp_server_auth_mode":"headers"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(tc.config))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to reject discovery without issuer_url")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected config to pass schema validation, got: %v", err)
 			}
 		})
 	}

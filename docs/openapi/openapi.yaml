@@ -160,6 +160,8 @@ tags:
     description: Webhook endpoint management and signed async-job delivery history
   - name: Notifications
     description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
+  - name: Background Jobs
+    description: Status, progress and cancellation of durable background jobs (cost recalculation, Warp log indexing, and others)
   - name: Warp
     description: Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry
 
@@ -1327,6 +1329,12 @@ paths:
   /api/notifications:
     $ref: "./paths/management/notifications.yaml#/notifications"
 
+  # Background jobs
+  /api/sidekiq/jobs:
+    $ref: "./paths/management/sidekiq.yaml#/sidekiq-jobs"
+  /api/sidekiq/jobs/{id}/cancel:
+    $ref: "./paths/management/sidekiq.yaml#/sidekiq-job-cancel"
+
   # Warp
   /api/warp/config:
     $ref: "./paths/management/warp.yaml#/warp-config"
@@ -2091,6 +2099,17 @@ components:
       $ref: "./schemas/management/notifications.yaml#/Notification"
     NotificationList:
       $ref: "./schemas/management/notifications.yaml#/NotificationList"
+    # Background jobs
+    SidekiqJobStatus:
+      $ref: "./schemas/management/sidekiq.yaml#/SidekiqJobStatus"
+    SidekiqJobProgress:
+      $ref: "./schemas/management/sidekiq.yaml#/SidekiqJobProgress"
+    SidekiqJob:
+      $ref: "./schemas/management/sidekiq.yaml#/SidekiqJob"
+    SidekiqJobList:
+      $ref: "./schemas/management/sidekiq.yaml#/SidekiqJobList"
+    SidekiqJobCancelResponse:
+      $ref: "./schemas/management/sidekiq.yaml#/SidekiqJobCancelResponse"
     # Warp
     WarpModel:
       $ref: "./schemas/management/warp.yaml#/WarpModel"

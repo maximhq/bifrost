@@ -44,7 +44,7 @@ Before configuring overrides, Bifrost needs a pricing catalog to work from. By d
 }
 ```
 
-`file://` URLs are also supported for loading datasheets from the local filesystem:
+`file://` URLs are also supported in `config.json` for loading datasheets from the local filesystem (the Web UI and `PUT /api/config` accept `http(s)://` URLs only):
 
 ```json
 "pricing_url": "file:///opt/bifrost/pricing.json"
@@ -52,8 +52,8 @@ Before configuring overrides, Bifrost needs a pricing catalog to work from. By d
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `pricing_url` | string (URI) | No | built-in | URL of the pricing datasheet. Supports `http://`, `https://`, and `file://` |
-| `model_parameters_url` | string (URI) | No | built-in | URL of the model parameters datasheet. Supports `http://`, `https://`, and `file://` |
+| `pricing_url` | string (URI) | No | built-in | URL of the pricing datasheet. Supports `http://`, `https://`, and (in `config.json` only) `file://` |
+| `model_parameters_url` | string (URI) | No | built-in | URL of the model parameters datasheet. Supports `http://`, `https://`, and (in `config.json` only) `file://` |
 | `pricing_sync_interval` | integer | No | `86400` | Sync interval in seconds. Minimum `3600` (1 hour) |
 
 </Tab>
@@ -308,6 +308,8 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `output_cost_per_token_batches` | Output token cost for batch requests |
 | `input_cost_per_token_priority` | Input token cost for priority requests |
 | `output_cost_per_token_priority` | Output token cost for priority requests |
+| `input_cost_per_token_ultrafast` | Input token cost for ultrafast requests |
+| `output_cost_per_token_ultrafast` | Output token cost for ultrafast requests |
 | `input_cost_per_token_flex` | Input token cost for flex requests |
 | `output_cost_per_token_flex` | Output token cost for flex requests |
 | `input_cost_per_token_fast` | Input token cost for fast-mode requests (flat across the full context window - no tiering) |
@@ -330,6 +332,8 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `output_cost_per_token_above_272k_tokens` | Output cost above 272k context |
 | `output_cost_per_token_above_272k_tokens_priority` | Output cost above 272k context for priority requests |
 | `output_cost_per_token_flex_above_272k_tokens` | Output cost above 272k context for flex requests |
+| `input_cost_per_token_above_272k_tokens_ultrafast` | Input cost above 272k context for ultrafast requests |
+| `output_cost_per_token_above_272k_tokens_ultrafast` | Output cost above 272k context for ultrafast requests |
 | `input_cost_per_image_above_128k_tokens` | Input cost per image above 128k context |
 
 ### Cache costs
@@ -342,10 +346,12 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `cache_read_input_token_cost_above_200k_tokens` | Cache read above 200k context |
 | `cache_read_input_token_cost_above_200k_tokens_priority` | Cache read above 200k context for priority requests |
 | `cache_read_input_token_cost_priority` | Priority cache read cost |
+| `cache_read_input_token_cost_ultrafast` | Ultrafast cache read cost |
 | `cache_read_input_token_cost_flex` | Flex cache read cost |
 | `cache_read_input_token_cost_above_272k_tokens` | Cache read above 272k context |
 | `cache_read_input_token_cost_above_272k_tokens_priority` | Cache read above 272k context for priority requests |
 | `cache_read_input_token_cost_flex_above_272k_tokens` | Cache read above 272k context for flex requests |
+| `cache_read_input_token_cost_above_272k_tokens_ultrafast` | Cache read above 272k context for ultrafast requests |
 | `cache_read_input_image_token_cost` | Cache read cost for image tokens |
 | `cache_creation_input_audio_token_cost` | Cache creation cost for audio tokens |
 | `cache_creation_input_token_cost_above_1hr` | Cache creation cost for 1hr+ TTL entries |
@@ -354,6 +360,9 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `cache_creation_input_token_cost_flex` | Flex cache creation cost |
 | `cache_creation_input_token_cost_flex_above_272k_tokens` | Cache creation above 272k context for flex requests |
 | `cache_creation_input_token_cost_priority` | Priority cache creation cost |
+| `cache_creation_input_token_cost_above_272k_tokens_priority` | Cache creation above 272k context for priority (OpenAI Fast mode) requests |
+| `cache_creation_input_token_cost_ultrafast` | Ultrafast cache creation cost |
+| `cache_creation_input_token_cost_above_272k_tokens_ultrafast` | Cache creation above 272k context for ultrafast requests |
 | `cache_creation_input_token_cost_fast` | Cache creation cost for fast-mode requests (flat across the full context window - no tiering) |
 | `cache_creation_input_token_cost_above_1hr_fast` | Cache creation cost for fast-mode requests with 1hr+ TTL entries |
 | `cache_read_input_token_cost_fast` | Cache read cost for fast-mode requests (flat across the full context window - no tiering) |

@@ -3,6 +3,8 @@ package modelcatalog
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -231,4 +233,17 @@ func TestWithRetries_TableDriven(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFetchMCPLibraryRefusesRedirectToLinkLocal: a reachable catalog host that
+// redirects to the cloud metadata address must be refused at the redirect hop.
+func TestFetchMCPLibraryRefusesRedirectToLinkLocal(t *testing.T) {
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	_, err := fetchMCPLibrary(context.Background(), redirect.URL)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "link-local")
 }

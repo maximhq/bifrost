@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -129,6 +130,16 @@ func EmbeddingContentToGeminiContent(content schemas.EmbeddingContent, allowedUR
 	return &Content{Parts: parts}, nil
 }
 
+// geminiPerEntryEmbeddingExtraKeys are Gemini-native extra params that belong on an
+// individual requests[] entry of :batchEmbedContents. applyGeminiEmbeddingParams lifts
+// them onto the entry, and ToGeminiEmbeddingRequest strips them from the batch-level
+// extra params so they are never merged at the top level, where Gemini rejects them.
+var geminiPerEntryEmbeddingExtraKeys = []string{"taskType", "title", "documentOcr", "audioTrackExtraction"}
+
+// applyGeminiEmbeddingParams copies the embedding parameters onto one requests[] entry.
+// The first-class task_type/title fields win; the Gemini-native "taskType"/"title"
+// extra params are honoured as aliases so a request-level value fans out to every entry
+// (issue #7812).
 func applyGeminiEmbeddingParams(req *GeminiEmbeddingRequest, params *schemas.EmbeddingParameters) {
 	if params == nil {
 		return
@@ -139,6 +150,18 @@ func applyGeminiEmbeddingParams(req *GeminiEmbeddingRequest, params *schemas.Emb
 
 	if params.ExtraParams != nil {
 		req.ExtraParams = params.ExtraParams
+		if taskType, ok := schemas.SafeExtractStringPointer(params.ExtraParams["taskType"]); ok {
+			delete(req.ExtraParams, "taskType")
+			if req.TaskType == nil {
+				req.TaskType = taskType
+			}
+		}
+		if title, ok := schemas.SafeExtractStringPointer(params.ExtraParams["title"]); ok {
+			delete(req.ExtraParams, "title")
+			if req.Title == nil {
+				req.Title = title
+			}
+		}
 		if documentOCR, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["documentOcr"]); ok {
 			delete(req.ExtraParams, "documentOcr")
 			req.DocumentOCR = documentOCR
@@ -161,8 +184,13 @@ func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Gem
 	batchRequest := &GeminiBatchEmbeddingRequest{
 		Requests: make([]GeminiEmbeddingRequest, 0, len(bifrostReq.Input)),
 	}
-	if bifrostReq.Params != nil {
-		batchRequest.ExtraParams = bifrostReq.Params.ExtraParams
+	if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
+		// Clone so per-entry keys can be stripped without mutating the caller's map;
+		// they are applied per entry below and must not surface at the batch top level.
+		batchRequest.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
+		for _, key := range geminiPerEntryEmbeddingExtraKeys {
+			delete(batchRequest.ExtraParams, key)
+		}
 	}
 	for _, item := range bifrostReq.Input {
 		content, err := EmbeddingContentToGeminiContent(item.Content)

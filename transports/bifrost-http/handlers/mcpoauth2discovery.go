@@ -65,6 +65,12 @@ func (h *OAuth2DiscoveryHandler) handlePRM(ctx *fasthttp.RequestCtx) {
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		return
 	}
+	// Defense in depth: a shared cache (CDN/reverse proxy) must never store
+	// this document. issuer_url is now mandatory whenever discovery is
+	// enabled (validateClientConfig), so the response no longer varies by
+	// Host, but this still guards against any future regression that
+	// reintroduces per-request derivation.
+	ctx.Response.Header.Set("Cache-Control", "no-store")
 
 	base := oauth2IssuerURL(ctx, h.store)
 	doc := map[string]any{
@@ -89,6 +95,8 @@ func (h *OAuth2DiscoveryHandler) handleASMetadata(ctx *fasthttp.RequestCtx) {
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		return
 	}
+	// Defense in depth: see the matching comment in handlePRM.
+	ctx.Response.Header.Set("Cache-Control", "no-store")
 
 	base := oauth2IssuerURL(ctx, h.store)
 	doc := map[string]any{
@@ -120,6 +128,8 @@ func (h *OAuth2DiscoveryHandler) handleJWKS(ctx *fasthttp.RequestCtx) {
 		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		return
 	}
+	// Defense in depth: see the matching comment in handlePRM.
+	ctx.Response.Header.Set("Cache-Control", "no-store")
 
 	if h.store.ConfigStore == nil {
 		ctx.SetContentType("application/json")

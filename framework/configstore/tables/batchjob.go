@@ -41,7 +41,7 @@ type TableProviderJob struct {
 	ID string `gorm:"primaryKey;type:varchar(512)" json:"id"`
 	// Kind discriminates the job family. Rows written before the column existed
 	// default to batch, which is what every one of them was.
-	Kind     string `gorm:"type:varchar(50);not null;default:'batch';uniqueIndex:idx_batch_jobs_identity_v2,priority:2;index:idx_batch_jobs_sweeper_v2,priority:1" json:"kind"`
+	Kind     string `gorm:"type:varchar(50);not null;default:'batch';uniqueIndex:idx_batch_jobs_identity_v2,priority:2;index:idx_batch_jobs_sweeper_v2,priority:1;index:idx_batch_jobs_due,priority:1,where:next_check_at IS NOT NULL" json:"kind"`
 	Provider string `gorm:"type:varchar(255);uniqueIndex:idx_batch_jobs_identity_v2,priority:1;index:idx_batch_jobs_sweeper_v2,priority:2;not null" json:"provider"`
 	// JobID is the provider-side identifier: a batch id, a video id. The column is
 	// still named batch_id — renaming it would break old pods mid-rolling-deploy
@@ -62,7 +62,7 @@ type TableProviderJob struct {
 	ErrorFileID    *string `gorm:"type:varchar(255)" json:"error_file_id,omitempty"`
 	ResultsURL     *string `gorm:"type:text" json:"results_url,omitempty"`
 
-	NextCheckAt      *time.Time `gorm:"index:idx_batch_jobs_sweeper_v2,priority:4" json:"next_check_at,omitempty"`
+	NextCheckAt      *time.Time `gorm:"index:idx_batch_jobs_sweeper_v2,priority:4;index:idx_batch_jobs_due,priority:2,where:next_check_at IS NOT NULL" json:"next_check_at,omitempty"`
 	PollAttempts     int        `gorm:"default:0" json:"poll_attempts"`
 	AccountingStatus string     `gorm:"type:varchar(50);index:idx_batch_jobs_sweeper_v2,priority:3;not null" json:"accounting_status"`
 

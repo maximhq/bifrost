@@ -1780,13 +1780,19 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v2.2.4",
-              "changelogs/v2.2.3",
-              "changelogs/v2.2.2",
-              "changelogs/v2.2.1",
-              "changelogs/v2.2.0",
-              "changelogs/v2.1.1",
-              "changelogs/v2.1.0",
+              "changelogs/v2.2.5",
+              {
+                "group": "September 2026",
+                "pages": [
+                  "changelogs/v2.2.4",
+                  "changelogs/v2.2.3",
+                  "changelogs/v2.2.2",
+                  "changelogs/v2.2.1",
+                  "changelogs/v2.2.0",
+                  "changelogs/v2.1.1",
+                  "changelogs/v2.1.0"
+                ]
+              },
               {
                 "group": "August 2026",
                 "pages": [
@@ -2001,14 +2007,20 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
-              "changelogs/ent-v2.2.4",
-              "changelogs/ent-v2.2.3",
-              "changelogs/ent-v2.2.2",
-              "changelogs/ent-v2.2.1",
-              "changelogs/ent-v2.2.0",
-              "changelogs/ent-v2.1.1",
-              "changelogs/ent-v2.1.0",
-              "changelogs/ent-v2.0.1",
+              "changelogs/ent-v2.2.5",
+              {
+                "group": "September 2026",
+                "pages": [
+                  "changelogs/ent-v2.2.4",
+                  "changelogs/ent-v2.2.3",
+                  "changelogs/ent-v2.2.2",
+                  "changelogs/ent-v2.2.1",
+                  "changelogs/ent-v2.2.0",
+                  "changelogs/ent-v2.1.1",
+                  "changelogs/ent-v2.1.0",
+                  "changelogs/ent-v2.0.1"
+                ]
+              },
               {
                 "group": "August 2026",
                 "pages": [
@@ -2099,11 +2111,17 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
-              "changelogs/edge-v0.9.1",
-              "changelogs/edge-v0.9.0",
-              "changelogs/edge-v0.8.0",
-              "changelogs/edge-v0.7.0",
-              "changelogs/edge-v0.6.0",
+              "changelogs/edge-v0.9.2",
+              {
+                "group": "September 2026",
+                "pages": [
+                  "changelogs/edge-v0.9.1",
+                  "changelogs/edge-v0.9.0",
+                  "changelogs/edge-v0.8.0",
+                  "changelogs/edge-v0.7.0",
+                  "changelogs/edge-v0.6.0"
+                ]
+              },
               {
                 "group": "August 2026",
                 "pages": ["changelogs/edge-v0.5.6", "changelogs/edge-v0.4.0"]
@@ -2142,6 +2160,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.45",
               "changelogs/helm-v2.1.44",
               "changelogs/helm-v2.1.43",
               "changelogs/helm-v2.1.42",

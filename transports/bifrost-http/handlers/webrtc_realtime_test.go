@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	"github.com/pion/webrtc/v4"
 	"github.com/valyala/fasthttp"
 )
 
@@ -553,5 +555,49 @@ func TestApplyRealtimeEphemeralKeyMapping_RestoresVirtualKeyAndKeyID(t *testing.
 	}
 	if got := bifrostCtx.Value(schemas.BifrostContextKeyAPIKeyID); got != "key_123" {
 		t.Fatalf("api key id context = %#v, want %q", got, "key_123")
+	}
+}
+
+// malformedSimulcastOffer is a syntactically valid offer whose simulcast
+// attribute carries an empty rid segment (`send ;`). Older pion releases
+// indexed the empty segment and panicked inside SetRemoteDescription.
+const malformedSimulcastOffer = "v=0\r\n" +
+	"o=- 0 0 IN IP4 127.0.0.1\r\n" +
+	"s=-\r\n" +
+	"t=0 0\r\n" +
+	"a=group:BUNDLE 0\r\n" +
+	"a=msid-semantic: WMS\r\n" +
+	"m=audio 9 UDP/TLS/RTP/SAVPF 0\r\n" +
+	"c=IN IP4 0.0.0.0\r\n" +
+	"a=rtcp:9 IN IP4 0.0.0.0\r\n" +
+	"a=ice-ufrag:AAAA\r\n" +
+	"a=ice-pwd:AAAAAAAAAAAAAAAAAAAAAA\r\n" +
+	"a=fingerprint:sha-256 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\r\n" +
+	"a=setup:actpass\r\n" +
+	"a=mid:0\r\n" +
+	"a=sendrecv\r\n" +
+	"a=rtpmap:0 PCMU/8000\r\n" +
+	"a=simulcast:send ;\r\n"
+
+func TestSetRemoteDescription_MalformedSimulcastOfferDoesNotPanic(t *testing.T) {
+	pc, err := newRealtimePeerConnection()
+	if err != nil {
+		t.Fatalf("new peer connection: %v", err)
+	}
+	defer pc.Close()
+
+	// Must return (error or nil), never unwind the goroutine.
+	_ = setRemoteDescription(pc, webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: malformedSimulcastOffer})
+}
+
+func TestSetRemoteDescription_RecoversParserPanicAsError(t *testing.T) {
+	// A nil peer connection panics inside pion before any parsing; the wrapper
+	// must surface that as an error for the one request.
+	err := setRemoteDescription(nil, webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: "v=0\r\n"})
+	if err == nil {
+		t.Fatal("expected a recovered panic to surface as an error")
+	}
+	if !strings.Contains(err.Error(), "sdp rejected") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
