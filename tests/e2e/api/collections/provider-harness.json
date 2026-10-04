@@ -187529,6 +187529,1157 @@
           ]
         }
       ]
+    },
+    {
+      "name": "143. Mistral content arrays return text or explicit streaming errors (#7906) (mistral-content-array)",
+      "description": "Deterministic, free fixture pin for #7906. A local SSE upstream emits original Mistral delta.content arrays through the real native provider parser. Three routes complete homogeneous text arrays; thinking, mixed and reference arrays terminate with a structured error instead of being dropped. Uses real dashboard login, a fresh app profile with no preexisting Mistral, an owned native provider with a dummy key, upstream wire witness and cleanup. Mistral is not a supported custom-provider base in this revision, so no allowlist changes or bypass mocker plugin are used. Same-host fixture started by run-mistral-content-array-fixture.mjs; scoped INCLUDE_PREVIEW=1 PARALLEL=0 only. User-run live harness; complete preparation below.\n\nUser-run setup (Linux/WSL Bash, repo root; Node, Go, jq, curl, docker, nc and lsof):\n1. Start the profile backing service: docker compose -f tests/docker-compose.yml up -d weaviate. Wait for curl -sf http://localhost:9000/v1/.well-known/ready and nc -z localhost 50051 to succeed. Check lsof -nP -iTCP:3021 -sTCP:LISTEN prints no listener; use another free port consistently if occupied.\n2. Make a fresh isolated profile (never run this on an existing app directory):\nmkdir -p tmp\nTASK_MISTRAL_APP_DIR=$(mktemp -d \"$PWD/tmp/mistral-content-array.XXXXXX\")\ngit show HEAD:tests/integrations/python/config.json | jq --arg db \"$TASK_MISTRAL_APP_DIR/config.db\" --arg logs \"$TASK_MISTRAL_APP_DIR/logs.db\" '.providers={} | .governance.routing_rules=[] | .governance.virtual_keys=[] | .governance.auth_config={\"is_enabled\":true,\"admin_username\":\"mistral_array_harness\",\"admin_password\":\"harness-only-password\"} | .config_store.config.path=$db | .logs_store.config.path=$logs | .mcp.client_configs=[] | .client.oauth2_server_config.issuer_url=\"http://localhost:3021\"' > \"$TASK_MISTRAL_APP_DIR/config.json\"\nprintf '%s\\n' \"$TASK_MISTRAL_APP_DIR\" > tmp/mistral-content-array-app-dir\n3. In a separate terminal, start only the same-host fixture (ENV_FILE must not already exist; choose another path for concurrent runs):\nnode tests/e2e/api/runners/run-mistral-content-array-fixture.mjs --env-out tmp/mistral-content-array.env.json\n4. Start the gateway from the reviewed source in another terminal:\nmake dev PORT=3021 APP_DIR=$(cat tmp/mistral-content-array-app-dir)\n5. After /health answers, obtain a disposable bootstrap session for the Makefile's authenticated raw-override preflight (do not print its token):\nTASK_MISTRAL_BOOTSTRAP_TOKEN=$(curl -fsS -c - -o /dev/null -H 'Content-Type: application/json' --data '{\"username\":\"mistral_array_harness\",\"password\":\"harness-only-password\"}' http://localhost:3021/api/session/login | awk '$6==\"token\" {print $7}')\ntest -n \"$TASK_MISTRAL_BOOTSTRAP_TOKEN\" && export BIFROST_E2E_AUTH_HEADER=\"Bearer $TASK_MISTRAL_BOOTSTRAP_TOKEN\"\n6. Run the full owned setup/wire/cleanup chain in one Newman process:\nmake run-provider-harness-test PROVIDER=mistral FEATURE=\"mistral-content-array\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 ENV_FILE=tmp/mistral-content-array.env.json BASE_URL=http://localhost:3021\n7. The collection removes its provider/key, witness and login session. Invalidate the separate bootstrap session after the run, then stop the two foreground servers:\ncurl -fsS -X POST -H \"Authorization: $BIFROST_E2E_AUTH_HEADER\" http://localhost:3021/api/session/logout >/dev/null\nunset BIFROST_E2E_AUTH_HEADER TASK_MISTRAL_BOOTSTRAP_TOKEN\nThe submitted rows are structurally validated; live execution belongs to the user. These six calls reach only the local fixture, with a dummy key; no real provider credential is needed.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture local fixture identity - mistral-content-array - #7906",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{mistralArrayMockBaseUrl}}/__health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('local fixture returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('correct deterministic upstream is running', function () {",
+                  "  pm.expect(pm.response.json()).to.deep.equal({fixture: 'mistral-content-array-7906', version: 1});",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture login to isolated dashboard - mistral-content-array - #7906",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/session/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\":\"{{mistralArrayUsername}}\",\"password\":\"{{mistralArrayPassword}}\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('mistralArrayToken');",
+                  "pm.collectionVariables.unset('mistralArrayNativeAbsent');",
+                  "pm.collectionVariables.unset('mistralArrayProviderCreated');",
+                  "pm.collectionVariables.unset('mistralArrayKeyReady');\npm.collectionVariables.unset('mistralArrayProviderDeleted');",
+                  "pm.collectionVariables.set('mistralArrayNonce', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('real dashboard login issues a token', function () {",
+                  "  pm.expect(pm.response.json().message, pm.response.text()).to.equal('Login successful');",
+                  "  var token = String(pm.response.headers.get('Set-Cookie') || '').match(/(?:^|;\\s*)token=([^;]+)/);",
+                  "  pm.expect(token, 'login must issue a real session cookie').not.to.equal(null);",
+                  "  pm.collectionVariables.set('mistralArrayToken', token[1]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture confirm native provider is absent - mistral-content-array - #7906",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mistralArrayToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider precondition returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('fresh profile has no existing Mistral to overwrite', function () {",
+                  "  var matches = pm.response.json().providers.filter(function (p) { return p.name === 'mistral'; });",
+                  "  pm.expect(matches, 'Use the documented fresh app profile; never overwrite an existing provider').to.have.lengthOf(0);",
+                  "  pm.collectionVariables.set('mistralArrayNativeAbsent', '1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture create owned native local provider - mistral-content-array - #7906",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mistralArrayToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"mistral\",\"network_config\":{\"base_url\":\"{{mistralArrayMockBaseUrl}}\",\"allow_private_network\":true,\"max_retries\":0},\"concurrency_and_buffer_size\":{\"concurrency\":2,\"buffer_size\":10},\"send_back_raw_response\":true}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('mistralArrayNativeAbsent');",
+                  "pm.test('prerequisite mistralArrayNativeAbsent exists', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native provider create returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('native provider points at the actual SSE fixture', function () {",
+                  "  var row = pm.response.json();",
+                  "  pm.expect(row.name, pm.response.text()).to.equal('mistral');",
+                  "  pm.expect(row.provider_status, pm.response.text()).to.equal('active');",
+                  "  pm.expect(row.network_config.base_url).to.equal(pm.variables.get('mistralArrayMockBaseUrl'));",
+                  "  pm.expect(row.network_config.allow_private_network).to.equal(true);",
+                  "  pm.collectionVariables.set('mistralArrayProviderCreated', '1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture add dummy fixture key - mistral-content-array - #7906",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mistralArrayToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/mistral/keys",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"mistral-array-harness-{{mistralArrayNonce}}\",\"value\":\"mistral-array-fixture-key\",\"models\":[\"mistral-array-fixture\"],\"weight\":1}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('mistralArrayProviderCreated');",
+                  "pm.test('prerequisite mistralArrayProviderCreated exists', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('dummy key create returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('fixture key is registered without a real credential', function () {",
+                  "  var key = pm.response.json();",
+                  "  pm.expect(key.name, pm.response.text()).to.equal('mistral-array-harness-' + pm.collectionVariables.get('mistralArrayNonce'));",
+                  "  pm.expect(key.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('mistralArrayKeyReady', '1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mistral SSE wire assertions (mistral-content-array)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text();",
+                  "var route = pm.info.requestName.indexOf('[chat]') >= 0 ? 'chat' : (pm.info.requestName.indexOf('[responses]') >= 0 ? 'responses' : 'anthropic');",
+                  "var unsupported = pm.info.requestName.indexOf('unsupported') >= 0;",
+                  "var events = [];",
+                  "var doneMarkers = 0;",
+                  "pm.test('real streaming HTTP response and parseable SSE data', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type') || '', raw).to.include('text/event-stream');",
+                  "  raw.split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) return;",
+                  "    var value = line.slice(5).trim();",
+                  "    if (value === '[DONE]') { doneMarkers++; return; }",
+                  "    if (value) events.push(JSON.parse(value));",
+                  "  });",
+                  "  pm.expect(events.length, raw).to.be.above(0);",
+                  "});",
+                  "var errors = events.filter(function (e) { return e.error && typeof e.error.message === 'string'; });",
+                  "var completed = events.filter(function (e) { return e.type === 'response.completed' || e.type === 'message_stop'; });",
+                  "var text = '';",
+                  "events.forEach(function (e) {",
+                  "  if (route === 'chat') (e.choices || []).forEach(function (c) { if (c.delta && typeof c.delta.content === 'string') text += c.delta.content; });",
+                  "  else if (route === 'responses' && e.type === 'response.output_text.delta') text += e.delta || '';",
+                  "  else if (route === 'anthropic' && e.type === 'content_block_delta' && e.delta && e.delta.type === 'text_delta') text += e.delta.text || '';",
+                  "});",
+                  "pm.test('array content produces the promised successful or explicit error stream', function () {",
+                  "  if (unsupported) {",
+                  "    pm.expect(errors.length, raw).to.equal(1);",
+                  "    pm.expect(errors[0].error.message, raw).to.equal('failed to unmarshal response from provider API');",
+                  "    pm.expect(completed.length, 'unsupported content must not be reported completed: ' + raw).to.equal(0);",
+                  "    pm.expect(doneMarkers, 'failed stream must not claim a clean terminal marker: ' + raw).to.equal(0);",
+                  "    pm.expect(text, 'a mixed array must not leak a partial answer before rejecting its thinking block: ' + raw).to.equal('');",
+                  "  } else {",
+                  "    pm.expect(errors.length, raw).to.equal(0);",
+                  "    pm.expect(text, raw).to.equal('mistral array fixture ' + pm.collectionVariables.get('mistralArrayNonce'));",
+                  "    if (route === 'chat') {",
+                  "      pm.expect(doneMarkers, raw).to.equal(1);",
+                  "      pm.expect(events.some(function (e) { return (e.choices || []).some(function (c) { return c.finish_reason === 'stop'; }); }), raw).to.equal(true);",
+                  "      pm.expect(events.some(function (e) { return e.usage && e.usage.total_tokens === 7; }), raw).to.equal(true);",
+                  "    } else if (route === 'responses') {",
+                  "      pm.expect(completed.length, raw).to.equal(1);",
+                  "      pm.expect(completed[0].response.status, raw).to.equal('completed');",
+                  "      pm.expect(completed[0].response.usage.total_tokens, raw).to.equal(7);",
+                  "      pm.expect(events.filter(function (e) { return e.type === 'response.output_text.done'; }).map(function (e) { return e.text; }), raw).to.deep.equal([text]);",
+                  "    } else {",
+                  "      pm.expect(completed.length, raw).to.equal(1);",
+                  "      var starts = events.filter(function (e) { return e.type === 'content_block_start'; });",
+                  "      var stops = events.filter(function (e) { return e.type === 'content_block_stop'; });",
+                  "      pm.expect(starts.length, raw).to.equal(1);",
+                  "      pm.expect(starts[0].content_block.type, raw).to.equal('text');",
+                  "      pm.expect(stops.map(function (e) { return e.index; }), raw).to.deep.equal([starts[0].index]);",
+                  "      var open = false;",
+                  "      events.forEach(function (e) {",
+                  "        if (e.type === 'content_block_start') open = true;",
+                  "        if (e.type === 'content_block_delta') pm.expect(open && e.index === starts[0].index, 'every text delta targets the open block: ' + raw).to.equal(true);",
+                  "        if (e.type === 'content_block_stop') open = false;",
+                  "      });",
+                  "      pm.expect(events.some(function (e) { return e.type === 'message_delta' && e.delta.stop_reason === 'end_turn' && e.usage.output_tokens === 2; }), raw).to.equal(true);",
+                  "    }",
+                  "  }",
+                  "});",
+                  "function collectFrames(value, out) {",
+                  "  if (typeof value === 'string') { try { collectFrames(JSON.parse(value), out); } catch (e) {} }",
+                  "  else if (Array.isArray(value)) value.forEach(function (v) { collectFrames(v, out); });",
+                  "  else if (value && typeof value === 'object' && value.choices) out.push(value);",
+                  "}",
+                  "if (route !== 'anthropic') pm.test('raw provider capture retains the original content array', function () {",
+                  "  var originals = [];",
+                  "  events.forEach(function (e) { collectFrames((e.extra_fields || {}).raw_response, originals); });",
+                  "  var arrays = originals.filter(function (e) { return (e.choices || []).some(function (c) { return c.delta && Array.isArray(c.delta.content); }); });",
+                  "  pm.expect(arrays.length, 'raw capture lost the actual upstream array: ' + raw).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "item": [
+            {
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [chat] text array completes - mistral-content-array - #7906",
+              "protocolProfileBehavior": {
+                "disableCookies": true
+              },
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{mistralArrayToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/chat/completions",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"model\": \"mistral/mistral-array-fixture\", \"messages\": [{\"role\": \"user\", \"content\": \"mistral-content-array:text-chat:{{mistralArrayNonce}}\"}], \"stream\": true, \"max_tokens\": 8}"
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var ready = pm.collectionVariables.get('mistralArrayKeyReady');",
+                      "pm.test('prerequisite mistralArrayKeyReady exists', function () { pm.expect(ready).to.equal('1'); });",
+                      "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();",
+                      "pm.collectionVariables.set('mistralArrayTextChatAttempted', '1');"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [responses] text array completes - mistral-content-array - #7906",
+              "protocolProfileBehavior": {
+                "disableCookies": true
+              },
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{mistralArrayToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/responses",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"model\": \"mistral/mistral-array-fixture\", \"input\": \"mistral-content-array:text-responses:{{mistralArrayNonce}}\", \"stream\": true, \"max_output_tokens\": 8}"
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var ready = pm.collectionVariables.get('mistralArrayKeyReady');",
+                      "pm.test('prerequisite mistralArrayKeyReady exists', function () { pm.expect(ready).to.equal('1'); });",
+                      "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();",
+                      "pm.collectionVariables.set('mistralArrayTextResponsesAttempted', '1');"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [anthropic] text array completes - mistral-content-array - #7906",
+              "protocolProfileBehavior": {
+                "disableCookies": true
+              },
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{mistralArrayToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "url": "{{baseUrl}}/anthropic/v1/messages",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"model\": \"mistral/mistral-array-fixture\", \"messages\": [{\"role\": \"user\", \"content\": \"mistral-content-array:text-anthropic:{{mistralArrayNonce}}\"}], \"stream\": true, \"max_tokens\": 8}"
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var ready = pm.collectionVariables.get('mistralArrayKeyReady');",
+                      "pm.test('prerequisite mistralArrayKeyReady exists', function () { pm.expect(ready).to.equal('1'); });",
+                      "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();",
+                      "pm.collectionVariables.set('mistralArrayTextAnthropicAttempted', '1');"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [chat] unsupported thinking-chat fails explicitly - mistral-content-array - #7906",
+              "protocolProfileBehavior": {
+                "disableCookies": true
+              },
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{mistralArrayToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/chat/completions",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"model\": \"mistral/mistral-array-fixture\", \"messages\": [{\"role\": \"user\", \"content\": \"mistral-content-array:thinking-chat:{{mistralArrayNonce}}\"}], \"stream\": true, \"max_tokens\": 8}"
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var ready = pm.collectionVariables.get('mistralArrayKeyReady');",
+                      "pm.test('prerequisite mistralArrayKeyReady exists', function () { pm.expect(ready).to.equal('1'); });",
+                      "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();",
+                      "pm.collectionVariables.set('mistralArrayThinkingChatAttempted', '1');"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [responses] unsupported mixed-responses fails explicitly - mistral-content-array - #7906",
+              "protocolProfileBehavior": {
+                "disableCookies": true
+              },
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{mistralArrayToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/responses",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"model\": \"mistral/mistral-array-fixture\", \"input\": \"mistral-content-array:mixed-responses:{{mistralArrayNonce}}\", \"stream\": true, \"max_output_tokens\": 8}"
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var ready = pm.collectionVariables.get('mistralArrayKeyReady');",
+                      "pm.test('prerequisite mistralArrayKeyReady exists', function () { pm.expect(ready).to.equal('1'); });",
+                      "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();",
+                      "pm.collectionVariables.set('mistralArrayMixedResponsesAttempted', '1');"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [anthropic] unsupported reference-anthropic fails explicitly - mistral-content-array - #7906",
+              "protocolProfileBehavior": {
+                "disableCookies": true
+              },
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{mistralArrayToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "url": "{{baseUrl}}/anthropic/v1/messages",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"model\": \"mistral/mistral-array-fixture\", \"messages\": [{\"role\": \"user\", \"content\": \"mistral-content-array:reference-anthropic:{{mistralArrayNonce}}\"}], \"stream\": true, \"max_tokens\": 8}"
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var ready = pm.collectionVariables.get('mistralArrayKeyReady');",
+                      "pm.test('prerequisite mistralArrayKeyReady exists', function () { pm.expect(ready).to.equal('1'); });",
+                      "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();",
+                      "pm.collectionVariables.set('mistralArrayReferenceAnthropicAttempted', '1');"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture inspect actual six upstream array frames - mistral-content-array - #7906",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{mistralArrayMockBaseUrl}}/__requests/{{mistralArrayNonce}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('upstream witness returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('six gateway requests reached the Mistral SSE parser path', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayTextChatAttempted'), 'run the full scoped chain').to.equal('1');",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayTextResponsesAttempted'), 'run the full scoped chain').to.equal('1');",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayTextAnthropicAttempted'), 'run the full scoped chain').to.equal('1');",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayThinkingChatAttempted'), 'run the full scoped chain').to.equal('1');",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayMixedResponsesAttempted'), 'run the full scoped chain').to.equal('1');",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayReferenceAnthropicAttempted'), 'run the full scoped chain').to.equal('1');",
+                  "  var rows = pm.response.json().requests;",
+                  "  pm.expect(rows.map(function (r) { return r.scenario; }), pm.response.text()).to.deep.equal(['text-chat','text-responses','text-anthropic','thinking-chat','mixed-responses','reference-anthropic']);",
+                  "  pm.expect(rows.every(function (r) { return r.method === 'POST' && r.path === '/v1/chat/completions' && r.model === 'mistral-array-fixture' && r.stream === true && Array.isArray(r.frame.choices[0].delta.content); }), pm.response.text()).to.equal(true);",
+                  "  pm.expect(rows[0].frame.choices[0].delta.content.map(function (c) { return c.text; }).join('')).to.equal('mistral array fixture ' + pm.collectionVariables.get('mistralArrayNonce'));",
+                  "  pm.expect(rows[3].frame.choices[0].delta.content[0].thinking[0].type).to.equal('text');",
+                  "  pm.expect(rows[3].frame.choices[0].delta.content[0].signature).to.equal('fixture-signature');",
+                  "  pm.expect(rows[4].frame.choices[0].delta.content.map(function (c) { return c.type; })).to.deep.equal(['text', 'thinking']);",
+                  "  pm.expect(rows[5].frame.choices[0].delta.content[0].reference_ids).to.deep.equal([7, 'fixture-' + pm.collectionVariables.get('mistralArrayNonce')]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture delete only the owned native provider - mistral-content-array - #7906",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mistralArrayToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/mistral"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('mistralArrayProviderCreated');",
+                  "pm.test('prerequisite mistralArrayProviderCreated exists', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('owned provider deletion returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('owned native provider deletion was accepted', function () {",
+                  "  pm.expect(pm.response.json().name, pm.response.text()).to.equal('mistral');",
+                  "  pm.collectionVariables.set('mistralArrayProviderDeleted', '1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture confirm native provider cleanup - mistral-content-array - #7906",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mistralArrayToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider cleanup witness returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('created provider and its keys are absent', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayProviderDeleted')).to.equal('1');",
+                  "  pm.expect(pm.response.json().providers.filter(function (p) { return p.name === 'mistral'; }), pm.response.text()).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture delete nonce fixture witness - mistral-content-array - #7906",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "DELETE",
+            "header": [],
+            "url": "{{mistralArrayMockBaseUrl}}/__requests/{{mistralArrayNonce}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fixture cleanup returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('nonce witness was removed after gateway cleanup', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayProviderDeleted')).to.equal('1');",
+                  "  pm.expect(pm.response.json().deleted).to.equal(pm.collectionVariables.get('mistralArrayNonce'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture logout from isolated dashboard - mistral-content-array - #7906",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mistralArrayToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/session/logout"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('logout returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('dashboard session is invalidated', function () {",
+                  "  pm.expect(pm.response.json().message, pm.response.text()).to.equal('Logout successful');",
+                  "  pm.collectionVariables.unset('mistralArrayToken');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "150. Provider metadata and tags on the providers API (PR #7943) (provider-labels)",
+      "description": "PR #7943 adds operator-defined metadata (key/value) and tags to providers on the management API. POST /api/providers and PUT /api/providers/{provider} accept `metadata` and `tags` (tags are trimmed, de-duplicated and sorted; an invalid tag is a 400; on PUT an omitted field is left alone and null clears it), provider responses carry them, and GET /api/providers filters on `metadata_<key>=<value>` and `tags=a,b` (AND-ed; every listed tag must be present). A bare `metadata_=x` is a 400 rather than an unfiltered list. These rows create a throwaway keyless openai-based custom provider with a per-run name (no standard provider is modified), exercise create, both filters, the AND rule, the invalid-key and invalid-tag 400s and the null clear, then delete the provider and confirm it is gone from the filtered list. Before the PR the labels are dropped on create and the filters are ignored, so the create, filter and 400 rows fail. The keyless provider has no credentials and no request reaches OpenAI; the openai keyword is only a harness filter label. Runs against the default harness profile (config store enabled, dashboard auth unconfigured: no base URL or proxy is set, so the dashboard-auth guard does not apply).",
+      "item": [
+        {
+          "name": "openai provider-labels create a keyless openai-based custom provider with metadata and tags - #7943",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('providerLabelsName', 'harness-labels-' + pm.variables.replaceIn('{{$timestamp}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var name = pm.collectionVariables.get('providerLabelsName');",
+                  "var body = pm.response.json();",
+                  "pm.test('the created provider is returned', function () { pm.expect(body.name, pm.response.text()).to.equal(name); });",
+                  "pm.test('metadata is stored and returned', function () { pm.expect(body.metadata, pm.response.text()).to.deep.equal({ harness_owner: name }); });",
+                  "pm.test('tags are stored trimmed', function () { pm.expect(body.tags, pm.response.text()).to.be.an('array').that.has.members(['harness-provider-labels', 'harness-provider-labels-b']); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"{{providerLabelsName}}\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"metadata\": {\n    \"harness_owner\": \"{{providerLabelsName}}\"\n  },\n  \"tags\": [\n    \" harness-provider-labels \",\n    \"harness-provider-labels-b\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels GET /api/providers metadata and tags filters return only the labeled provider - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var name = pm.collectionVariables.get('providerLabelsName');",
+                  "var names = (pm.response.json().providers || []).map(function (p) { return p.name; });",
+                  "pm.test('only the labeled provider matches', function () { pm.expect(names, pm.response.text()).to.deep.equal([name]); });",
+                  "pm.test('the listed provider carries its labels', function () {",
+                  "  var p = pm.response.json().providers[0];",
+                  "  pm.expect(p.metadata, pm.response.text()).to.deep.equal({ harness_owner: name });",
+                  "  pm.expect(p.tags, pm.response.text()).to.include('harness-provider-labels');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers?metadata_harness_owner={{providerLabelsName}}&tags=harness-provider-labels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ],
+              "query": [
+                {
+                  "key": "metadata_harness_owner",
+                  "value": "{{providerLabelsName}}"
+                },
+                {
+                  "key": "tags",
+                  "value": "harness-provider-labels"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels GET /api/providers tags filter requires every listed tag - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('no provider carries both tags', function () { pm.expect(pm.response.json().providers, pm.response.text()).to.be.an('array').that.is.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers?metadata_harness_owner={{providerLabelsName}}&tags=harness-provider-labels,harness-provider-labels-absent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ],
+              "query": [
+                {
+                  "key": "metadata_harness_owner",
+                  "value": "{{providerLabelsName}}"
+                },
+                {
+                  "key": "tags",
+                  "value": "harness-provider-labels,harness-provider-labels-absent"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai provider-labels GET /api/providers rejects an empty metadata filter key - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('error names the invalid metadata filter key', function () { pm.expect(pm.response.text()).to.include('invalid metadata filter key'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers?metadata_=x",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ],
+              "query": [
+                {
+                  "key": "metadata_",
+                  "value": "x"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai provider-labels PUT /api/providers rejects an invalid tag - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('error reports the invalid provider labels', function () { pm.expect(pm.response.text()).to.include('Invalid provider labels'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{providerLabelsName}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{providerLabelsName}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 1,\n    \"buffer_size\": 10\n  },\n  \"tags\": [\n    \"bad tag\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels PUT /api/providers replaces the tags and clears metadata with null - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('tags are replaced as a whole, not merged with the earlier ones', function () { pm.expect(body.tags, pm.response.text()).to.deep.equal(['harness-provider-labels-c']); });",
+                  "pm.test('metadata is cleared by null', function () { pm.expect(body.metadata || {}, pm.response.text()).to.deep.equal({}); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{providerLabelsName}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{providerLabelsName}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 1,\n    \"buffer_size\": 10\n  },\n  \"metadata\": null,\n  \"tags\": [\n    \"harness-provider-labels-c\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels GET /api/providers metadata filter no longer matches after the clear - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('no provider carries the cleared metadata', function () { pm.expect(pm.response.json().providers, pm.response.text()).to.be.an('array').that.is.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers?metadata_harness_owner={{providerLabelsName}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ],
+              "query": [
+                {
+                  "key": "metadata_harness_owner",
+                  "value": "{{providerLabelsName}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels delete the custom provider - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{providerLabelsName}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{providerLabelsName}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels GET /api/providers tags filter no longer lists the deleted provider - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var name = pm.collectionVariables.get('providerLabelsName');",
+                  "var names = (pm.response.json().providers || []).map(function (p) { return p.name; });",
+                  "pm.test('the deleted provider is gone', function () { pm.expect(names, pm.response.text()).to.not.include(name); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers?tags=harness-provider-labels-c",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ],
+              "query": [
+                {
+                  "key": "tags",
+                  "value": "harness-provider-labels-c"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
