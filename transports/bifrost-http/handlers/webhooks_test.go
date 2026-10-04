@@ -506,3 +506,70 @@ func TestWebhookHandlerTestDeliveryRequiresAuthForPrivateEndpoints(t *testing.T)
 	handler.testWebhookEndpoint(publicCtx)
 	assert.Equal(t, fasthttp.StatusOK, publicCtx.Response.StatusCode(), "body: %s", publicCtx.Response.Body())
 }
+
+// TestWebhookHandlerPrivateEndpointRegistrationRequiresAuth: the same bypassed
+// caller cannot register or re-point an endpoint that allows private-network
+// delivery (create, update, redeliver), while public endpoints and edits that
+// keep a stored private URL stay open to it. An authenticated caller is
+// unaffected.
+func TestWebhookHandlerPrivateEndpointRegistrationRequiresAuth(t *testing.T) {
+	handler, config := newWebhookTestHandler(t)
+	bypassed := func(body string, params map[string]string) *fasthttp.RequestCtx {
+		ctx := newWebhookRequestCtx(body, params)
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		return ctx
+	}
+	private := `{"name":"private","url":"http://127.0.0.1:9/hook","events":["async_job.completed"],"allow_private_network":true}`
+
+	// Create: refused for the bypassed caller, nothing persisted.
+	createCtx := bypassed(private, nil)
+	handler.createWebhookEndpoint(createCtx)
+	require.Equal(t, fasthttp.StatusForbidden, createCtx.Response.StatusCode(), "body: %s", createCtx.Response.Body())
+	_, exists := config.WebhookEndpointByName("private")
+	assert.False(t, exists)
+
+	// A public endpoint is still creatable without auth...
+	publicCtx := bypassed(`{"name":"public","url":"https://93.184.216.34/hook","events":["async_job.completed"]}`, nil)
+	handler.createWebhookEndpoint(publicCtx)
+	require.Equal(t, fasthttp.StatusCreated, publicCtx.Response.StatusCode(), "body: %s", publicCtx.Response.Body())
+	publicID := decodeJSONResponse(t, publicCtx)["endpoint"].(map[string]any)["id"].(string)
+
+	// ...but cannot be flipped to a private receiver on update.
+	flipCtx := bypassed(`{"name":"public","url":"http://10.0.0.5/hook","events":["async_job.completed"],"allow_private_network":true}`, map[string]string{"id": publicID})
+	handler.updateWebhookEndpoint(flipCtx)
+	require.Equal(t, fasthttp.StatusForbidden, flipCtx.Response.StatusCode(), "body: %s", flipCtx.Response.Body())
+	stored, ok := config.WebhookEndpointByID(publicID)
+	require.True(t, ok)
+	assert.False(t, stored.AllowPrivateNetwork)
+	assert.Equal(t, "https://93.184.216.34/hook", stored.URL)
+
+	// An authenticated admin registers the private endpoint as before.
+	adminCtx := newWebhookRequestCtx(private, nil)
+	handler.createWebhookEndpoint(adminCtx)
+	require.Equal(t, fasthttp.StatusCreated, adminCtx.Response.StatusCode(), "body: %s", adminCtx.Response.Body())
+	privateID := decodeJSONResponse(t, adminCtx)["endpoint"].(map[string]any)["id"].(string)
+
+	// The bypassed caller may still edit non-destination fields of that
+	// endpoint while it keeps the stored private URL...
+	keepCtx := bypassed(`{"name":"private","url":"http://127.0.0.1:9/hook","events":["async_job.failed"],"allow_private_network":true}`, map[string]string{"id": privateID})
+	handler.updateWebhookEndpoint(keepCtx)
+	require.Equal(t, fasthttp.StatusOK, keepCtx.Response.StatusCode(), "body: %s", keepCtx.Response.Body())
+
+	// ...but cannot re-point it at a different internal address.
+	moveCtx := bypassed(`{"name":"private","url":"http://127.0.0.1:9/other","events":["async_job.failed"],"allow_private_network":true}`, map[string]string{"id": privateID})
+	handler.updateWebhookEndpoint(moveCtx)
+	require.Equal(t, fasthttp.StatusForbidden, moveCtx.Response.StatusCode(), "body: %s", moveCtx.Response.Body())
+	stored, ok = config.WebhookEndpointByID(privateID)
+	require.True(t, ok)
+	assert.Equal(t, "http://127.0.0.1:9/hook", stored.URL)
+
+	// Redelivery to the private endpoint is refused for the bypassed caller
+	// and nothing is queued.
+	seedWebhookDelivery(t, config, "d-private", "wh-private", privateID, time.Now().UTC())
+	redeliverCtx := bypassed("", map[string]string{"id": "d-private"})
+	handler.redeliverWebhook(redeliverCtx)
+	require.Equal(t, fasthttp.StatusForbidden, redeliverCtx.Response.StatusCode(), "body: %s", redeliverCtx.Response.Body())
+	due, err := config.ConfigStore.ListDueWebhookJobs(context.Background(), 0)
+	require.NoError(t, err)
+	assert.Empty(t, due)
+}
