@@ -85,6 +85,10 @@ export interface VirtualKeyConfig {
   expiryPreset?: "Never" | "30 min" | "1 hour" | "24 hours" | "7 days";
   /** Only meaningful with an expiry; the checkbox is hidden otherwise. */
   deleteAfterExpire?: boolean;
+  /** Metadata entries to add (create) or set (edit: an existing key's value is replaced). */
+  metadata?: Record<string, string>;
+  /** Edit only: metadata keys to remove. */
+  removeMetadataKeys?: string[];
 }
 
 /**
@@ -102,6 +106,7 @@ export class VirtualKeysPage extends BasePage {
   readonly descriptionInput: Locator;
   readonly isActiveToggle: Locator;
   readonly contentLoggingSelect: Locator;
+  readonly metadataSection: Locator;
   readonly deleteAfterExpireCheckbox: Locator;
   readonly providerSelect: Locator;
   readonly saveBtn: Locator;
@@ -121,6 +126,7 @@ export class VirtualKeysPage extends BasePage {
     this.descriptionInput = page.getByTestId("vk-description-input");
     this.isActiveToggle = page.getByTestId("vk-is-active-toggle");
     this.contentLoggingSelect = page.getByTestId("vk-content-logging-select");
+    this.metadataSection = page.getByTestId("vk-metadata-section");
     this.deleteAfterExpireCheckbox = page.getByTestId("vk-delete-after-expire");
     this.providerSelect = page.getByTestId("vk-provider-select");
     this.saveBtn = page.getByTestId("vk-save-btn");
@@ -282,6 +288,9 @@ export class VirtualKeysPage extends BasePage {
 
     if (config.contentLogging && config.contentLogging !== "inherit") {
       await this.setContentLogging(config.contentLogging);
+    }
+    if (config.metadata) {
+      await this.setMetadata(config.metadata);
     }
     await this.setExpiry(config.expiryPreset, config.deleteAfterExpire);
 
@@ -487,6 +496,13 @@ export class VirtualKeysPage extends BasePage {
       await this.setContentLogging(updates.contentLogging);
     }
 
+    for (const key of updates.removeMetadataKeys ?? []) {
+      await this.removeMetadataEntry(key);
+    }
+    if (updates.metadata) {
+      await this.setMetadata(updates.metadata);
+    }
+
     if (updates.budgets && updates.budgets.length > 0) {
       await this.setBudgets(updates.budgets);
     }
@@ -660,6 +676,62 @@ export class VirtualKeysPage extends BasePage {
     if (text.includes("Off for this key")) return "disabled";
     if (text.includes("On for this key")) return "enabled";
     return "inherit";
+  }
+
+  /**
+   * Find the metadata table row whose key input holds `key`, or -1.
+   */
+  private async findMetadataRow(key: string): Promise<number> {
+    const keyInputs = this.metadataSection.locator('input[data-column="key"]');
+    const count = await keyInputs.count();
+    for (let i = 0; i < count; i++) {
+      if ((await keyInputs.nth(i).inputValue()) === key) return i;
+    }
+    return -1;
+  }
+
+  /**
+   * Set metadata entries in the open sheet. An existing key gets its value replaced; a new key is
+   * typed into the table's trailing empty row, which the table replaces with a fresh one.
+   */
+  async setMetadata(entries: Record<string, string>): Promise<void> {
+    await this.metadataSection.scrollIntoViewIfNeeded();
+    for (const [key, value] of Object.entries(entries)) {
+      let row = await this.findMetadataRow(key);
+      if (row === -1) {
+        const keyInputs = this.metadataSection.locator('input[data-column="key"]');
+        row = (await keyInputs.count()) - 1;
+        await keyInputs.nth(row).fill(key);
+      }
+      const valueInput = this.metadataSection.locator('input[data-column="value"]').nth(row);
+      await valueInput.fill(value);
+      await expect(valueInput).toHaveValue(value);
+    }
+  }
+
+  /**
+   * Remove one metadata entry from the open sheet by its key.
+   */
+  async removeMetadataEntry(key: string): Promise<void> {
+    const row = await this.findMetadataRow(key);
+    expect(row, `metadata key ${key} should be in the sheet`).toBeGreaterThanOrEqual(0);
+    await this.metadataSection.locator("tbody tr").nth(row).getByRole("button").click();
+    await expect.poll(() => this.findMetadataRow(key)).toBe(-1);
+  }
+
+  /**
+   * Read the metadata entries shown in the open sheet.
+   */
+  async getMetadata(): Promise<Record<string, string>> {
+    const keyInputs = this.metadataSection.locator('input[data-column="key"]');
+    const valueInputs = this.metadataSection.locator('input[data-column="value"]');
+    const result: Record<string, string> = {};
+    const count = await keyInputs.count();
+    for (let i = 0; i < count; i++) {
+      const key = await keyInputs.nth(i).inputValue();
+      if (key) result[key] = await valueInputs.nth(i).inputValue();
+    }
+    return result;
   }
 
   /**
