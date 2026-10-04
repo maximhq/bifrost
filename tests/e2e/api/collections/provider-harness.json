@@ -197637,6 +197637,153 @@
           }
         }
       ]
+    },
+    {
+      "name": "Provider endpoint URL components (endpoint-url-components)",
+      "description": "Reject ambiguous URL components before destination lookup, persistence, or discovery. Uses the default profile with dashboard auth disabled; no provider calls.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai endpoint-url-components query is rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint-url-components query is rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"base URL must not contain\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"endpoint-component-check\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"network_config\": {\n    \"base_url\": \"http://127.0.0.1/base?x=\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai endpoint-url-components fragment is rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint-url-components fragment is rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"base URL must not contain\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"endpoint-component-check\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"network_config\": {\n    \"base_url\": \"http://127.0.0.1/base#tail\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai endpoint-url-components credentials is rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint-url-components credentials is rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"base URL must not contain\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"endpoint-component-check\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"network_config\": {\n    \"base_url\": \"http://name:pass@127.0.0.1/base\"\n  }\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }
