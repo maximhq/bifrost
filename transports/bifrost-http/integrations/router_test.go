@@ -1342,6 +1342,51 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 	}
 }
 
+// The Bedrock passthrough is a restricted route: it targets the Bedrock provider and is mounted
+// at /bedrock_passthrough, so it can never be mistaken for the native /bedrock integration.
+func TestBedrockPassthroughRouterTargetsBedrockAtItsOwnPrefix(t *testing.T) {
+	r := NewBedrockPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	require.NotNil(t, r.passthroughCfg)
+	assert.Equal(t, schemas.Bedrock, r.passthroughCfg.Provider)
+	assert.Equal(t, []string{"/bedrock_passthrough"}, r.passthroughCfg.StripPrefix)
+	assert.Empty(t, r.passthroughCfg.AllowedRoutes, "the operation allow-list lives in the provider, which also holds the signing credentials")
+}
+
+// The Bedrock passthrough streams exactly the operation whose AWS response is an event stream.
+// InvokeAgent's path and body carry no "stream" marker, so the router needs the provider's word for it.
+func TestBedrockPassthroughRouterStreamsOnlyInvokeAgent(t *testing.T) {
+	cfg := NewBedrockPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).passthroughCfg
+	require.NotNil(t, cfg.StreamingPath, "the router must know InvokeAgent streams")
+
+	const invokeAgent = "/agents/AGENT12345/agentAliases/ALIAS12345/sessions/s1/text"
+	assert.True(t, cfg.streams(http.MethodPost, invokeAgent, false), "InvokeAgent answers with an event stream")
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/KB12345678/retrieve", false), "Retrieve is a plain request/response call")
+	assert.False(t, cfg.streams(http.MethodPost, "/guardrail/gr1a2b3c4d5e/version/DRAFT/apply", false), "ApplyGuardrail is a plain request/response call")
+	assert.False(t, cfg.streams(http.MethodGet, invokeAgent, false), "only the POST that the provider forwards streams")
+	assert.False(t, cfg.streams(http.MethodPost, "/model/amazon.titan-text-express-v1/invoke", false), "a route outside the allow-list is not special-cased")
+
+	// The provider's word is final: an accepted identifier that happens to contain "stream", or a body
+	// that says stream: true, must not move a request/response operation onto the streaming handler.
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/STREAMKB01/retrieve", false), "a knowledge-base id containing the word stream is still a plain Retrieve")
+	assert.False(t, cfg.streams(http.MethodPost, "/guardrail/streamguard1/version/DRAFT/apply", false), "a guardrail id containing the word stream is still a plain ApplyGuardrail")
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/KB12345678/retrieve", true), "stream: true in a Retrieve body does not make it stream")
+	assert.True(t, cfg.streams(http.MethodPost, "/agents/AGENT12345/agentAliases/ALIAS12345/sessions/s1/text", false), "InvokeAgent still streams")
+}
+
+// The generic stream decision is unchanged for every other passthrough router.
+func TestPassthroughConfigStreamsDecision(t *testing.T) {
+	plain := &PassthroughConfig{}
+	assert.True(t, plain.streams(http.MethodPost, "/v1beta/models/x:streamGenerateContent", false), "a stream marker in the path")
+	assert.True(t, plain.streams(http.MethodPost, "/v1/messages", true), "stream: true in the body")
+	assert.False(t, plain.streams(http.MethodPost, "/v1/messages", false))
+
+	custom := &PassthroughConfig{StreamingPath: func(method, path string) bool { return method == http.MethodPost && path == "/always" }}
+	assert.True(t, custom.streams(http.MethodPost, "/always", false), "the provider hook marks the route as streaming")
+	assert.False(t, custom.streams(http.MethodPost, "/other", false))
+	assert.False(t, custom.streams(http.MethodPost, "/stream/other", false), "when the provider supplies a route predicate it replaces the generic path marker")
+	assert.False(t, custom.streams(http.MethodPost, "/other", true), "and the generic body marker")
+}
+
 // Exercise the real router/provider paths and HTTP header commit for both SDK
 // conversion and raw passthrough. All provider requests go to a local server.
 func TestProviderCorrelationHeaders_IntegrationAndPassthroughWire(t *testing.T) {
