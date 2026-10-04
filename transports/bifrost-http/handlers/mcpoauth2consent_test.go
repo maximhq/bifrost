@@ -201,6 +201,29 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 	})
 
+	t.Run("a rotated key's previous value cannot consent during the cooldown", func(t *testing.T) {
+		// During the rotation cooldown the store still resolves the retired value to the key, so
+		// direct calls keep working. Consent mints a new long-lived grant, so it needs the
+		// current value: the retired one is refused, the current one is accepted.
+		rotatedVK := &configtables.TableVirtualKey{ID: "vk-row-3", Value: *schemas.NewSecretVar("sk-bf-current"), PreviousValue: *schemas.NewSecretVar("sk-bf-retired"), IsActive: new(true)}
+		store := newConsentStore()
+		store.vksByValue["sk-bf-current"] = rotatedVK
+		store.vksByValue["sk-bf-retired"] = rotatedVK
+		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+		seedPendingFlow(store, "flow-2", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, nil, false)
+
+		retired := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-retired"}`)
+		h.flowSubmit(retired)
+		assert.Equal(t, fasthttp.StatusBadRequest, retired.Response.StatusCode(), string(retired.Response.Body()))
+		assert.NotEqual(t, configtables.OAuth2AuthorizeRequestStatusConsented, store.authReqs["flow-1"].Status, "no grant may be minted from a retired value")
+
+		current := consentCtx("flow-2", `{"mode":"vk","value":"sk-bf-current"}`)
+		h.flowSubmit(current)
+		require.Equal(t, fasthttp.StatusOK, current.Response.StatusCode(), string(current.Response.Body()))
+		assert.Equal(t, "vk-row-3", store.authReqs["flow-2"].BfSub)
+	})
+
 	t.Run("double submit returns 410 on the second attempt", func(t *testing.T) {
 		store := newConsentStore()
 		store.vksByValue[activeVK.Value.GetValue()] = activeVK
