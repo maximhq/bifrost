@@ -401,6 +401,9 @@ type CreateVirtualKeyRequest struct {
 	// client.disable_content_logging; true forces content off for this key's traffic, false forces
 	// it on for the log store.
 	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
+	// Metadata is free-form key/value attribution (cost center, owner, ...). See
+	// configstoreTables.ValidateVirtualKeyMetadata for the rules.
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // vkModelBudgetRequest is one per-model budget/rate-limit group under a provider config
@@ -456,6 +459,9 @@ type UpdateVirtualKeyRequest struct {
 	// DisableContentLogging is tri-state on the wire: omitted leaves the current decision, null
 	// clears it back to inheriting client.disable_content_logging, true/false set it.
 	DisableContentLogging schemas.OptionalJSON[bool] `json:"disable_content_logging,omitempty"`
+	// Metadata replaces the key's metadata as a whole: omitted (or null) leaves it unchanged,
+	// {} clears it, and any other object becomes the new metadata.
+	Metadata *map[string]string `json:"metadata,omitempty"`
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to more than one of Team, Customer or Business Unit")
@@ -1952,8 +1958,13 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	excludeAccessProfileManagedVirtual := string(ctx.QueryArgs().Peek("exclude_access_profile_managed_virtual")) == "true"
 	excludeAssignedVirtualKeys := string(ctx.QueryArgs().Peek("exclude_assigned_virtual_keys")) == "true"
 	forUserAssignment := string(ctx.QueryArgs().Peek("for_user_assignment")) == "true"
+	metadataFilters, err := parseVirtualKeyMetadataFilters(ctx)
+	if err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || businessUnitID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || businessUnitID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment || len(metadataFilters) > 0 {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
@@ -1967,6 +1978,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			ExcludeAccessProfileManagedVirtual: excludeAccessProfileManagedVirtual,
 			ExcludeAssignedVirtualKeys:         excludeAssignedVirtualKeys,
 			ForUserAssignment:                  forUserAssignment,
+			MetadataFilters:                    metadataFilters,
 		}
 		if limitStr != "" {
 			n, err := strconv.Atoi(limitStr)
@@ -2051,6 +2063,34 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	})
 }
 
+// parseVirtualKeyMetadataFilters collects metadata_<key>=<value> query parameters, the same
+// shape the logs endpoints accept. An invalid key is a 400 rather than a silently ignored
+// filter, which would return every key.
+func parseVirtualKeyMetadataFilters(ctx *fasthttp.RequestCtx) (map[string]string, error) {
+	var filters map[string]string
+	var invalid string
+	ctx.QueryArgs().VisitAll(func(key, value []byte) { //nolint:staticcheck
+		metadataKey, ok := strings.CutPrefix(string(key), "metadata_")
+		if !ok {
+			return
+		}
+		if !configstoreTables.IsValidVirtualKeyMetadataKey(metadataKey) {
+			if invalid == "" {
+				invalid = metadataKey
+			}
+			return
+		}
+		if filters == nil {
+			filters = make(map[string]string)
+		}
+		filters[metadataKey] = string(value)
+	})
+	if invalid != "" {
+		return nil, fmt.Errorf("invalid metadata filter key %q: keys must be 1-%d characters of letters, digits, '.', '_' or '-'", invalid, configstoreTables.MaxVirtualKeyMetadataKeyLength)
+	}
+	return filters, nil
+}
+
 // createVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key
 func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	var req CreateVirtualKeyRequest
@@ -2105,6 +2145,10 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "delete_after_expire requires expires_at")
 		return
 	}
+	if err := configstoreTables.ValidateVirtualKeyMetadata(req.Metadata); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// Set defaults: nil means "use DB default (true)"
 	isActive := req.IsActive
 	if isActive == nil {
@@ -2138,6 +2182,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			DeleteAfterExpire: req.DeleteAfterExpire,
 			// Stored as given: nil is inherit, so no defaulting here.
 			DisableContentLogging: req.DisableContentLogging,
+			Metadata:              req.Metadata,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -2452,6 +2497,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, errVirtualKeyDualAssociation.Error())
 		return
 	}
+	if req.Metadata != nil {
+		if err := configstoreTables.ValidateVirtualKeyMetadata(*req.Metadata); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+	}
 	// The operator's explicit "reset usage" choice, surfaced by the UI's
 	// Preserve / Reset dialog. Carried into budget reconciliation and collected
 	// there, so the in-memory store can be cleared once the transaction commits.
@@ -2519,6 +2570,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		if req.Description != nil {
 			vk.Description = *req.Description
+		}
+		if req.Metadata != nil {
+			vk.Metadata = *req.Metadata
 		}
 		if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
 			if errors.Is(err, errVirtualKeyDualAssociation) {
