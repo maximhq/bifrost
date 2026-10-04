@@ -98,3 +98,88 @@ func TestResponses_AnthropicEndpointEmitsOutputConfigEffort(t *testing.T) {
 		t.Fatalf("output_config.effort = %#v, want %q; wire body = %#v", captured["output_config"], effort, captured)
 	}
 }
+
+// TestAnthropicEndpointOmitsThinkingBudgetOnEffortOnlyRequest: DeepSeek
+// documents thinking.budget_tokens as ignored, so an effort-only request must
+// not carry a synthesized one - it would be a dead field on the wire. Reported
+// by @is911 on #6740 against head 54db65ce, where effort reached the wire
+// correctly but a budget was still synthesized beside it.
+//
+// Both a v4 and a non-v4 model name are covered. The non-v4 case is the one
+// that must keep failing open: an unrecognised name still reaches the
+// provider-wide native-effort grant, so it gets the same treatment rather than
+// silently falling back to a budget.
+func TestAnthropicEndpointOmitsThinkingBudgetOnEffortOnlyRequest(t *testing.T) {
+	t.Parallel()
+	for _, model := range []string{"deepseek-v4-flash", "deepseek-chat"} {
+		t.Run("chat/"+model, func(t *testing.T) {
+			t.Parallel()
+			var captured map[string]any
+			server := captureAnthropicWire(t, &captured)
+			defer server.Close()
+
+			provider, err := newTestDeepSeekProvider(server.URL)
+			if err != nil {
+				t.Fatalf("NewDeepSeekProvider: %v", err)
+			}
+			effort := "medium"
+			msg := "hello"
+			_, bifrostErr := provider.ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), anthropicEndpointKey(), &schemas.BifrostChatRequest{
+				Provider: schemas.DeepSeek,
+				Model:    model,
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &msg}}},
+				Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: &effort}},
+			})
+			if bifrostErr != nil {
+				t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+			}
+			assertEffortWithoutBudget(t, captured, effort)
+		})
+
+		t.Run("responses/"+model, func(t *testing.T) {
+			t.Parallel()
+			var captured map[string]any
+			server := captureAnthropicWire(t, &captured)
+			defer server.Close()
+
+			provider, err := newTestDeepSeekProvider(server.URL)
+			if err != nil {
+				t.Fatalf("NewDeepSeekProvider: %v", err)
+			}
+			effort := "high"
+			msg := "hello"
+			_, bifrostErr := provider.Responses(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), anthropicEndpointKey(), &schemas.BifrostResponsesRequest{
+				Provider: schemas.DeepSeek,
+				Model:    model,
+				Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: &msg}}},
+				Params:   &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{Effort: &effort}},
+			})
+			if bifrostErr != nil {
+				t.Fatalf("Responses: %v", bifrostErr.Error.Message)
+			}
+			assertEffortWithoutBudget(t, captured, effort)
+		})
+	}
+}
+
+// assertEffortWithoutBudget pins both halves of the contract at once: the
+// effort the caller asked for is on the wire, and no thinking budget rode along
+// with it.
+func assertEffortWithoutBudget(t *testing.T, captured map[string]any, effort string) {
+	t.Helper()
+	outputConfig, ok := captured["output_config"].(map[string]any)
+	if !ok || outputConfig["effort"] != effort {
+		t.Fatalf("output_config.effort = %#v, want %q; wire body = %#v", captured["output_config"], effort, captured)
+	}
+	thinking, present := captured["thinking"]
+	if !present {
+		return
+	}
+	block, ok := thinking.(map[string]any)
+	if !ok {
+		t.Fatalf("thinking = %#v, want absent or an object; wire body = %#v", thinking, captured)
+	}
+	if budget, has := block["budget_tokens"]; has {
+		t.Fatalf("thinking.budget_tokens = %#v on an effort-only request; DeepSeek ignores it, so it must not be synthesized; wire body = %#v", budget, captured)
+	}
+}
