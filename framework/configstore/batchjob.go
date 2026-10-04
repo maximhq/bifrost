@@ -78,6 +78,19 @@ func (s *RDBConfigStore) UpsertProviderJob(ctx context.Context, job *tables.Tabl
 	return db.Model(&tables.TableProviderJob{}).Where("id = ?", job.ID).Updates(updates).Error
 }
 
+// GetProviderJobsByIDs returns the provider jobs among jobIDs that exist, in no
+// particular order. Rows no id matches are left out rather than reported.
+func (s *RDBConfigStore) GetProviderJobsByIDs(ctx context.Context, jobIDs []string) ([]*tables.TableProviderJob, error) {
+	if len(jobIDs) == 0 {
+		return nil, nil
+	}
+	var jobs []*tables.TableProviderJob
+	if err := s.DB().WithContext(ctx).Where("id IN ?", jobIDs).Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
 // GetProviderJob returns a provider job by its stable id, or ErrNotFound.
 func (s *RDBConfigStore) GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error) {
 	if jobID == "" {
