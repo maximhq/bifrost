@@ -1188,6 +1188,25 @@ func defaultSupportsNativeEffort(caps schemas.ModelCaps) bool {
 	return DefaultSupportsNativeEffort(caps.Model())
 }
 
+// forwardsEffortWithoutThinkingBudget reports whether this provider takes
+// output_config.effort on its own, with no synthesized thinking.budget_tokens
+// beside it.
+//
+// The native-effort branch of the converters pairs effort with a budget because
+// that is what the Claude model it was written for wants. A surface that
+// documents budget_tokens as ignored gets a dead field instead, so the
+// synthesis is skipped where a provider declares it unnecessary. Nothing else
+// changes: the gate only suppresses a block the upstream discards, and a
+// provider without the grant keeps the existing behaviour exactly.
+//
+// Keyed on the provider rather than the model, deliberately: a model name that
+// does not reach the native-effort branch at all never consults this, so an
+// unrecognised name still fails open onto the budget-only path.
+func forwardsEffortWithoutThinkingBudget(caps schemas.ModelCaps) bool {
+	features, ok := ProviderFeatures[caps.Provider()]
+	return ok && features.EffortWithoutThinkingBudget
+}
+
 // SupportsEffortParameter returns true if the model accepts the
 // output_config.effort parameter. Supported models: Claude Fable 5,
 // Claude Mythos 5, Claude Mythos Preview, Opus 5, Opus 4.8, Opus 4.7, Opus 4.6,

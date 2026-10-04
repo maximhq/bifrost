@@ -171,46 +171,47 @@ const (
 //	     Messages API, per the "Supported APIs or features" table:
 //	     https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html
 type ProviderFeatureSupport struct {
-	WebSearch              bool // web_search server tool (cite: A)
-	WebSearchNova          bool // web_search via nova_grounding — Bedrock Responses path only, not Chat/Converse
-	WebSearchDynamic       bool // web_search_20260209 dynamic filtering (cite: A)
-	WebFetch               bool // web_fetch server tool (cite: A)
-	CodeExecution          bool // code_execution server tool (cite: A)
-	CodeExecNova           bool // code_execution via nova_code_interpreter — Bedrock Responses path only, not Chat/Converse
-	ComputerUse            bool // computer_use client tool (cite: A, B-header)
-	Bash                   bool // bash client tool (cite: A, B-header)
-	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
-	TextEditor             bool // text_editor client tool (cite: A)
-	ToolSearch             bool // tool_search server tool + tool.defer_loading — tool-search-tool-2025-10-19 (cite: A). On classic Amazon Bedrock AWS restricts this to InvokeModel/InvokeModelWithResponseStream, never Converse (cite: TS-bedrock); the Bedrock provider routes any request carrying a tool_search tool or defer_loading to InvokeModel (bedrock.go, InvokeModel section), so the flag is on.
-	MCP                    bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
-	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: allowed_callers only as of current docs — defer_loading now has its own beta, see ToolSearch (cite: A)
-	InputExamples          bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
-	StructuredOutputs      bool // strict tool validation / output_format (cite: A)
-	PromptCachingScope     bool // cache_control.scope — prompt-caching-scope-2026-01-05 (cite: A)
-	Compaction             bool // compact_20260112 (cite: A, B-header)
-	ContextEditing         bool // clear_tool_uses / clear_thinking (cite: A, B-header)
-	ContextManagementField bool // provider accepts the context_management JSON body field at all; false → entire field dropped regardless of edit types
-	FilesAPI               bool // files-api-2025-04-14, file_id source (cite: A)
-	InterleavedThinking    bool // interleaved thinking between tool calls (cite: A, B-header; fails on non-allowlisted models on Bedrock/Vertex)
-	Skills                 bool // Agent Skills — container.skills object (cite: A)
-	ContainerBasic         bool // Bare string-form container id — universally supported (cite: A)
-	Context1M              bool // 1M context window — context-1m-2025-08-07 (cite: A)
-	FastMode               bool // Opus 4.6 research preview — fast-mode-2026-02-01 (cite: A)
-	RedactThinking         bool // redact-thinking-2026-02-12 (cite: A) — note Bedrock has its own "thinking encryption" (different mechanism)
-	TaskBudgets            bool // output_config.task_budget — task-budgets-2026-03-13 (cite: A)
-	InferenceGeo           bool // inference_geo field — Claude API only; Bedrock/Vertex/Azure use their own region-routing mechanisms (cite: A)
-	EagerInputStreaming    bool // fine-grained-tool-streaming-2025-05-14 (cite: A, B-header)
-	AdvisorTool            bool // advisor_tool_result block — Anthropic only (cite: Advisor-excl)
-	FileSearch             bool // file_search server tool (OpenAI-only)
-	ImageGeneration        bool // image_generation server tool (OpenAI-only)
-	ServiceTier            bool // service_tier request field — strip when false (Vertex uses headers instead)
-	Diagnostics            bool // diagnostics request field — cache diagnostics (cache-diagnosis-2026-04-07 beta, diagnostics.previous_message_id). Claude API only per docs ("not supported on Amazon Bedrock or Vertex AI"); stripped elsewhere fail-closed. Azure rejects it.
-	ServerSideFallback     bool // native "fallbacks" request field — server-side-fallback-2026-06-01. Claude API only per docs ("not available on Amazon Bedrock, Google Cloud, or Microsoft Foundry").
-	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
-	Safeguards             bool // Opaque Claude auto-mode classifier payloads; supported models require the dangerous-tool-use beta.
-	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
-	MidConvOutputConfig    bool // per-message output_config.effort on role:"system" messages — mid-conversation-output-config-2026-07-01. Claude API direct only; model-gated by DefaultSupportsMidConversationOutputConfig.
-	NativeEffort           bool // output_config.effort accepted on every model the provider serves — the provider-wide fallback for ModelCaps.SupportsNativeEffort when no datasheet row speaks; the Claude model ladder (DefaultSupportsNativeEffort) is the fallback everywhere this is false. DeepSeek: "output_config: only effort is supported" (https://api-docs.deepseek.com/guides/anthropic_api)
+	WebSearch                   bool // web_search server tool (cite: A)
+	WebSearchNova               bool // web_search via nova_grounding — Bedrock Responses path only, not Chat/Converse
+	WebSearchDynamic            bool // web_search_20260209 dynamic filtering (cite: A)
+	WebFetch                    bool // web_fetch server tool (cite: A)
+	CodeExecution               bool // code_execution server tool (cite: A)
+	CodeExecNova                bool // code_execution via nova_code_interpreter — Bedrock Responses path only, not Chat/Converse
+	ComputerUse                 bool // computer_use client tool (cite: A, B-header)
+	Bash                        bool // bash client tool (cite: A, B-header)
+	Memory                      bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
+	TextEditor                  bool // text_editor client tool (cite: A)
+	ToolSearch                  bool // tool_search server tool + tool.defer_loading — tool-search-tool-2025-10-19 (cite: A). On classic Amazon Bedrock AWS restricts this to InvokeModel/InvokeModelWithResponseStream, never Converse (cite: TS-bedrock); the Bedrock provider routes any request carrying a tool_search tool or defer_loading to InvokeModel (bedrock.go, InvokeModel section), so the flag is on.
+	MCP                         bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
+	AdvancedToolUse             bool // advanced-tool-use-2025-11-20 bundle: allowed_callers only as of current docs — defer_loading now has its own beta, see ToolSearch (cite: A)
+	InputExamples               bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
+	StructuredOutputs           bool // strict tool validation / output_format (cite: A)
+	PromptCachingScope          bool // cache_control.scope — prompt-caching-scope-2026-01-05 (cite: A)
+	Compaction                  bool // compact_20260112 (cite: A, B-header)
+	ContextEditing              bool // clear_tool_uses / clear_thinking (cite: A, B-header)
+	ContextManagementField      bool // provider accepts the context_management JSON body field at all; false → entire field dropped regardless of edit types
+	FilesAPI                    bool // files-api-2025-04-14, file_id source (cite: A)
+	InterleavedThinking         bool // interleaved thinking between tool calls (cite: A, B-header; fails on non-allowlisted models on Bedrock/Vertex)
+	Skills                      bool // Agent Skills — container.skills object (cite: A)
+	ContainerBasic              bool // Bare string-form container id — universally supported (cite: A)
+	Context1M                   bool // 1M context window — context-1m-2025-08-07 (cite: A)
+	FastMode                    bool // Opus 4.6 research preview — fast-mode-2026-02-01 (cite: A)
+	RedactThinking              bool // redact-thinking-2026-02-12 (cite: A) — note Bedrock has its own "thinking encryption" (different mechanism)
+	TaskBudgets                 bool // output_config.task_budget — task-budgets-2026-03-13 (cite: A)
+	InferenceGeo                bool // inference_geo field — Claude API only; Bedrock/Vertex/Azure use their own region-routing mechanisms (cite: A)
+	EagerInputStreaming         bool // fine-grained-tool-streaming-2025-05-14 (cite: A, B-header)
+	AdvisorTool                 bool // advisor_tool_result block — Anthropic only (cite: Advisor-excl)
+	FileSearch                  bool // file_search server tool (OpenAI-only)
+	ImageGeneration             bool // image_generation server tool (OpenAI-only)
+	ServiceTier                 bool // service_tier request field — strip when false (Vertex uses headers instead)
+	Diagnostics                 bool // diagnostics request field — cache diagnostics (cache-diagnosis-2026-04-07 beta, diagnostics.previous_message_id). Claude API only per docs ("not supported on Amazon Bedrock or Vertex AI"); stripped elsewhere fail-closed. Azure rejects it.
+	ServerSideFallback          bool // native "fallbacks" request field — server-side-fallback-2026-06-01. Claude API only per docs ("not available on Amazon Bedrock, Google Cloud, or Microsoft Foundry").
+	FallbackCredit              bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
+	Safeguards                  bool // Opaque Claude auto-mode classifier payloads; supported models require the dangerous-tool-use beta.
+	MidConvToolChanges          bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
+	MidConvOutputConfig         bool // per-message output_config.effort on role:"system" messages — mid-conversation-output-config-2026-07-01. Claude API direct only; model-gated by DefaultSupportsMidConversationOutputConfig.
+	NativeEffort                bool // output_config.effort accepted on every model the provider serves — the provider-wide fallback for ModelCaps.SupportsNativeEffort when no datasheet row speaks; the Claude model ladder (DefaultSupportsNativeEffort) is the fallback everywhere this is false. DeepSeek: "output_config: only effort is supported" (https://api-docs.deepseek.com/guides/anthropic_api)
+	EffortWithoutThinkingBudget bool // output_config.effort is forwarded WITHOUT a synthesized thinking.budget_tokens. For a surface that documents budget_tokens as ignored, the synthesized block is a dead field on the wire. Only meaningful where NativeEffort is also granted. DeepSeek: "output_config: only effort is supported", thinking.budget_tokens ignored (https://api-docs.deepseek.com/guides/anthropic_api)
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -358,20 +359,21 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		Safeguards:     true, // Claude Code auto-mode classifier — Azure shares Anthropic's native request shape via BuildAnthropicResponsesRequestBody, model-gated via SupportsSafeguards (Sonnet 5 / Opus 4.7+ / Fable), same as Vertex above.
 	},
 	schemas.DeepSeek: {
-		WebSearch:              true,
-		WebSearchDynamic:       true,
-		ContainerBasic:         true,
-		ContextManagementField: true,
-		Compaction:             true,
-		ContextEditing:         true,
-		PromptCachingScope:     true,
-		AdvancedToolUse:        true,
-		InputExamples:          true,
-		EagerInputStreaming:    true,
-		StructuredOutputs:      true,
-		InterleavedThinking:    true,
-		ServiceTier:            true,
-		NativeEffort:           true,
+		WebSearch:                   true,
+		WebSearchDynamic:            true,
+		ContainerBasic:              true,
+		ContextManagementField:      true,
+		Compaction:                  true,
+		ContextEditing:              true,
+		PromptCachingScope:          true,
+		AdvancedToolUse:             true,
+		InputExamples:               true,
+		EagerInputStreaming:         true,
+		StructuredOutputs:           true,
+		InterleavedThinking:         true,
+		ServiceTier:                 true,
+		NativeEffort:                true,
+		EffortWithoutThinkingBudget: true,
 	},
 	// Fireworks' Anthropic-compatible Messages endpoint (cite: FW-compat,
 	// https://docs.fireworks.ai/tools-sdks/anthropic-compatibility), reached
