@@ -188325,7 +188325,7 @@
     },
     {
       "name": "150. Provider metadata and tags on the providers API (PR #7943) (provider-labels)",
-      "description": "PR #7943 adds operator-defined metadata (key/value) and tags to providers on the management API. POST /api/providers and PUT /api/providers/{provider} accept `metadata` and `tags` (tags are trimmed, de-duplicated and sorted; an invalid tag is a 400; on PUT an omitted field is left alone and null clears it), provider responses carry them, and GET /api/providers filters on `metadata_<key>=<value>` and `tags=a,b` (AND-ed; every listed tag must be present). A bare `metadata_=x` is a 400 rather than an unfiltered list. These rows create a throwaway keyless openai-based custom provider with a per-run name (no standard provider is modified), exercise create, both filters, the AND rule, the invalid-key and invalid-tag 400s and the null clear, then delete the provider and confirm it is gone from the filtered list. Before the PR the labels are dropped on create and the filters are ignored, so the create, filter and 400 rows fail. The keyless provider has no credentials and no request reaches OpenAI; the openai keyword is only a harness filter label. Runs against the default harness profile (config store enabled, dashboard auth unconfigured: no base URL or proxy is set, so the dashboard-auth guard does not apply).",
+      "description": "PR #7943 adds operator-defined metadata (key/value) and tags to providers on the management API. POST /api/providers and PUT /api/providers/{provider} accept `metadata` and `tags` (tags are trimmed, de-duplicated and sorted; an invalid tag is a 400; on PUT an omitted field is left alone and null clears it), provider responses carry them, and GET /api/providers filters on `metadata_<key>=<value>` and `tags=a,b` (AND-ed; every listed tag must be present). A bare `metadata_=x` is a 400 rather than an unfiltered list. These rows create a throwaway keyless openai-based custom provider with a per-run name (no standard provider is modified), exercise create (unsorted input with a duplicate, stored trimmed, de-duplicated and sorted), both filters, the AND rule, the invalid-key and invalid-tag 400s, the 400 for 51 tags of which only 50 are distinct (the cap counts the list as sent, as config.schema.json's maxItems does) and the null clear, then delete the provider and confirm it is gone from the filtered list. Before the PR the labels are dropped on create and the filters are ignored, so the create, filter and 400 rows fail. The keyless provider has no credentials and no request reaches OpenAI; the openai keyword is only a harness filter label. Runs against the default harness profile (config store enabled, dashboard auth unconfigured: no base URL or proxy is set, so the dashboard-auth guard does not apply).",
       "item": [
         {
           "name": "openai provider-labels create a keyless openai-based custom provider with metadata and tags - #7943",
@@ -188349,7 +188349,7 @@
                   "var body = pm.response.json();",
                   "pm.test('the created provider is returned', function () { pm.expect(body.name, pm.response.text()).to.equal(name); });",
                   "pm.test('metadata is stored and returned', function () { pm.expect(body.metadata, pm.response.text()).to.deep.equal({ harness_owner: name }); });",
-                  "pm.test('tags are stored trimmed', function () { pm.expect(body.tags, pm.response.text()).to.be.an('array').that.has.members(['harness-provider-labels', 'harness-provider-labels-b']); });"
+                  "pm.test('tags are stored trimmed, de-duplicated and sorted', function () { pm.expect(body.tags, pm.response.text()).to.deep.equal(['harness-provider-labels', 'harness-provider-labels-b']); });"
                 ]
               }
             }
@@ -188374,7 +188374,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"provider\": \"{{providerLabelsName}}\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"metadata\": {\n    \"harness_owner\": \"{{providerLabelsName}}\"\n  },\n  \"tags\": [\n    \" harness-provider-labels \",\n    \"harness-provider-labels-b\"\n  ]\n}"
+              "raw": "{\n  \"provider\": \"{{providerLabelsName}}\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"metadata\": {\n    \"harness_owner\": \"{{providerLabelsName}}\"\n  },\n  \"tags\": [\n    \"harness-provider-labels-b\",\n    \" harness-provider-labels \",\n    \"harness-provider-labels\"\n  ]\n}"
             }
           }
         },
@@ -188534,6 +188534,45 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 1,\n    \"buffer_size\": 10\n  },\n  \"tags\": [\n    \"bad tag\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai provider-labels PUT /api/providers rejects more than 50 tags even when duplicates leave 50 - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('error reports the 50-tag cap on the list as sent', function () { pm.expect(pm.response.text()).to.include('at most 50 entries, got 51'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{providerLabelsName}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{providerLabelsName}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 1,\n    \"buffer_size\": 10\n  },\n  \"tags\": [\n    \"harness-provider-labels-t0\",\n    \"harness-provider-labels-t1\",\n    \"harness-provider-labels-t2\",\n    \"harness-provider-labels-t3\",\n    \"harness-provider-labels-t4\",\n    \"harness-provider-labels-t5\",\n    \"harness-provider-labels-t6\",\n    \"harness-provider-labels-t7\",\n    \"harness-provider-labels-t8\",\n    \"harness-provider-labels-t9\",\n    \"harness-provider-labels-t10\",\n    \"harness-provider-labels-t11\",\n    \"harness-provider-labels-t12\",\n    \"harness-provider-labels-t13\",\n    \"harness-provider-labels-t14\",\n    \"harness-provider-labels-t15\",\n    \"harness-provider-labels-t16\",\n    \"harness-provider-labels-t17\",\n    \"harness-provider-labels-t18\",\n    \"harness-provider-labels-t19\",\n    \"harness-provider-labels-t20\",\n    \"harness-provider-labels-t21\",\n    \"harness-provider-labels-t22\",\n    \"harness-provider-labels-t23\",\n    \"harness-provider-labels-t24\",\n    \"harness-provider-labels-t25\",\n    \"harness-provider-labels-t26\",\n    \"harness-provider-labels-t27\",\n    \"harness-provider-labels-t28\",\n    \"harness-provider-labels-t29\",\n    \"harness-provider-labels-t30\",\n    \"harness-provider-labels-t31\",\n    \"harness-provider-labels-t32\",\n    \"harness-provider-labels-t33\",\n    \"harness-provider-labels-t34\",\n    \"harness-provider-labels-t35\",\n    \"harness-provider-labels-t36\",\n    \"harness-provider-labels-t37\",\n    \"harness-provider-labels-t38\",\n    \"harness-provider-labels-t39\",\n    \"harness-provider-labels-t40\",\n    \"harness-provider-labels-t41\",\n    \"harness-provider-labels-t42\",\n    \"harness-provider-labels-t43\",\n    \"harness-provider-labels-t44\",\n    \"harness-provider-labels-t45\",\n    \"harness-provider-labels-t46\",\n    \"harness-provider-labels-t47\",\n    \"harness-provider-labels-t48\",\n    \"harness-provider-labels-t49\",\n    \"harness-provider-labels-t0\"\n  ]\n}"
             }
           }
         },

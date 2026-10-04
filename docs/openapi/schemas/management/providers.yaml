@@ -426,6 +426,17 @@ Tags:
     type: string
     pattern: '^[a-zA-Z0-9._-]{1,64}$'
 
+TagsInput:
+  type: array
+  description: >-
+    Free-form labels (for example prod, eu, approved-for-pii). Each tag is 1-64 characters of
+    letters, digits, '.', '_' and '-' once surrounding whitespace is trimmed; at most 50 entries,
+    duplicates included. Stored trimmed, de-duplicated and sorted.
+  maxItems: 50
+  items:
+    type: string
+    pattern: '^\s*[a-zA-Z0-9._-]{1,64}\s*$'
+
 ListProvidersResponse:
   type: object
   description: List providers response
@@ -464,7 +475,7 @@ AddProviderRequest:
     metadata:
       $ref: '#/ProviderMetadata'
     tags:
-      $ref: '#/Tags'
+      $ref: '#/TagsInput'
 
 CacheControlInjectionPoint:
   type: object
@@ -534,11 +545,12 @@ UpdateProviderRequest:
       type: [array, 'null']
       description: >-
         Replaces the provider's tags as a whole. Omit to leave them unchanged; send [] or null to
-        clear them. Same rules as on create.
+        clear them. Same rules as on create: surrounding whitespace is trimmed, at most 50
+        entries (duplicates included).
       maxItems: 50
       items:
         type: string
-        pattern: '^[a-zA-Z0-9._-]{1,64}$'
+        pattern: '^\s*[a-zA-Z0-9._-]{1,64}\s*$'
 
 ListProviderKeysResponse:
   type: object

@@ -322,7 +322,9 @@ def test_virtual_key_request_contract_is_current():
 def test_provider_labels_contract():
     """Provider metadata and tags: the update request accepts null for both (null clears them),
     and the list endpoint documents its metadata_<key> filters in the description instead of
-    declaring a literal `metadata_<key>` query parameter, which a client would send verbatim."""
+    declaring a literal `metadata_<key>` query parameter, which a client would send verbatim.
+    Request tag patterns accept surrounding whitespace (the handler trims before validating, as
+    config.schema.json does), while the response keeps the strict pattern of the stored form."""
     import json
 
     source = load(HERE / "schemas" / "management" / "providers.yaml")
@@ -339,6 +341,25 @@ def test_provider_labels_contract():
             types = types if isinstance(types, list) else [types]
             if sorted(types) != sorted([base, "null"]):
                 problems.append(f"{where} UpdateProviderRequest.{field}: type {types}, want [{base}, null]")
+
+    trimmed_tag = r"^\s*[a-zA-Z0-9._-]{1,64}\s*$"
+    stored_tag = r"^[a-zA-Z0-9._-]{1,64}$"
+
+    def tags_schema(doc_schemas, name):
+        tags = doc_schemas[name]["properties"]["tags"]
+        if "$ref" in tags:
+            tags = doc_schemas[tags["$ref"].split("/")[-1]]
+        return tags
+
+    for where, schemas in (("schemas/management/providers.yaml", source), ("openapi.json", bundle)):
+        for name, want in (
+            ("AddProviderRequest", trimmed_tag),
+            ("UpdateProviderRequest", trimmed_tag),
+            ("ProviderResponse", stored_tag),
+        ):
+            got = tags_schema(schemas, name).get("items", {}).get("pattern")
+            if got != want:
+                problems.append(f"{where} {name}.tags item pattern {got!r}, want {want!r}")
 
     source_list = load(PATHS_DIR / "providers.yaml")["providers"]["get"]
     bundle_list = bundle_doc["paths"]["/api/providers"]["get"]
