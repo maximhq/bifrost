@@ -188322,6 +188322,97 @@
           ]
         }
       ]
+    },
+    {
+      "name": "144. OpenAI retry backoff overflow (#6964)",
+      "description": "Opt-in local fixture regression for the high-attempt overflow noted in #6964, separate from cancellation and Retry-After. Follow runners/retry-backoff-overflow-fixture.md and set backoffOverflowFixture=1 against an isolated custom OpenAI provider. The real gateway retries 41 transient HTTP 503 failures with initial=max=100ms. Calls 39/41/42 previously wrapped the exponential duration negative and skipped the wait; the fixture rejects any late retry arriving under 60ms with nonretryable 400. JSON and streaming startup must reach call 42 and return the unique success marker. Every unexpected error fails loudly; no paid provider requests are used.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('backoffOverflowFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "OpenAI retry backoff overflow retry-backoff-overflow-json JSON - #6964",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OpenAI retry backoff overflow JSON - #6964', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, body).to.equal(200);",
+                  "  pm.expect(body).not.to.include('retry-backoff-overflow-early');",
+                  "  var result = pm.response.json();",
+                  "  pm.expect(result.id, body).to.equal('backoff-overflow-42');",
+                  "  pm.expect(result.choices[0].message.content, body).to.equal('backoff-overflow-ok:42');",
+                  "  pm.expect(result.choices[0].finish_reason, body).to.equal('stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai-backoff-overflow-fixture/retry-backoff-overflow-json\",\"messages\":[{\"role\":\"user\",\"content\":\"{{$guid}}\"}],\"stream\":false}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "OpenAI retry backoff overflow retry-backoff-overflow-stream streaming startup - #6964",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OpenAI retry backoff overflow streaming startup - #6964', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, body).to.equal(200);",
+                  "  pm.expect(body).not.to.include('retry-backoff-overflow-early');",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), body).to.include('text/event-stream');",
+                  "  pm.expect(body).to.include('data: [DONE]');",
+                  "  var chunks = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data: ') === 0 && line !== 'data: [DONE]'; }).map(function (line) { return JSON.parse(line.slice(6)); });",
+                  "  var content = chunks.map(function (chunk) { return chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content || ''; }).join('');",
+                  "  pm.expect(content, body).to.equal('backoff-overflow-ok:42');",
+                  "  pm.expect(chunks.some(function (chunk) { return chunk.choices && chunk.choices[0] && chunk.choices[0].finish_reason === 'stop'; }), body).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai-backoff-overflow-fixture/retry-backoff-overflow-stream\",\"messages\":[{\"role\":\"user\",\"content\":\"{{$guid}}\"}],\"stream\":true}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        }
+      ]
     }
   ]
 }
