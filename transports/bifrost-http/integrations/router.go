@@ -543,6 +543,18 @@ type PassthroughConfig struct {
 	// AllowedRoutes, when non-empty, restricts the passthrough catch-all to exactly
 	// these method+path pairs instead of forwarding every request under StripPrefix.
 	AllowedRoutes []PassthroughRoute
+	// StreamingPath, when set, marks requests whose upstream response is a stream even though the
+	// path and body carry no "stream" marker (Bedrock InvokeAgent answers with an event stream).
+	StreamingPath func(method, path string) bool
+}
+
+// streams reports whether a passthrough request is served by the streaming handler: the path names
+// a stream, the body asks for one, or the provider says this route always streams.
+func (c *PassthroughConfig) streams(method, path string, bodyStream bool) bool {
+	if strings.Contains(strings.ToLower(path), "stream") || bodyStream {
+		return true
+	}
+	return c.StreamingPath != nil && c.StreamingPath(method, path)
 }
 
 // PassthroughRoute is an exact method+path pair a restricted passthrough router
@@ -3545,7 +3557,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
-	isStreaming := strings.Contains(strings.ToLower(path), "stream") || bodyStream
+	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream)
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{
 		Method:      string(ctx.Method()),
