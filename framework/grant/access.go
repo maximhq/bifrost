@@ -123,6 +123,46 @@ func (a *Access) IsModelAllowed(provider string, model string) bool {
 	return a.compose(base, a.permitAllowsModel(a.scoping, provider, model))
 }
 
+// AllowsEveryModel implements schemas.Access.
+func (a *Access) AllowsEveryModel(provider string) bool {
+	if a == nil {
+		return false
+	}
+	base := a.anyBase(func(p schemas.Permit) bool { return permitAllowsEveryModel(p, provider) })
+	if a.scoping == nil {
+		return base
+	}
+	return a.compose(base, permitAllowsEveryModel(a.scoping, provider))
+}
+
+// permitAllowsEveryModel reports whether the permit permits every model on provider. Its provider
+// permits for the provider are read as a union, as permitAllowsModel reads them: one unrestricted
+// entry is enough, while a blacklist on any entry is decisive (blacklistsModel blocks the model
+// whatever another entry allows). A provider the permit lists no permit for is every-model only
+// under allow-all, as in permitAllowsModel.
+func permitAllowsEveryModel(p schemas.Permit, provider string) bool {
+	if isNilPermit(p) {
+		return false
+	}
+	found, unrestricted := false, false
+	for _, pp := range p.ProviderPermits() {
+		if pp.Provider != provider {
+			continue
+		}
+		found = true
+		if len(pp.BlacklistedModels) > 0 {
+			return false
+		}
+		if pp.AllowedModels.IsUnrestricted() {
+			unrestricted = true
+		}
+	}
+	if !found {
+		return p.AllowsAllProviders()
+	}
+	return unrestricted
+}
+
 // IsMCPToolAllowed implements schemas.Access.
 func (a *Access) IsMCPToolAllowed(toolPattern string) bool {
 	if a == nil || toolPattern == "" {
