@@ -263,6 +263,45 @@ func TestConsentFlowSubmit_Session(t *testing.T) {
 	})
 }
 
+// TestConsentFlowSubmit_DeviceFlow pins the device-grant branch used by the
+// Claude Code gateway: consent completes the row without minting an
+// authorization code, and sends the browser to the device-approved page.
+func TestConsentFlowSubmit_DeviceFlow(t *testing.T) {
+	store := newConsentStore()
+	store.vksByValue["sk-bf-active"] = &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active"), IsActive: new(true)}
+	deviceHash := "device-hash"
+	store.authReqs["flow-device"] = &configtables.TableOAuth2AuthorizeRequest{
+		ID:             "flow-device",
+		ClientID:       claudeCodeClientID,
+		Status:         configtables.OAuth2AuthorizeRequestStatusPending,
+		DeviceCodeHash: &deviceHash,
+		ExpiresAt:      time.Now().Add(time.Minute),
+	}
+	h := newConsentHandler(store, nil, false)
+
+	// The consent page names the built-in client even if its registration was swept.
+	detail := consentCtx("flow-device", "")
+	h.flowDetail(detail)
+	require.Equal(t, fasthttp.StatusOK, detail.Response.StatusCode(), string(detail.Response.Body()))
+	var flow consentFlowDetailResponse
+	require.NoError(t, json.Unmarshal(detail.Response.Body(), &flow))
+	assert.Equal(t, "Claude Code", flow.ClientName)
+
+	ctx := consentCtx("flow-device", `{"mode":"vk","value":"sk-bf-active"}`)
+	h.flowSubmit(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var resp consentFlowSubmitResponse
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	assert.Equal(t, testIssuer+"/oauth/device?approved=1", resp.RedirectURL)
+	assert.NotContains(t, resp.RedirectURL, "code=")
+
+	got := store.authReqs["flow-device"]
+	assert.Equal(t, configtables.OAuth2AuthorizeRequestStatusConsented, got.Status)
+	assert.Nil(t, got.CodeHash, "a device grant carries no authorization code")
+	assert.Equal(t, "vk", got.BfMode)
+	assert.Equal(t, "vk-row-1", got.BfSub)
+}
+
 func TestConsentFlowSubmit_User(t *testing.T) {
 	t.Run("user mode rejected when no resolver (mode not offered)", func(t *testing.T) {
 		store := newConsentStore()

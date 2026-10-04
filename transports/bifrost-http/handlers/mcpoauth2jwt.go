@@ -71,6 +71,14 @@ func extractBearerJWT(ctx *fasthttp.RequestCtx) string {
 // the verified claims. The caller provides the signing key (typically from a
 // process-lifetime cache) so verification need not read it per request.
 func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, signingKey *configtables.OAuth2SigningKey) (*jwtMCPClaims, error) {
+	return verifyOAuth2JWT(ctx, rawToken, store, signingKey, oauth2MCPResourceURL(ctx, store))
+}
+
+// verifyOAuth2JWT verifies a Bifrost-issued JWT for the protected resource
+// identified by resource (its required audience). Every resource shares the
+// signing key and issuer, so the audience pin is what keeps a token issued for
+// one resource (e.g. /claude-code) from being replayed against another (/mcp).
+func verifyOAuth2JWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, signingKey *configtables.OAuth2SigningKey, resource string) (*jwtMCPClaims, error) {
 	if signingKey == nil {
 		return nil, fmt.Errorf("signing key unavailable")
 	}
@@ -113,7 +121,6 @@ func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, 
 	}
 
 	// RFC 8707: the token must have been issued for this specific resource.
-	resource := oauth2MCPResourceURL(ctx, store)
 	aud, err := claims.GetAudience()
 	if err != nil || !slices.Contains(aud, resource) {
 		return nil, fmt.Errorf("token audience does not match this resource")

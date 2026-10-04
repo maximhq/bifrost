@@ -478,6 +478,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// The Claude Code gateway derives every URL and token claim it issues from
+	// issuer_url, independently of mcp_server_auth_mode, so it needs one pinned
+	// just as OAuth discovery does below. Evaluated on the merged config so a
+	// partial update cannot clear the issuer while the gateway stays on.
+	if effectiveOAuth2Config.IsClaudeCodeGatewayEnabled() &&
+		(!effectiveOAuth2Config.IssuerURL.IsSet() || effectiveOAuth2Config.IssuerURL.GetValue() == "") {
+		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set to a non-empty value when claude_code_gateway is enabled")
+		return
+	}
+
 	// Enabling discovery without a pinned issuer_url would leave every issuer
 	// reference (discovery documents, authorize redirect, JWT iss/aud) derived
 	// from the unauthenticated, per-request Host header - reject the write here

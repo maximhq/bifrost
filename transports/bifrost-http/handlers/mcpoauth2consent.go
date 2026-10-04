@@ -106,6 +106,11 @@ func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 	}
 
 	client, err := h.store.ConfigStore.GetOAuth2ClientByClientID(ctx, req.ClientID)
+	if errors.Is(err, configstore.ErrNotFound) && req.ClientID == claudeCodeClientID {
+		// The orphaned-client sweep may remove the built-in Claude Code client
+		// while a sign-in is in flight; it needs no registration to be named.
+		client, err = &configtables.TableOAuth2Client{ClientID: claudeCodeClientID, ClientName: claudeCodeClientName}, nil
+	}
 	if err != nil || client == nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusInternalServerError, "client registration not found")
@@ -205,19 +210,26 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Mint the authorization code. Only the SHA256 hash is stored — the
-	// plaintext travels to the client via the redirect URI and is never
-	// persisted anywhere (RFC 6749 §4.1.2).
-	code, err := generateSecureToken(32)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to generate authorization code")
-		return
+	// A device-grant flow (Claude Code gateway sign-in) has no redirect to carry
+	// an authorization code: consent alone completes it, and the device's next
+	// token poll consumes the row. Every other flow mints a code.
+	isDeviceFlow := req.DeviceCodeHash != nil
+	var code string
+	if !isDeviceFlow {
+		// Mint the authorization code. Only the SHA256 hash is stored — the
+		// plaintext travels to the client via the redirect URI and is never
+		// persisted anywhere (RFC 6749 §4.1.2).
+		code, err = generateSecureToken(32)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, "failed to generate authorization code")
+			return
+		}
+		hash := hashSHA256Hex(code)
+		req.CodeHash = &hash
 	}
 
 	req.BfMode = string(bfMode)
 	req.BfSub = bfSub
-	hash := hashSHA256Hex(code)
-	req.CodeHash = &hash
 	req.Status = configtables.OAuth2AuthorizeRequestStatusConsented
 	req.UpdatedAt = time.Now()
 
@@ -239,6 +251,10 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 	}
 
 	issuer := oauth2IssuerURL(ctx, h.store)
+	if isDeviceFlow {
+		SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: claudeCodeDeviceApprovedURL(issuer)})
+		return
+	}
 	redirectURL, err := buildRedirectURL(req.RedirectURI, map[string]string{
 		"code":  code,
 		"state": req.State,
