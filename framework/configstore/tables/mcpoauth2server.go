@@ -72,6 +72,12 @@ type OAuth2ServerConfig struct {
 	// option. Only meaningful when MCPServerAuthMode is oauth.
 	DisableVKIdentity bool `json:"disable_vk_identity,omitempty"`
 
+	// ClaudeCodeGateway exposes this authorization server to Claude Code's
+	// gateway sign-in (/login → Cloud gateway) under /claude-code. It is
+	// independent of MCPServerAuthMode but requires IssuerURL. nil or
+	// Enabled=false leaves every /claude-code route answering 404.
+	ClaudeCodeGateway *ClaudeCodeGatewayConfig `json:"claude_code_gateway,omitempty"`
+
 	// Refresh tokens have no hard expiry — they are invalidated only by:
 	//   - rotation on use (each /oauth2/token refresh call issues a new token
 	//     and immediately invalidates the previous one)
@@ -81,6 +87,26 @@ type OAuth2ServerConfig struct {
 	//   - DisableVKIdentity enabled (vk-mode grants denied on refresh)
 	// No RefreshTokenTTL field exists by design — there is no timer, only
 	// explicit invalidation paths.
+}
+
+// ClaudeCodeGatewayConfig configures the Claude Code gateway protocol served
+// under /claude-code: the RFC 8628 device sign-in that Claude Code's /login
+// runs, Anthropic Messages inference, managed settings and OTLP telemetry.
+// It reuses the OAuth2 authorization server's signing key, consent page and
+// refresh-token rotation, but not the /mcp auth mode: it is served whenever it
+// is enabled and IssuerURL is set, even while /mcp stays on header auth.
+type ClaudeCodeGatewayConfig struct {
+	Enabled bool `json:"enabled"`
+	// ManagedSettings is the Claude Code managed-settings.json document served at
+	// /claude-code/managed/settings to every signed-in client. nil means no
+	// managed policy (the endpoint answers 404); an empty object is an empty policy.
+	ManagedSettings map[string]any `json:"managed_settings,omitempty"`
+}
+
+// IsClaudeCodeGatewayEnabled reports whether the Claude Code gateway toggle is
+// on. It does not check IssuerURL, which the gateway also requires.
+func (c *OAuth2ServerConfig) IsClaudeCodeGatewayEnabled() bool {
+	return c != nil && c.ClaudeCodeGateway != nil && c.ClaudeCodeGateway.Enabled
 }
 
 // DefaultOAuth2ServerConfig returns sensible defaults for the AS-specific settings.

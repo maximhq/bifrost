@@ -526,6 +526,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"make_mcp_oauth_flows_state_unique"}, run: migrationMakeMCPOauthFlowsStateUnique},
 	{IDs: []string{"add_ultrafast_above_272k_pricing_columns"}, run: migrationAddUltrafastAbove272kPricingColumns},
 	{IDs: []string{"add_priority_above_272k_cache_creation_pricing_column"}, run: migrationAddPriorityAbove272kCacheCreationPricingColumn},
+	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -15128,6 +15129,62 @@ func migrationAddPriorityAbove272kCacheCreationPricingColumn(ctx context.Context
 			tx = tx.WithContext(ctx)
 			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
 				return fmt.Errorf("failed to drop column %s: %w", column, err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns adds the device_code_hash
+// and user_code_hash columns, each with a unique index, to
+// oauth2_authorize_requests. They let a row carry an RFC 8628 device
+// authorization (the Claude Code gateway sign-in) through the same consent and
+// single-use consume path as an authorization-code request. Both are nullable:
+// existing and authorization-code rows keep NULL, which the unique indexes
+// treat as distinct.
+func migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth2_authorize_requests_device_code_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	fields := []struct{ column, field string }{
+		{"device_code_hash", "DeviceCodeHash"},
+		{"user_code_hash", "UserCodeHash"},
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, f := range fields {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, f.column); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", f.column, err)
+				}
+				if !mg.HasIndex(&tables.TableOAuth2AuthorizeRequest{}, f.field) {
+					if err := mg.CreateIndex(&tables.TableOAuth2AuthorizeRequest{}, f.field); err != nil {
+						return fmt.Errorf("failed to create index on %s: %w", f.column, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// The columns only hold short-lived sign-in state (rows expire within
+			// minutes and are swept), so dropping them loses nothing durable.
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, f := range fields {
+				if mg.HasIndex(&tables.TableOAuth2AuthorizeRequest{}, f.field) {
+					if err := mg.DropIndex(&tables.TableOAuth2AuthorizeRequest{}, f.field); err != nil {
+						return fmt.Errorf("failed to drop index on %s: %w", f.column, err)
+					}
+				}
+				if err := dropColumnIfExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, f.column); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", f.column, err)
+				}
 			}
 			return nil
 		},

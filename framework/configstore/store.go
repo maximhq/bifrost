@@ -1057,6 +1057,13 @@ type ConfigStore interface {
 	CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
 	GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error)
 	GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// GetOAuth2AuthorizeRequestByDeviceCodeHash returns the device-grant request
+	// for a device_code hash in any status, so the token endpoint can answer
+	// authorization_pending, expired_token or issue tokens.
+	GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx context.Context, deviceCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// GetPendingOAuth2AuthorizeRequestByUserCodeHash returns the still-pending,
+	// unexpired device-grant request for a user_code hash.
+	GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx context.Context, userCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
 	// ConsentOAuth2AuthorizeRequest atomically transitions a still-pending request
 	// to consented (recording the code hash and resolved identity) — returns
 	// ErrNotFound when no longer pending, so concurrent double-consent can't

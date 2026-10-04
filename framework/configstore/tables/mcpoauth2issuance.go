@@ -101,6 +101,13 @@ type TableOAuth2AuthorizeRequest struct {
 	// rows store SQL NULL — NULLs are distinct under the unique index, letting many
 	// requests stay pending at once while still enforcing uniqueness for real hashes.
 	CodeHash *string `gorm:"type:varchar(255);uniqueIndex" json:"-"`
+	// Device authorization grant (RFC 8628) rows only; nil on authorization-code
+	// rows. SHA256 of the device_code the client polls with and of the
+	// normalized user_code the user types on the verification page. A device row
+	// carries no redirect URI, state or PKCE challenge: the consent flow marks
+	// it consented and the token endpoint consumes it when the client next polls.
+	DeviceCodeHash *string `gorm:"type:varchar(255);uniqueIndex" json:"-"`
+	UserCodeHash   *string `gorm:"type:varchar(255);uniqueIndex" json:"-"`
 	// TTL:
 	ExpiresAt time.Time `gorm:"index;not null" json:"expires_at"`
 	CreatedAt time.Time `gorm:"not null" json:"created_at"`
