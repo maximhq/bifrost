@@ -20,9 +20,9 @@ const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 const isIssuerSet = (issuer?: SecretVar) => !!(issuer?.value?.trim() || issuer?.ref?.trim());
 
 // Claude Code is pointed at {issuer}/claude-code. Only a plain-text issuer can be
-// shown; an env reference resolves on the server.
+// shown; env and vault references resolve on the server.
 const gatewayURL = (issuer?: SecretVar) => {
-	const value = issuer?.type === "env" ? "" : (issuer?.value ?? "").trim();
+	const value = issuer?.type === "env" || issuer?.type === "vault" ? "" : (issuer?.value ?? "").trim();
 	return value ? `${value.replace(/\/+$/, "")}/claude-code` : "<issuer URL>/claude-code";
 };
 
@@ -154,14 +154,14 @@ export default function ClaudeCodeView() {
 				{enabled && (
 					<div className="space-y-3 rounded-sm border p-4" data-testid="claude-code-connect-instructions">
 						<p className="text-sm font-medium">Connect Claude Code</p>
-						<p className="text-muted-foreground text-sm">
-							In Claude Code, run <code className="text-xs">/login</code>, choose <b>Cloud gateway</b> and enter:
-						</p>
+						<p className="text-muted-foreground text-sm">Gateway URL:</p>
 						<code className="bg-muted block rounded-sm px-3 py-2 text-xs" data-testid="claude-code-gateway-url">
 							{url}
 						</code>
 						<p className="text-muted-foreground text-sm">
-							To preset it on managed machines, add these keys to Claude Code&apos;s managed settings file:
+							Claude Code reads the gateway URL only from machine-level managed settings. Deploy these keys to each developer machine (MDM
+							or Claude Code&apos;s <code className="text-xs">managed-settings.json</code>), then developers run{" "}
+							<code className="text-xs">/login</code> and press Enter on the <b>Cloud gateway</b> screen:
 						</p>
 						<pre className="bg-muted overflow-x-auto rounded-sm px-3 py-2 text-xs">{mdmSnippet}</pre>
 						<Alert>

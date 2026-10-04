@@ -49,8 +49,11 @@ const (
 	claudeCodeUserCodeAlphabet = "BCDFGHJKLMNPQRSTVWXZ"
 	claudeCodeUserCodeLength   = 8
 	// Per-IP limits for the two unauthenticated sign-in endpoints (RFC 8628 §5.1, §5.2).
-	claudeCodeDeviceAuthorizationLimit = 30
-	claudeCodeDeviceVerifyLimit        = 30
+	// Keyed by the TCP peer, so behind a reverse proxy every client of one process
+	// shares a bucket; the limits leave room for that while keeping user-code
+	// guessing negligible (20^8 codes, each valid for 10 minutes).
+	claudeCodeDeviceAuthorizationLimit = 120
+	claudeCodeDeviceVerifyLimit        = 120
 	claudeCodeRateLimitWindow          = time.Minute
 )
 
@@ -741,7 +744,10 @@ func normalizeClaudeCodeUserCode(code string) string {
 
 // ipRateLimiter is a fixed-window per-key counter for the unauthenticated
 // sign-in endpoints. It is per process: behind several replicas the effective
-// limit scales with the replica count, which is fine for abuse damping.
+// limit scales with the replica count, which is fine for abuse damping. Callers
+// key it by ctx.RemoteIP(), never by X-Forwarded-For: Bifrost has no
+// trusted-proxy setting, and a caller-controlled header would let anyone pick a
+// fresh bucket per request.
 type ipRateLimiter struct {
 	mu      sync.Mutex
 	limit   int

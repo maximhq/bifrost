@@ -155,8 +155,9 @@ ClientConfig:
     oauth2_server_config:
       type: object
       description: >
-        OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode
-        is 'both' or 'oauth'.
+        OAuth2 authorization server settings for /mcp (when mcp_server_auth_mode is 'both' or
+        'oauth') and for the Claude Code gateway (when claude_code_gateway.enabled is true, in
+        any mcp_server_auth_mode).
       properties:
         issuer_url:
           oneOf:

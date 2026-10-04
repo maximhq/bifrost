@@ -104,7 +104,7 @@ Set `ANTHROPIC_CUSTOM_HEADERS` to `x-bf-vk: your-virtual-key`. This passes the v
 
 ## Sign in with `/login` (Cloud gateway)
 
-Instead of handing every developer a virtual key, you can let them sign in to Bifrost from inside Claude Code. Bifrost serves Claude Code's gateway sign-in protocol under `/claude-code`: the developer runs `/login`, picks **Cloud gateway**, confirms a code in the browser, and chooses which identity to use. Claude Code then sends a short-lived token that it refreshes on its own, and nothing long-lived is stored on the laptop.
+Instead of handing every developer a virtual key, you can let them sign in to Bifrost from inside Claude Code. Bifrost serves Claude Code's gateway sign-in protocol under `/claude-code`: the developer runs `/login`, picks **Cloud gateway**, confirms a code in the browser, and chooses which identity to use. Claude Code then sends a short-lived token that it refreshes on its own. The virtual key itself never reaches the laptop; Claude Code keeps only its gateway session (access and refresh token) in the machine's secure storage, and that session can be revoked from Bifrost.
 
 ### Enable it
 
@@ -139,13 +139,7 @@ On first connect Claude Code shows the TLS certificate fingerprint and asks the 
 
 ### Connect Claude Code
 
-In Claude Code run `/login`, choose **Cloud gateway** and enter:
-
-```text
-https://bifrost.example.com/claude-code
-```
-
-To preset the gateway on managed machines, add these keys to Claude Code's [managed settings file](https://code.claude.com/docs/en/managed-settings), so `/login` opens straight on the Cloud gateway screen:
+Claude Code takes the gateway URL only from **machine-level managed settings**: `/login` has no field to type it in. An administrator first deploys these two keys to each developer machine, through MDM or the per-OS [`managed-settings.json` file](https://code.claude.com/docs/en/managed-settings#delivery-mechanisms):
 
 ```json
 {
@@ -153,6 +147,8 @@ To preset the gateway on managed machines, add these keys to Claude Code's [mana
   "forceLoginGatewayUrl": "https://bifrost.example.com/claude-code"
 }
 ```
+
+The developer then runs `/login` in Claude Code, presses Enter on the **Cloud gateway** screen (which shows the preconfigured URL), and completes the browser sign-in below.
 
 ### What happens at sign-in
 

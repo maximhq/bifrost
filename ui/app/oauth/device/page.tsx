@@ -62,11 +62,12 @@ function CodeEntry({ prefill }: { prefill: string }) {
 				setError(body?.error?.message || "This code could not be verified. Run /login in Claude Code again.");
 				return;
 			}
-			// The consent URL is built by the server on Bifrost's own issuer; only
-			// follow it when it stays on this origin.
+			// The consent URL is built by the server from the configured issuer, which
+			// may be a different host than the one serving this page. Only refuse a
+			// scheme that could execute script when assigned to location.href.
 			const target = new URL(body.consent_url, window.location.origin);
-			if (target.origin !== window.location.origin) {
-				setError("The sign-in link points to a different host. Check the gateway's issuer URL setting.");
+			if (target.protocol !== "https:" && target.protocol !== "http:") {
+				setError("The sign-in link is not a valid web address. Check the gateway's issuer URL setting.");
 				return;
 			}
 			window.location.href = target.toString();
