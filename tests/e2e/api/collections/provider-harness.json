@@ -188325,7 +188325,7 @@
     },
     {
       "name": "149. Anthropic egress preserves stop_reason stop_sequence and the matched sequence (#7920 / PR #7921) (anthropic-stop-sequence)",
-      "description": "Pins that when Claude (Anthropic provider or Vertex) stops on a requested stop sequence, /anthropic/v1/messages reports stop_reason \"stop_sequence\" and the matched string in stop_sequence, in the non-streaming body and in the streaming terminal message_delta.\n\nBug (#7920): the response is converted Anthropic -> Bifrost Responses -> Anthropic. Anthropic's stop_sequence reason is folded into Bifrost \"stop\" and the matched string had no field on BifrostResponsesResponse, so the egress reported stop_reason end_turn with stop_sequence null. Clients that branch on stop_reason == \"stop_sequence\" could not tell a delimiter stop from a natural end of turn.\n\nFix: BifrostResponsesResponse gains an optional stop_sequence carrier, the Anthropic ingress (ToBifrostResponsesResponse and the streaming message_delta handling in core/providers/anthropic/responses.go) records it when the upstream reason is stop_sequence, and the egress restores stop_reason stop_sequence via anthropicStopReasonWithSequence (core/providers/anthropic/utils.go). An OpenAI-style \"stop\" with no matched sequence still maps to end_turn.\n\nCases use the issue repro: stop_sequences [\"5\"] with \"Count from 1 to 10 separated by spaces.\", which deterministically stops on \"5\". Anthropic non-streaming and streaming, Vertex Claude non-streaming and streaming. Red before the fix (end_turn / null), green after.",
+      "description": "Pins that when Claude (Anthropic provider or Vertex) stops on a requested stop sequence, /anthropic/v1/messages reports stop_reason \"stop_sequence\" and the matched string in stop_sequence, in the non-streaming body and in the streaming terminal message_delta.\n\nBug (#7920): the response is converted Anthropic -> Bifrost Responses -> Anthropic. Anthropic's stop_sequence reason is folded into Bifrost \"stop\" and the matched string had no field on BifrostResponsesResponse, so the egress reported stop_reason end_turn with stop_sequence null. Clients that branch on stop_reason == \"stop_sequence\" could not tell a delimiter stop from a natural end of turn.\n\nFix: BifrostResponsesResponse gains an optional stop_sequence carrier, the Anthropic ingress (ToBifrostResponsesResponse and the streaming message_delta handling in core/providers/anthropic/responses.go) records it when the upstream reason is stop_sequence, and the egress restores stop_reason stop_sequence via anthropicStopReasonWithSequence (core/providers/anthropic/utils.go). An OpenAI-style \"stop\" with no matched sequence still maps to end_turn.\n\nCases use the issue repro (stop_sequences [\"5\"]) with the output pinned as far as a live model allows: temperature 0, a system prompt demanding the exact characters, the user turn \"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\", and max_tokens 30, so the upstream stops right after \"4\". The text-ends-on-4 check runs first and reports a model that ignored the prompt as a precondition failure, separate from the stop_reason/stop_sequence assertions under test; the conversion itself is pinned with fixed upstream payloads by the unit tests in core/providers/anthropic. Anthropic non-streaming and streaming, Vertex Claude non-streaming and streaming. Red before the fix (end_turn / null), green after.",
       "item": [
         {
           "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages non-streaming stop_sequences hit reports stop_reason stop_sequence with the matched sequence - #7920",
@@ -188340,6 +188340,9 @@
                   "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
                   "  var j; try { j = pm.response.json(); } catch (e) {",
                   "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  var text = (j.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + j.stop_reason).to.match(/(^|\\D)4\\D*$/);",
                   "  pm.expect(j.stop_reason, 'a turn that stopped on the requested stop sequence must report stop_reason stop_sequence, not end_turn: ' + raw.slice(0, 400)).to.equal('stop_sequence');",
                   "  pm.expect(j.stop_sequence, 'stop_sequence must carry the matched sequence, not null: ' + raw.slice(0, 400)).to.equal('5');",
                   "});"
@@ -188361,7 +188364,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":100,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 10 separated by spaces.\"}]}"
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -188397,6 +188400,9 @@
                   "  var deltas = frames.filter(function (f) { return f.type === 'message_delta'; });",
                   "  pm.expect(deltas.length, 'stream must emit a terminal message_delta: ' + raw.slice(-600)).to.be.above(0);",
                   "  var d = deltas[deltas.length - 1].delta || {};",
+                  "  var text = frames.filter(function (f) { return f.type === 'content_block_delta' && f.delta && f.delta.type === 'text_delta'; }).map(function (f) { return f.delta.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the streamed text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + d.stop_reason).to.match(/(^|\\D)4\\D*$/);",
                   "  pm.expect(d.stop_reason, 'message_delta must report stop_reason stop_sequence, not end_turn: ' + JSON.stringify(d)).to.equal('stop_sequence');",
                   "  pm.expect(d.stop_sequence, 'message_delta must carry the matched stop_sequence, not null: ' + JSON.stringify(d)).to.equal('5');",
                   "  pm.expect(frames[frames.length - 1].type, 'stream must end on message_stop').to.equal('message_stop');",
@@ -188419,7 +188425,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":100,\"stream\":true,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 10 separated by spaces.\"}]}"
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stream\":true,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -188447,6 +188453,9 @@
                   "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
                   "  var j; try { j = pm.response.json(); } catch (e) {",
                   "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  var text = (j.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + j.stop_reason).to.match(/(^|\\D)4\\D*$/);",
                   "  pm.expect(j.stop_reason, 'a turn that stopped on the requested stop sequence must report stop_reason stop_sequence, not end_turn: ' + raw.slice(0, 400)).to.equal('stop_sequence');",
                   "  pm.expect(j.stop_sequence, 'stop_sequence must carry the matched sequence, not null: ' + raw.slice(0, 400)).to.equal('5');",
                   "});"
@@ -188468,7 +188477,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"max_tokens\":100,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 10 separated by spaces.\"}]}"
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -188504,6 +188513,9 @@
                   "  var deltas = frames.filter(function (f) { return f.type === 'message_delta'; });",
                   "  pm.expect(deltas.length, 'stream must emit a terminal message_delta: ' + raw.slice(-600)).to.be.above(0);",
                   "  var d = deltas[deltas.length - 1].delta || {};",
+                  "  var text = frames.filter(function (f) { return f.type === 'content_block_delta' && f.delta && f.delta.type === 'text_delta'; }).map(function (f) { return f.delta.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the streamed text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + d.stop_reason).to.match(/(^|\\D)4\\D*$/);",
                   "  pm.expect(d.stop_reason, 'message_delta must report stop_reason stop_sequence, not end_turn: ' + JSON.stringify(d)).to.equal('stop_sequence');",
                   "  pm.expect(d.stop_sequence, 'message_delta must carry the matched stop_sequence, not null: ' + JSON.stringify(d)).to.equal('5');",
                   "  pm.expect(frames[frames.length - 1].type, 'stream must end on message_stop').to.equal('message_stop');",
@@ -188526,7 +188538,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"max_tokens\":100,\"stream\":true,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 10 separated by spaces.\"}]}"
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stream\":true,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/messages",
