@@ -1,7 +1,11 @@
 package utils
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -107,9 +111,8 @@ func TestSanitizeFetchError(t *testing.T) {
 
 // TestFetchAndEncodeURL_ErrorsAreRedacted covers the paths reachable without a dial.
 // FetchAndEncodeURL routes through network.SSRFSafeDialContext, which rejects loopback
-// unconditionally and has no test seam, so an httptest server is unreachable by design
-// (same constraint documented in core/providers/openai/chatfileurl_test.go). The scheme
-// and parse guards run before any dial, and the dial rejection itself is reachable.
+// unconditionally. The scheme and parse guards run before any dial, and the dial
+// rejection itself is reachable.
 func TestFetchAndEncodeURL_ErrorsAreRedacted(t *testing.T) {
 	secrets := []string{"X-Amz-Signature", "deadbeefcafe", "hunter2"}
 
@@ -139,5 +142,175 @@ func TestFetchAndEncodeURL_ErrorsAreRedacted(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFetchAndEncodeImageURL_AcceptsImagesBySniffedBytes(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\npng image bytes")
+	jpeg := []byte("\xff\xd8\xff\xe0jpeg image bytes")
+
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+		wantType    string
+	}{
+		{
+			name:        "content type parameters are stripped and bytes win",
+			contentType: "image/jpeg; charset=binary",
+			body:        png,
+			wantType:    "image/png",
+		},
+		{
+			name:        "generic content type is allowed only when bytes are image",
+			contentType: "application/octet-stream",
+			body:        png,
+			wantType:    "image/png",
+		},
+		{
+			name:        "missing content type is allowed when bytes are image",
+			contentType: "",
+			body:        jpeg,
+			wantType:    "image/jpeg",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotType, gotEncoded, err := fetchAndEncodeImageURL(t.Context(), "https://cdn.example.com/photo", stubFetchResponse(tt.contentType, http.StatusOK, bytes.NewReader(tt.body)))
+			if err != nil {
+				t.Fatalf("fetchAndEncodeImageURL: %v", err)
+			}
+			if gotType != tt.wantType {
+				t.Errorf("media type = %q, want %q", gotType, tt.wantType)
+			}
+			if gotEncoded != base64.StdEncoding.EncodeToString(tt.body) {
+				t.Errorf("encoded body = %q, want fetched bytes", gotEncoded)
+			}
+		})
+	}
+}
+
+func TestFetchAndEncodeImageURL_RejectsNonImages(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+		want        string
+	}{
+		{
+			name:        "declared non-image type",
+			contentType: "text/html; charset=utf-8",
+			body:        []byte("\x89PNG\r\n\x1a\npng image bytes"),
+			want:        `content-type "text/html"`,
+		},
+		{
+			name:        "image header with non-image bytes",
+			contentType: "image/png",
+			body:        []byte("<html>not an image</html>"),
+			want:        "detected as",
+		},
+		{
+			name:        "empty body",
+			contentType: "image/png",
+			body:        nil,
+			want:        "is empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := fetchAndEncodeImageURL(t.Context(), "https://cdn.example.com/photo.png", stubFetchResponse(tt.contentType, http.StatusOK, bytes.NewReader(tt.body)))
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestFetchAndEncodeImageURL_RejectsBadStatusAndTooLarge(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   io.Reader
+		want   string
+	}{
+		{
+			name:   "bad status",
+			status: http.StatusNotFound,
+			body:   bytes.NewReader([]byte("missing")),
+			want:   "non-2xx status 404",
+		},
+		{
+			name:   "too large",
+			status: http.StatusOK,
+			body:   bytes.NewReader(bytes.Repeat([]byte{0}, int(fetchMaxBytes+1))),
+			want:   "exceeds 26214400-byte limit",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signed := "https://cdn.example.com/private.png?X-Amz-Signature=deadbeefcafe"
+			_, _, err := fetchAndEncodeImageURL(t.Context(), signed, stubFetchResponse("image/png", tt.status, tt.body))
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.want)
+			}
+			if strings.Contains(err.Error(), "deadbeefcafe") || strings.Contains(err.Error(), "X-Amz-Signature") {
+				t.Errorf("error leaks signed URL credentials: %s", err.Error())
+			}
+		})
+	}
+}
+
+func TestFetchAndEncodeImageURL_ErrorsAreRedacted(t *testing.T) {
+	secrets := []string{"X-Amz-Signature", "deadbeefcafe", "hunter2"}
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "unsupported scheme",
+			url:  "ftp://alice:hunter2@files.example.com/image.png?X-Amz-Signature=deadbeefcafe",
+		},
+		{
+			name: "blocked by the SSRF dialer",
+			url:  "https://alice:hunter2@127.0.0.1/image.png?X-Amz-Signature=deadbeefcafe",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := FetchAndEncodeImageURL(t.Context(), tt.url)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			for _, secret := range secrets {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("error leaks %q: %s", secret, err.Error())
+				}
+			}
+		})
+	}
+}
+
+func stubFetchResponse(contentType string, status int, body io.Reader) httpDoer {
+	return func(_ *http.Client, _ *http.Request) (*http.Response, error) {
+		header := http.Header{}
+		if contentType != "" {
+			header.Set("Content-Type", contentType)
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     header,
+			Body:       io.NopCloser(body),
+		}, nil
 	}
 }
