@@ -28,6 +28,7 @@ import (
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttputil"
 )
@@ -850,6 +851,100 @@ func TestAuthMiddleware_DisabledAuthConfig(t *testing.T) {
 	if !nextCalled {
 		t.Error("Next handler should be called when auth is disabled")
 	}
+}
+
+// TestAuthMiddleware_DisabledAuthConfig_CrossOrigin: while dashboard auth is disabled, a browser
+// request from an origin the operator did not name is refused on management routes. Localhost
+// origins, explicitly listed origins and domain patterns pass; the bare "*" default does not count.
+// Requests without an Origin, whitelisted routes and inference routes are unaffected.
+func TestAuthMiddleware_DisabledAuthConfig_CrossOrigin(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	run := func(am *AuthMiddleware, middleware schemas.BifrostHTTPMiddleware, path, origin string) (nextCalled bool, status int) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(path)
+		if origin != "" {
+			ctx.Request.Header.Set("Origin", origin)
+		}
+		middleware(func(ctx *fasthttp.RequestCtx) { nextCalled = true })(ctx)
+		return nextCalled, ctx.Response.StatusCode()
+	}
+
+	t.Run("auth config nil, default origins", func(t *testing.T) {
+		am := &AuthMiddleware{}
+		api := am.APIMiddleware()
+
+		called, _ := run(am, api, "/api/providers", "")
+		assert.True(t, called, "no Origin header: CLI/SDK callers are unaffected")
+		called, _ = run(am, api, "/api/providers", "http://localhost:3000")
+		assert.True(t, called, "localhost origins are always allowed")
+		called, _ = run(am, api, "/api/providers", "http://[::1]:3000")
+		assert.True(t, called)
+		called, status := run(am, api, "/api/providers", "https://evil.example")
+		assert.False(t, called, "an unlisted origin must not reach the open management API")
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+		called, _ = run(am, api, "/health", "https://evil.example")
+		assert.True(t, called, "whitelisted routes keep today's behaviour")
+		called, _ = run(am, am.InferenceMiddleware(), "/v1/chat/completions", "https://evil.example")
+		assert.True(t, called, "inference routes are governed by the governance plugin, not by this check")
+	})
+
+	t.Run("auth disabled, configured origins", func(t *testing.T) {
+		am := &AuthMiddleware{}
+		am.UpdateAuthConfig(&configstore.AuthConfig{
+			AdminUserName: schemas.NewSecretVar("admin"),
+			AdminPassword: schemas.NewSecretVar("password"),
+			IsEnabled:     false,
+		})
+		api := am.APIMiddleware()
+
+		am.UpdateAllowedOrigins([]string{"*"})
+		called, status := run(am, api, "/api/providers", "https://evil.example")
+		assert.False(t, called, "the bare wildcard does not name an origin")
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+
+		am.UpdateAllowedOrigins([]string{"https://app.example.com", "https://*.corp.example"})
+		called, _ = run(am, api, "/api/providers", "https://app.example.com")
+		assert.True(t, called, "an explicitly listed origin passes")
+		called, _ = run(am, api, "/api/providers", "https://tools.corp.example")
+		assert.True(t, called, "a domain pattern names the origin")
+		called, status = run(am, api, "/api/providers", "https://app.example.com.evil.example")
+		assert.False(t, called)
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+
+		// The dashboard served from a non-localhost address sends its own Origin on writes;
+		// a same-origin request (Origin host:port equals Host) is not cross-origin.
+		sameOrigin := &fasthttp.RequestCtx{}
+		sameOrigin.Request.SetRequestURI("/api/config")
+		sameOrigin.Request.Header.SetMethod(fasthttp.MethodPut)
+		sameOrigin.Request.Header.SetHost("10.0.0.5:8080")
+		sameOrigin.Request.Header.Set("Origin", "http://10.0.0.5:8080")
+		sameOriginCalled := false
+		api(func(*fasthttp.RequestCtx) { sameOriginCalled = true })(sameOrigin)
+		assert.True(t, sameOriginCalled, "the dashboard's own same-origin write must not be refused (status %d)", sameOrigin.Response.StatusCode())
+
+		defaultPort := &fasthttp.RequestCtx{}
+		defaultPort.Request.SetRequestURI("/api/config")
+		defaultPort.Request.Header.SetHost("bifrost.internal:443")
+		defaultPort.Request.Header.Set("Origin", "https://bifrost.internal")
+		defaultPortCalled := false
+		api(func(*fasthttp.RequestCtx) { defaultPortCalled = true })(defaultPort)
+		assert.True(t, defaultPortCalled, "an explicit default port in Host is the same origin")
+
+		crossHost := &fasthttp.RequestCtx{}
+		crossHost.Request.SetRequestURI("/api/config")
+		crossHost.Request.Header.SetHost("10.0.0.5:8080")
+		crossHost.Request.Header.Set("Origin", "http://10.0.0.5:9090")
+		crossHostCalled := false
+		api(func(*fasthttp.RequestCtx) { crossHostCalled = true })(crossHost)
+		assert.False(t, crossHostCalled, "a different port is a different origin")
+		assert.Equal(t, fasthttp.StatusForbidden, crossHost.Response.StatusCode())
+
+		// Operator-configured whitelisted routes are exempt like the system ones.
+		am.UpdateWhitelistedRoutes([]string{"/api/public/*"})
+		called, _ = run(am, api, "/api/public/status", "https://evil.example")
+		assert.True(t, called)
+	})
 }
 
 // TestAuthMiddleware_EnabledAuthConfig_NoAuth tests that auth middleware blocks unauthenticated requests

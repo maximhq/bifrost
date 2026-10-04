@@ -524,6 +524,84 @@ func TestRevokeOAuth2RefreshTokensByMode(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRevokeOAuth2GrantsBySubject(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	target := makeRefreshToken("v1", "f1", "c", "h-target") // vk / vk-1 from helper default
+	targetOther := makeRefreshToken("v2", "f2", "c", "h-target-2")
+	otherVK := makeRefreshToken("v3", "f3", "c", "h-other-vk")
+	otherVK.BfSub = "vk-2"
+	sameSubOtherMode := makeRefreshToken("u1", "f4", "c", "h-user")
+	sameSubOtherMode.BfMode = "user"
+	for _, rt := range []*tables.TableOAuth2RefreshToken{target, targetOther, otherVK, sameSubOtherMode} {
+		require.NoError(t, s.DB().Create(rt).Error)
+	}
+
+	// Consented-but-unredeemed authorization codes are grants too: one for the
+	// subject being revoked, one for another key.
+	future := time.Now().Add(time.Minute)
+	for _, ar := range []*tables.TableOAuth2AuthorizeRequest{
+		{ID: "ar-vk1", ClientID: "c", RedirectURI: "http://127.0.0.1/cb", State: "s", Scope: "mcp", Resource: "https://bifrost.test/mcp", CodeChallenge: "ch", CodeChallengeMethod: "S256", Status: tables.OAuth2AuthorizeRequestStatusConsented, CodeHash: strPtr("code-vk1"), BfMode: "vk", BfSub: "vk-1", ExpiresAt: future, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{ID: "ar-vk2", ClientID: "c", RedirectURI: "http://127.0.0.1/cb", State: "s", Scope: "mcp", Resource: "https://bifrost.test/mcp", CodeChallenge: "ch", CodeChallengeMethod: "S256", Status: tables.OAuth2AuthorizeRequestStatusConsented, CodeHash: strPtr("code-vk2"), BfMode: "vk", BfSub: "vk-2", ExpiresAt: future, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	} {
+		require.NoError(t, s.DB().Create(ar).Error)
+	}
+
+	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+
+	// The subject's pending code can no longer be exchanged; another key's still can.
+	err := s.ConsumeOAuth2AuthorizeRequest(ctx, "ar-vk1", makeRefreshToken("v-new-1", "ar-vk1", "c", "h-new-1"))
+	assert.ErrorIs(t, err, ErrNotFound, "a consented code for the revoked subject must not mint a new grant")
+	otherKeyToken := makeRefreshToken("v-new-2", "ar-vk2", "c", "h-new-2")
+	otherKeyToken.BfSub = "vk-2"
+	require.NoError(t, s.ConsumeOAuth2AuthorizeRequest(ctx, "ar-vk2", otherKeyToken))
+	minted, err := s.GetOAuth2RefreshTokenByHash(ctx, "h-new-2")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-2", minted.BfSub, "the other key's code mints a grant for the other key")
+
+	// Every active grant of that identity is revoked, across families...
+	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "h-target")
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "h-target-2")
+	assert.ErrorIs(t, err, ErrNotFound)
+	// ...while another key's grants and the same subject under another mode survive.
+	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "h-other-vk")
+	require.NoError(t, err)
+	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "h-user")
+	require.NoError(t, err)
+
+	// Idempotent on an identity with nothing left to revoke.
+	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+}
+
+// TestRevokeOAuth2GrantsBySubjectEndsCodesFirst: a revoked identity's consented codes move to a
+// terminal status (not merely an earlier expiry), and they are ended before its refresh tokens are
+// revoked, so an exchange that commits while revocation runs either finds its code already ended or
+// mints a token the later revocation still sees.
+func TestRevokeOAuth2GrantsBySubjectEndsCodesFirst(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	require.NoError(t, s.DB().Create(makeRefreshToken("v1", "f1", "c", "h-target")).Error)
+	require.NoError(t, s.DB().Create(&tables.TableOAuth2AuthorizeRequest{
+		ID: "ar-vk1", ClientID: "c", RedirectURI: "http://127.0.0.1/cb", State: "s", Scope: "mcp", Resource: "https://bifrost.test/mcp",
+		CodeChallenge: "ch", CodeChallengeMethod: "S256", Status: tables.OAuth2AuthorizeRequestStatusConsented, CodeHash: strPtr("code-vk1"),
+		BfMode: "vk", BfSub: "vk-1", ExpiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}).Error)
+
+	var updated []string
+	require.NoError(t, s.DB().Callback().Update().After("gorm:update").Register("test:record_update_order", func(db *gorm.DB) {
+		updated = append(updated, db.Statement.Table)
+	}))
+	t.Cleanup(func() { _ = s.DB().Callback().Update().Remove("test:record_update_order") })
+
+	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+
+	assert.Equal(t, []string{"oauth2_authorize_requests", "oauth2_refresh_tokens"}, updated, "codes are ended before tokens are revoked")
+	ar, err := s.GetOAuth2AuthorizeRequestByID(ctx, "ar-vk1")
+	require.NoError(t, err)
+	assert.Equal(t, tables.OAuth2AuthorizeRequestStatusRevoked, ar.Status, "a revoked code is in a terminal status, not merely expired")
+}
+
 func TestListOAuth2Sessions_JoinsAndExcludesRevoked(t *testing.T) {
 	s := setupOAuth2TestStore(t)
 	ctx := context.Background()

@@ -40,9 +40,53 @@ func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) 
 	require.NoError(t, writer.WriteField("stream", "true"))
 	require.NoError(t, writer.Close())
 
-	model, stream := parsePassthroughBody(writer.FormDataContentType(), body.Bytes())
+	model, stream, err := parsePassthroughBody(writer.FormDataContentType(), body.Bytes())
+	require.NoError(t, err)
 	assert.Equal(t, "openai/whisper-1", model)
 	assert.True(t, stream)
+}
+
+// TestParsePassthroughBody_JSONModelIsStrict: the model governance checks must be
+// the one the upstream reads from the same bytes, so the JSON branch accepts exactly
+// one, exactly-spelled, string-typed model key and refuses anything a different
+// decoder could read differently. An unrelated field with the wrong type no longer
+// drops the model, and a body with no model at all is still fine.
+func TestParsePassthroughBody_JSONModelIsStrict(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		body        string
+		wantModel   string
+		wantStream  bool
+		wantErr     string
+	}{
+		{name: "plain body", contentType: "application/json", body: `{"model":" gpt-4o ","stream":true}`, wantModel: "gpt-4o", wantStream: true},
+		{name: "no model key", contentType: "application/json", body: `{"input":"x"}`},
+		{name: "unrelated field of wrong type keeps the model", contentType: "application/json", body: `{"model":"gpt-4o","stream":"yes"}`, wantModel: "gpt-4o"},
+		{name: "duplicate model keys", contentType: "application/json", body: `{"model":"blocked","model":"allowed"}`, wantErr: "at most once"},
+		{name: "case-variant duplicate", contentType: "application/json", body: `{"model":"blocked","MODEL":"allowed"}`, wantErr: "at most once"},
+		{name: "case-variant only", contentType: "application/json", body: `{"Model":"gpt-4o"}`, wantErr: "spelled"},
+		{name: "non-string model", contentType: "application/json", body: `{"model":["gpt-4o"]}`, wantErr: "must be a string"},
+		{name: "nested model is not the request model", contentType: "application/json", body: `{"input":{"model":"inner"}}`},
+		{name: "invalid JSON declared as JSON", contentType: "application/json; charset=utf-8", body: `{"model":"gpt-4o",`, wantErr: "not valid JSON"},
+		{name: "invalid JSON with another content type is ignored", contentType: "text/plain", body: `model=gpt-4o`},
+		{name: "valid JSON with no content type is still read", contentType: "", body: `{"model":"gpt-4o"}`, wantModel: "gpt-4o"},
+		{name: "array body has no model", contentType: "application/json", body: `[{"model":"gpt-4o"}]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model, stream, err := parsePassthroughBody(tc.contentType, []byte(tc.body))
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				assert.Empty(t, model)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantModel, model)
+			assert.Equal(t, tc.wantStream, stream)
+		})
+	}
 }
 
 func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {

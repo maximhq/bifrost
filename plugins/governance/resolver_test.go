@@ -581,10 +581,11 @@ func TestBudgetResolver_EvaluateRequest_PassthroughModelFiltering(t *testing.T) 
 		{"passthrough stream without model has no restriction", "", schemas.PassthroughStreamRequest, DecisionAllow},
 		// Batch create carries no model of its own for a file-based batch, but an inline
 		// one names a model per item and governance evaluates each — so the allowlist
-		// applies whenever a model is actually present.
+		// applies whenever a model is actually present. File-based batches are covered by
+		// TestBudgetResolver_EvaluateRequest_FileBatchWithoutModel.
 		{"batch with disallowed model is blocked", "gpt-4o-mini", schemas.BatchCreateRequest, DecisionModelBlocked},
 		{"batch with allowed model passes", "gpt-4", schemas.BatchCreateRequest, DecisionAllow},
-		{"batch without model has no restriction", "", schemas.BatchCreateRequest, DecisionAllow},
+		{"inline batch without a top-level model has no restriction of its own", "", schemas.BatchCreateRequest, DecisionAllow},
 	}
 
 	for _, tt := range tests {
@@ -605,6 +606,104 @@ func TestBudgetResolver_EvaluateRequest_PassthroughModelFiltering(t *testing.T) 
 
 			result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, tt.model, tt.requestType, false, false)
 			assertDecision(t, tt.want, result)
+		})
+	}
+}
+
+// TestBudgetResolver_EvaluateRequest_FileBatchWithoutModel: a file- or blob-based batch is held to
+// what the provider binds. A key allowing every model (and blacklisting none) has nothing to apply
+// and lets it through. A key that restricts models is refused on a provider whose batch API runs the
+// rows' own models (OpenAI, Azure) whether or not a hint is present, and on a provider that binds the
+// request's model to the job (Gemini) only when that model is missing or disallowed.
+func TestBudgetResolver_EvaluateRequest_FileBatchWithoutModel(t *testing.T) {
+	tests := []struct {
+		name          string
+		provider      schemas.ModelProvider
+		allowedModels []string
+		blacklisted   []string
+		model         string
+		want          Decision
+		reason        string
+	}{
+		{"openai, every model allowed, no hint", schemas.OpenAI, []string{"*"}, nil, "", DecisionAllow, ""},
+		{"openai, every model allowed, hint", schemas.OpenAI, []string{"*"}, nil, "gpt-4", DecisionAllow, ""},
+		{"openai, restricted allowlist, no hint", schemas.OpenAI, []string{"gpt-4"}, nil, "", DecisionModelBlocked, "allows every model"},
+		{"openai, restricted allowlist, allowed hint is not enough", schemas.OpenAI, []string{"gpt-4"}, nil, "gpt-4", DecisionModelBlocked, "allows every model"},
+		{"openai, wildcard with a blacklist", schemas.OpenAI, []string{"*"}, []string{"gpt-4o"}, "", DecisionModelBlocked, "allows every model"},
+		{"azure, restricted allowlist, allowed hint is not enough", schemas.Azure, []string{"gpt-4"}, nil, "gpt-4", DecisionModelBlocked, "allows every model"},
+		{"gemini, restricted allowlist, no hint", schemas.Gemini, []string{"gemini-2.5-flash"}, nil, "", DecisionModelBlocked, "requires a model"},
+		{"gemini, restricted allowlist, allowed hint", schemas.Gemini, []string{"gemini-2.5-flash"}, nil, "gemini-2.5-flash", DecisionAllow, ""},
+		{"gemini, restricted allowlist, disallowed hint", schemas.Gemini, []string{"gemini-2.5-flash"}, nil, "gemini-2.5-pro", DecisionModelBlocked, "not allowed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := NewMockLogger()
+			providerConfig := buildProviderConfig(string(tt.provider), tt.allowedModels)
+			providerConfig.BlacklistedModels = tt.blacklisted
+			vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{providerConfig})
+
+			store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			}, nil, nil)
+			require.NoError(t, err)
+
+			resolver := NewBudgetResolver(store, nil, logger, nil)
+			ctx := resolverCtx(store, "sk-bf-test")
+
+			result := evaluateOpaqueBatch(resolver, ctx, tt.provider, tt.model)
+			assertDecision(t, tt.want, result)
+			if tt.reason != "" {
+				assert.Contains(t, result.Reason, tt.reason)
+			}
+		})
+	}
+}
+
+// A batch defined by an uploaded file or blob names its models only inside that input. On
+// providers whose batch API does not bind the request's model to the job (OpenAI, Azure), the hint
+// on the request is not what runs, so a model-restricted key is refused even with an allowed hint.
+// Providers that bind the model to the job (Gemini, Vertex, Bedrock) keep the hint check, and
+// inline batches and unrestricted keys are unaffected.
+func TestPreLLMHookRefusesOpaqueFileBatchesUnderModelRestrictedKeys(t *testing.T) {
+	restricted := buildVirtualKeyWithProviders("vk-batch", "sk-bf-batch", "Batch VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"gpt-4"}),
+		buildProviderConfig("azure", []string{"gpt-4"}),
+		buildProviderConfig("gemini", []string{"gemini-2.5-flash"}),
+	})
+	unrestricted := buildVirtualKeyWithProviders("vk-batch", "sk-bf-batch", "Batch VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	})
+	fileBatch := func(provider schemas.ModelProvider, model string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+			Provider: provider, Model: schemas.Ptr(model), InputFileID: "file-x",
+		}}
+	}
+	decision := func(sc *schemas.LLMPluginShortCircuit) string {
+		if sc == nil || sc.Error == nil || sc.Error.Type == nil {
+			return string(DecisionAllow)
+		}
+		return *sc.Error.Type
+	}
+
+	cases := []struct {
+		name string
+		vk   *configstoreTables.TableVirtualKey
+		req  *schemas.BifrostRequest
+		want Decision
+	}{
+		{"openai file batch, allowed hint, restricted key", restricted, fileBatch(schemas.OpenAI, "gpt-4"), DecisionModelBlocked},
+		{"azure blob batch, allowed hint, restricted key", restricted, &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.Azure, Model: schemas.Ptr("gpt-4"), InputBlob: schemas.Ptr("https://blob.example/in.jsonl")}}, DecisionModelBlocked},
+		{"gemini file batch, allowed hint, restricted key", restricted, fileBatch(schemas.Gemini, "gemini-2.5-flash"), DecisionAllow},
+		{"gemini file batch, disallowed hint, restricted key", restricted, fileBatch(schemas.Gemini, "gemini-2.5-pro"), DecisionModelBlocked},
+		{"openai file batch, unrestricted key", unrestricted, fileBatch(schemas.OpenAI, "gpt-4"), DecisionAllow},
+		{"openai inline batch, allowed models, restricted key", restricted, &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI, Requests: []schemas.BatchRequestItem{{Body: map[string]any{"model": "gpt-4"}}}}}, DecisionAllow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, tc.vk, nil)
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-batch"), tc.req)
+			require.NoError(t, err)
+			assert.Equal(t, string(tc.want), decision(shortCircuit))
 		})
 	}
 }
