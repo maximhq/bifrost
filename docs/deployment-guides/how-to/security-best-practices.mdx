@@ -91,7 +91,7 @@ The Security Settings page (`/workspace/config/security`) exposes several more c
 | Setting | Config key | Recommendation for public hosts |
 |---|---|---|
 | **Allow Direct API Keys** | `allow_direct_keys` | Keep **off** (default). When on, callers can pass their own provider key in a header (`x-bf-direct-key: true`), bypassing your registered key pool. |
-| **Allowed Origins** | `allowed_origins` | Set an explicit list. Never `*` in production. A wildcard lets JavaScript from any page on the internet call your gateway. |
+| **Allowed Origins** | `allowed_origins` | Set an explicit list. Never `*` in production. A wildcard lets JavaScript from any page on the internet call your gateway. While dashboard auth is disabled, `*` does not admit browser requests to the management API; only localhost, the gateway's own origin, and explicitly listed origins do. |
 | **Allowed Headers** | `allowed_headers` | Narrow to the minimum your callers need (e.g. `Authorization`, `Content-Type`, your virtual-key and tracing headers). |
 | **Required Headers** | `required_headers` | Optionally require headers on every request; missing ones are rejected with 400. |
 | **Whitelisted Routes** | `whitelisted_routes` | Only add routes that must bypass auth. System routes (`/health`, login, etc.) are always whitelisted. |
