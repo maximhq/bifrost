@@ -188322,6 +188322,212 @@
           ]
         }
       ]
+    },
+    {
+      "name": "144. Anthropic /v1/messages request validation - 400 invalid_request_error (#7917 / PR #7918) (anthropic-request-validation)",
+      "description": "Pins that /anthropic/v1/messages refuses requests Anthropic's Messages API rejects, with HTTP 400 and an Anthropic-shaped invalid_request_error, before anything reaches a provider.\n\nBug (#7917): the integration converted these requests instead of rejecting them. A sent max_tokens below 1 was dropped and replaced on egress with the model's full output budget (an invalid request became the most expensive generation, returned 200), an empty messages array surfaced as an untyped api_error (which SDKs retry), and unknown roles such as \"tool\" were coerced downstream. validateAnthropicMessageRequest, run from anthropicMessagesShortCircuit in transports/bifrost-http/integrations/anthropic.go, now refuses them at the integration edge.\n\nCases: max_tokens 0 (non-streaming), max_tokens -5 with stream true (must be a JSON 400, not an SSE stream), an empty messages array, and a role \"tool\" message. Every case is red before the fix (200 or a non-invalid_request_error type) and green after. Post-fix no request reaches the provider, so the folder costs nothing to run. Omitted or null max_tokens is still accepted and is covered by every other /anthropic case in the collection.",
+      "item": [
+        {
+          "name": "[EXPECT-400] anthropic/claude-haiku-4-5 /anthropic/v1/messages max_tokens 0 rejected with invalid_request_error - #7917",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic request validation: max_tokens 0 is refused with 400 invalid_request_error - #7917', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'invalid request must be refused with 400 before reaching the provider: ' + raw.slice(0, 400)).to.equal(400);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON (a 400 must not open an SSE stream): ' + raw.slice(0, 300)); return; }",
+                  "  pm.expect(j.type, 'Anthropic error envelope: ' + raw.slice(0, 300)).to.equal('error');",
+                  "  pm.expect(j.error && j.error.type, 'error.type must be invalid_request_error (api_error is retried by clients): ' + raw.slice(0, 300)).to.equal('invalid_request_error');",
+                  "  pm.expect(j.error && j.error.message, 'error.message must name the offending field: ' + raw.slice(0, 300)).to.include('max_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":0,\"messages\":[{\"role\":\"user\",\"content\":\"Say hi.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] anthropic/claude-haiku-4-5 /anthropic/v1/messages streaming max_tokens -5 rejected with invalid_request_error before the stream opens - #7917",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic request validation: streaming max_tokens -5 is refused with a JSON 400 invalid_request_error - #7917', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'invalid request must be refused with 400 before reaching the provider: ' + raw.slice(0, 400)).to.equal(400);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON (a 400 must not open an SSE stream): ' + raw.slice(0, 300)); return; }",
+                  "  pm.expect(j.type, 'Anthropic error envelope: ' + raw.slice(0, 300)).to.equal('error');",
+                  "  pm.expect(j.error && j.error.type, 'error.type must be invalid_request_error (api_error is retried by clients): ' + raw.slice(0, 300)).to.equal('invalid_request_error');",
+                  "  pm.expect(j.error && j.error.message, 'error.message must name the offending field: ' + raw.slice(0, 300)).to.include('max_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":-5,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Say hi.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] anthropic/claude-haiku-4-5 /anthropic/v1/messages empty messages array rejected with invalid_request_error - #7917",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic request validation: empty messages is refused with 400 invalid_request_error, not api_error - #7917', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'invalid request must be refused with 400 before reaching the provider: ' + raw.slice(0, 400)).to.equal(400);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON (a 400 must not open an SSE stream): ' + raw.slice(0, 300)); return; }",
+                  "  pm.expect(j.type, 'Anthropic error envelope: ' + raw.slice(0, 300)).to.equal('error');",
+                  "  pm.expect(j.error && j.error.type, 'error.type must be invalid_request_error (api_error is retried by clients): ' + raw.slice(0, 300)).to.equal('invalid_request_error');",
+                  "  pm.expect(j.error && j.error.message, 'error.message must name the offending field: ' + raw.slice(0, 300)).to.include('messages');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":16,\"messages\":[]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] anthropic/claude-haiku-4-5 /anthropic/v1/messages unknown role tool rejected with invalid_request_error - #7917",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic request validation: role tool is refused with 400 invalid_request_error - #7917', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'invalid request must be refused with 400 before reaching the provider: ' + raw.slice(0, 400)).to.equal(400);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON (a 400 must not open an SSE stream): ' + raw.slice(0, 300)); return; }",
+                  "  pm.expect(j.type, 'Anthropic error envelope: ' + raw.slice(0, 300)).to.equal('error');",
+                  "  pm.expect(j.error && j.error.type, 'error.type must be invalid_request_error (api_error is retried by clients): ' + raw.slice(0, 300)).to.equal('invalid_request_error');",
+                  "  pm.expect(j.error && j.error.message, 'error.message must name the offending field: ' + raw.slice(0, 300)).to.include('messages.0.role');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":16,\"messages\":[{\"role\":\"tool\",\"content\":\"Say hi.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
