@@ -4433,6 +4433,10 @@ func inlineGeminiSystemReminder(msg *schemas.ResponsesMessage, allowedImageURLSc
 	return content, nil
 }
 
+// convertResponsesMessagesToGeminiContents converts Responses input messages into Gemini
+// contents plus an optional system instruction. Empty text is skipped because a part with
+// no fields marshals to {} and Gemini rejects it; the system instruction is nil when it
+// would have no parts.
 func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
 	if len(allowedImageURLSchemes) == 0 {
 		allowedImageURLSchemes = defaultGeminiImageURLSchemes

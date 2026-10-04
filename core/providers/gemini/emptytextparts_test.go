@@ -38,6 +38,7 @@ func assertNoEmptyGeminiParts(t *testing.T, contents []Content, system *Content)
 	}
 }
 
+// responsesTextMessage builds a Responses input message whose content is the plain string text.
 func responsesTextMessage(role schemas.ResponsesMessageRoleType, text string) schemas.ResponsesMessage {
 	return schemas.ResponsesMessage{
 		Role:    schemas.Ptr(role),
@@ -46,6 +47,9 @@ func responsesTextMessage(role schemas.ResponsesMessageRoleType, text string) sc
 	}
 }
 
+// TestConvertResponsesMessagesToGeminiContents_SkipsEmptyContentStr verifies that empty text
+// in Responses messages is dropped, partless turns and system instructions are omitted, and
+// function call/output parts are preserved.
 func TestConvertResponsesMessagesToGeminiContents_SkipsEmptyContentStr(t *testing.T) {
 	user := schemas.ResponsesInputMessageRoleUser
 	assistant := schemas.ResponsesInputMessageRoleAssistant
@@ -157,7 +161,8 @@ func TestConvertResponsesMessagesToGeminiContents_SkipsEmptyContentStr(t *testin
 	}
 }
 
-// End to end through the Anthropic Messages ingress, which forwards content "" as ContentStr.
+// TestToGeminiResponsesRequest_AnthropicEmptyStringContent checks the fix end to end through
+// the Anthropic Messages ingress, which forwards content "" as ContentStr.
 func TestToGeminiResponsesRequest_AnthropicEmptyStringContent(t *testing.T) {
 	out := buildGeminiRequestFromAnthropic(t, []anthropic.AnthropicMessage{
 		anthropicTextMessage(anthropic.AnthropicMessageRoleUser, "hi"),
@@ -174,6 +179,8 @@ func TestToGeminiResponsesRequest_AnthropicEmptyStringContent(t *testing.T) {
 	assert.NotContains(t, string(body), "{}")
 }
 
+// TestToGeminiResponsesRequest_EmptyInstructionsOmitted verifies that an empty Instructions
+// parameter does not produce a partless systemInstruction.
 func TestToGeminiResponsesRequest_EmptyInstructionsOmitted(t *testing.T) {
 	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	out, err := ToGeminiResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
@@ -186,6 +193,8 @@ func TestToGeminiResponsesRequest_EmptyInstructionsOmitted(t *testing.T) {
 	assert.Nil(t, out.SystemInstruction)
 }
 
+// TestConvertBifrostMessagesToGemini_SkipsEmptyText verifies that the chat converter drops
+// empty text blocks and omits the system instruction when it would have no parts.
 func TestConvertBifrostMessagesToGemini_SkipsEmptyText(t *testing.T) {
 	tests := []struct {
 		name       string
