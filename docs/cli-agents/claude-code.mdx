@@ -86,7 +86,7 @@ scoped management API key.
 
 ## Authentication Methods
 
-For manual configuration with a Bifrost virtual key, there are two methods:
+For manual configuration with a Bifrost virtual key, there are two methods. To let developers sign in from Claude Code instead, see [Sign in with `/login`](#sign-in-with-login-cloud-gateway).
 
 ### `ANTHROPIC_AUTH_TOKEN` (Recommended)
 
@@ -101,6 +101,98 @@ All code snippets below use this method.
 Set `ANTHROPIC_CUSTOM_HEADERS` to `x-bf-vk: your-virtual-key`. This passes the virtual key as a custom header instead of the `Authorization` header.
 
 **Caveat:** Because the virtual key is sent as a custom header rather than as the bearer token, Claude Code falls back to standard Anthropic account authentication for the `Authorization` header. This means you still need to log in with an Anthropic account. No credits are needed on the Anthropic account since billing goes through your Bifrost virtual key, but the account login is still required.
+
+## Sign in with `/login` (Cloud gateway)
+
+Instead of handing every developer a virtual key, you can let them sign in to Bifrost from inside Claude Code. Bifrost serves Claude Code's gateway sign-in protocol under `/claude-code`: the developer runs `/login`, picks **Cloud gateway**, confirms a code in the browser, and chooses which identity to use. Claude Code then sends a short-lived token that it refreshes on its own, and nothing long-lived is stored on the laptop.
+
+### Enable it
+
+<Tabs>
+<Tab title="Web UI">
+Go to **Settings → Claude Code**, set the **Issuer URL** (Bifrost's stable public URL), turn on **Enable Claude Code sign-in** and save. The page shows the URL to give developers.
+</Tab>
+<Tab title="config.json">
+```json
+{
+  "client": {
+    "oauth2_server_config": {
+      "issuer_url": "https://bifrost.example.com",
+      "claude_code_gateway": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+</Tab>
+</Tabs>
+
+`issuer_url` is required. It is the same issuer the [MCP OAuth server](/mcp/gateway-auth) uses, but the gateway does not depend on `mcp_server_auth_mode`: `/mcp` can stay on header authentication.
+
+Claude Code only signs in to a gateway that:
+
+- is served over `https://` (plain `http://` is accepted only on `localhost`, `127.0.0.1` or `::1`), and
+- resolves to a private network address (RFC 1918, loopback, link-local, CGNAT or IPv6 ULA). Developers going through a corporate HTTPS proxy should add the Bifrost host to `NO_PROXY`.
+
+On first connect Claude Code shows the TLS certificate fingerprint and asks the developer to trust it, then pins it, so serve the same certificate from every node behind the hostname.
+
+### Connect Claude Code
+
+In Claude Code run `/login`, choose **Cloud gateway** and enter:
+
+```text
+https://bifrost.example.com/claude-code
+```
+
+To preset the gateway on managed machines, add these keys to Claude Code's [managed settings file](https://code.claude.com/docs/en/managed-settings), so `/login` opens straight on the Cloud gateway screen:
+
+```json
+{
+  "forceLoginMethod": "gateway",
+  "forceLoginGatewayUrl": "https://bifrost.example.com/claude-code"
+}
+```
+
+### What happens at sign-in
+
+1. Claude Code opens `https://bifrost.example.com/oauth/device?user_code=XXXX-XXXX`. The developer checks that the code matches the terminal and selects **Continue**.
+2. Bifrost shows its OAuth consent page for **Claude Code**. The developer picks an identity:
+   - **Virtual key**: paste a Bifrost virtual key. Requests then run under that key's budgets, rate limits and model access.
+   - **Signed-in account**: available when an identity provider is configured (Enterprise).
+   - **Anonymous session**: only offered to a signed-in dashboard user while *Enforce authentication on inference* is off.
+3. The browser confirms the sign-in, and Claude Code receives its token.
+
+Claude Code never receives the virtual key itself. It gets a signed token bound to the key (audience `https://bifrost.example.com/claude-code`, so it is refused on `/mcp`), which Bifrost resolves back to the key on every request. Deactivating or deleting the key, or revoking the grant under **OAuth grants**, cuts the session off; signing out with `/logout` revokes it too. Access tokens last for the configured `access_token_ttl` (10 minutes by default), and Claude Code refreshes them silently.
+
+### Models, managed settings and telemetry
+
+- **Inference** goes to `/claude-code/v1/messages` and behaves like the [`/anthropic` route](#configuring-claude-code-to-work-with-bifrost), including model resolution and provider-prefixed model IDs. Set `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` on the client (for example via managed settings below) to fill the `/model` picker from `/claude-code/v1/models`.
+- **Managed settings**: anything you put in `claude_code_gateway.managed_settings` (or the **Managed settings** editor in the UI) is served to every signed-in Claude Code client as its `managed-settings.json`, and refreshed about hourly:
+
+  ```json
+  "claude_code_gateway": {
+    "enabled": true,
+    "managed_settings": {
+      "env": { "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1" },
+      "permissions": { "deny": ["WebFetch"] }
+    }
+  }
+  ```
+
+- **Telemetry**: while signed in to a gateway, Claude Code sends its OpenTelemetry exports to the gateway. Bifrost accepts and discards them; request-level usage is already captured in Bifrost's own logs.
+
+| Endpoint (under `/claude-code`) | Purpose |
+| --- | --- |
+| `GET /.well-known/oauth-authorization-server` | Sign-in discovery |
+| `POST /oauth/device_authorization`, `POST /oauth/token`, `POST /oauth/revoke` | Device sign-in, token refresh, sign-out |
+| `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models` | Inference |
+| `GET /managed/settings` | Managed settings |
+| `POST /v1/metrics`, `/v1/logs`, `/v1/traces` | Telemetry (accepted) |
+
+<Note>
+Gateway sign-in always runs the browser flow, so it does not suit unattended CI jobs. Use a virtual key with `ANTHROPIC_AUTH_TOKEN` there.
+</Note>
 
 ## Configuring Claude Code to work with Bifrost
 
