@@ -37,7 +37,7 @@ import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getBusinessUnitPicker } from "@/lib/registries/businessUnitPicker";
 import { getUserPicker } from "@/lib/registries/userPicker";
-import { validateVirtualKeyMetadata } from "@/lib/utils/virtualKeyMetadata";
+import { validateVirtualKeyMetadata, virtualKeyMetadataUpdate } from "@/lib/utils/virtualKeyMetadata";
 import {
 	getErrorMessage,
 	useAttachVirtualMCPVirtualKeyMutation,
@@ -1089,7 +1089,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 						// managed key keeps it editable and the save must carry it (null clears to inherit).
 						disable_content_logging: contentLoggingValue(data.contentLogging),
 						// Metadata is attribution on the key itself, not profile-governed access, so it stays editable too.
-						metadata: data.metadata,
+						// Sent only when edited: the server replaces it as a whole.
+						...virtualKeyMetadataUpdate(form.formState.defaultValues?.metadata, data.metadata),
 					},
 				}).unwrap();
 				toast.success("Virtual key updated");
@@ -1153,8 +1154,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					// null clears the key back to inheriting the client setting; the server keeps omitted and
 					// null apart, so this is always sent.
 					disable_content_logging: contentLoggingValue(data.contentLogging),
-					// Replaces the metadata as a whole; {} clears it.
-					metadata: data.metadata,
+					// Sent only when edited, since it replaces the stored metadata as a whole ({} clears it);
+					// an untouched form copy may be older than what is stored now.
+					...virtualKeyMetadataUpdate(form.formState.defaultValues?.metadata, data.metadata),
 					...expiryPayload,
 					...deleteAfterExpirePayload,
 				};

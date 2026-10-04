@@ -5,6 +5,7 @@ import {
 	virtualKeyMetadataKeyError,
 	virtualKeyMetadataLogsFilter,
 	virtualKeyMetadataQueryParams,
+	virtualKeyMetadataUpdate,
 } from "./virtualKeyMetadata";
 
 describe("validateVirtualKeyMetadata", () => {
@@ -56,5 +57,29 @@ describe("virtualKeyMetadataQueryParams", () => {
 describe("virtualKeyMetadataLogsFilter", () => {
 	test("encodes one entry the way the logs page parses metadata_filters", () => {
 		expect(JSON.parse(virtualKeyMetadataLogsFilter("cost_center", 'cc "42"'))).toEqual({ cost_center: 'cc "42"' });
+	});
+});
+describe("virtualKeyMetadataUpdate", () => {
+	test.each([
+		["both empty", {}, {}],
+		["both undefined", undefined, undefined],
+		["same entries", { cost_center: "cc-42", env: "prod" }, { cost_center: "cc-42", env: "prod" }],
+		["same entries in another order", { env: "prod", cost_center: "cc-42" }, { cost_center: "cc-42", env: "prod" }],
+	])("omits metadata when unchanged: %s", (_, initial, current) => {
+		expect(virtualKeyMetadataUpdate(initial, current)).toEqual({});
+	});
+
+	test.each([
+		["value changed", { cost_center: "cc-42" }, { cost_center: "cc-43" }],
+		["entry added", { cost_center: "cc-42" }, { cost_center: "cc-42", env: "prod" }],
+		["entry removed", { cost_center: "cc-42", env: "prod" }, { cost_center: "cc-42" }],
+		["key renamed", { cost_center: "cc-42" }, { costcenter: "cc-42" }],
+		["first metadata", undefined, { cost_center: "cc-42" }],
+	])("sends the edited map when changed: %s", (_, initial, current) => {
+		expect(virtualKeyMetadataUpdate(initial, current)).toEqual({ metadata: current });
+	});
+
+	test("sends {} to clear metadata the key had", () => {
+		expect(virtualKeyMetadataUpdate({ cost_center: "cc-42" }, {})).toEqual({ metadata: {} });
 	});
 });

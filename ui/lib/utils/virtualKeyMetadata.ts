@@ -38,6 +38,26 @@ export function validateVirtualKeyMetadata(metadata: Record<string, string> | un
 	return undefined;
 }
 
+/**
+ * The metadata part of an update request: the edited map when it differs from the one the form
+ * opened with, otherwise nothing. The server replaces metadata as a whole and leaves it alone when
+ * omitted, so a save that did not touch metadata must not resend the form's copy, which may be
+ * older than what is stored now. Compared by content rather than react-hook-form's dirtyFields,
+ * which tracks a record per entry and can stay set after an edit is undone.
+ */
+export function virtualKeyMetadataUpdate(
+	initial: Record<string, string | undefined> | undefined,
+	current: Record<string, string> | undefined,
+): { metadata?: Record<string, string> } {
+	const before = initial ?? {};
+	const after = current ?? {};
+	const keys = Object.keys(after);
+	const unchanged =
+		keys.length === Object.keys(before).length &&
+		keys.every((key) => Object.prototype.hasOwnProperty.call(before, key) && before[key] === after[key]);
+	return unchanged ? {} : { metadata: after };
+}
+
 /** Builds the metadata_<key>=<value> query params the virtual key list endpoint filters on. */
 export function virtualKeyMetadataQueryParams(metadata: Record<string, string> | undefined): Record<string, string> {
 	const params: Record<string, string> = {};
