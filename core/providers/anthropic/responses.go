@@ -256,6 +256,12 @@ type anthropicToResponsesStreamState struct {
 	// Code can't carry and never spawns nested blocks, so it is left open here and
 	// closed at output_item.done from the verbatim carry input instead.
 	codeExecServerClosedByItem map[string]bool
+
+	// sawToolUse records that a client tool_use content block was opened on this
+	// stream. Translated upstreams (Gemini, OpenAI-shaped Responses) report a
+	// natural stop on tool-call turns, so the terminal message_delta consults this
+	// to report tool_use instead of end_turn, matching the non-streaming converter.
+	sawToolUse bool
 }
 
 // emittedTextProgress records one Anthropic text block's wire-visible prefix.
@@ -2936,6 +2942,9 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 // own -- the branch chose a block type the delta it later emits cannot land on -- so
 // the tests in streamblocktype_test.go assert the emitted shape directly rather than
 // relying on this to launder it.
+//
+// It also records when a client tool_use block opens (state.sawToolUse), so the
+// terminal message_delta can report tool_use for translated tool-call turns.
 func enforceStreamBlockTypes(state *anthropicToResponsesStreamState, events []*AnthropicStreamEvent) []*AnthropicStreamEvent {
 	kept := events[:0]
 	for _, event := range events {
@@ -2949,6 +2958,9 @@ func enforceStreamBlockTypes(state *anthropicToResponsesStreamState, events []*A
 		case AnthropicStreamEventTypeContentBlockStart:
 			if event.ContentBlock != nil {
 				state.setBlockType(index, event.ContentBlock.Type)
+				if event.ContentBlock.Type == AnthropicContentBlockTypeToolUse {
+					state.sawToolUse = true
+				}
 			}
 		case AnthropicStreamEventTypeContentBlockDelta:
 			// An index with no recorded start is left alone: block-index bookkeeping
@@ -2967,6 +2979,10 @@ func enforceStreamBlockTypes(state *anthropicToResponsesStreamState, events []*A
 	return kept
 }
 
+// toAnthropicResponsesStreamEvents maps one Bifrost Responses stream event to the
+// Anthropic stream events it produces. On response.completed it emits the terminal
+// message_delta, reporting tool_use instead of end_turn when the turn opened a
+// tool_use block or its output carries a tool call, and stop_sequence null.
 func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *schemas.BifrostResponsesStreamResponse) []*AnthropicStreamEvent {
 	if bifrostResp == nil {
 		return nil
@@ -3889,11 +3905,13 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			Type: AnthropicStreamEventTypeMessageDelta,
 			Delta: &AnthropicStreamDelta{
 				StopReason:   schemas.Ptr(AnthropicStopReasonEndTurn),
-				StopSequence: schemas.Ptr(""),
+				StopSequence: nil,
 			},
 		}
+		hasToolUse := getOrCreateAnthropicToResponsesStreamState(ctx).sawToolUse
 		// Convert usage from Bifrost to Anthropic
 		if bifrostResp.Response != nil {
+			hasToolUse = hasToolUse || bifrostResponsesOutputHasToolUse(bifrostResp.Response.Output)
 			anthropicContentDeltaEvent.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
 			if bifrostResp.Response.StopReason != nil {
 				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
@@ -3923,6 +3941,9 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 					ExpiresAt: bifrostResp.Response.Container.ExpiresAt,
 				}
 			}
+		}
+		if delta := anthropicContentDeltaEvent.Delta; delta != nil && delta.StopReason != nil {
+			delta.StopReason = schemas.Ptr(anthropicStopReasonForToolUse(*delta.StopReason, hasToolUse))
 		}
 		return []*AnthropicStreamEvent{anthropicContentDeltaEvent, streamResp}
 
@@ -5062,7 +5083,9 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 	return bifrostResp
 }
 
-// ToAnthropicResponsesResponse converts a BifrostResponse with Responses structure back to AnthropicMessageResponse
+// ToAnthropicResponsesResponse converts a BifrostResponse with Responses structure back to AnthropicMessageResponse.
+// A natural stop on a turn that produced a tool_use block is reported as stop_reason
+// tool_use, since translated upstreams (Gemini, OpenAI-shaped Responses) do not say so.
 func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *schemas.BifrostResponsesResponse) *AnthropicMessageResponse {
 	anthropicResp := &AnthropicMessageResponse{
 		Type: "message",
@@ -5124,7 +5147,8 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		break
 	}
 
-	// Stop reason precedence: StopReason > IncompleteDetails > tool_use inference > end_turn.
+	// Stop reason precedence: StopReason > IncompleteDetails > end_turn, with a
+	// natural stop on a turn that called a tool reported as tool_use.
 	if bifrostResp.StopReason != nil {
 		anthropicResp.StopReason = ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason)
 	} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.IncompleteDetails); reason != "" {
@@ -5134,13 +5158,15 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		anthropicResp.StopReason = reason
 	} else {
 		anthropicResp.StopReason = AnthropicStopReasonEndTurn
-		for _, block := range contentBlocks {
-			if block.Type == AnthropicContentBlockTypeToolUse {
-				anthropicResp.StopReason = AnthropicStopReasonToolUse
-				break
-			}
+	}
+	hasToolUse := false
+	for _, block := range contentBlocks {
+		if block.Type == AnthropicContentBlockTypeToolUse {
+			hasToolUse = true
+			break
 		}
 	}
+	anthropicResp.StopReason = anthropicStopReasonForToolUse(anthropicResp.StopReason, hasToolUse)
 	anthropicResp.StopDetails = stopDetailsToAnthropic(bifrostResp.StopDetails)
 
 	anthropicResp.Model = bifrostResp.Model

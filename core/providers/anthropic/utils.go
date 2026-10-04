@@ -3251,6 +3251,34 @@ func anthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponse
 	return ""
 }
 
+// anthropicStopReasonForToolUse reports tool_use for a natural stop (end_turn) on a
+// turn that called a client tool. Translated upstreams such as Gemini (finishReason
+// STOP) and OpenAI-shaped Responses providers report a plain stop on tool-call
+// turns, while Anthropic clients dispatch tools on stop_reason == "tool_use". Any
+// other reason (max_tokens, refusal, pause_turn, ...) is returned unchanged.
+func anthropicStopReasonForToolUse(reason AnthropicStopReason, hasToolUse bool) AnthropicStopReason {
+	if hasToolUse && reason == AnthropicStopReasonEndTurn {
+		return AnthropicStopReasonToolUse
+	}
+	return reason
+}
+
+// bifrostResponsesOutputHasToolUse reports whether a Responses output carries an
+// item the Anthropic egress renders as a client tool_use block.
+func bifrostResponsesOutputHasToolUse(output []schemas.ResponsesMessage) bool {
+	for i := range output {
+		item := &output[i]
+		if item.Type == nil || isReasoningItem(item) {
+			continue
+		}
+		switch *item.Type {
+		case schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesMessageTypeComputerCall:
+			return true
+		}
+	}
+	return false
+}
+
 // ConvertToAnthropicImageBlock converts a Bifrost image block to Anthropic format
 // Uses the same pattern as the original buildAnthropicImageSourceMap function
 func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicContentBlock {
