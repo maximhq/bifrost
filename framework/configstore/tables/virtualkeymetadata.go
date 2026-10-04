@@ -2,8 +2,6 @@ package tables
 
 import (
 	"strings"
-
-	"github.com/maximhq/bifrost/core/schemas"
 )
 
 const (
@@ -22,11 +20,17 @@ var virtualKeyMetadataReservedKeys = map[string]struct{}{
 	"isAsyncRequest": {},
 }
 
+// virtualKeyMetadataLoadBalancerPrefix is the log metadata key prefix the enterprise load balancer
+// writes under (schemas.LoadBalancerMetadataPrefix in core, which the log store also treats as
+// system metadata). It is duplicated here rather than referenced so this module keeps building
+// against the published core release it pins; the two values must stay identical.
+const virtualKeyMetadataLoadBalancerPrefix = "bifrost_alb_"
+
 // isVirtualKeyMetadataReservedKey reports whether key is a system log metadata key
-// (isAsyncRequest or anything under schemas.LoadBalancerMetadataPrefix).
+// (isAsyncRequest or anything under the load balancer's metadata prefix).
 func isVirtualKeyMetadataReservedKey(key string) bool {
 	_, reserved := virtualKeyMetadataReservedKeys[key]
-	return reserved || strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix)
+	return reserved || strings.HasPrefix(key, virtualKeyMetadataLoadBalancerPrefix)
 }
 
 // IsValidVirtualKeyMetadataKey reports whether key is acceptable as a virtual key metadata key.
