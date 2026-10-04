@@ -274,6 +274,11 @@ type TableVirtualKey struct {
 	// write the default for a nil pointer on insert and collapse "inherit" into "false".
 	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
 
+	// Metadata is free-form key/value data the operator attaches to the key (cost center, project,
+	// owner, environment, ...). It is snapshotted onto every log row the key produces, so spend can
+	// be filtered by it. Validated by ValidateVirtualKeyMetadata; an empty map is stored as NULL.
+	Metadata map[string]string `gorm:"type:text;serializer:json" json:"metadata,omitempty"`
+
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
@@ -478,6 +483,14 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	}
 	if owners > 1 {
 		return fmt.Errorf("virtual key cannot belong to more than one of team, customer or business unit")
+	}
+
+	if err := ValidateVirtualKeyMetadata(vk.Metadata); err != nil {
+		return err
+	}
+	// One representation for "no metadata": NULL, never "{}".
+	if len(vk.Metadata) == 0 {
+		vk.Metadata = nil
 	}
 
 	// Hash must be computed before encryption (from plaintext value).

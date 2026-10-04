@@ -523,3 +523,25 @@ func TestWarpBudgetAmountsNameTheirCurrency(t *testing.T) {
 	governed := describeUserGovernance(&UserGovernance{UserID: "u-1", Profiles: []UserGovernanceProfile{{Name: "admin", Active: true}}})
 	require.Contains(t, governed["guidance"], "US dollars")
 }
+
+// Metadata is operator-set attribution (cost center, owner, ...) the model needs to answer
+// "whose key is this"; it is reported when present and left out when the key has none.
+func TestWarpDescribeVirtualKeyReportsMetadata(t *testing.T) {
+	fake := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{
+		"vk-1": {ID: "vk-1", Name: "prod", Metadata: map[string]string{"cost_center": "cc-42"}},
+		"vk-2": {ID: "vk-2", Name: "dev"},
+	}}
+	deps := &ToolDeps{governance: fake}
+
+	result, err := runTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-1"})
+	require.NoError(t, err)
+	out, ok := result.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, map[string]string{"cost_center": "cc-42"}, out["metadata"])
+
+	result, err = runTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-2"})
+	require.NoError(t, err)
+	out, ok = result.(map[string]any)
+	require.True(t, ok)
+	require.NotContains(t, out, "metadata")
+}
