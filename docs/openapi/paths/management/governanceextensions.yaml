@@ -230,7 +230,7 @@ user-virtual-keys:
       '404':
         description: User has no access profiles
       '409':
-        description: A virtual key with this name already exists
+        description: A virtual key with this name already exists for this owner
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
