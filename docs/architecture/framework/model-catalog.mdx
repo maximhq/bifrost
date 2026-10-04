@@ -75,6 +75,46 @@ The mechanism is generic: nothing in the cost engine names a provider, so any mo
 
 Peak vs off-peak is decided by the request's **start time**, carried on `LookupScopes.BilledAt`, so pricing is deterministic and a stream crossing a boundary bills entirely at its start-time rate.
 
+### **7. Model Tags**
+
+Operators can label models with tags (for example `prod`, `eu`, `approved-for-pii`) for routing, ownership and compliance. Tags work for any model of a configured provider, including fine-tunes and custom deployments that are not in the pricing datasheet. Each tag is 1-64 characters of letters, digits, `.`, `_` and `-`; a model carries at most 50, stored trimmed, de-duplicated and sorted.
+
+<Tabs group="model-tags">
+
+<Tab title="Using Web UI">
+
+1. Navigate to **"Model Catalog"** → **"Models"**
+2. Click the edit button on a model row, add tags in the **"Tags"** field and click **"Save Changes"**
+3. Use the **"Filter by tags"** field above the table to list only models carrying every entered tag
+
+</Tab>
+
+<Tab title="Using API">
+
+```bash
+# Replace the tags of one or more models (an empty list clears them)
+curl --location --request PUT 'http://localhost:8080/api/models/tags' \
+--header 'Content-Type: application/json' \
+--data '[
+    {"provider": "openai", "model": "gpt-4o-mini", "tags": ["prod", "approved-for-pii"]},
+    {"provider": "openai", "model": "ft:gpt-4o-mini:acme:support:abc123", "tags": ["internal"]}
+]'
+
+# Management listings return tags and filter by them (every listed tag must match)
+curl 'http://localhost:8080/api/models/details?tags=prod,approved-for-pii'
+
+# So does the OpenAI-compatible models list; pagination applies to the filtered list
+curl 'http://localhost:8080/v1/models?provider=openai&tags=approved-for-pii&page_size=20'
+```
+
+</Tab>
+
+</Tabs>
+
+A tagged model shows its tags wherever it is listed: the datasheet models plus whatever the provider's own list-models endpoint returns, so a fine-tune appears once the provider lists it. Tags need a config store. They are kept in memory by the Model Catalog (loaded at startup and refreshed after every write and on `ReloadFromDB`), so filtering adds no database lookups to the request path. Plugins see them on `ctx.GetModelInfo(...)`. The `tags` filter on `/v1/models` is applied by Bifrost and is not forwarded to providers; the OpenAI, Anthropic and GenAI drop-in model lists do not include tags.
+
+Tags are separate from `additional_attributes`, the key/value data stored on pricing rows (for example a model description): tags are a filterable list and work for models without a pricing row, while key/value data about a model continues to live in `additional_attributes`.
+
 ## Configuration
 
 The `ModelCatalog` can be configured during initialization by passing a `Config` struct.

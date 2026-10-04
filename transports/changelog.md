@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **Model Tags UI** - The model catalog edit sheet sets tags on a model (saved separately from pricing-row attributes, so models outside the datasheet can be tagged), and the Models tab shows tags and filters by them [@jimseiwert](https://github.com/jimseiwert)
 - **Provider Metadata and Tags UI** - The provider configuration sheet has a Metadata & Tags tab, the providers list shows each provider's tags and can be filtered by them, and the provider configuration docs cover the API and config.json [@jimseiwert](https://github.com/jimseiwert)
 - **Model Tags on /v1/models** - `GET /v1/models` and `GET /v1/models/{model}` return each model's `tags`, and `GET /v1/models?tags=a,b` keeps only models carrying every tag, paginating the filtered list. `tags` is no longer forwarded to providers as an extra query parameter [@jimseiwert](https://github.com/jimseiwert)
 - **Model Tags API** - `PUT /api/models/tags` sets tags on any model of a configured provider (including models outside the pricing datasheet). `GET /api/models` and `GET /api/models/details` return each model's `tags` and filter with `tags=a,b` (all tags must match) before pagination [@jimseiwert](https://github.com/jimseiwert)
