@@ -11,6 +11,8 @@ import (
 // clients as stop_reason "stop_sequence" with the matched string, not end_turn/null,
 // after the Anthropic -> Bifrost Responses -> Anthropic round trip.
 
+// assertStopFields checks that a converted stop_reason and stop_sequence match the
+// expected pair, treating a nil wantSeq as requiring a null stop_sequence.
 func assertStopFields(t *testing.T, gotReason AnthropicStopReason, gotSeq *string, wantReason AnthropicStopReason, wantSeq *string) {
 	t.Helper()
 	if gotReason != wantReason {
@@ -24,6 +26,9 @@ func assertStopFields(t *testing.T, gotReason AnthropicStopReason, gotSeq *strin
 	}
 }
 
+// TestStopSequence_NonStreamingRoundTrip verifies that a non-streaming Anthropic message
+// keeps its stop_reason and matched stop_sequence through the Responses round trip, and
+// that a stray sequence on a non-stop_sequence reason is dropped.
 func TestStopSequence_NonStreamingRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -60,8 +65,9 @@ func TestStopSequence_NonStreamingRoundTrip(t *testing.T) {
 	}
 }
 
-// OpenAI-style providers report an ambiguous "stop" with no matched sequence; that
-// must keep mapping to end_turn rather than guessing stop_sequence.
+// TestStopSequence_BifrostStopWithoutSequenceIsEndTurn verifies that the ambiguous "stop"
+// OpenAI-style providers report with no matched sequence keeps mapping to end_turn
+// rather than guessing stop_sequence.
 func TestStopSequence_BifrostStopWithoutSequenceIsEndTurn(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
@@ -74,6 +80,9 @@ func TestStopSequence_BifrostStopWithoutSequenceIsEndTurn(t *testing.T) {
 	assertStopFields(t, result.StopReason, result.StopSequence, AnthropicStopReasonEndTurn, nil)
 }
 
+// TestStopSequence_StreamingRoundTrip verifies that stop_reason and stop_sequence survive
+// streaming conversion, both on the relayed message_delta and on the message_delta
+// synthesized from response.completed.
 func TestStopSequence_StreamingRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -130,6 +139,8 @@ func TestStopSequence_StreamingRoundTrip(t *testing.T) {
 	}
 }
 
+// TestStopSequence_ChatResponseEgress verifies that a chat response's StopString becomes
+// stop_reason "stop_sequence" with the matched string, while a plain stop maps to end_turn.
 func TestStopSequence_ChatResponseEgress(t *testing.T) {
 	t.Parallel()
 

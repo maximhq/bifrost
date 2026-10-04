@@ -2975,6 +2975,9 @@ func enforceStreamBlockTypes(state *anthropicToResponsesStreamState, events []*A
 	return kept
 }
 
+// toAnthropicResponsesStreamEvents maps a single Bifrost Responses stream chunk to the
+// raw Anthropic stream events it represents, including the stop_reason/stop_sequence
+// carried on message_delta. ToAnthropicResponsesStreamResponse post-processes the result.
 func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *schemas.BifrostResponsesStreamResponse) []*AnthropicStreamEvent {
 	if bifrostResp == nil {
 		return nil
