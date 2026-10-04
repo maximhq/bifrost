@@ -231,7 +231,7 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 	}
 
 	if bifrostReq.Params != nil {
-		if bifrostReq.Params.Instructions != nil {
+		if bifrostReq.Params.Instructions != nil && *bifrostReq.Params.Instructions != "" {
 			// check if system instruction is already set
 			if geminiReq.SystemInstruction == nil {
 				geminiReq.SystemInstruction = &Content{
@@ -4433,6 +4433,10 @@ func inlineGeminiSystemReminder(msg *schemas.ResponsesMessage, allowedImageURLSc
 	return content, nil
 }
 
+// convertResponsesMessagesToGeminiContents converts Responses input messages into Gemini
+// contents plus an optional system instruction. Empty text is skipped because a part with
+// no fields marshals to {} and Gemini rejects it; the system instruction is nil when it
+// would have no parts.
 func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
 	if len(allowedImageURLSchemes) == 0 {
 		allowedImageURLSchemes = defaultGeminiImageURLSchemes
@@ -4588,7 +4592,10 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 			// Convert system message content
 			if msg.Content != nil {
-				if msg.Content.ContentStr != nil {
+				// An empty string carries no payload: every Part field is omitempty, so
+				// Part{Text: ""} marshals to `{}` and Gemini rejects the whole request with
+				// 400 "Request contains an invalid argument".
+				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
 					systemInstruction.Parts = append(systemInstruction.Parts, &Part{
 						Text: *msg.Content.ContentStr,
 					})
@@ -4818,7 +4825,9 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		if !isFunctionOutput {
 			// Convert message content
 			if msg.Content != nil {
-				if msg.Content.ContentStr != nil {
+				// Skip empty strings for the same reason as the system branch above: an
+				// Anthropic message with content "" would otherwise become a `{}` part.
+				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
 					content.Parts = append(content.Parts, &Part{
 						Text: *msg.Content.ContentStr,
 					})
@@ -4841,6 +4850,12 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		if len(content.Parts) > 0 {
 			contents = append(contents, content)
 		}
+	}
+
+	// A leading system prompt made only of empty strings leaves a partless systemInstruction,
+	// which Gemini rejects; omit it so the caller can fall back to Params.Instructions.
+	if systemInstruction != nil && len(systemInstruction.Parts) == 0 {
+		systemInstruction = nil
 	}
 
 	return contents, systemInstruction, nil
