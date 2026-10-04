@@ -188568,6 +188568,166 @@
           }
         }
       ]
+    },
+    {
+      "name": "145. Virtual key metadata snapshotted onto logs (PR #7936) (vk-metadata-logs)",
+      "description": "PR #7936 stamps the resolved virtual key's metadata on the request context (governance) and merges it into the log row's metadata (logging), after every request-supplied source, so spend is filterable by the key's attribution with the existing /api/logs?metadata_<key>=<value> filter and a caller cannot override it: on a key collision the virtual key's value beats an x-bf-lh-* header and an x-bf-dim-* dimension of the same name, while unrelated caller labels are kept. One self-contained row, like the session-affinity management cases: the pre-request script creates a key with openai access whose cost_center carries the run id; the chat request goes through it carrying x-bf-lh-cost_center and x-bf-dim-owner spoofs plus an unrelated x-bf-lh-tenant label; the test script filters the logs on the key's cost_center (polling, since the log writer batches), expects exactly that request, reads the row and checks cost_center and owner come from the key and tenant from the header, then deletes the key and the log row. One row is deliberate: the recipe forks newman per provider and modality class, so setup in a separate management row would be pulled into the chat shard as a producer and run twice. Red before the change: the row carries the spoofed cost_center, so the filter on the key's value finds nothing. Leftover keys of an aborted run are named harness-vk-metadata-logs-run-<ms> and swept once they are ten minutes old. The pure merge rules, the MCP and passthrough stamping paths and the realtime handlers are covered by Go tests (TestMergeVirtualKeyMetadata, TestPostLLMHookSnapshotsVirtualKeyMetadata, TestPreMCPConnectionHook_StampsVirtualKeyMetadata, TestRealtimeContextsCarryVirtualKeyMetadata).",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini vk-metadata-logs: the key's metadata lands on the log row and beats x-bf-lh-* / x-bf-dim-* spoofs",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// A fresh run id per request: collection variables outlive a run in Postman, and the logs",
+                  "// filter must only ever see this run's request.",
+                  "var run = 'run-' + Date.now();",
+                  "pm.collectionVariables.set('vkMetadataLogsRun', run);",
+                  "pm.collectionVariables.unset('vkMetadataLogsVkId');",
+                  "pm.collectionVariables.unset('vkMetadataLogsVkValue');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var j = null; try { j = res.json(); } catch (e) { j = null; }",
+                  "    cb(res, j);",
+                  "  });",
+                  "}",
+                  "// Leftovers of an aborted earlier run carry their run timestamp in their names. Only keys",
+                  "// older than ten minutes are swept, so a parallel shard's live key is never touched.",
+                  "call('GET', '/api/governance/virtual-keys', null, function (r0, j0) {",
+                  "  ((j0 && j0.virtual_keys) || []).forEach(function (v) {",
+                  "    var m = String(v.name || '').match(/^harness-vk-metadata-logs-run-(\\d+)$/);",
+                  "    if (m && (Date.now() - Number(m[1])) > 10 * 60 * 1000) { call('DELETE', '/api/governance/virtual-keys/' + v.id, null, function () {}); }",
+                  "  });",
+                  "  call('POST', '/api/governance/virtual-keys', {",
+                  "    name: 'harness-vk-metadata-logs-' + run,",
+                  "    metadata: { cost_center: 'cc-' + run, owner: 'harness-vk-owner@example.com' },",
+                  "    provider_configs: [{ provider: 'openai', weight: 1, allowed_models: ['*'], key_ids: ['*'] }]",
+                  "  }, function (res, j) {",
+                  "    var vk = (j || {}).virtual_key || {};",
+                  "    var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "    pm.test('setup: virtual key with metadata created', function () {",
+                  "      pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200);",
+                  "      pm.expect(value, res ? res.text() : 'no response').to.be.a('string').and.not.empty;",
+                  "      pm.expect(vk.metadata, res ? res.text() : 'no response').to.eql({ cost_center: 'cc-' + run, owner: 'harness-vk-owner@example.com' });",
+                  "    });",
+                  "    pm.collectionVariables.set('vkMetadataLogsVkId', vk.id || '');",
+                  "    pm.collectionVariables.set('vkMetadataLogsVkValue', value || '');",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = pm.collectionVariables.get('vkMetadataLogsRun');",
+                  "var vkId = pm.collectionVariables.get('vkMetadataLogsVkId');",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('vk-metadata-logs: chat through the key succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('vk-metadata-logs: x-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var j = null; try { j = res.json(); } catch (e) { j = null; }",
+                  "    cb(res, j);",
+                  "  });",
+                  "}",
+                  "// Persistent log stores and reused gateways would otherwise keep the key and the row.",
+                  "function deleteRow() {",
+                  "  if (!reqId) { return; }",
+                  "  call('DELETE', '/api/logs', { ids: [reqId] }, function (res) {",
+                  "    pm.test('cleanup: log row deleted', function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  });",
+                  "}",
+                  "function cleanup() {",
+                  "  // No key id means setup already failed loudly; there is no key to delete.",
+                  "  if (!vkId) { return deleteRow(); }",
+                  "  call('DELETE', '/api/governance/virtual-keys/' + vkId, null, function (res) {",
+                  "    pm.test('cleanup: virtual key deleted', function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "    deleteRow();",
+                  "  });",
+                  "}",
+                  "if (pm.response.code !== 200 || !reqId) { cleanup(); return; }",
+                  "// The log row is written by the batching writer, so poll the filtered list for it instead of",
+                  "// asserting on the first read. Bounded: ten reads a second and a half apart.",
+                  "function findRow(attempt) {",
+                  "  call('GET', '/api/logs?metadata_cost_center=cc-' + encodeURIComponent(run) + '&limit=10', null, function (res, j) {",
+                  "    var logs = (j && j.logs) || [];",
+                  "    if ((!res || res.code !== 200 || logs.length < 1) && attempt < 10) { setTimeout(function () { findRow(attempt + 1); }, 1500); return; }",
+                  "    pm.test(\"vk-metadata-logs: the key's cost_center finds exactly this request, despite the header spoof\", function () {",
+                  "      pm.expect(res && res.code, 'logs list: ' + (res ? res.text() : 'no response')).to.eql(200);",
+                  "      pm.expect(logs.map(function (l) { return l.id; }), 'rows: ' + (res ? res.text() : '')).to.eql([reqId]);",
+                  "    });",
+                  "    call('GET', '/api/logs/' + encodeURIComponent(reqId), null, function (res2, row) {",
+                  "      var md = (row && row.metadata) || {};",
+                  "      pm.test(\"vk-metadata-logs: the row takes the key's values over x-bf-lh-* and x-bf-dim-*, and keeps other labels\", function () {",
+                  "        pm.expect(res2 && res2.code, 'log read: ' + (res2 ? res2.text() : 'no response')).to.eql(200);",
+                  "        pm.expect(md.cost_center, 'metadata: ' + JSON.stringify(md)).to.equal('cc-' + run);",
+                  "        pm.expect(md.owner, 'metadata: ' + JSON.stringify(md)).to.equal('harness-vk-owner@example.com');",
+                  "        pm.expect(md.tenant, 'metadata: ' + JSON.stringify(md)).to.equal('acme-' + run);",
+                  "      });",
+                  "      cleanup();",
+                  "    });",
+                  "  });",
+                  "}",
+                  "findRow(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkMetadataLogsVkValue}}"
+              },
+              {
+                "key": "x-bf-lh-cost_center",
+                "value": "spoofed-by-header"
+              },
+              {
+                "key": "x-bf-lh-tenant",
+                "value": "acme-{{vkMetadataLogsRun}}"
+              },
+              {
+                "key": "x-bf-dim-owner",
+                "value": "spoofed-by-dimension"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        }
+      ]
     }
   ]
 }
