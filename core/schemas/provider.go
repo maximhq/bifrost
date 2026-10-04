@@ -718,7 +718,7 @@ type Provider interface {
 	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
 	// Rerank performs a rerank request to reorder documents by relevance to a query
 	Rerank(ctx *BifrostContext, key Key, request *BifrostRerankRequest) (*BifrostRerankResponse, *BifrostError)
-	// Decision performs an decision request against an annotated function-tool definition (Typesafe-only; other providers return unsupported)
+	// Decision performs a native decision request when the selected provider and model support it.
 	Decision(ctx *BifrostContext, key Key, request *BifrostDecisionRequest) (*BifrostDecisionResponse, *BifrostError)
 	// OCR performs an optical character recognition request on a document
 	OCR(ctx *BifrostContext, key Key, request *BifrostOCRRequest) (*BifrostOCRResponse, *BifrostError)

@@ -12,6 +12,7 @@ Perplexity is an OpenAI-compatible API with built-in web search capabilities and
 - **Reasoning effort mapping** - `reasoning.effort` mapped to Perplexity's `reasoning_effort` with special handling for "minimal"
 - **Search results inclusion** - Citations, search results, and videos included in response
 - **Special usage tracking** - Citation tokens, search queries, and reasoning tokens tracked separately
+- **Native Decisions** - Bifrost's `/v1/decisions` contract maps to Perplexity's native `/v1/decisions` endpoint for `pplx-decider-v1-27b`
 
 ### Supported Operations
 
@@ -19,6 +20,7 @@ Perplexity is an OpenAI-compatible API with built-in web search capabilities and
 |-----------|---------------|-----------|----------|
 | Chat Completions | ✅ | ✅ | `/chat/completions` |
 | Responses API | ✅ | ✅ | `/chat/completions` |
+| Decisions | ✅ | - | `/v1/decisions` |
 | Text Completions | ❌ | ❌ | - |
 | Embeddings | ❌ | ❌ | - |
 | Image Generation | ❌ | ❌ | - |
@@ -30,6 +32,8 @@ Perplexity is an OpenAI-compatible API with built-in web search capabilities and
 
 <Note>
 **Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, Batch, and List Models are not supported by the upstream Perplexity API. These return `UnsupportedOperationError`.
+
+**Decisions** are served only by the `pplx-decider-v1-27b` model; any other model returns `UnsupportedOperationError` for a decision request.
 </Note>
 
 ## Setup & Configuration
@@ -395,3 +399,58 @@ Same as Chat Completions with search results, citations, and extended usage trac
 ## Streaming
 
 Responses streaming uses the same OpenAI-compatible streaming as Chat Completions, with results adapted to Responses format.
+
+---
+
+# 3. Decisions
+
+`POST /v1/decisions` evaluates `state` against named `questions` using Perplexity's `pplx-decider-v1-27b` model. The request and response follow Bifrost's provider-neutral Decisions contract (see [TypeSafe](/providers/supported-providers/typesafe#decisions-api)), so the same request can be routed to either provider by changing only `model`.
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "perplexity/pplx-decider-v1-27b",
+    "state": "Customer message: I was double charged and nobody replied. I want a refund today.",
+    "questions": {
+      "is_frustrated": { "kind": "noul", "instructions": "Is the customer frustrated?" },
+      "category": {
+        "kind": "choice",
+        "instructions": "Pick the ticket category",
+        "criteria": { "billing": "charges and refunds", "bug": "product defects", "other": "anything else" }
+      },
+      "urgency": {
+        "kind": "score",
+        "instructions": "Rate how urgently this needs a human reply",
+        "criteria": ["can wait a week", "should be answered soon", "needs a reply today"]
+      }
+    }
+  }'
+```
+
+## Request Conversion
+
+| Bifrost field | Native field | Validation |
+|---------------|--------------|------------|
+| `model` | `model` | Must be `pplx-decider-v1-27b` (routing prefix stripped) |
+| `state` | `state` | String, object, or array; anything else rejected with 400 |
+| `questions` | `questions` | 1-128 named questions |
+| `questions.<name>.kind` | `questions.<name>.type` | `noul`, `choice`, or `score` |
+| `questions.<name>.instructions` | `instructions` | Required; string, object, or array |
+| `questions.<name>.criteria` | `criteria` | Kind-specific, see below |
+
+| Kind | Criteria | Validation |
+|------|----------|------------|
+| `noul` | Optional map with only `"true"` and `"false"` keys | Other keys rejected with 400 |
+| `choice` | Required map of option to description | Missing, empty, or more than 255 options rejected with 400 |
+| `score` | Required ordered array of level descriptions | Fewer than 1 or more than 10 levels rejected with 400 |
+
+Request bodies of 32 MiB or more are rejected with 400 before they are sent.
+
+## Response Conversion
+
+- Native `noul`, `choice`, and `score` value fields normalize to a unified `value`; `confidence`, `probabilities`, and `legend` are preserved
+- Every question must be answered with its requested kind; a missing answer, a mismatched type, a missing value, a `noul` outside `[0,1]`, or a `choice` that is not one of the requested options is returned as an error rather than passed through
+- Usage `input_tokens` maps to `prompt_tokens` and `total_tokens`
+- Upstream errors are parsed with the OpenAI-compatible error format
+
