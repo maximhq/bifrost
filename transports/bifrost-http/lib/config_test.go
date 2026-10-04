@@ -555,6 +555,9 @@ type MockConfigStore struct {
 	governanceItemsUpdated struct {
 		budgets []tables.TableBudget
 	}
+	// virtualKeysDeleted records the IDs handed to DeleteVirtualKey, so a test can assert on
+	// what a source_of_truth=config.json prune removed.
+	virtualKeysDeleted  []string
 	flushSessionsCalled bool
 }
 
@@ -1107,6 +1110,7 @@ func (m *MockConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *tabl
 }
 
 func (m *MockConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error {
+	m.virtualKeysDeleted = append(m.virtualKeysDeleted, id)
 	return nil
 }
 
@@ -1945,11 +1949,11 @@ func TestMergeGovernanceConfig_ForceFileSyncPreservesBudgetRuntimeState(t *testi
 		inMemory.LastReset.UTC(), lastReset)
 }
 
-// TestMatchConfigVirtualKey pins how a config.json virtual key finds its stored row: by id when it
-// has one, otherwise by name within its own owner, falling back to a lone key of that name, and
-// refusing to guess between several keys of that name owned by others.
-func TestMatchConfigVirtualKey(t *testing.T) {
-	team1, team2, team3, customer1, blank := "team-1", "team-2", "team-3", "customer-1", ""
+// TestMatchConfigVirtualKeys pins how config.json virtual keys find their stored rows: by id when
+// they have one, otherwise by name within their own owner, falling back to a lone key of that name
+// that no other entry claims, and refusing to guess between several candidates.
+func TestMatchConfigVirtualKeys(t *testing.T) {
+	team1, team2, team3, team4, customer1, blank := "team-1", "team-2", "team-3", "team-4", "customer-1", ""
 	stored := []tables.TableVirtualKey{
 		{ID: "vk-prod-team1", Name: "prod", TeamID: &team1},
 		{ID: "vk-prod-team2", Name: "prod", TeamID: &team2},
@@ -1958,26 +1962,112 @@ func TestMatchConfigVirtualKey(t *testing.T) {
 	}
 	tests := []struct {
 		name          string
-		entry         tables.TableVirtualKey
-		wantIdx       int
-		wantAmbiguous bool
+		entries       []tables.TableVirtualKey
+		wantIdx       []int
+		wantAmbiguous []bool
+		wantHeld      []string
 	}{
-		{name: "id wins over name and owner", entry: tables.TableVirtualKey{ID: "vk-prod-team2", Name: "other", TeamID: &team1}, wantIdx: 1},
-		{name: "unknown id is new", entry: tables.TableVirtualKey{ID: "vk-new", Name: "prod", TeamID: &team1}, wantIdx: -1},
-		{name: "name within the same team", entry: tables.TableVirtualKey{Name: "prod", TeamID: &team2}, wantIdx: 1},
-		{name: "name among unowned keys", entry: tables.TableVirtualKey{Name: "prod"}, wantIdx: 2},
-		{name: "blank owner id means unowned", entry: tables.TableVirtualKey{Name: "prod", TeamID: &blank}, wantIdx: 2},
-		{name: "lone key of that name with another owner", entry: tables.TableVirtualKey{Name: "ci"}, wantIdx: 3},
-		{name: "several keys of that name none with the owner", entry: tables.TableVirtualKey{Name: "prod", TeamID: &team3}, wantIdx: -1, wantAmbiguous: true},
-		{name: "unknown name is new", entry: tables.TableVirtualKey{Name: "dev", TeamID: &team1}, wantIdx: -1},
+		{name: "id wins over name and owner", entries: []tables.TableVirtualKey{{ID: "vk-prod-team2", Name: "other", TeamID: &team1}}, wantIdx: []int{1}},
+		{name: "unknown id is new", entries: []tables.TableVirtualKey{{ID: "vk-new", Name: "prod", TeamID: &team1}}, wantIdx: []int{-1}},
+		{name: "name within the same team", entries: []tables.TableVirtualKey{{Name: "prod", TeamID: &team2}}, wantIdx: []int{1}},
+		{name: "name among unowned keys", entries: []tables.TableVirtualKey{{Name: "prod"}}, wantIdx: []int{2}},
+		{name: "blank owner id means unowned", entries: []tables.TableVirtualKey{{Name: "prod", TeamID: &blank}}, wantIdx: []int{2}},
+		{name: "lone key of that name with another owner", entries: []tables.TableVirtualKey{{Name: "ci"}}, wantIdx: []int{3}},
+		{
+			name:          "several keys of that name none with the owner",
+			entries:       []tables.TableVirtualKey{{Name: "prod", TeamID: &team3}},
+			wantIdx:       []int{-1},
+			wantAmbiguous: []bool{true},
+			wantHeld:      []string{"vk-prod-team1", "vk-prod-team2", "vk-prod-unowned"},
+		},
+		{name: "unknown name is new", entries: []tables.TableVirtualKey{{Name: "dev", TeamID: &team1}}, wantIdx: []int{-1}},
+		{
+			// The stored ci key belongs to customer-1 and the file declares ci for customer-1 and for
+			// team-1: the owner match claims the row, so the team-1 entry is a new key rather than a
+			// second claim on the same row that would overwrite customer-1's key.
+			name:    "owner match claims the lone key before another owner falls back to it",
+			entries: []tables.TableVirtualKey{{Name: "ci", TeamID: &team1}, {Name: "ci", CustomerID: &customer1}},
+			wantIdx: []int{-1, 3},
+		},
+		{
+			name:    "id match claims the lone key before an id-less entry falls back to it",
+			entries: []tables.TableVirtualKey{{Name: "ci", TeamID: &team1}, {ID: "vk-ci-customer1", Name: "ci", CustomerID: &customer1}},
+			wantIdx: []int{-1, 3},
+		},
+		{
+			name:          "two id-less entries cannot both fall back to one lone key",
+			entries:       []tables.TableVirtualKey{{Name: "ci", TeamID: &team3}, {Name: "ci", TeamID: &team4}},
+			wantIdx:       []int{-1, -1},
+			wantAmbiguous: []bool{true, true},
+			wantHeld:      []string{"vk-ci-customer1"},
+		},
+		{
+			// team-1 and team-2 claim their own rows, leaving the unowned prod key as the lone
+			// unclaimed candidate for the team-3 entry.
+			name:    "claimed keys leave a lone candidate",
+			entries: []tables.TableVirtualKey{{Name: "prod", TeamID: &team1}, {Name: "prod", TeamID: &team2}, {Name: "prod", TeamID: &team3}},
+			wantIdx: []int{0, 1, 2},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			idx, ambiguous := matchConfigVirtualKey(stored, tc.entry)
-			assert.Equal(t, tc.wantIdx, idx)
-			assert.Equal(t, tc.wantAmbiguous, ambiguous)
+			got := matchConfigVirtualKeys(stored, tc.entries)
+			assert.Equal(t, tc.wantIdx, got.idx)
+			wantAmbiguous := tc.wantAmbiguous
+			if wantAmbiguous == nil {
+				wantAmbiguous = make([]bool, len(tc.entries))
+			}
+			assert.Equal(t, wantAmbiguous, got.ambiguous)
+			held := make([]string, 0, len(got.held))
+			for id := range got.held {
+				held = append(held, id)
+			}
+			assert.ElementsMatch(t, tc.wantHeld, held)
 		})
 	}
+}
+
+// TestMergeGovernanceConfig_AmbiguousVirtualKeyIsNotPruned covers source_of_truth=config.json with
+// an id-less virtual key whose name matches several stored keys, none with its owner. The entry is
+// skipped, so the stored keys it may refer to must not be pruned as absent from the file, and the
+// skipped entry must not reach the in-memory snapshot without an id.
+func TestMergeGovernanceConfig_AmbiguousVirtualKeyIsNotPruned(t *testing.T) {
+	initTestLogger()
+
+	team1, team2, team3 := "team-1", "team-2", "team-3"
+	store := NewMockConfigStore()
+	dbGovernance := &configstore.GovernanceConfig{
+		VirtualKeys: []tables.TableVirtualKey{
+			{ID: "vk-prod-team1", Name: "prod", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-team1")},
+			{ID: "vk-prod-team2", Name: "prod", TeamID: &team2, Value: *schemas.NewSecretVar("sk-bf-team2")},
+			{ID: "vk-stale", Name: "stale", Value: *schemas.NewSecretVar("sk-bf-stale")},
+		},
+	}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		Governance: &configstore.GovernanceConfig{
+			VirtualKeys: []tables.TableVirtualKey{
+				{Name: "prod", TeamID: &team3, Value: *schemas.NewSecretVar("sk-bf-team3")},
+			},
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	assert.Equal(t, []string{"vk-stale"}, store.virtualKeysDeleted,
+		"only the key no config.json entry can refer to may be pruned")
+	ids := make([]string, 0, len(config.GovernanceConfig.VirtualKeys))
+	for _, vk := range config.GovernanceConfig.VirtualKeys {
+		ids = append(ids, vk.ID)
+	}
+	assert.ElementsMatch(t, []string{"vk-prod-team1", "vk-prod-team2"}, ids,
+		"kept keys stay in the in-memory snapshot and the skipped id-less entry stays out of it")
+	assert.Empty(t, store.governanceItemsCreated.virtualKeys, "an ambiguous entry must not create a key")
 }
 
 func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
