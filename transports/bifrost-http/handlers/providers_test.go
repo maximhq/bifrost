@@ -2595,6 +2595,8 @@ func TestProviderLabels_CreateUpdateAndListFilters(t *testing.T) {
 		{query: "?metadata_owner=team-a&tags=prod", want: []string{"mock-a", "mock-c"}},
 		{query: "?tags=a%20b", wantStatus: fasthttp.StatusBadRequest},
 		{query: "?metadata_bad%20key=x", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?metadata_=x", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?metadata_owner=team-a&metadata_=x", wantStatus: fasthttp.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		names, status := list(tc.query)

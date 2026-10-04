@@ -319,6 +319,39 @@ def test_virtual_key_request_contract_is_current():
 
 
 
+def test_provider_labels_contract():
+    """Provider metadata and tags: the update request accepts null for both (null clears them),
+    and the list endpoint documents its metadata_<key> filters in the description instead of
+    declaring a literal `metadata_<key>` query parameter, which a client would send verbatim."""
+    import json
+
+    source = load(HERE / "schemas" / "management" / "providers.yaml")
+    bundle_doc = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    bundle = bundle_doc["components"]["schemas"]
+    problems = []
+
+    for where, schema in (
+        ("schemas/management/providers.yaml", source["UpdateProviderRequest"]),
+        ("openapi.json", bundle["UpdateProviderRequest"]),
+    ):
+        for field, base in (("metadata", "object"), ("tags", "array")):
+            types = schema["properties"][field].get("type")
+            types = types if isinstance(types, list) else [types]
+            if sorted(types) != sorted([base, "null"]):
+                problems.append(f"{where} UpdateProviderRequest.{field}: type {types}, want [{base}, null]")
+
+    source_list = load(PATHS_DIR / "providers.yaml")["providers"]["get"]
+    bundle_list = bundle_doc["paths"]["/api/providers"]["get"]
+    for where, operation in (("paths/management/providers.yaml", source_list), ("openapi.json", bundle_list)):
+        names = [p.get("name", "") for p in operation.get("parameters", [])]
+        if any("<" in name for name in names):
+            problems.append(f"{where} listProviders: templated query parameter name in {names}")
+        if "metadata_<key>" not in operation.get("description", ""):
+            problems.append(f"{where} listProviders: description does not document metadata_<key> filters")
+
+    assert not problems, "Provider labels contract drift:\n    " + "\n    ".join(problems)
+
+
 def test_warp_credential_contract_is_current():
     """Warp's settings API carries `api_key_id`, a reference to a configured provider key.
     There is no write-only `api_key` and no `api_key_set` presence flag, so no redaction
@@ -787,6 +820,7 @@ check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws
 check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
+check("provider labels contract: nullable update, no templated filter param", test_provider_labels_contract)
 check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
 check("warp config input models its embedding contract", test_warp_config_input_models_the_embedding_contract)
 check("warp chat response contract matches the agent", test_warp_chat_response_contract_is_current)
