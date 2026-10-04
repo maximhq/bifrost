@@ -188322,6 +188322,364 @@
           ]
         }
       ]
+    },
+    {
+      "name": "150. Provider metadata and tags on the providers API (PR #7943) (provider-labels)",
+      "description": "PR #7943 adds operator-defined metadata (key/value) and tags to providers on the management API. POST /api/providers and PUT /api/providers/{provider} accept `metadata` and `tags` (tags are trimmed, de-duplicated and sorted; an invalid tag is a 400; on PUT an omitted field is left alone and null clears it), provider responses carry them, and GET /api/providers filters on `metadata_<key>=<value>` and `tags=a,b` (AND-ed; every listed tag must be present). A bare `metadata_=x` is a 400 rather than an unfiltered list. These rows create a throwaway keyless openai-based custom provider with a per-run name (no standard provider is modified), exercise create, both filters, the AND rule, the invalid-key and invalid-tag 400s and the null clear, then delete the provider and confirm it is gone from the filtered list. Before the PR the labels are dropped on create and the filters are ignored, so the create, filter and 400 rows fail. The keyless provider has no credentials and no request reaches OpenAI; the openai keyword is only a harness filter label. Runs against the default harness profile (config store enabled, dashboard auth unconfigured: no base URL or proxy is set, so the dashboard-auth guard does not apply).",
+      "item": [
+        {
+          "name": "openai provider-labels create a keyless openai-based custom provider with metadata and tags - #7943",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('providerLabelsName', 'harness-labels-' + pm.variables.replaceIn('{{$timestamp}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var name = pm.collectionVariables.get('providerLabelsName');",
+                  "var body = pm.response.json();",
+                  "pm.test('the created provider is returned', function () { pm.expect(body.name, pm.response.text()).to.equal(name); });",
+                  "pm.test('metadata is stored and returned', function () { pm.expect(body.metadata, pm.response.text()).to.deep.equal({ harness_owner: name }); });",
+                  "pm.test('tags are stored trimmed', function () { pm.expect(body.tags, pm.response.text()).to.be.an('array').that.has.members(['harness-provider-labels', 'harness-provider-labels-b']); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"{{providerLabelsName}}\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"metadata\": {\n    \"harness_owner\": \"{{providerLabelsName}}\"\n  },\n  \"tags\": [\n    \" harness-provider-labels \",\n    \"harness-provider-labels-b\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels GET /api/providers metadata and tags filters return only the labeled provider - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var name = pm.collectionVariables.get('providerLabelsName');",
+                  "var names = (pm.response.json().providers || []).map(function (p) { return p.name; });",
+                  "pm.test('only the labeled provider matches', function () { pm.expect(names, pm.response.text()).to.deep.equal([name]); });",
+                  "pm.test('the listed provider carries its labels', function () {",
+                  "  var p = pm.response.json().providers[0];",
+                  "  pm.expect(p.metadata, pm.response.text()).to.deep.equal({ harness_owner: name });",
+                  "  pm.expect(p.tags, pm.response.text()).to.include('harness-provider-labels');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers?metadata_harness_owner={{providerLabelsName}}&tags=harness-provider-labels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ],
+              "query": [
+                {
+                  "key": "metadata_harness_owner",
+                  "value": "{{providerLabelsName}}"
+                },
+                {
+                  "key": "tags",
+                  "value": "harness-provider-labels"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels GET /api/providers tags filter requires every listed tag - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('no provider carries both tags', function () { pm.expect(pm.response.json().providers, pm.response.text()).to.be.an('array').that.is.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers?metadata_harness_owner={{providerLabelsName}}&tags=harness-provider-labels,harness-provider-labels-absent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ],
+              "query": [
+                {
+                  "key": "metadata_harness_owner",
+                  "value": "{{providerLabelsName}}"
+                },
+                {
+                  "key": "tags",
+                  "value": "harness-provider-labels,harness-provider-labels-absent"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai provider-labels GET /api/providers rejects an empty metadata filter key - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('error names the invalid metadata filter key', function () { pm.expect(pm.response.text()).to.include('invalid metadata filter key'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers?metadata_=x",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ],
+              "query": [
+                {
+                  "key": "metadata_",
+                  "value": "x"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai provider-labels PUT /api/providers rejects an invalid tag - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('error reports the invalid provider labels', function () { pm.expect(pm.response.text()).to.include('Invalid provider labels'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{providerLabelsName}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{providerLabelsName}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 1,\n    \"buffer_size\": 10\n  },\n  \"tags\": [\n    \"bad tag\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels PUT /api/providers replaces the tags and clears metadata with null - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('tags are replaced as a whole, not merged with the earlier ones', function () { pm.expect(body.tags, pm.response.text()).to.deep.equal(['harness-provider-labels-c']); });",
+                  "pm.test('metadata is cleared by null', function () { pm.expect(body.metadata || {}, pm.response.text()).to.deep.equal({}); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{providerLabelsName}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{providerLabelsName}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 1,\n    \"buffer_size\": 10\n  },\n  \"metadata\": null,\n  \"tags\": [\n    \"harness-provider-labels-c\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels GET /api/providers metadata filter no longer matches after the clear - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('no provider carries the cleared metadata', function () { pm.expect(pm.response.json().providers, pm.response.text()).to.be.an('array').that.is.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers?metadata_harness_owner={{providerLabelsName}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ],
+              "query": [
+                {
+                  "key": "metadata_harness_owner",
+                  "value": "{{providerLabelsName}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels delete the custom provider - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{providerLabelsName}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{providerLabelsName}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai provider-labels GET /api/providers tags filter no longer lists the deleted provider - #7943",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var name = pm.collectionVariables.get('providerLabelsName');",
+                  "var names = (pm.response.json().providers || []).map(function (p) { return p.name; });",
+                  "pm.test('the deleted provider is gone', function () { pm.expect(names, pm.response.text()).to.not.include(name); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers?tags=harness-provider-labels-c",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ],
+              "query": [
+                {
+                  "key": "tags",
+                  "value": "harness-provider-labels-c"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
