@@ -520,13 +520,25 @@ UpdateProviderRequest:
     prompt_cache:
       $ref: '#/PromptCacheConfig'
     metadata:
-      allOf:
-        - $ref: '#/ProviderMetadata'
-      description: Replaces the provider's metadata as a whole. Omit to leave it unchanged; send {} or null to clear it.
+      type: [object, 'null']
+      description: >-
+        Replaces the provider's metadata as a whole. Omit to leave it unchanged; send {} or null to
+        clear it. Same rules as on create.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+      additionalProperties:
+        type: string
+        maxLength: 512
     tags:
-      allOf:
-        - $ref: '#/Tags'
-      description: Replaces the provider's tags as a whole. Omit to leave them unchanged; send [] or null to clear them.
+      type: [array, 'null']
+      description: >-
+        Replaces the provider's tags as a whole. Omit to leave them unchanged; send [] or null to
+        clear them. Same rules as on create.
+      maxItems: 50
+      items:
+        type: string
+        pattern: '^[a-zA-Z0-9._-]{1,64}$'
 
 ListProviderKeysResponse:
   type: object
@@ -556,6 +568,7 @@ ModelResponse:
 
 ModelTagsEntry:
   type: object
+  additionalProperties: false
   required:
     - provider
     - model
@@ -565,7 +578,8 @@ ModelTagsEntry:
       description: A configured provider
     model:
       type: string
-      description: Model name; does not have to be in the pricing datasheet
+      maxLength: 255
+      description: Model name of at most 255 bytes; does not have to be in the pricing datasheet
     tags:
       $ref: '#/Tags'
 

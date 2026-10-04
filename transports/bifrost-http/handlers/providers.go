@@ -1713,6 +1713,10 @@ func (h *ProviderHandler) setModelTags(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, "provider and model are required for every model tags entry")
 			return
 		}
+		if len(payload[i].Model) > tables.MaxModelNameLength {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("model name for provider %s can be at most %d bytes", payload[i].Provider, tables.MaxModelNameLength))
+			return
+		}
 		if _, err := h.inMemoryStore.GetProviderConfigRaw(schemas.ModelProvider(payload[i].Provider)); err != nil {
 			if errors.Is(err, lib.ErrNotFound) {
 				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("provider %s not found", payload[i].Provider))
@@ -1830,18 +1834,21 @@ func providerDialTargetChanged(old *schemas.NetworkConfig, next schemas.NetworkC
 }
 
 // parseMetadataLabelFilters collects metadata_<key>=<value> query parameters, the same shape the logs
-// endpoints accept. An invalid key is a 400 rather than a silently ignored filter, which would
-// return everything.
+// endpoints accept. An invalid key, including the empty key of a bare metadata_=<value>, is a 400
+// rather than a silently ignored filter, which would return everything. Whether an invalid key
+// was seen is tracked separately from the key itself because the empty key is also invalid.
 func parseMetadataLabelFilters(args *fasthttp.Args) (map[string]string, error) {
 	var filters map[string]string
 	var invalid string
+	hasInvalid := false
 	for key, value := range args.All() {
 		metadataKey, ok := strings.CutPrefix(string(key), "metadata_")
 		if !ok {
 			continue
 		}
 		if !tables.IsValidMetadataKey(metadataKey) {
-			if invalid == "" {
+			if !hasInvalid {
+				hasInvalid = true
 				invalid = metadataKey
 			}
 			continue
@@ -1851,7 +1858,7 @@ func parseMetadataLabelFilters(args *fasthttp.Args) (map[string]string, error) {
 		}
 		filters[metadataKey] = string(value)
 	}
-	if invalid != "" {
+	if hasInvalid {
 		return nil, fmt.Errorf("invalid metadata filter key %q: keys must be 1-%d characters of letters, digits, '.', '_' or '-'", invalid, tables.MaxMetadataKeyLength)
 	}
 	return filters, nil

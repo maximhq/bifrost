@@ -40664,7 +40664,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List all providers",
-        "description": "Returns a list of all configured providers with their configurations and status.\n",
+        "description": "Returns a list of all configured providers with their configurations and status.\nOptional metadata and tag filters are AND-ed together.\n\n**Metadata filters:** add one `metadata_<key>=<value>` query parameter per metadata\nkey to match, where `<key>` is the metadata key itself (for example\n`?metadata_owner=team-a&metadata_region=eu-west-1`). Only providers whose metadata\nhas every given key set to exactly the given value are returned. A key that is not\n1-256 characters of letters, digits, '.', '_' and '-' is rejected with a 400.\nThese parameters have dynamic names, so they are described here rather than declared\nas individual parameters.\n",
         "tags": ["Providers"],
         "security": [
           {
@@ -40675,14 +40675,6 @@
           }
         ],
         "parameters": [
-          {
-            "name": "metadata_<key>",
-            "in": "query",
-            "description": "Metadata filter: only providers whose metadata has <key> set to exactly this value (for example metadata_owner=team-a). Repeat with different keys to AND them. An invalid key (anything but letters, digits, '.', '_' and '-') is rejected with a 400.",
-            "schema": {
-              "type": "string"
-            }
-          },
           {
             "name": "tags",
             "in": "query",
@@ -41847,6 +41839,7 @@
                 "minItems": 1,
                 "items": {
                   "type": "object",
+                  "additionalProperties": false,
                   "required": [
                     "provider",
                     "model"
@@ -41858,7 +41851,8 @@
                     },
                     "model": {
                       "type": "string",
-                      "description": "Model name; does not have to be in the pricing datasheet"
+                      "maxLength": 255,
+                      "description": "Model name of at most 255 bytes; does not have to be in the pricing datasheet"
                     },
                     "tags": {
                       "type": "array",
@@ -41890,10 +41884,24 @@
             }
           },
           "404": {
-            "description": "A provider in the batch is not configured"
+            "description": "A provider in the batch is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "503": {
-            "description": "No config store is configured"
+            "description": "No config store is configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal server error",
@@ -108859,7 +108867,7 @@
             }
           },
           "metadata": {
-            "type": "object",
+            "type": ["object", "null"],
             "description": "Replaces the provider's metadata as a whole. Omit to leave it unchanged; send {} or null to clear it. Same rules as on create.",
             "maxProperties": 50,
             "propertyNames": {
@@ -108871,7 +108879,7 @@
             }
           },
           "tags": {
-            "type": "array",
+            "type": ["array", "null"],
             "description": "Replaces the provider's tags as a whole. Omit to leave them unchanged; send [] or null to clear them. Same rules as on create.",
             "maxItems": 50,
             "items": {
