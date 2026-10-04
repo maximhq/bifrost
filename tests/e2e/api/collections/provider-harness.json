@@ -188324,7 +188324,7 @@
       ]
     },
     {
-      "name": "144. Anthropic /v1/messages request validation - 400 invalid_request_error (#7917 / PR #7918) (anthropic-request-validation)",
+      "name": "147. Anthropic /v1/messages request validation - 400 invalid_request_error (#7917 / PR #7918) (anthropic-request-validation)",
       "description": "Pins that /anthropic/v1/messages refuses requests Anthropic's Messages API rejects, with HTTP 400 and an Anthropic-shaped invalid_request_error, before anything reaches a provider.\n\nBug (#7917): the integration converted these requests instead of rejecting them. A sent max_tokens below 1 was dropped and replaced on egress with the model's full output budget (an invalid request became the most expensive generation, returned 200), an empty messages array surfaced as an untyped api_error (which SDKs retry), and unknown roles such as \"tool\" were coerced downstream. validateAnthropicMessageRequest, run from anthropicMessagesShortCircuit in transports/bifrost-http/integrations/anthropic.go, now refuses them at the integration edge.\n\nCases: max_tokens 0 (non-streaming), max_tokens -5 with stream true (must be a JSON 400, not an SSE stream), an empty messages array, and a role \"tool\" message. Every case is red before the fix (200 or a non-invalid_request_error type) and green after. Post-fix no request reaches the provider, so the folder costs nothing to run. Omitted or null max_tokens is still accepted and is covered by every other /anthropic case in the collection.",
       "item": [
         {
