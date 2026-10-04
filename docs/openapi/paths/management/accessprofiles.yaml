@@ -1037,7 +1037,7 @@ users-access-profile-virtual-keys:
             schema:
               $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '409':
-        description: A virtual key with this name already exists for this owner
+        description: A virtual key with this name already exists among keys with no team, customer or business unit. User-issued keys share that single namespace, so the name must be unused by every other unowned key
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
