@@ -127,6 +127,7 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunFastModeTest,
 		RunEagerInputStreamingTest,
 		RunServerToolsViaOpenAIEndpointTest,
+		RunWebSearchViaChatCompletionsTest,
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)
