@@ -127,6 +127,41 @@ func redactedWebhookEndpoint(endpoint *configstoreTables.TableWebhookEndpoint) *
 }
 
 // storeAvailable guards every route against a disabled config store.
+// requireGenuineAuthForPrivateNetworkEndpoint rejects a create/update that
+// makes Bifrost deliver to a loopback or private-network receiver when the
+// caller was only let through by the fail-open bypass (dashboard auth
+// disabled/unconfigured), not by a real credential. allow_private_network is
+// a legitimate setting for a real admin; the problem is that anyone on the
+// network could otherwise choose an internal destination for the gateway's
+// outbound POSTs - the same rule requireGenuineAuthForEndpointChange applies
+// to provider keys. existing is the stored endpoint on update and nil on
+// create; an update that keeps the stored private URL passes, so bypassed
+// callers can still edit events, headers and retry settings. On rejection
+// this sends the response and returns true.
+func requireGenuineAuthForPrivateNetworkEndpoint(ctx *fasthttp.RequestCtx, existing, next *configstoreTables.TableWebhookEndpoint) bool {
+	if !isAuthBypassed(ctx) || !next.AllowPrivateNetwork {
+		return false
+	}
+	if existing != nil && existing.AllowPrivateNetwork && existing.URL == next.URL {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, "Registering a webhook endpoint that allows private-network delivery requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.")
+	return true
+}
+
+// requireGenuineAuthForPrivateNetworkDelivery is the per-request twin of
+// requireGenuineAuthForPrivateNetworkEndpoint for caller-triggered deliveries
+// (test fire, redeliver) to an endpoint that allows private-network delivery.
+// Scheduled deliveries are unaffected. On rejection this sends the response
+// and returns true.
+func requireGenuineAuthForPrivateNetworkDelivery(ctx *fasthttp.RequestCtx, endpoint *configstoreTables.TableWebhookEndpoint, action string) bool {
+	if !endpoint.AllowPrivateNetwork || !isAuthBypassed(ctx) {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("unauthenticated callers cannot %s webhook endpoints that allow private-network delivery; set an admin password to allow this", action))
+	return true
+}
+
 func (h *WebhookHandler) storeAvailable(ctx *fasthttp.RequestCtx) bool {
 	if h.store == nil || h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "Config store is not available")
@@ -236,6 +271,9 @@ func (h *WebhookHandler) createWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	if requireGenuineAuthForPrivateNetworkEndpoint(ctx, nil, endpoint) {
+		return
+	}
 	if err := h.store.ConfigStore.CreateWebhookEndpoint(ctx, endpoint); err != nil {
 		if errors.Is(err, configstore.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, "A webhook endpoint with this name already exists")
@@ -277,13 +315,12 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	// Masked header values round-tripped from a read are placeholders, not
 	// real values — restore the stored value so an edit that touches other
 	// fields cannot corrupt the headers.
-	if len(req.Headers) > 0 {
-		if existing, ok := h.store.WebhookEndpointByID(id); ok {
-			for name, value := range req.Headers {
-				if value.IsMaskedPlaceholder() {
-					if stored, found := existing.Headers[name]; found {
-						req.Headers[name] = stored
-					}
+	existing, hasExisting := h.store.WebhookEndpointByID(id)
+	if len(req.Headers) > 0 && hasExisting {
+		for name, value := range req.Headers {
+			if value.IsMaskedPlaceholder() {
+				if stored, found := existing.Headers[name]; found {
+					req.Headers[name] = stored
 				}
 			}
 		}
@@ -291,6 +328,12 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	endpoint := req.toTable(id)
 	if err := endpoint.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if !hasExisting {
+		existing = nil
+	}
+	if requireGenuineAuthForPrivateNetworkEndpoint(ctx, existing, endpoint) {
 		return
 	}
 	if err := h.store.ConfigStore.UpdateWebhookEndpoint(ctx, endpoint); err != nil {
@@ -409,11 +452,8 @@ func (h *WebhookHandler) testWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	// gateway's own network, so the test fire requires a real credential - the
 	// same scoping rejectPrivateMCPTargetIfAuthBypassed applies to MCP
 	// clients. Public endpoints and scheduled deliveries are unaffected.
-	if endpoint.AllowPrivateNetwork {
-		if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed {
-			SendError(ctx, fasthttp.StatusForbidden, "unauthenticated callers cannot test webhook endpoints that allow private-network delivery; set an admin password to allow this")
-			return
-		}
+	if requireGenuineAuthForPrivateNetworkDelivery(ctx, endpoint, "test") {
+		return
 	}
 	// The event to sample is optional; it defaults to the endpoint's first
 	// subscription and must be one the endpoint would actually receive.
@@ -620,6 +660,11 @@ func (h *WebhookHandler) redeliverWebhook(ctx *fasthttp.RequestCtx) {
 	}
 	if endpoint.Disabled {
 		SendError(ctx, fasthttp.StatusBadRequest, "The endpoint this delivery belongs to is disabled")
+		return
+	}
+	// A replay is a caller-triggered delivery, so it carries the same
+	// private-network scoping as the test fire.
+	if requireGenuineAuthForPrivateNetworkDelivery(ctx, endpoint, "redeliver to") {
 		return
 	}
 	// Same id as the original delivery: the webhook-id header stays stable,
