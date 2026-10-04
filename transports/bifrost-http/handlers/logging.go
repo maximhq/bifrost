@@ -3247,6 +3247,11 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 
 // deleteMCPLogs handles DELETE /api/mcp-logs - Delete MCP tool logs by their IDs
 func (h *LoggingHandler) deleteMCPLogs(ctx *fasthttp.RequestCtx) {
+	if isAuthBypassed(ctx) {
+		SendError(ctx, fasthttp.StatusForbidden, "Deleting MCP tool logs requires an authenticated admin session; authentication was bypassed for this request")
+		return
+	}
+
 	var req struct {
 		IDs []string `json:"ids"`
 	}
