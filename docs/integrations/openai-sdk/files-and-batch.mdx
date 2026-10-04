@@ -359,6 +359,10 @@ print(f"Status: {batch.status}")
 
 ### List Batches
 
+<Note>
+Batches belong to the virtual key that created them. With a virtual key, listing returns that key's batches (and batches with no recorded creating key), and requests to retrieve, cancel, fetch results for, or delete a batch created by another key return `404`. Requests without a virtual key see every batch, as before. If Bifrost cannot look up batch ownership, a list request fails with `500` instead of returning a partial page. When Bifrost runs without a config store, ownership is never recorded, so batch list, retrieve, cancel, results, and delete requests made with a virtual key are refused with `403`; configure a config store to use batches with virtual keys.
+</Note>
+
 ```python
 # List batches (specify provider)
 response = client.batches.list(
