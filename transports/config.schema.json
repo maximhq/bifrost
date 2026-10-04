@@ -1180,7 +1180,17 @@
                 "description": "Custom key/value metadata for this virtual key (for example cost_center, project, owner, environment). Keys may contain letters, digits, '.', '_' and '-' (max 256 characters) and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
                 "maxProperties": 50,
                 "propertyNames": {
-                  "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+                  "pattern": "^[a-zA-Z0-9._-]{1,256}$",
+                  "not": {
+                    "anyOf": [
+                      {
+                        "const": "isAsyncRequest"
+                      },
+                      {
+                        "pattern": "^bifrost_alb_"
+                      }
+                    ]
+                  }
                 },
                 "additionalProperties": {
                   "type": "string",
@@ -6905,7 +6915,7 @@
     },
     "provider_metadata": {
       "type": "object",
-      "description": "Custom key/value metadata for this provider (for example owner, region, cost_center). Keys may contain letters, digits, '.', '_' and '-' (max 256 characters); values are strings of at most 512 characters; at most 50 entries. Returned by the providers API and filterable with metadata_<key>=<value>.",
+      "description": "Custom key/value metadata for this provider (for example owner, region, cost_center). Keys may contain letters, digits, '.', '_' and '-' (max 256 characters); values are strings of at most 512 characters; at most 50 entries. Returned by the providers API and filterable on GET /api/providers with metadata_<key>=<value>.",
       "maxProperties": 50,
       "propertyNames": {
         "pattern": "^[a-zA-Z0-9._-]{1,256}$"
@@ -6917,11 +6927,11 @@
     },
     "tags": {
       "type": "array",
-      "description": "Free-form labels (for example prod, eu, approved-for-pii). Each tag is 1-64 characters of letters, digits, '.', '_' and '-'; at most 50 tags. Tags are trimmed, de-duplicated and sorted on save, and are filterable with tags=a,b (all must match).",
+      "description": "Free-form labels (for example prod, eu, approved-for-pii). Each tag is 1-64 characters of letters, digits, '.', '_' and '-' after surrounding whitespace is trimmed; at most 50 tags. Tags are trimmed, de-duplicated and sorted when the config is loaded. Provider tags are returned by the providers API and filterable on GET /api/providers with tags=a,b (all must match).",
       "maxItems": 50,
       "items": {
         "type": "string",
-        "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+        "pattern": "^\\s*[a-zA-Z0-9._-]{1,64}\\s*$"
       }
     },
     "provider": {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -555,8 +556,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
 		PromptCache:              p.PromptCache,
-		Metadata:                 p.Metadata,
-		Tags:                     p.Tags,
+		Metadata:                 maps.Clone(p.Metadata),
+		Tags:                     slices.Clone(p.Tags),
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,

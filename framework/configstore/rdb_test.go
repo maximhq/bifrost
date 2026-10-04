@@ -5130,8 +5130,9 @@ func TestProviderMetadataAndTags_PersistThroughAddUpdateAndSync(t *testing.T) {
 }
 
 // TestModelTags_SetGetAndClear pins the sparse config_models override: a row is created on the
-// first tag, replaced on the next write, removed when the tags are cleared, refused for an unknown
-// provider, and any model name (in the catalog or not) can be tagged.
+// first tag, replaced on the next write, kept with NULL tags when the tags are cleared, refused
+// for an unknown provider or an oversized model name, and any model name (in the catalog or not)
+// can be tagged.
 func TestModelTags_SetGetAndClear(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -5160,13 +5161,28 @@ func TestModelTags_SetGetAndClear(t *testing.T) {
 
 	require.NoError(t, store.SetModelTags(ctx, "openai", "gpt-5.1", nil))
 	var count int64
-	require.NoError(t, store.DB().Model(&tables.TableModel{}).Where("name = ?", "gpt-5.1").Count(&count).Error)
-	assert.Zero(t, count, "clearing the tags must remove the override row")
+	require.NoError(t, store.DB().Model(&tables.TableModel{}).Where("name = ? AND tags IS NULL", "gpt-5.1").Count(&count).Error)
+	assert.Equal(t, int64(1), count, "clearing the tags must write NULL and keep the row")
+	tags, err = store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, tags["openai"], "gpt-5.1", "a cleared model must not be listed as tagged")
 	require.NoError(t, store.SetModelTags(ctx, "openai", "never-tagged", nil), "clearing an untagged model is a no-op")
 
 	assert.ErrorIs(t, store.SetModelTags(ctx, "unknown", "gpt-5.1", []string{"prod"}), ErrNotFound)
 	assert.ErrorContains(t, store.SetModelTags(ctx, "openai", "gpt-5.1", []string{"a,b"}), "invalid tag")
 	assert.ErrorContains(t, store.SetModelTags(ctx, "openai", " ", []string{"prod"}), "model name is required")
+	assert.ErrorContains(t, store.SetModelTags(ctx, "openai", strings.Repeat("m", tables.MaxModelNameLength+1), []string{"prod"}), "at most 255 bytes")
+	require.NoError(t, store.SetModelTags(ctx, "openai", strings.Repeat("m", tables.MaxModelNameLength), []string{"prod"}))
+
+	// A config_models row that existed before tagging (seeded or from an older install) survives
+	// tagging and clearing.
+	var openaiProvider tables.TableProvider
+	require.NoError(t, store.DB().Where("name = ?", "openai").First(&openaiProvider).Error)
+	require.NoError(t, store.DB().Create(&tables.TableModel{ID: "legacy-row", ProviderID: openaiProvider.ID, Name: "legacy-model"}).Error)
+	require.NoError(t, store.SetModelTags(ctx, "openai", "legacy-model", []string{"prod"}))
+	require.NoError(t, store.SetModelTags(ctx, "openai", "legacy-model", nil))
+	require.NoError(t, store.DB().Model(&tables.TableModel{}).Where("id = ?", "legacy-row").Count(&count).Error)
+	assert.Equal(t, int64(1), count, "clearing tags must not delete a pre-existing config_models row")
 
 	// A deleted provider's model tags are no longer returned (FK cascade; the join also drops orphans).
 	require.NoError(t, store.DeleteProvider(ctx, schemas.Anthropic))
