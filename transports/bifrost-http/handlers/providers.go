@@ -70,7 +70,7 @@ type ModelPricingAttributesEntry struct {
 }
 
 // ModelTagsEntry is the wire shape for PUT /api/models/tags. Tags replace the model's tags as a
-// whole; an empty list clears them.
+// whole; an empty list clears them, and a missing or null tags field is rejected.
 type ModelTagsEntry struct {
 	Provider string   `json:"provider"`
 	Model    string   `json:"model"`
@@ -1723,6 +1723,12 @@ func (h *ProviderHandler) setModelTags(ctx *fasthttp.RequestCtx) {
 				return
 			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get provider %s: %v", payload[i].Provider, err))
+			return
+		}
+		// A missing or null tags field is refused rather than read as "clear": an explicit []
+		// is the only way to clear a model's tags.
+		if payload[i].Tags == nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("tags is required for %s/%s; send [] to clear a model's tags", payload[i].Provider, payload[i].Model))
 			return
 		}
 		tags, err := tables.NormalizeTags(payload[i].Tags)

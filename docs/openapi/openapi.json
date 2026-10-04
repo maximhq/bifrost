@@ -41810,7 +41810,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Set model tags",
-        "description": "Replaces the tags of each listed model. The provider must be configured; any model name is accepted, including models that are not in the pricing datasheet. An empty tags list clears a model's tags. The whole batch is validated first and written in one transaction. Requires a config store.\n",
+        "description": "Replaces the tags of each listed model. The provider must be configured; any model name is accepted, including models that are not in the pricing datasheet. Every entry must carry tags; a missing or null tags field is rejected with a 400, and an empty tags list clears a model's tags. The whole batch is validated first and written in one transaction. Requires a config store.\n\nEntries are applied in request order, and the same (provider, model) pair may appear more than once: each entry replaces that model's tags, so the last entry for a pair decides its final tags (an empty list in that last entry clears them).\n",
         "tags": [
           "Providers"
         ],
@@ -41834,7 +41834,8 @@
                   "additionalProperties": false,
                   "required": [
                     "provider",
-                    "model"
+                    "model",
+                    "tags"
                   ],
                   "properties": {
                     "provider": {
@@ -41847,7 +41848,7 @@
                     },
                     "tags": {
                       "type": "array",
-                      "description": "Free-form labels (for example prod, eu, approved-for-pii). Each tag is 1-64 characters of letters, digits, '.', '_' and '-' once surrounding whitespace is trimmed; at most 50 entries, duplicates included. Stored trimmed, de-duplicated and sorted.",
+                      "description": "Replaces the model's tags. Required: a missing or null value is rejected with a 400, and an empty list clears the model's tags.",
                       "maxItems": 50,
                       "items": {
                         "type": "string",
