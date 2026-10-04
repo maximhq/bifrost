@@ -3815,6 +3815,8 @@ func TestValidateConfigSchema_IssuerURLRequiredForDiscovery(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_VirtualKeyMetadata checks that config.schema.json enforces the same
+// metadata rules as the configstore validator, including the reserved keys.
 func TestValidateConfigSchema_VirtualKeyMetadata(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -3828,6 +3830,9 @@ func TestValidateConfigSchema_VirtualKeyMetadata(t *testing.T) {
 		{name: "empty key", metadata: `{"": "cc-42"}`, wantErr: true},
 		{name: "value too long", metadata: `{"k": "` + strings.Repeat("v", 513) + `"}`, wantErr: true},
 		{name: "not an object", metadata: `["cc-42"]`, wantErr: true},
+		{name: "reserved key", metadata: `{"isAsyncRequest": "true"}`, wantErr: true},
+		{name: "load balancer prefix", metadata: `{"bifrost_alb_provider": "x"}`, wantErr: true},
+		{name: "reserved name as a substring", metadata: `{"my_bifrost_alb_x": "v", "isAsyncRequestCount": "1"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
