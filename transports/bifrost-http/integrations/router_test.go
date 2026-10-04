@@ -40,9 +40,53 @@ func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) 
 	require.NoError(t, writer.WriteField("stream", "true"))
 	require.NoError(t, writer.Close())
 
-	model, stream := parsePassthroughBody(writer.FormDataContentType(), body.Bytes())
+	model, stream, err := parsePassthroughBody(writer.FormDataContentType(), body.Bytes())
+	require.NoError(t, err)
 	assert.Equal(t, "openai/whisper-1", model)
 	assert.True(t, stream)
+}
+
+// TestParsePassthroughBody_JSONModelIsStrict: the model governance checks must be
+// the one the upstream reads from the same bytes, so the JSON branch accepts exactly
+// one, exactly-spelled, string-typed model key and refuses anything a different
+// decoder could read differently. An unrelated field with the wrong type no longer
+// drops the model, and a body with no model at all is still fine.
+func TestParsePassthroughBody_JSONModelIsStrict(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		body        string
+		wantModel   string
+		wantStream  bool
+		wantErr     string
+	}{
+		{name: "plain body", contentType: "application/json", body: `{"model":" gpt-4o ","stream":true}`, wantModel: "gpt-4o", wantStream: true},
+		{name: "no model key", contentType: "application/json", body: `{"input":"x"}`},
+		{name: "unrelated field of wrong type keeps the model", contentType: "application/json", body: `{"model":"gpt-4o","stream":"yes"}`, wantModel: "gpt-4o"},
+		{name: "duplicate model keys", contentType: "application/json", body: `{"model":"blocked","model":"allowed"}`, wantErr: "at most once"},
+		{name: "case-variant duplicate", contentType: "application/json", body: `{"model":"blocked","MODEL":"allowed"}`, wantErr: "at most once"},
+		{name: "case-variant only", contentType: "application/json", body: `{"Model":"gpt-4o"}`, wantErr: "spelled"},
+		{name: "non-string model", contentType: "application/json", body: `{"model":["gpt-4o"]}`, wantErr: "must be a string"},
+		{name: "nested model is not the request model", contentType: "application/json", body: `{"input":{"model":"inner"}}`},
+		{name: "invalid JSON declared as JSON", contentType: "application/json; charset=utf-8", body: `{"model":"gpt-4o",`, wantErr: "not valid JSON"},
+		{name: "invalid JSON with another content type is ignored", contentType: "text/plain", body: `model=gpt-4o`},
+		{name: "valid JSON with no content type is still read", contentType: "", body: `{"model":"gpt-4o"}`, wantModel: "gpt-4o"},
+		{name: "array body has no model", contentType: "application/json", body: `[{"model":"gpt-4o"}]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model, stream, err := parsePassthroughBody(tc.contentType, []byte(tc.body))
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				assert.Empty(t, model)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantModel, model)
+			assert.Equal(t, tc.wantStream, stream)
+		})
+	}
 }
 
 func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
@@ -1296,4 +1340,49 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 			require.Equal(t, "sk-ant-test-operator-key", got[0].apiKey)
 		})
 	}
+}
+
+// The Bedrock passthrough is a restricted route: it targets the Bedrock provider and is mounted
+// at /bedrock_passthrough, so it can never be mistaken for the native /bedrock integration.
+func TestBedrockPassthroughRouterTargetsBedrockAtItsOwnPrefix(t *testing.T) {
+	r := NewBedrockPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	require.NotNil(t, r.passthroughCfg)
+	assert.Equal(t, schemas.Bedrock, r.passthroughCfg.Provider)
+	assert.Equal(t, []string{"/bedrock_passthrough"}, r.passthroughCfg.StripPrefix)
+	assert.Empty(t, r.passthroughCfg.AllowedRoutes, "the operation allow-list lives in the provider, which also holds the signing credentials")
+}
+
+// The Bedrock passthrough streams exactly the operation whose AWS response is an event stream.
+// InvokeAgent's path and body carry no "stream" marker, so the router needs the provider's word for it.
+func TestBedrockPassthroughRouterStreamsOnlyInvokeAgent(t *testing.T) {
+	cfg := NewBedrockPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).passthroughCfg
+	require.NotNil(t, cfg.StreamingPath, "the router must know InvokeAgent streams")
+
+	const invokeAgent = "/agents/AGENT12345/agentAliases/ALIAS12345/sessions/s1/text"
+	assert.True(t, cfg.streams(http.MethodPost, invokeAgent, false), "InvokeAgent answers with an event stream")
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/KB12345678/retrieve", false), "Retrieve is a plain request/response call")
+	assert.False(t, cfg.streams(http.MethodPost, "/guardrail/gr1a2b3c4d5e/version/DRAFT/apply", false), "ApplyGuardrail is a plain request/response call")
+	assert.False(t, cfg.streams(http.MethodGet, invokeAgent, false), "only the POST that the provider forwards streams")
+	assert.False(t, cfg.streams(http.MethodPost, "/model/amazon.titan-text-express-v1/invoke", false), "a route outside the allow-list is not special-cased")
+
+	// The provider's word is final: an accepted identifier that happens to contain "stream", or a body
+	// that says stream: true, must not move a request/response operation onto the streaming handler.
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/STREAMKB01/retrieve", false), "a knowledge-base id containing the word stream is still a plain Retrieve")
+	assert.False(t, cfg.streams(http.MethodPost, "/guardrail/streamguard1/version/DRAFT/apply", false), "a guardrail id containing the word stream is still a plain ApplyGuardrail")
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/KB12345678/retrieve", true), "stream: true in a Retrieve body does not make it stream")
+	assert.True(t, cfg.streams(http.MethodPost, "/agents/AGENT12345/agentAliases/ALIAS12345/sessions/s1/text", false), "InvokeAgent still streams")
+}
+
+// The generic stream decision is unchanged for every other passthrough router.
+func TestPassthroughConfigStreamsDecision(t *testing.T) {
+	plain := &PassthroughConfig{}
+	assert.True(t, plain.streams(http.MethodPost, "/v1beta/models/x:streamGenerateContent", false), "a stream marker in the path")
+	assert.True(t, plain.streams(http.MethodPost, "/v1/messages", true), "stream: true in the body")
+	assert.False(t, plain.streams(http.MethodPost, "/v1/messages", false))
+
+	custom := &PassthroughConfig{StreamingPath: func(method, path string) bool { return method == http.MethodPost && path == "/always" }}
+	assert.True(t, custom.streams(http.MethodPost, "/always", false), "the provider hook marks the route as streaming")
+	assert.False(t, custom.streams(http.MethodPost, "/other", false))
+	assert.False(t, custom.streams(http.MethodPost, "/stream/other", false), "when the provider supplies a route predicate it replaces the generic path marker")
+	assert.False(t, custom.streams(http.MethodPost, "/other", true), "and the generic body marker")
 }

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -202,5 +203,78 @@ func TestAddMCPClient_UnresolvableTargetRejected(t *testing.T) {
 	status, body := postMCPClient(t, `{"name":"probe","connection_type":"http","connection_string":"http://does-not-resolve.invalid/mcp","auth_type":"none"}`)
 	if status != fasthttp.StatusForbidden {
 		t.Fatalf("expected status %d for an unresolvable target, got %d: %s", fasthttp.StatusForbidden, status, body)
+	}
+}
+
+func secretVarFromJSON(t *testing.T, raw string) schemas.SecretVar {
+	t.Helper()
+	var v schemas.SecretVar
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		t.Fatalf("unmarshal %s: %v", raw, err)
+	}
+	return v
+}
+
+// TestMCPClientSecretReferences lists every env./vault. reference in the
+// credential-bearing fields, by wire name, and ignores literal values.
+func TestMCPClientSecretReferences(t *testing.T) {
+	envHeader := secretVarFromJSON(t, `"env.BIFROST_TEST_UNSET_SECRET"`)
+	vaultSecret := secretVarFromJSON(t, `"vault.mcp/client"`)
+	plain := secretVarFromJSON(t, `"literal-token"`)
+	refs := mcpClientSecretReferences(
+		map[string]schemas.SecretVar{"X-Api-Key": envHeader, "X-Plain": plain},
+		schemas.NewSecretVar("https://mcp.example.com/mcp"),
+		&OAuthConfigRequest{ClientID: &plain, ClientSecret: &vaultSecret},
+		&schemas.MCPTokenExchangeConfig{ClientSecret: &envHeader},
+		&schemas.MCPTLSConfig{CACertPEM: &envHeader},
+	)
+	want := []string{"headers.X-Api-Key", "oauth_config.client_secret", "token_exchange.client_secret", "tls_config.ca_cert_pem"}
+	if strings.Join(refs, ",") != strings.Join(want, ",") {
+		t.Fatalf("expected %v, got %v", want, refs)
+	}
+	if got := mcpClientSecretReferences(map[string]schemas.SecretVar{"X-Plain": plain}, nil, nil, nil, nil); len(got) != 0 {
+		t.Fatalf("expected no references for literal values, got %v", got)
+	}
+}
+
+// TestRejectSecretReferencesIfAuthBypassed: a caller let through with no
+// credential check cannot make the gateway resolve its own env/vault values
+// into a client's outbound fields; an authenticated admin and literal values
+// are unaffected.
+func TestRejectSecretReferencesIfAuthBypassed(t *testing.T) {
+	bypassed := &fasthttp.RequestCtx{}
+	bypassed.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	if !rejectSecretReferencesIfAuthBypassed(bypassed, []string{"headers.X-Api-Key"}) {
+		t.Fatal("expected an unauthenticated env reference to be rejected")
+	}
+	if bypassed.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusForbidden, bypassed.Response.StatusCode())
+	}
+	if !strings.Contains(string(bypassed.Response.Body()), "headers.X-Api-Key") {
+		t.Errorf("expected the error to name the field, got %s", bypassed.Response.Body())
+	}
+
+	literal := &fasthttp.RequestCtx{}
+	literal.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	if rejectSecretReferencesIfAuthBypassed(literal, nil) {
+		t.Fatal("expected literal-only requests to pass")
+	}
+
+	authenticated := &fasthttp.RequestCtx{}
+	if rejectSecretReferencesIfAuthBypassed(authenticated, []string{"headers.X-Api-Key"}) {
+		t.Fatal("expected an authenticated admin's env reference to be allowed")
+	}
+}
+
+// TestAddMCPClient_SecretReferenceRejectedBeforeDial proves the gate is wired
+// into the create path ahead of any target lookup: the same unresolvable host
+// is refused for the reference, not for its address.
+func TestAddMCPClient_SecretReferenceRejectedBeforeDial(t *testing.T) {
+	status, body := postMCPClient(t, `{"name":"probe","connection_type":"http","connection_string":"http://does-not-resolve.invalid/mcp","auth_type":"headers","headers":{"X-Api-Key":"env.BIFROST_TEST_UNSET_SECRET"}}`)
+	if status != fasthttp.StatusForbidden {
+		t.Fatalf("expected status %d, got %d: %s", fasthttp.StatusForbidden, status, body)
+	}
+	if !strings.Contains(body, "headers.X-Api-Key") {
+		t.Fatalf("expected the refusal to name headers.X-Api-Key, got %s", body)
 	}
 }
