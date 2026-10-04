@@ -6,11 +6,17 @@ import (
 	"gorm.io/gorm"
 )
 
+// MaxModelNameLength caps a config_models model name, in bytes. It matches the varchar(255) model
+// column of the pricing table and keeps the (provider_id, name) unique index entry well under
+// database index row limits.
+const MaxModelNameLength = 255
+
 // TableModel represents a model configuration in the database.
 //
-// Rows are sparse per-model overrides keyed by (provider_id, name): a row exists only for a
-// model that carries operator data (today, tags). Any model name is allowed, including models
-// that are not in the pricing datasheet.
+// Rows are sparse per-model overrides keyed by (provider_id, name), created when a model first
+// carries operator data (today, tags). Any model name of at most MaxModelNameLength bytes is
+// allowed, including models that are not in the pricing datasheet. A row whose tags are NULL
+// carries no tags.
 type TableModel struct {
 	ID         string `gorm:"primaryKey" json:"id"`
 	ProviderID uint   `gorm:"index;not null;uniqueIndex:idx_provider_name" json:"provider_id"`

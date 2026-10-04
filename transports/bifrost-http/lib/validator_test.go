@@ -3848,6 +3848,9 @@ func TestValidateConfigSchema_VirtualKeyMetadata(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_ProviderMetadataAndTags checks the providers.<name>.metadata and tags
+// rules in config.schema.json, including that tags with surrounding whitespace are accepted
+// because NormalizeTags trims them before the 1-64 character rule applies.
 func TestValidateConfigSchema_ProviderMetadataAndTags(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -3864,6 +3867,10 @@ func TestValidateConfigSchema_ProviderMetadataAndTags(t *testing.T) {
 		{name: "tag with comma", provider: "openai", labels: `"tags": ["a,b"]`, wantErr: true},
 		{name: "tag too long", provider: "openai", labels: `"tags": ["` + strings.Repeat("t", 65) + `"]`, wantErr: true},
 		{name: "tags not an array", provider: "openai", labels: `"tags": "prod"`, wantErr: true},
+		{name: "tag with surrounding whitespace (trimmed on load)", provider: "openai", labels: `"tags": [" prod ", "eu\t"]`},
+		{name: "whitespace-only tag", provider: "openai", labels: `"tags": ["  "]`, wantErr: true},
+		{name: "tag with inner space", provider: "openai", labels: `"tags": ["a b"]`, wantErr: true},
+		{name: "trimmed tag too long", provider: "openai", labels: `"tags": [" ` + strings.Repeat("t", 65) + ` "]`, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
