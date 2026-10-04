@@ -1,7 +1,13 @@
 package integrations
 
 import (
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -11,6 +17,78 @@ import (
 // to the provider without matching against known route patterns.
 type PassthroughRouter struct {
 	*GenericRouter
+}
+
+// stripPassthroughPrefix removes the first configured prefix that matches path at a segment
+// boundary and returns the remainder as a rooted path. A prefix only matches when it ends the
+// path or is followed by "/", so "/genai_passthrough/v1" never matches
+// "/genai_passthrough/v1@host/x" or "/genai_passthrough/v1beta1foo/x"; the shorter
+// "/genai_passthrough" prefix is tried in turn. ok is false when nothing matches, which the
+// router treats as no route rather than forwarding an unanchored remainder.
+func stripPassthroughPrefix(path string, prefixes []string) (string, bool) {
+	for _, prefix := range prefixes {
+		rest, found := strings.CutPrefix(path, prefix)
+		if !found {
+			continue
+		}
+		if rest == "" {
+			return "/", true
+		}
+		if strings.HasPrefix(rest, "/") {
+			return rest, true
+		}
+	}
+	return "", false
+}
+
+// validatePassthroughPath rejects passthrough remainders that could change how the upstream
+// URL is interpreted once concatenated onto a provider base URL. The path must be rooted by
+// exactly one "/", must not carry a userinfo separator in its first segment, and must not
+// contain a scheme separator, backslashes, dot-dot segments, or control characters anywhere.
+// The same rules are applied to the percent-decoded form so an encoded variant cannot slip
+// through. Later segments may contain "@" because Vertex model versions use it
+// ("models/claude-sonnet-4-5@20250929"); past the first segment it can no longer reach
+// the authority, and the provider-side host check covers the remaining cases.
+func validatePassthroughPath(p string) error {
+	if err := checkPassthroughPathRules(p); err != nil {
+		return err
+	}
+	decoded, err := url.PathUnescape(p)
+	if err != nil {
+		return fmt.Errorf("invalid passthrough path: %w", err)
+	}
+	if decoded != p {
+		return checkPassthroughPathRules(decoded)
+	}
+	return nil
+}
+
+func checkPassthroughPathRules(p string) error {
+	switch {
+	case !strings.HasPrefix(p, "/"):
+		return errors.New("invalid passthrough path: must start with /")
+	case strings.HasPrefix(p, "//"):
+		return errors.New("invalid passthrough path: must not start with //")
+	case strings.Contains(p, "\\"):
+		return errors.New("invalid passthrough path: must not contain backslashes")
+	case strings.Contains(p, "://"):
+		return errors.New("invalid passthrough path: must not contain a scheme")
+	}
+	for i := 0; i < len(p); i++ {
+		if p[i] < 0x20 || p[i] == 0x7f {
+			return errors.New("invalid passthrough path: must not contain control characters")
+		}
+	}
+	first, _, _ := strings.Cut(p[1:], "/")
+	if strings.Contains(first, "@") {
+		return errors.New("invalid passthrough path: first segment must not contain @")
+	}
+	for _, segment := range strings.Split(p, "/") {
+		if segment == ".." {
+			return errors.New("invalid passthrough path: must not contain .. segments")
+		}
+	}
+	return nil
 }
 
 // NewPassthroughRouter creates a passthrough-only router for any prefix/provider combo.
@@ -72,6 +150,21 @@ func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handler
 		StripPrefix: []string{
 			"/azure_passthrough",
 		},
+	})
+}
+
+// NewBedrockPassthroughRouter creates a passthrough router for /bedrock_passthrough. Unlike the
+// other passthrough routers it is not a general proxy: the Bedrock provider forwards only
+// InvokeAgent, knowledge-base Retrieve and ApplyGuardrail, the operations Bifrost has no native
+// route for, and refuses every other path with a 400 before any request is built.
+func NewBedrockPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider: schemas.Bedrock,
+		StripPrefix: []string{
+			"/bedrock_passthrough",
+		},
+		// InvokeAgent answers with an event stream; nothing in its path or body says so.
+		StreamingPath: bedrock.IsPassthroughStreamPath,
 	})
 }
 

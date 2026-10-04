@@ -80,6 +80,7 @@ type ServerCallbacks interface {
 	// Auth related callbacks
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ValidateSetupToken(token string) bool
+	ValidateConfiguredSetupToken(token string) bool
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	// Pricing related callbacks
 	UpdateSyncConfig(ctx context.Context) error
@@ -109,6 +110,9 @@ type ServerCallbacks interface {
 	RemoveVirtualMCP(ctx context.Context, id uint) error
 	AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
 	DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
+	// ReloadVirtualKeys reloads many virtual keys exactly as ReloadVirtualKey
+	// reloads one, from batched reads. Enterprise also propagates it to peers.
+	ReloadVirtualKeys(ctx context.Context, ids []string) error
 	// ResetBudgetUsageInMemory clears usage for the given budgets in the governance
 	// store, leaving each reset boundary untouched. owner identifies the entity that
 	// owns them so enterprise can address the cluster broadcast that propagates the
@@ -124,6 +128,7 @@ type ServerCallbacks interface {
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
 	ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error)
+	ModelConfigIndexKey(model string, provider *string) string
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
@@ -249,12 +254,13 @@ type BifrostHTTPServer struct {
 	// from it.
 	ShellRewriter handlers.ShellRewriter
 
-	WebSocketHandler    *handlers.WebSocketHandler
-	NotificationService *handlers.NotificationService
-	WarpHandler         *handlers.WarpHandler
-	MCPServerHandler    *handlers.MCPServerHandler
-	devPprofHandler     *handlers.DevPprofHandler
-	IntegrationHandler  *handlers.IntegrationHandler
+	WebSocketHandler     *handlers.WebSocketHandler
+	NotificationService  *handlers.NotificationService
+	WarpHandler          *handlers.WarpHandler
+	MCPServerHandler     *handlers.MCPServerHandler
+	devPprofHandler      *handlers.DevPprofHandler
+	skillsServingHandler *handlers.SkillsServingHandler
+	IntegrationHandler   *handlers.IntegrationHandler
 
 	AuthMiddleware       *handlers.AuthMiddleware
 	CORSMiddleware       *handlers.CorsMiddleware
@@ -670,7 +676,16 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	if err != nil {
 		return virtualKey, fmt.Errorf("failed to reload VK-scoped model configs for VK %s: %w", id, err)
 	}
-	store := governancePlugin.GetGovernanceStore()
+	s.applyVirtualKeyReload(ctx, governancePlugin.GetGovernanceStore(), virtualKey, mcs)
+	return virtualKey, nil
+}
+
+// applyVirtualKeyReload installs a freshly loaded virtual key and its VK-scoped
+// model configs in memory and drops the caches bound to the key. It is the
+// in-memory half of ReloadVirtualKey, shared with ReloadVirtualKeys so a batched
+// reload leaves each key exactly as a per-key reload would.
+func (s *BifrostHTTPServer) applyVirtualKeyReload(ctx context.Context, store governance.GovernanceStore, virtualKey *tables.TableVirtualKey, mcs []tables.TableModelConfig) {
+	id := virtualKey.ID
 	store.UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
 	// Snapshot in-memory VK-scoped config IDs before the upserts so we can evict
 	// the ones that no longer exist in the DB (e.g. a standalone VK adopted into
@@ -689,7 +704,66 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	}
 	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
-	return virtualKey, nil
+}
+
+// virtualKeysByIDs is the batched key read ReloadVirtualKeys needs;
+// RDBConfigStore provides it.
+type virtualKeysByIDs interface {
+	GetVirtualKeysByIDs(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error)
+}
+
+// ReloadVirtualKeys reloads many virtual keys the way ReloadVirtualKey reloads
+// one: each key is re-read with every relation, its VK-scoped model configs
+// are installed and stale ones evicted, and its token and credential caches
+// are dropped. The keys and the model configs are each read once for all ids,
+// in chunks, instead of two reads per key; both reads finish before any
+// in-memory state changes. An id with no row is skipped. It returns an error,
+// changing nothing, when a read fails or the config store has no batched key
+// read, so the caller can fall back to ReloadVirtualKey per key.
+func (s *BifrostHTTPServer) ReloadVirtualKeys(ctx context.Context, ids []string) error {
+	seen := make(map[string]struct{}, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, dup := seen[id]; dup || id == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	loader, ok := s.Config.ConfigStore.(virtualKeysByIDs)
+	if !ok {
+		return fmt.Errorf("config store does not support batched virtual key reads")
+	}
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return err
+	}
+	virtualKeys, err := loader.GetVirtualKeysByIDs(ctx, unique)
+	if err != nil {
+		return fmt.Errorf("failed to load virtual keys: %w", err)
+	}
+	mcs, err := s.Config.ConfigStore.GetModelConfigsByScopeAndScopeIDs(ctx, tables.ModelConfigScopeVirtualKey, unique)
+	if err != nil {
+		return fmt.Errorf("failed to reload VK-scoped model configs: %w", err)
+	}
+	mcsByVK := make(map[string][]tables.TableModelConfig, len(unique))
+	for i := range mcs {
+		if mcs[i].ScopeID != nil {
+			mcsByVK[*mcs[i].ScopeID] = append(mcsByVK[*mcs[i].ScopeID], mcs[i])
+		}
+	}
+	store := governancePlugin.GetGovernanceStore()
+	for i := range virtualKeys {
+		s.applyVirtualKeyReload(ctx, store, &virtualKeys[i], mcsByVK[virtualKeys[i].ID])
+		delete(seen, virtualKeys[i].ID)
+	}
+	for id := range seen {
+		logger.Debug("virtual key %s not found during batched reload; skipping", id)
+	}
+	return nil
 }
 
 // virtualMCPCache is the governance-store subset the Virtual MCP routes refresh in memory. The store
@@ -911,6 +985,16 @@ func (s *BifrostHTTPServer) RemoveCustomer(ctx context.Context, id string) error
 	}
 	governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(ctx, id)
 	return nil
+}
+
+// ModelConfigIndexKey reports the spelling the governance store indexes a model config
+// under (see LocalGovernanceStore.ModelConfigIndexKey); without the governance plugin it
+// falls back to the catalog-independent canonical name.
+func (s *BifrostHTTPServer) ModelConfigIndexKey(model string, provider *string) string {
+	if governancePlugin, err := s.getGovernancePlugin(); err == nil && governancePlugin != nil {
+		return governancePlugin.GetGovernanceStore().ModelConfigIndexKey(model, provider)
+	}
+	return governance.CanonicalModelConfigName(model, provider)
 }
 
 // ReloadModelConfig reloads a model config from the database into in-memory store
@@ -1434,6 +1518,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	// Reloading whitelisted routes from the client config
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
+		s.AuthMiddleware.UpdateAllowedOrigins(config.AllowedOrigins)
 		s.AuthMiddleware.UpdateTempTokenAuthEnabled(config.MCPEnableTempTokenAuth)
 	}
 	// Refresh the CORS middleware's immutable snapshot so its requests pick up the
@@ -1526,6 +1611,17 @@ func (s *BifrostHTTPServer) ValidateSetupToken(token string) bool {
 		return true
 	}
 	return s.AuthMiddleware.CheckBootstrapToken(token)
+}
+
+// ValidateConfiguredSetupToken reports whether token matches the operator-configured setup
+// token (see AuthMiddleware.CheckConfiguredSetupToken). Unlike ValidateSetupToken it does not
+// open up once an admin account exists, and it is false when no token is configured or no
+// auth middleware is installed.
+func (s *BifrostHTTPServer) ValidateConfiguredSetupToken(token string) bool {
+	if s.AuthMiddleware == nil {
+		return false
+	}
+	return s.AuthMiddleware.CheckConfiguredSetupToken(token)
 }
 
 // UpdateDropExcessRequests updates excess requests config
@@ -2608,6 +2704,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if skillsServingHandler != nil {
 		skillsServingHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+	s.skillsServingHandler = skillsServingHandler
 	cacheHandler.RegisterRoutes(s.Router, middlewares...)
 	if featureFlagsHandler != nil {
 		featureFlagsHandler.RegisterRoutes(s.Router, middlewares...)
@@ -2633,6 +2730,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if s.WarpHandler != nil {
 		s.WarpHandler.RegisterRoutes(s.Router, middlewares...)
+	}
+	if s.Config.ConfigStore != nil && s.SidekiqRunner != nil {
+		handlers.NewSidekiqHandler(s.Config.ConfigStore, s.SidekiqRunner).RegisterRoutes(s.Router, middlewares...)
 	}
 	// Register dev pprof handler only in dev mode
 	if handlers.IsDevMode() {
@@ -2990,6 +3090,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	inferenceMiddlewares := commonMiddlewares
 	if s.Config.ConfigStore == nil {
 		logger.Error("auth middleware requires config store, skipping auth middleware initialization")
+		// No auth runs in this mode, so mark every API request as bypassed; otherwise the
+		// handlers that require genuine auth for dangerous changes see an unmarked request and
+		// let it through.
+		apiMiddlewares = append(apiMiddlewares, handlers.AuthBypassedMiddleware())
 	} else {
 		// Use a signed (stateless) ticket store when an encryption key is configured
 		// so tickets are verifiable across nodes; otherwise fall back to in-memory.
@@ -3107,10 +3211,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// TransportInterceptor runs AFTER the auth middlewares so HTTPTransportPreHook observes an
 	// authenticated request, and inside TracingMiddleware so the tracing defer runs AFTER
 	// transport post-hooks (capturing HTTPTransportPostHook plugin logs).
-	// Order: Tracing.pre → PreAuthInterceptor → auth → TransportInterceptor.pre → handler →
-	//        TransportInterceptor.post → Tracing.defer
+	// Recovery sits directly inside Tracing (see handlers.InferenceOuterMiddlewares).
+	// Order: Tracing.pre → Recovery → PreAuthInterceptor → auth → TransportInterceptor.pre → handler →
+	//        TransportInterceptor.post → Recovery.defer → Tracing.defer
 	inferenceMiddlewares = append(inferenceMiddlewares, handlers.TransportInterceptorMiddleware(s.Config))
-	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{s.TracingMiddleware.Middleware()}, inferenceMiddlewares...)
+	inferenceMiddlewares = append(handlers.InferenceOuterMiddlewares(s.TracingMiddleware, s.CORSMiddleware), inferenceMiddlewares...)
 
 	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)
 	if err != nil {
@@ -3212,7 +3317,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            handlers.SecurityHeadersMiddleware()(s.CORSMiddleware.Middleware()(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
+		Handler:            handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}
@@ -3330,6 +3435,9 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping dev pprof handler...")
 				s.devPprofHandler.Cleanup()
 			}
+			if s.skillsServingHandler != nil {
+				s.skillsServingHandler.Close()
+			}
 			if s.wsPool != nil {
 				logger.Info("closing websocket connection pool...")
 				s.wsPool.Close()
@@ -3348,13 +3456,25 @@ func (s *BifrostHTTPServer) Start() error {
 		}
 
 	case err := <-errChan:
-		if s.IntegrationHandler != nil {
-			s.IntegrationHandler.Close()
-		}
-		if s.wsPool != nil {
-			s.wsPool.Close()
-		}
+		s.cleanupAfterServeError()
 		return err
 	}
 	return nil
+}
+
+// cleanupAfterServeError releases what Start had set up when Serve itself
+// fails: open realtime sessions, the websocket pool, and the skills serving
+// cache, whose exported bare repositories live in temp directories that only
+// Close removes. The graceful-shutdown path above does the same as part of
+// its full teardown.
+func (s *BifrostHTTPServer) cleanupAfterServeError() {
+	if s.IntegrationHandler != nil {
+		s.IntegrationHandler.Close()
+	}
+	if s.wsPool != nil {
+		s.wsPool.Close()
+	}
+	if s.skillsServingHandler != nil {
+		s.skillsServingHandler.Close()
+	}
 }

@@ -380,6 +380,7 @@ export default function CustomersTable({
 																						</span>
 																					</div>
 																					<Progress
+																						aria-label="Budget usage"
 																						value={pct}
 																						className={cn(
 																							"bg-muted/70 dark:bg-muted/30 h-1.5",
@@ -422,6 +423,7 @@ export default function CustomersTable({
 																					</span>
 																				</div>
 																				<Progress
+																					aria-label="Token usage"
 																					value={tokenPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",
@@ -456,6 +458,7 @@ export default function CustomersTable({
 																					</span>
 																				</div>
 																				<Progress
+																					aria-label="Request usage"
 																					value={requestPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",

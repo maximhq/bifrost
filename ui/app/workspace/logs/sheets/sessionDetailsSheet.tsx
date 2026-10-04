@@ -188,12 +188,13 @@ export function SessionDetailsSheet({
 						{sessionId && onFilterByParentRequestId ? (
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<code
-										className="text-primary hover:text-primary/80 cursor-pointer text-sm break-all underline-offset-2 hover:underline"
+									<button
+										type="button"
+										className="text-primary hover:text-primary/80 cursor-pointer text-left font-mono text-sm break-all underline-offset-2 hover:underline"
 										onClick={() => onFilterByParentRequestId(sessionId)}
 									>
 										{sessionId}
-									</code>
+									</button>
 								</TooltipTrigger>
 								<TooltipContent sideOffset={6}>Filter this session</TooltipContent>
 							</Tooltip>

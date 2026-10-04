@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -901,4 +902,11 @@ func TestWarpBackfillResumesFromFailedRunCheckpoint(t *testing.T) {
 	require.NoError(t, sonic.Unmarshal([]byte(restartedJSON), &restarted))
 	require.Zero(t, restarted.Scanned)
 	require.Nil(t, restarted.CursorTime)
+}
+
+func TestSummarizeBackfillMeta(t *testing.T) {
+	got := SummarizeBackfillMeta(`{"total":200,"scanned":50,"indexed":40}`)
+	require.Equal(t, sidekiq.JobSummary{Done: 50, Total: 200}, got)
+
+	require.Equal(t, sidekiq.JobSummary{}, SummarizeBackfillMeta(`{not json`), "malformed metadata yields an empty summary")
 }

@@ -433,7 +433,8 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-		// Copy: keys are deleted below, and each retry converts the same request again.
+		// Clone: the conversion runs once per retry/fallback attempt on the same
+		// Bifrost request, and the consumed keys are deleted from the outbound map.
 		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 
 		// Prefer explicit aspect_ratio; fall back to deriving aspect ratio + resolution from size.
@@ -587,7 +588,6 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 		// Handle extra parameters for Imagen-specific fields
 		if bifrostReq.Params.ExtraParams != nil {
-			// Copy: keys are deleted below, and each retry converts the same request again.
 			req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 			if addWatermark, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["addWatermark"]); ok {
 				delete(req.ExtraParams, "addWatermark")
@@ -784,7 +784,6 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-		// Copy: keys are deleted below, and each retry converts the same request again.
 		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 
 		// Prefer explicit aspect_ratio; fall back to deriving aspect ratio + resolution from size.
@@ -1012,7 +1011,6 @@ func ToImagenImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 		var hasMaskData bool
 		var dilation *float64
 		var maskClasses []int
-		// Copy: keys are deleted below, and each retry converts the same request again.
 		req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 		// Check if user provided a mask
 		if len(bifrostReq.Params.Mask) > 0 {

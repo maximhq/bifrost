@@ -15,7 +15,7 @@ import (
 // between TableVirtualKeyProviderConfig and TableKey
 type TableVirtualKeyProviderConfigKey struct {
 	TableVirtualKeyProviderConfigID uint `gorm:"primaryKey;uniqueIndex:idx_vk_provider_config_key"`
-	TableKeyID                      uint `gorm:"primaryKey;uniqueIndex:idx_vk_provider_config_key"`
+	TableKeyID                      uint `gorm:"primaryKey;uniqueIndex:idx_vk_provider_config_key;index:idx_vkpc_keys_table_key_id"`
 }
 
 // TableName sets the table name for the join table
@@ -26,8 +26,8 @@ func (TableVirtualKeyProviderConfigKey) TableName() string {
 // TableVirtualKeyProviderConfig represents a provider configuration for a virtual key
 type TableVirtualKeyProviderConfig struct {
 	ID                uint              `gorm:"primaryKey;autoIncrement" json:"id"`
-	VirtualKeyID      string            `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
-	Provider          string            `gorm:"type:varchar(50);not null" json:"provider"`
+	VirtualKeyID      string            `gorm:"type:varchar(255);not null;index:idx_vk_provider_configs_virtual_key_id" json:"virtual_key_id"`
+	Provider          string            `gorm:"type:varchar(50);not null;index:idx_vk_provider_configs_provider" json:"provider"`
 	Weight            *float64          `json:"weight"`
 	AllowedModels     schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"`     // ["*"] allows all models; empty denies all (deny-by-default)
 	BlacklistedModels schemas.BlackList `gorm:"type:text;serializer:json" json:"blacklisted_models"` // ["*"] blocks all models; empty blocks none
@@ -195,7 +195,7 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 type TableVirtualKeyMCPConfig struct {
 	ID             uint              `gorm:"primaryKey;autoIncrement" json:"id"`
 	VirtualKeyID   string            `gorm:"type:varchar(255);not null;uniqueIndex:idx_vk_mcpclient" json:"virtual_key_id"`
-	MCPClientID    uint              `gorm:"not null;uniqueIndex:idx_vk_mcpclient" json:"mcp_client_id"`
+	MCPClientID    uint              `gorm:"not null;uniqueIndex:idx_vk_mcpclient;index:idx_vk_mcp_configs_mcp_client_id" json:"mcp_client_id"`
 	MCPClient      TableMCPClient    `gorm:"foreignKey:MCPClientID" json:"mcp_client"`
 	ToolsToExecute schemas.WhiteList `gorm:"type:text;serializer:json" json:"tools_to_execute"`
 
@@ -242,7 +242,7 @@ func (mc *TableVirtualKeyMCPConfig) UnmarshalJSON(data []byte) error {
 
 // TableVirtualKey represents a virtual key with budget, rate limits, and team/customer association
 type TableVirtualKey struct {
-	ID                string                          `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	ID                string                          `gorm:"primaryKey;type:varchar(255);index:idx_virtual_keys_created_at_id,priority:2" json:"id"`
 	Name              string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
 	Description       string                          `gorm:"type:text" json:"description,omitempty"`
 	Value             schemas.SecretVar               `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`
@@ -328,7 +328,7 @@ type TableVirtualKey struct {
 
 	CreatedByUserID *string `gorm:"type:varchar(255);index:idx_virtual_key_created_by" json:"created_by_user_id,omitempty"`
 
-	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
+	CreatedAt time.Time `gorm:"index;index:idx_virtual_keys_created_at_id,priority:1;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 }
 

@@ -108,15 +108,31 @@ export const azureKeyConfigSchema = z
 		},
 	);
 
+// Vertex AWS Workload Identity Federation block. The audience is the only mandatory field; the
+// service account, region and role hop are optional refinements of the exchange.
+export const vertexAWSWorkloadIdentitySchema = z.object({
+	audience: secretVarSchema.optional(),
+	service_account_email: secretVarSchema.optional(),
+	token_lifetime_seconds: z
+		.number()
+		.int("Token lifetime must be a whole number of seconds")
+		.min(600, "Token lifetime must be at least 600 seconds")
+		.max(43200, "Token lifetime must be at most 43200 seconds")
+		.optional(),
+	aws_region: secretVarSchema.optional(),
+	aws_role_arn: secretVarSchema.optional(),
+});
+
 // Vertex key config schema
 export const vertexKeyConfigSchema = z
 	.object({
-		_auth_type: z.enum(["service_account", "service_account_json", "api_key"]).optional(),
+		_auth_type: z.enum(["service_account", "service_account_json", "api_key", "aws_workload_identity"]).optional(),
 		project_id: secretVarSchema.optional(),
 		project_number: secretVarSchema.optional(),
 		region: secretVarSchema.optional(),
 		auth_credentials: secretVarSchema.optional(),
 		force_single_region: z.boolean().optional(),
+		aws_workload_identity: vertexAWSWorkloadIdentitySchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.project_id), {
 		message: "Project ID is required",
@@ -136,6 +152,33 @@ export const vertexKeyConfigSchema = z
 		},
 		{
 			message: "Auth Credentials is required for service account JSON authentication",
+			path: ["auth_credentials"],
+		},
+	)
+	.refine(
+		(data) => {
+			// The federation tab hides every other credential input, so the audience is what
+			// makes the key usable; without it the key would silently fall back to ADC.
+			if (data._auth_type === "aws_workload_identity") {
+				return isSecretVarSet(data.aws_workload_identity?.audience);
+			}
+			return true;
+		},
+		{
+			message: "Workload Identity Pool provider audience is required",
+			path: ["aws_workload_identity", "audience"],
+		},
+	)
+	.refine(
+		(data) => {
+			// Federation and a credentials JSON are two different identities; never send both.
+			if (isSecretVarSet(data.aws_workload_identity?.audience)) {
+				return !isSecretVarSet(data.auth_credentials);
+			}
+			return true;
+		},
+		{
+			message: "Remove the auth credentials JSON when using AWS workload identity",
 			path: ["auth_credentials"],
 		},
 	);
@@ -1534,8 +1577,32 @@ export const budgetOverrideFormSchema = z
 		path: ["cycles"],
 	});
 
+// Proof of control for an auth_config change made while dashboard auth is disabled but an
+// admin account exists (SecurityView). PUT /api/config refuses such a change with 403 unless
+// it carries the stored admin password or the operator's setup token, so one of the two must
+// be filled in; the issue lands on current_password because that is the field shown first.
+// current_password is sent exactly as typed: the server compares it against the stored hash
+// byte for byte and the password policy allows spaces. The setup token is trimmed, matching
+// how the server reads the configured one.
+export const authProofOfControlSchema = z
+	.object({
+		current_password: z.string(),
+		setup_token: z.string().trim(),
+	})
+	.superRefine((data, ctx) => {
+		if (!data.current_password.trim() && !data.setup_token) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["current_password"],
+				message:
+					"Enter the current admin password to confirm this change. Dashboard protection is off, so this session is not signed in. If you do not know the password, use the setup token instead.",
+			});
+		}
+	});
+
 // Export type inference helpers
 export type SecretVar = z.infer<typeof secretVarSchema>;
+export type AuthProofOfControl = z.infer<typeof authProofOfControlSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
 export type ModelProviderKeySchema = z.infer<typeof modelProviderKeySchema>;
 export type NetworkConfigSchema = z.infer<typeof networkConfigSchema>;

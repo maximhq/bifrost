@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -2048,16 +2049,42 @@ type BedrockInvokeStreamChunkEvent struct {
 	Bytes []byte `json:"bytes"`
 }
 
+// withInvokeGuardrailOutcome merges the guardrail action and trace into the chunk's JSON, which
+// is where InvokeModelWithResponseStream reports them: SDK clients decode only
+// event["chunk"]["bytes"], so a field beside bytes would never reach them. A chunk that cannot
+// take the fields is returned unchanged.
+func withInvokeGuardrailOutcome(chunk []byte, action string, trace json.RawMessage) []byte {
+	out := bytes.Clone(chunk)
+	if action != "" {
+		updated, err := providerUtils.SetRawJSONField(out, "amazon-bedrock-guardrailAction", []byte(strconv.Quote(action)))
+		if err != nil {
+			return chunk
+		}
+		out = updated
+	}
+	if len(trace) > 0 {
+		updated, err := providerUtils.SetRawJSONField(out, "amazon-bedrock-trace", trace)
+		if err != nil {
+			return chunk
+		}
+		out = updated
+	}
+	return out
+}
+
 // ToEncodedEvents converts the flat BedrockStreamEvent into a sequence of specific events
 func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 	var events []BedrockEncodedEvent
 
-	for _, rawChunk := range event.InvokeModelRawChunks {
+	for i, rawChunk := range event.InvokeModelRawChunks {
+		// InvokeModelWithResponseStream reports the guardrail outcome once, inside the
+		// last chunk, so it rides on the final frame of the terminal event only.
+		if i == len(event.InvokeModelRawChunks)-1 {
+			rawChunk = withInvokeGuardrailOutcome(rawChunk, event.InvokeModelGuardrailAction, event.InvokeModelTrace)
+		}
 		events = append(events, BedrockEncodedEvent{
 			EventType: "chunk",
-			Payload: BedrockInvokeStreamChunkEvent{
-				Bytes: rawChunk,
-			},
+			Payload:   BedrockInvokeStreamChunkEvent{Bytes: rawChunk},
 		})
 	}
 
@@ -2270,6 +2297,12 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		}
 		if request.GuardrailConfig.Trace != nil {
 			guardrailMap["trace"] = *request.GuardrailConfig.Trace
+		}
+		if request.GuardrailConfig.StreamProcessingMode != nil {
+			guardrailMap["streamProcessingMode"] = *request.GuardrailConfig.StreamProcessingMode
+		}
+		if request.GuardrailConfig.TagSuffix != "" {
+			guardrailMap["tagSuffix"] = request.GuardrailConfig.TagSuffix
 		}
 		bifrostReq.Params.ExtraParams["guardrailConfig"] = guardrailMap
 	}
@@ -2780,7 +2813,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					inferenceConfig.StopSequences = stop
 				}
 			}
-			applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq)
+			if err := applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq); err != nil {
+				return nil, err
+			}
 			if len(bedrockReq.ExtraParams) == 0 {
 				bedrockReq.ExtraParams = nil
 			}
@@ -4299,9 +4334,15 @@ func convertBifrostMessageToBedrockSystemMessages(msg *schemas.ResponsesMessage)
 		} else if msg.Content.ContentBlocks != nil {
 			for _, block := range msg.Content.ContentBlocks {
 				if block.Text != nil {
-					systemMessages = append(systemMessages, BedrockSystemMessage{
-						Text: block.Text,
-					})
+					if block.GuardContent != nil {
+						systemMessages = append(systemMessages, BedrockSystemMessage{
+							GuardContent: newBedrockGuardContent(*block.Text, block.GuardContent.Qualifiers),
+						})
+					} else {
+						systemMessages = append(systemMessages, BedrockSystemMessage{
+							Text: block.Text,
+						})
+					}
 					if block.CacheControl != nil {
 						systemMessages = append(systemMessages, BedrockSystemMessage{
 							CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
@@ -4447,6 +4488,26 @@ func convertBedrockSystemMessageToBifrostMessages(systemMessages []BedrockSystem
 						{
 							Type: schemas.ResponsesInputMessageContentBlockTypeText,
 							Text: sysMsg.Text,
+						},
+					},
+				},
+			})
+		}
+		if sysMsg.GuardContent != nil && sysMsg.GuardContent.Text != nil {
+			// A guarded system entry keeps its text and carries the guard marker so the
+			// egress rebuilds the guardContent entry (#7696).
+			systemRole := schemas.ResponsesInputMessageRoleSystem
+			msgType := schemas.ResponsesMessageTypeMessage
+			text := sysMsg.GuardContent.Text.Text
+			bifrostMessages = append(bifrostMessages, schemas.ResponsesMessage{
+				Type: &msgType,
+				Role: &systemRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+							Text:         &text,
+							GuardContent: guardContentMarker(sysMsg.GuardContent),
 						},
 					},
 				},
@@ -4626,6 +4687,44 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			outputMessages = append(outputMessages, bifrostMsg)
 			// Track this message so standalone citationsContent blocks can be attached to it.
 			lastTextOutputIdx = len(outputMessages) - 1
+
+		} else if block.GuardContent != nil && block.GuardContent.Text != nil {
+			// A selectively-guarded text block. It is carried as an ordinary text block with a
+			// guard marker so the egress converter can rebuild the guardContent entry; dropping
+			// it here (as this loop used to) silently disabled selective evaluation (#7696).
+			role := convertBedrockRoleToBifrostRole(msg.Role)
+			textBlockType := schemas.ResponsesInputMessageContentBlockTypeText
+			if isOutputMessage || msg.Role == BedrockMessageRoleAssistant {
+				textBlockType = schemas.ResponsesOutputMessageContentTypeText
+			}
+			text := block.GuardContent.Text.Text
+			bifrostMsg := createTextMessage(&text, role, textBlockType, isOutputMessage)
+			bifrostMsg.Content.ContentBlocks[0].GuardContent = guardContentMarker(block.GuardContent)
+			outputMessages = append(outputMessages, bifrostMsg)
+			lastTextOutputIdx = len(outputMessages) - 1
+
+		} else if block.GuardContent != nil && block.GuardContent.Image != nil {
+			// A selectively-guarded image: an ordinary image block carrying the guard marker.
+			if block.GuardContent.Image.Source.Bytes == nil {
+				continue
+			}
+			role := convertBedrockRoleToBifrostRole(msg.Role)
+			dataURL := bedrockImageDataURL(block.GuardContent.Image.Format, *block.GuardContent.Image.Source.Bytes)
+			bifrostMsg := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+						ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &dataURL},
+						GuardContent:                           guardContentMarker(block.GuardContent),
+					}},
+				},
+			}
+			if isOutputMessage {
+				bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+			}
+			outputMessages = append(outputMessages, bifrostMsg)
 
 		} else if block.CitationsContent != nil {
 			// Standalone citationsContent block — attach citations as url_citation annotations
@@ -5268,14 +5367,27 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 				if block.Text == nil || *block.Text == "" {
 					continue
 				}
-				bedrockBlock.Text = block.Text
+				if block.GuardContent != nil {
+					// Selectively-guarded text renders as a guardContent entry, not a text block.
+					bedrockBlock.GuardContent = newBedrockGuardContent(*block.Text, block.GuardContent.Qualifiers)
+				} else {
+					bedrockBlock.Text = block.Text
+				}
 			case schemas.ResponsesInputMessageContentBlockTypeImage:
 				if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
 					imageSource, err := convertImageToBedrockSource(ctx, model, *block.ResponsesInputMessageContentBlockImage.ImageURL)
 					if err != nil {
 						return nil, fmt.Errorf("failed to convert image in responses content block: %w", err)
 					}
-					bedrockBlock.Image = imageSource
+					if block.GuardContent != nil {
+						guard, err := newBedrockGuardImage(imageSource)
+						if err != nil {
+							return nil, err
+						}
+						bedrockBlock.GuardContent = guard
+					} else {
+						bedrockBlock.Image = imageSource
+					}
 				}
 			case schemas.ResponsesOutputMessageContentTypeReasoning:
 				// Redacted-shape models carry their blob on the reasoning message,

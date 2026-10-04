@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -39,9 +40,53 @@ func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) 
 	require.NoError(t, writer.WriteField("stream", "true"))
 	require.NoError(t, writer.Close())
 
-	model, stream := parsePassthroughBody(writer.FormDataContentType(), body.Bytes())
+	model, stream, err := parsePassthroughBody(writer.FormDataContentType(), body.Bytes())
+	require.NoError(t, err)
 	assert.Equal(t, "openai/whisper-1", model)
 	assert.True(t, stream)
+}
+
+// TestParsePassthroughBody_JSONModelIsStrict: the model governance checks must be
+// the one the upstream reads from the same bytes, so the JSON branch accepts exactly
+// one, exactly-spelled, string-typed model key and refuses anything a different
+// decoder could read differently. An unrelated field with the wrong type no longer
+// drops the model, and a body with no model at all is still fine.
+func TestParsePassthroughBody_JSONModelIsStrict(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		body        string
+		wantModel   string
+		wantStream  bool
+		wantErr     string
+	}{
+		{name: "plain body", contentType: "application/json", body: `{"model":" gpt-4o ","stream":true}`, wantModel: "gpt-4o", wantStream: true},
+		{name: "no model key", contentType: "application/json", body: `{"input":"x"}`},
+		{name: "unrelated field of wrong type keeps the model", contentType: "application/json", body: `{"model":"gpt-4o","stream":"yes"}`, wantModel: "gpt-4o"},
+		{name: "duplicate model keys", contentType: "application/json", body: `{"model":"blocked","model":"allowed"}`, wantErr: "at most once"},
+		{name: "case-variant duplicate", contentType: "application/json", body: `{"model":"blocked","MODEL":"allowed"}`, wantErr: "at most once"},
+		{name: "case-variant only", contentType: "application/json", body: `{"Model":"gpt-4o"}`, wantErr: "spelled"},
+		{name: "non-string model", contentType: "application/json", body: `{"model":["gpt-4o"]}`, wantErr: "must be a string"},
+		{name: "nested model is not the request model", contentType: "application/json", body: `{"input":{"model":"inner"}}`},
+		{name: "invalid JSON declared as JSON", contentType: "application/json; charset=utf-8", body: `{"model":"gpt-4o",`, wantErr: "not valid JSON"},
+		{name: "invalid JSON with another content type is ignored", contentType: "text/plain", body: `model=gpt-4o`},
+		{name: "valid JSON with no content type is still read", contentType: "", body: `{"model":"gpt-4o"}`, wantModel: "gpt-4o"},
+		{name: "array body has no model", contentType: "application/json", body: `[{"model":"gpt-4o"}]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model, stream, err := parsePassthroughBody(tc.contentType, []byte(tc.body))
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				assert.Empty(t, model)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantModel, model)
+			assert.Equal(t, tc.wantStream, stream)
+		})
+	}
 }
 
 func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
@@ -1064,4 +1109,280 @@ func (c *cancelRecorder) requireCancelled(t *testing.T, msg string) {
 	case <-time.After(5 * time.Second):
 		t.Fatal(msg)
 	}
+}
+
+// passthroughTestAccount configures a single Anthropic provider whose BaseURL points at a
+// local test upstream, so passthrough tests can observe exactly what (if anything) reaches it.
+type passthroughTestAccount struct {
+	baseURL string
+}
+
+func (a passthroughTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Anthropic}, nil
+}
+
+func (a passthroughTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	if p != schemas.Anthropic {
+		return nil, nil
+	}
+	return []schemas.Key{{
+		ID:     "passthrough-test-key",
+		Value:  *schemas.NewSecretVar("sk-ant-test-operator-key"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 1.0,
+	}}, nil
+}
+
+func (a passthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if p != schemas.Anthropic {
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	nc := schemas.DefaultNetworkConfig
+	nc.BaseURL = a.baseURL
+	return &schemas.ProviderConfig{
+		NetworkConfig:            nc,
+		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+	}, nil
+}
+
+type passthroughUpstreamHit struct {
+	path   string
+	apiKey string
+}
+
+func TestStripPassthroughPrefix(t *testing.T) {
+	genai := []string{"/genai_passthrough/v1beta1", "/genai_passthrough/v1beta", "/genai_passthrough/v1", "/genai_passthrough"}
+	tests := []struct {
+		name     string
+		path     string
+		prefixes []string
+		want     string
+		wantOK   bool
+	}{
+		{name: "versioned prefix at boundary", path: "/genai_passthrough/v1beta/models/x", prefixes: genai, want: "/models/x", wantOK: true},
+		{name: "v1 prefix at boundary", path: "/genai_passthrough/v1/models/x", prefixes: genai, want: "/models/x", wantOK: true},
+		{name: "bare prefix at boundary", path: "/genai_passthrough/files/abc", prefixes: genai, want: "/files/abc", wantOK: true},
+		{name: "exact prefix yields root", path: "/genai_passthrough/v1beta", prefixes: genai, want: "/", wantOK: true},
+		{name: "longer first segment falls through to shorter prefix", path: "/genai_passthrough/v1beta1foo/x", prefixes: genai, want: "/v1beta1foo/x", wantOK: true},
+		{name: "userinfo separator after prefix falls through to shorter prefix", path: "/genai_passthrough/v1@127.0.0.1/x", prefixes: genai, want: "/v1@127.0.0.1/x", wantOK: true},
+		{name: "single prefix with userinfo separator does not match", path: "/anthropic_passthrough@evil.example/x", prefixes: []string{"/anthropic_passthrough"}, wantOK: false},
+		{name: "unrelated path does not match", path: "/openai_passthrough/v1/models", prefixes: []string{"/anthropic_passthrough"}, wantOK: false},
+		{name: "runware v1 remainder kept", path: "/runware_passthrough/v1", prefixes: []string{"/runware_passthrough"}, want: "/v1", wantOK: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := stripPassthroughPrefix(tc.path, tc.prefixes)
+			require.Equal(t, tc.wantOK, ok)
+			if ok {
+				require.Equal(t, tc.want, got)
+			}
+		})
+	}
+}
+
+func TestValidatePassthroughPath(t *testing.T) {
+	valid := []string{
+		"/",
+		"/v1/messages",
+		"/models/gemini-2.5-pro:generateContent",
+		"/v1/projects/p/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict",
+		"/v1/files/file%2Fabc",
+		"/openai/deployments/gpt-4o/chat/completions",
+	}
+	for _, p := range valid {
+		require.NoError(t, validatePassthroughPath(p), "path %q should be accepted", p)
+	}
+
+	invalid := []string{
+		"",
+		"v1/messages",
+		"@evil.example/v1/messages",
+		"/@evil.example/v1/messages",
+		"/v1@evil.example/messages",
+		"//evil.example/x",
+		"/%2F%2Fevil.example/x",
+		"/%40evil.example/x",
+		"/v1/../admin",
+		"/v1/%2e%2e/admin",
+		"/v1\\messages",
+		"/v1/https://evil.example/x",
+		"/v1/messages\r\nX-Injected: 1",
+		"/v1/%0d%0amessages",
+		"/v1/%zz",
+	}
+	for _, p := range invalid {
+		require.Error(t, validatePassthroughPath(p), "path %q should be rejected", p)
+	}
+}
+
+// TestHandlePassthrough_PathAndProviderGuards drives the passthrough catch-all end to end
+// against a real Bifrost instance and a local upstream. Malformed remainders and unknown
+// providers must be rejected by the router with no upstream request at all, because any
+// request that reaches the provider carries the operator's key. Well-formed paths must
+// still be forwarded with the prefix stripped at a segment boundary.
+func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
+	var mu sync.Mutex
+	var hits []passthroughUpstreamHit
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, passthroughUpstreamHit{path: r.URL.RequestURI(), apiKey: r.Header.Get("x-api-key")})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	takeHits := func() []passthroughUpstreamHit {
+		mu.Lock()
+		defer mu.Unlock()
+		out := hits
+		hits = nil
+		return out
+	}
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewGenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewAnthropicPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "http://")
+
+	tests := []struct {
+		name         string
+		uri          string
+		provider     string
+		wantStatus   int
+		wantUpstream string // expected upstream request URI; empty means no upstream request allowed
+		wantBodyHas  string
+	}{
+		{
+			// "/genai_passthrough/v1" no longer matches past the boundary, so the bare prefix
+			// strips to "/v1@host/x" and the first-segment rule rejects it before dispatch.
+			name:        "userinfo separator after a versioned prefix is rejected",
+			uri:         "/genai_passthrough/v1@" + upstreamHost + "/x",
+			provider:    "anthropic",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "invalid passthrough path",
+		},
+		{
+			name:        "percent-encoded userinfo separator is rejected",
+			uri:         "/genai_passthrough/v1%40" + upstreamHost + "/x",
+			provider:    "anthropic",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "invalid passthrough path",
+		},
+		{
+			name:        "userinfo separator in the first segment is rejected",
+			uri:         "/anthropic_passthrough/@evil.example/v1/messages",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "invalid passthrough path",
+		},
+		{
+			name:        "unknown x-model-provider is rejected",
+			uri:         "/anthropic_passthrough/v1/messages",
+			provider:    "not-a-provider",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "x-model-provider",
+		},
+		{
+			name:         "well-formed anthropic path is forwarded",
+			uri:          "/anthropic_passthrough/v1/messages?beta=true",
+			wantStatus:   fasthttp.StatusOK,
+			wantUpstream: "/v1/messages?beta=true",
+		},
+		{
+			name:         "versioned genai prefix is stripped at the boundary",
+			uri:          "/genai_passthrough/v1beta/models/claude:generateContent",
+			provider:     "anthropic",
+			wantStatus:   fasthttp.StatusOK,
+			wantUpstream: "/models/claude:generateContent",
+		},
+		{
+			name:         "longer first segment falls back to the shorter prefix",
+			uri:          "/genai_passthrough/v1beta1foo/x",
+			provider:     "anthropic",
+			wantStatus:   fasthttp.StatusOK,
+			wantUpstream: "/v1beta1foo/x",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			takeHits()
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.SetContentType("application/json")
+			if tc.provider != "" {
+				ctx.Request.Header.Set("x-model-provider", tc.provider)
+			}
+			ctx.Request.SetBodyString(`{}`)
+
+			r.Handler(&ctx)
+
+			got := takeHits()
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			if tc.wantBodyHas != "" {
+				require.Contains(t, string(ctx.Response.Body()), tc.wantBodyHas)
+			}
+			if tc.wantUpstream == "" {
+				require.Empty(t, got, "no request may reach the upstream for %s", tc.uri)
+				return
+			}
+			require.Len(t, got, 1)
+			require.Equal(t, tc.wantUpstream, got[0].path)
+			require.Equal(t, "sk-ant-test-operator-key", got[0].apiKey)
+		})
+	}
+}
+
+// The Bedrock passthrough is a restricted route: it targets the Bedrock provider and is mounted
+// at /bedrock_passthrough, so it can never be mistaken for the native /bedrock integration.
+func TestBedrockPassthroughRouterTargetsBedrockAtItsOwnPrefix(t *testing.T) {
+	r := NewBedrockPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	require.NotNil(t, r.passthroughCfg)
+	assert.Equal(t, schemas.Bedrock, r.passthroughCfg.Provider)
+	assert.Equal(t, []string{"/bedrock_passthrough"}, r.passthroughCfg.StripPrefix)
+	assert.Empty(t, r.passthroughCfg.AllowedRoutes, "the operation allow-list lives in the provider, which also holds the signing credentials")
+}
+
+// The Bedrock passthrough streams exactly the operation whose AWS response is an event stream.
+// InvokeAgent's path and body carry no "stream" marker, so the router needs the provider's word for it.
+func TestBedrockPassthroughRouterStreamsOnlyInvokeAgent(t *testing.T) {
+	cfg := NewBedrockPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).passthroughCfg
+	require.NotNil(t, cfg.StreamingPath, "the router must know InvokeAgent streams")
+
+	const invokeAgent = "/agents/AGENT12345/agentAliases/ALIAS12345/sessions/s1/text"
+	assert.True(t, cfg.streams(http.MethodPost, invokeAgent, false), "InvokeAgent answers with an event stream")
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/KB12345678/retrieve", false), "Retrieve is a plain request/response call")
+	assert.False(t, cfg.streams(http.MethodPost, "/guardrail/gr1a2b3c4d5e/version/DRAFT/apply", false), "ApplyGuardrail is a plain request/response call")
+	assert.False(t, cfg.streams(http.MethodGet, invokeAgent, false), "only the POST that the provider forwards streams")
+	assert.False(t, cfg.streams(http.MethodPost, "/model/amazon.titan-text-express-v1/invoke", false), "a route outside the allow-list is not special-cased")
+
+	// The provider's word is final: an accepted identifier that happens to contain "stream", or a body
+	// that says stream: true, must not move a request/response operation onto the streaming handler.
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/STREAMKB01/retrieve", false), "a knowledge-base id containing the word stream is still a plain Retrieve")
+	assert.False(t, cfg.streams(http.MethodPost, "/guardrail/streamguard1/version/DRAFT/apply", false), "a guardrail id containing the word stream is still a plain ApplyGuardrail")
+	assert.False(t, cfg.streams(http.MethodPost, "/knowledgebases/KB12345678/retrieve", true), "stream: true in a Retrieve body does not make it stream")
+	assert.True(t, cfg.streams(http.MethodPost, "/agents/AGENT12345/agentAliases/ALIAS12345/sessions/s1/text", false), "InvokeAgent still streams")
+}
+
+// The generic stream decision is unchanged for every other passthrough router.
+func TestPassthroughConfigStreamsDecision(t *testing.T) {
+	plain := &PassthroughConfig{}
+	assert.True(t, plain.streams(http.MethodPost, "/v1beta/models/x:streamGenerateContent", false), "a stream marker in the path")
+	assert.True(t, plain.streams(http.MethodPost, "/v1/messages", true), "stream: true in the body")
+	assert.False(t, plain.streams(http.MethodPost, "/v1/messages", false))
+
+	custom := &PassthroughConfig{StreamingPath: func(method, path string) bool { return method == http.MethodPost && path == "/always" }}
+	assert.True(t, custom.streams(http.MethodPost, "/always", false), "the provider hook marks the route as streaming")
+	assert.False(t, custom.streams(http.MethodPost, "/other", false))
+	assert.False(t, custom.streams(http.MethodPost, "/stream/other", false), "when the provider supplies a route predicate it replaces the generic path marker")
+	assert.False(t, custom.streams(http.MethodPost, "/other", true), "and the generic body marker")
 }

@@ -256,6 +256,9 @@ bifrost:
   client:
     dropExcessRequests: false
     initialPoolSize: 300
+    # While dashboard auth is disabled, browser requests to the management API are accepted
+    # only from localhost, the gateway's own origin, and origins listed here explicitly;
+    # "*" does not admit them.
     allowedOrigins:
       - "*"
     enableLogging: true
@@ -306,7 +309,7 @@ bifrost:
     # mcpServerAuthMode: "headers"
     # OAuth2 authorization server settings for /mcp (only used when mcpServerAuthMode is "both" or "oauth")
     # oauth2ServerConfig:
-    #   issuerUrl: ""             # Stable public issuer URL; required for multi-host deployments. Supports env.VAR_NAME
+    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth" (helm fails without it). Supports env.VAR_NAME
     #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"

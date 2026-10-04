@@ -94,6 +94,20 @@ func (s *Service) RegisterBackfill(runner *sidekiq.Runner) {
 		return
 	}
 	runner.Register(BackfillJobKind, s.RunBackfillJob)
+	runner.RegisterSummarizer(BackfillJobKind, SummarizeBackfillMeta)
+}
+
+// SummarizeBackfillMeta reports a backfill job's scan progress for generic job views.
+// Malformed metadata yields an empty summary rather than an error.
+func SummarizeBackfillMeta(metadata string) sidekiq.JobSummary {
+	var meta struct {
+		Total   int64 `json:"total"`
+		Scanned int64 `json:"scanned"`
+	}
+	if sonic.Unmarshal([]byte(metadata), &meta) != nil {
+		return sidekiq.JobSummary{}
+	}
+	return sidekiq.JobSummary{Done: meta.Scanned, Total: meta.Total}
 }
 
 // BuildBackfillJobMeta freezes the selected window and embedding space, and

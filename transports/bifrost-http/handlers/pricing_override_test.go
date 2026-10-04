@@ -153,3 +153,7 @@ func TestUpdatePricingOverride_ReplacesFullBody(t *testing.T) {
 	assert.Nil(t, patch.OutputCostPerToken)
 	assert.Empty(t, stored.ConfigHash)
 }
+
+func (pricingOverrideTestGovernanceManager) ModelConfigIndexKey(model string, provider *string) string {
+	return governance.CanonicalModelConfigName(model, provider)
+}

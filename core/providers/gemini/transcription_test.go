@@ -1,10 +1,11 @@
 package gemini
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Gemini bills the prompt even when it returns no transcript (for example a
@@ -35,38 +36,45 @@ func TestToBifrostTranscriptionResponseKeepsUsageWhenTextEmpty(t *testing.T) {
 	}
 }
 
-// The conversion runs once per retry/fallback attempt on the same Bifrost
-// request. Moving safety_settings, cached_content and labels into typed fields
-// must not remove them from the request, or the next attempt is sent without them.
-func TestToGeminiTranscriptionRequestExtraParamsSurviveRetries(t *testing.T) {
-	extraParams := func() map[string]interface{} {
-		return map[string]interface{}{
-			"safety_settings": []interface{}{
-				map[string]interface{}{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-			},
-			"cached_content":     "cachedContents/abc123",
-			"labels":             map[string]interface{}{"team": "platform"},
-			"custom_passthrough": "keep-me",
-		}
-	}
+// The transcription converter runs once per retry/fallback attempt on the same
+// Bifrost request and removes safety_settings, cached_content and labels from the
+// outbound ExtraParams. It used to alias the source map, so the second attempt was
+// sent without any of them. Regression for issue #7826.
+func TestToGeminiTranscriptionRequest_ExtraParamsSurviveRetries(t *testing.T) {
 	bifrostReq := &schemas.BifrostTranscriptionRequest{
-		Provider: schemas.Vertex,
+		Provider: schemas.Gemini,
 		Model:    "gemini-2.5-flash",
-		Input:    &schemas.TranscriptionInput{File: []byte("audio")},
-		Params:   &schemas.TranscriptionParameters{ExtraParams: extraParams()},
+		Input:    &schemas.TranscriptionInput{File: []byte("not-really-audio"), Filename: "sample.mp3"},
+		Params: &schemas.TranscriptionParameters{
+			ExtraParams: map[string]interface{}{
+				"safety_settings": []interface{}{
+					map[string]interface{}{
+						"category":  "HARM_CATEGORY_HARASSMENT",
+						"threshold": "BLOCK_NONE",
+					},
+				},
+				"cached_content":     "cachedContents/abc123",
+				"labels":             map[string]interface{}{"team": "platform"},
+				"custom_passthrough": "keep-me",
+			},
+		},
 	}
 
 	for attempt := 1; attempt <= 3; attempt++ {
-		req := ToGeminiTranscriptionRequest(bifrostReq)
-		if len(req.SafetySettings) != 1 || req.CachedContent != "cachedContents/abc123" || req.Labels["team"] != "platform" {
-			t.Fatalf("attempt %d: safetySettings = %v, cachedContent = %q, labels = %v, want all three set",
-				attempt, req.SafetySettings, req.CachedContent, req.Labels)
-		}
-		if got := req.GetExtraParams(); !reflect.DeepEqual(got, map[string]interface{}{"custom_passthrough": "keep-me"}) {
-			t.Fatalf("attempt %d: extra params = %v, want only custom_passthrough", attempt, got)
-		}
+		geminiReq := ToGeminiTranscriptionRequest(bifrostReq)
+		require.NotNil(t, geminiReq, "attempt %d", attempt)
+
+		require.Len(t, geminiReq.SafetySettings, 1, "attempt %d: safetySettings", attempt)
+		assert.Equal(t, "HARM_CATEGORY_HARASSMENT", geminiReq.SafetySettings[0].Category, "attempt %d", attempt)
+		assert.Equal(t, "BLOCK_NONE", geminiReq.SafetySettings[0].Threshold, "attempt %d", attempt)
+		assert.Equal(t, "cachedContents/abc123", geminiReq.CachedContent, "attempt %d: cachedContent", attempt)
+		assert.Equal(t, map[string]string{"team": "platform"}, geminiReq.Labels, "attempt %d: labels", attempt)
+		assert.Equal(t, map[string]interface{}{"custom_passthrough": "keep-me"}, geminiReq.GetExtraParams(), "attempt %d: wire extra params", attempt)
 	}
-	if !reflect.DeepEqual(bifrostReq.Params.ExtraParams, extraParams()) {
-		t.Errorf("request extra params changed to %v", bifrostReq.Params.ExtraParams)
-	}
+
+	// The Bifrost request itself must be left intact for the next attempt.
+	assert.Contains(t, bifrostReq.Params.ExtraParams, "safety_settings")
+	assert.Contains(t, bifrostReq.Params.ExtraParams, "cached_content")
+	assert.Contains(t, bifrostReq.Params.ExtraParams, "labels")
+	assert.Len(t, bifrostReq.Params.ExtraParams, 4)
 }

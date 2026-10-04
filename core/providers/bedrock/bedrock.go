@@ -238,6 +238,34 @@ var retryableBedrockExceptions = map[string]int{
 	"modelTimeoutException":       504, // native 408; processing timeout, transient
 }
 
+type converseStreamProgress struct {
+	messageStopped bool
+	eventCount     int
+	lastEventType  string
+	lastPayload    []byte
+}
+
+func (progress *converseStreamProgress) observe(message eventstream.Message, event *BedrockStreamEvent) {
+	progress.eventCount++
+	progress.lastEventType = "unknown"
+	if header := message.Headers.Get(":event-type"); header != nil {
+		progress.lastEventType = header.String()
+	}
+	progress.lastPayload = append(progress.lastPayload[:0], message.Payload[:min(len(message.Payload), 4096)]...)
+	if event.StopReason != nil && *event.StopReason != "" {
+		progress.messageStopped = true
+	}
+}
+
+func (progress *converseStreamProgress) incompleteError(usage *schemas.BifrostLLMUsage) *schemas.BifrostError {
+	streamError := providerUtils.NewBifrostUpstreamConnectionError(
+		fmt.Sprintf("Bedrock Converse stream ended before messageStop (events: %d, last event: %q)", progress.eventCount, progress.lastEventType),
+		io.ErrUnexpectedEOF,
+	)
+	streamError.ExtraFields.BilledUsage = usage
+	return streamError
+}
+
 // newBedrockStreamException builds a BifrostError from an AWS EventStream
 // exception message (any :message-type other than "event"). It preserves the
 // upstream exception type — the payload's "__type" when present, else the
@@ -1570,6 +1598,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			}
 		}()
 		var finishReason *string
+		var progress converseStreamProgress
 		chunkIndex := 0
 
 		// Process AWS Event Stream format using proper decoder
@@ -1604,6 +1633,13 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				}
 				// End of stream - this is normal
 				if err == io.EOF {
+					if !progress.messageStopped {
+						normalizeUsage()
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						streamErr := providerUtils.EnrichError(ctx, progress.incompleteError(usage), jsonData, progress.lastPayload, provider.sendBackRawRequest, provider.sendBackRawResponse, time.Since(startTime))
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
+						return
+					}
 					break
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1651,6 +1687,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
+
+				progress.observe(message, &streamEvent)
 
 				if streamEvent.Usage != nil {
 					// Accumulate usage information instead of overwriting
@@ -1994,6 +2032,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		}()
 
 		var streamTrace *BedrockConverseTrace
+		var progress converseStreamProgress
 		chunkIndex := 0
 
 		// Create stream state for stateful conversions (used by Converse API path)
@@ -2027,6 +2066,13 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					return
 				}
 				if err == io.EOF {
+					if !progress.messageStopped {
+						normalizeUsage()
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						streamErr := providerUtils.EnrichError(ctx, progress.incompleteError(billedUsage), jsonData, progress.lastPayload, provider.sendBackRawRequest, provider.sendBackRawResponse, time.Since(startTime))
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
+						return
+					}
 					// Converse API: finalize any open items at end of stream.
 					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage, streamTrace)
 					for i, finalResponse := range finalResponses {
@@ -2099,6 +2145,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
+
+				progress.observe(message, &streamEvent)
 
 				if streamEvent.Trace != nil {
 					streamTrace = streamEvent.Trace
@@ -4198,7 +4246,11 @@ func (provider *BedrockProvider) getModelPathAndRegion(ctx *schemas.BifrostConte
 func (provider *BedrockProvider) buildCountTokensBody(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) ([]byte, error) {
 	countTokensReq := &BedrockCountTokensRequest{}
 	if responsesUsesAnthropicInvokePath(ctx, request) {
-		body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, provider.invokeBuildConfig(request.Model, false, true))
+		request, guardrailBody, err := invokeGuardTagging(request)
+		if err != nil {
+			return nil, err
+		}
+		body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, provider.invokeBuildConfig(request.Model, false, true, guardrailBody))
 		if bifrostErr != nil {
 			return nil, fmt.Errorf("build InvokeModel body for count-tokens: %s", bifrostErr.Error.Message)
 		}
@@ -4221,6 +4273,10 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 	// Convert to Bedrock Converse format using the existing responses converter
 	jsonData, err := provider.buildCountTokensBody(ctx, request)
 	if err != nil {
+		// A malformed guardrailConfig.tagSuffix is the caller's input, not a marshal fault.
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			return nil, badRequest
+		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 
@@ -4331,15 +4387,6 @@ func (provider *BedrockProvider) ContainerFileContent(_ *schemas.BifrostContext,
 // ContainerFileDelete is not supported by the Bedrock provider.
 func (provider *BedrockProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
-}
-
-// Passthrough is not supported by the Bedrock provider.
-func (provider *BedrockProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
-}
-
-func (provider *BedrockProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }
 
 // ---------------------------------------------------------------------------
@@ -4553,13 +4600,23 @@ func (provider *BedrockProvider) invokeSigner(ctx *schemas.BifrostContext, key s
 	}
 }
 
-func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, validateTools bool) anthropic.AnthropicRequestBuildConfig {
+// invokeBuildConfig shapes the Anthropic Messages body for InvokeModel. guardrailBody, when
+// non-nil, is injected as the top-level amazon-bedrock-guardrailConfig field (input tagging,
+// see invokeGuardTagging); the Converse-shaped guardrailConfig extra param is always removed
+// because InvokeModel takes the guardrail through headers and rejects it as a body field.
+func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, validateTools bool, guardrailBody map[string]any) anthropic.AnthropicRequestBuildConfig {
 	_, bareModel := parseBedrockRegionAndModel(model)
+	var includeFields map[string]any
+	if guardrailBody != nil {
+		includeFields = map[string]any{"amazon-bedrock-guardrailConfig": guardrailBody}
+	}
 	return anthropic.AnthropicRequestBuildConfig{
 		Provider:                  schemas.Bedrock,
 		Model:                     bareModel,
 		IsStreaming:               streaming,
 		ValidateTools:             validateTools,
+		ExcludeFields:             []string{"guardrailConfig"},
+		IncludeFields:             includeFields,
 		BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 		ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
 		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
@@ -4567,11 +4624,39 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 	}
 }
 
+// invokeGuardrailHeaders adds the X-Amzn-Bedrock-Guardrail* headers InvokeModel takes in place
+// of the guardrailConfig body field that invokeBuildConfig strips. Without them the request
+// runs unguarded. The Converse-shaped lowercase trace is uppercased, as the header requires.
+func invokeGuardrailHeaders(base map[string]string, extraParams map[string]any) map[string]string {
+	out := withGuardrailHeaders(base, extraParams)
+	config, _ := extraParams["guardrailConfig"].(map[string]any)
+	if trace, _ := config["trace"].(string); trace != "" && out[guardrailTraceHeader] == trace {
+		// out may still be the shared provider headers, so write to a copy.
+		out = maps.Clone(out)
+		out[guardrailTraceHeader] = strings.ToUpper(trace)
+	}
+	return out
+}
+
+func chatExtraParams(request *schemas.BifrostChatRequest) map[string]any {
+	if request.Params == nil {
+		return nil
+	}
+	return request.Params.ExtraParams
+}
+
+func responsesExtraParams(request *schemas.BifrostResponsesRequest) map[string]any {
+	if request.Params == nil {
+		return nil
+	}
+	return request.Params.ExtraParams
+}
+
 // invokeStreamHeaders adds Accept-Encoding: identity to the static extra
 // headers so the event stream arrives frame by frame rather than as one gzip
 // burst, matching what makeStreamingRequest does for ConverseStream.
-func (provider *BedrockProvider) invokeStreamHeaders() map[string]string {
-	out := maps.Clone(provider.networkConfig.ExtraHeaders)
+func (provider *BedrockProvider) invokeStreamHeaders(extraParams map[string]any) map[string]string {
+	out := maps.Clone(invokeGuardrailHeaders(provider.networkConfig.ExtraHeaders, extraParams))
 	if out == nil {
 		out = make(map[string]string, 1)
 	}
@@ -4581,10 +4666,17 @@ func (provider *BedrockProvider) invokeStreamHeaders() map[string]string {
 
 func (provider *BedrockProvider) invokeAnthropicChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeAction)
+	request, guardrailBody, err := invokeChatGuardTagging(request)
+	if err != nil {
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			return nil, badRequest
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
 	return anthropic.HandleAnthropicChatCompletionRequest(
 		ctx, provider.mantleClient, requestURL, request,
-		provider.invokeBuildConfig(request.Model, false, false),
-		openai.BearerAuthHeader(key), provider.networkConfig.ExtraHeaders,
+		provider.invokeBuildConfig(request.Model, false, false, guardrailBody),
+		openai.BearerAuthHeader(key), invokeGuardrailHeaders(provider.networkConfig.ExtraHeaders, chatExtraParams(request)),
 		provider.invokeSigner(ctx, key, requestURL, bedrockInvokeAccept, region),
 		provider.logger,
 	)
@@ -4592,7 +4684,14 @@ func (provider *BedrockProvider) invokeAnthropicChatCompletion(ctx *schemas.Bifr
 
 func (provider *BedrockProvider) invokeAnthropicChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeStreamAction)
-	jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, provider.invokeBuildConfig(request.Model, true, false))
+	request, guardrailBody, err := invokeChatGuardTagging(request)
+	if err != nil {
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			return nil, badRequest
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+	jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, provider.invokeBuildConfig(request.Model, true, false, guardrailBody))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -4602,7 +4701,7 @@ func (provider *BedrockProvider) invokeAnthropicChatCompletionStream(ctx *schema
 	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, invokeSSEReaderFactory)
 	return anthropic.HandleAnthropicChatCompletionStreaming(
 		ctx, provider.mantleStreamingClient, requestURL, jsonData,
-		openai.BearerAuthHeader(key), provider.invokeStreamHeaders(),
+		openai.BearerAuthHeader(key), provider.invokeStreamHeaders(chatExtraParams(request)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		provider.networkConfig.BetaHeaderOverrides,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -4615,10 +4714,17 @@ func (provider *BedrockProvider) invokeAnthropicChatCompletionStream(ctx *schema
 
 func (provider *BedrockProvider) invokeAnthropicResponses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeAction)
+	request, guardrailBody, err := invokeGuardTagging(request)
+	if err != nil {
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			return nil, badRequest
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
 	return anthropic.HandleAnthropicResponsesRequest(
 		ctx, provider.mantleClient, requestURL, request,
-		provider.invokeBuildConfig(request.Model, false, true),
-		openai.BearerAuthHeader(key), provider.networkConfig.ExtraHeaders,
+		provider.invokeBuildConfig(request.Model, false, true, guardrailBody),
+		openai.BearerAuthHeader(key), invokeGuardrailHeaders(provider.networkConfig.ExtraHeaders, responsesExtraParams(request)),
 		provider.invokeSigner(ctx, key, requestURL, bedrockInvokeAccept, region),
 		provider.logger,
 	)
@@ -4626,14 +4732,21 @@ func (provider *BedrockProvider) invokeAnthropicResponses(ctx *schemas.BifrostCo
 
 func (provider *BedrockProvider) invokeAnthropicResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeStreamAction)
-	jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, provider.invokeBuildConfig(request.Model, true, true))
+	request, guardrailBody, err := invokeGuardTagging(request)
+	if err != nil {
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			return nil, badRequest
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+	jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, provider.invokeBuildConfig(request.Model, true, true, guardrailBody))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, invokeSSEReaderFactory)
 	return anthropic.HandleAnthropicResponsesStream(
 		ctx, provider.mantleStreamingClient, requestURL, jsonData,
-		openai.BearerAuthHeader(key), provider.invokeStreamHeaders(),
+		openai.BearerAuthHeader(key), provider.invokeStreamHeaders(responsesExtraParams(request)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		provider.networkConfig.BetaHeaderOverrides,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

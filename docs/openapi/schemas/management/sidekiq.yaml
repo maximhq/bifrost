@@ -1,0 +1,87 @@
+# Background Job (Sidekiq) Schemas
+
+SidekiqJobStatus:
+  type: string
+  description: |
+    Lifecycle of a job. `completed`, `failed` and `cancelled` are terminal.
+  enum:
+    - pending
+    - running
+    - completed
+    - failed
+    - cancelled
+
+SidekiqJobProgress:
+  type: object
+  description: Units of work finished out of the approximate total.
+  required:
+    - done
+    - total
+  properties:
+    done:
+      type: integer
+      format: int64
+    total:
+      type: integer
+      format: int64
+      description: Approximate; 0 when the total is unknown.
+
+SidekiqJob:
+  type: object
+  required:
+    - id
+    - kind
+    - status
+    - cancellable
+    - created_at
+    - updated_at
+  properties:
+    id:
+      type: string
+    kind:
+      type: string
+      description: Job type, for example `logs_recalculate_cost` or `warp_log_embedding_backfill`.
+    status:
+      $ref: '#/SidekiqJobStatus'
+    progress:
+      $ref: '#/SidekiqJobProgress'
+    message:
+      type: string
+      description: Human-readable note from the job, when it reports one.
+    last_error:
+      type: string
+      description: Why the job failed, when it did.
+    cancellable:
+      type: boolean
+      description: True while the job is pending or running.
+    created_at:
+      type: string
+      format: date-time
+    started_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+    completed_at:
+      type: string
+      format: date-time
+
+SidekiqJobList:
+  type: object
+  required:
+    - jobs
+  properties:
+    jobs:
+      type: array
+      items:
+        $ref: '#/SidekiqJob'
+
+SidekiqJobCancelResponse:
+  type: object
+  required:
+    - cancelled
+  properties:
+    cancelled:
+      type: boolean
+      description: True when this call moved the job to `cancelled`; false when it was unknown or already finished.

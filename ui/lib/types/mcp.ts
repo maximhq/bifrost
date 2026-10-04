@@ -154,6 +154,10 @@ export interface MCPClientConfig {
 	// clients — pre-existing clients were backfilled to true). SSE and STDIO
 	// always behave as sticky regardless of this field.
 	needs_session_stickiness?: boolean;
+	// Server-set, read-only: true when the client was registered without an
+	// admin credential check, so every connection to it must resolve to a
+	// public address. Never cleared once set.
+	require_public_target?: boolean;
 	tool_pricing?: Record<string, number>;
 	// Per-client override (0 = use global). API returns NANOSECONDS
 	// (Go time.Duration), while updates send minutes — convert with
