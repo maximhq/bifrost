@@ -612,6 +612,9 @@ func (m *MockConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Contex
 func (m *MockConfigStore) RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error {
 	return nil
 }
+func (m *MockConfigStore) RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error {
+	return nil
+}
 func (m *MockConfigStore) SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error) {
 	return 0, nil
 }

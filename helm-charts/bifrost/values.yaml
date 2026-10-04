@@ -256,6 +256,9 @@ bifrost:
   client:
     dropExcessRequests: false
     initialPoolSize: 300
+    # While dashboard auth is disabled, browser requests to the management API are accepted
+    # only from localhost, the gateway's own origin, and origins listed here explicitly;
+    # "*" does not admit them.
     allowedOrigins:
       - "*"
     enableLogging: true
