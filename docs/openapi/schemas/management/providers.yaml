@@ -386,6 +386,10 @@ ProviderResponse:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    metadata:
+      $ref: '#/ProviderMetadata'
+    tags:
+      $ref: '#/Tags'
     provider_status:
       $ref: '#/ProviderStatus'
     status:
@@ -397,6 +401,30 @@ ProviderResponse:
     config_hash:
       type: string
       description: Hash of config.json version, used for change detection
+
+ProviderMetadata:
+  type: object
+  description: >-
+    Custom key/value metadata on the provider (for example owner, region, cost_center). Keys are
+    1-256 characters of letters, digits, '.', '_' and '-'; values are strings of at most 512
+    characters; at most 50 entries. Omitted when the provider has none.
+  maxProperties: 50
+  propertyNames:
+    pattern: '^[a-zA-Z0-9._-]{1,256}$'
+  additionalProperties:
+    type: string
+    maxLength: 512
+
+Tags:
+  type: array
+  description: >-
+    Free-form labels (for example prod, eu, approved-for-pii). Each tag is 1-64 characters of
+    letters, digits, '.', '_' and '-'; at most 50. Stored trimmed, de-duplicated and sorted.
+    Omitted when there are none.
+  maxItems: 50
+  items:
+    type: string
+    pattern: '^[a-zA-Z0-9._-]{1,64}$'
 
 ListProvidersResponse:
   type: object
@@ -433,6 +461,10 @@ AddProviderRequest:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    metadata:
+      $ref: '#/ProviderMetadata'
+    tags:
+      $ref: '#/Tags'
 
 CacheControlInjectionPoint:
   type: object
@@ -487,6 +519,14 @@ UpdateProviderRequest:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    metadata:
+      allOf:
+        - $ref: '#/ProviderMetadata'
+      description: Replaces the provider's metadata as a whole. Omit to leave it unchanged; send {} or null to clear it.
+    tags:
+      allOf:
+        - $ref: '#/Tags'
+      description: Replaces the provider's tags as a whole. Omit to leave them unchanged; send [] or null to clear them.
 
 ListProviderKeysResponse:
   type: object

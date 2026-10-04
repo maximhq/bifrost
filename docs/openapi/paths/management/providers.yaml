@@ -13,11 +13,28 @@ providers:
     summary: List all providers
     description: |
       Returns a list of all configured providers with their configurations and status.
+      Optional metadata and tag filters are AND-ed together.
     tags:
       - Providers
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
+    parameters:
+      - name: metadata_<key>
+        in: query
+        description: >-
+          Metadata filter: only providers whose metadata has <key> set to exactly this value
+          (for example metadata_owner=team-a). Repeat with different keys to AND them.
+          An invalid key (anything but letters, digits, '.', '_' and '-') is rejected with a 400.
+        schema:
+          type: string
+      - name: tags
+        in: query
+        description: >-
+          Comma-separated tags (for example tags=prod,eu); only providers carrying every listed
+          tag are returned. An invalid tag is rejected with a 400.
+        schema:
+          type: string
     responses:
       '200':
         description: Successful response
@@ -25,6 +42,8 @@ providers:
           application/json:
             schema:
               $ref: '../../schemas/management/providers.yaml#/ListProvidersResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

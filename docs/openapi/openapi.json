@@ -40666,6 +40666,24 @@
             "BasicAuth": []
           }
         ],
+        "parameters": [
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Metadata filter: only providers whose metadata has <key> set to exactly this value (for example metadata_owner=team-a). Repeat with different keys to AND them. An invalid key (anything but letters, digits, '.', '_' and '-') is rejected with a 400.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "Comma-separated tags (for example tags=prod,eu); only providers carrying every listed tag are returned. An invalid tag is rejected with a 400.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -40673,6 +40691,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListProvidersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (invalid metadata or tags filter)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -108228,6 +108256,27 @@
               }
             }
           },
+          "metadata": {
+            "type": "object",
+            "description": "Custom key/value metadata on the provider (for example owner, region, cost_center). Omitted when the provider has none.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "tags": {
+            "type": "array",
+            "description": "Free-form labels (for example prod, eu, approved-for-pii), stored trimmed, de-duplicated and sorted. Omitted when there are none.",
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+            }
+          },
           "prompt_cache": {
             "type": "object",
             "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Requests that already carry their own cache markers are never modified.",
@@ -108447,6 +108496,27 @@
               }
             }
           },
+          "metadata": {
+            "type": "object",
+            "description": "Custom key/value metadata (for example owner, region, cost_center). Keys are 1-256 characters of letters, digits, '.', '_' and '-'; values are strings of at most 512 characters; at most 50 entries.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "tags": {
+            "type": "array",
+            "description": "Free-form labels (for example prod, eu, approved-for-pii). Each tag is 1-64 characters of letters, digits, '.', '_' and '-'; at most 50. Stored trimmed, de-duplicated and sorted.",
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+            }
+          },
           "prompt_cache": {
             "type": "object",
             "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Requests that already carry their own cache markers are never modified.",
@@ -108628,6 +108698,27 @@
                   "type": "string"
                 }
               }
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Replaces the provider's metadata as a whole. Omit to leave it unchanged; send {} or null to clear it. Same rules as on create.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "tags": {
+            "type": "array",
+            "description": "Replaces the provider's tags as a whole. Omit to leave them unchanged; send [] or null to clear them. Same rules as on create.",
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9._-]{1,64}$"
             }
           },
           "prompt_cache": {

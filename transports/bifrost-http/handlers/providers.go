@@ -105,6 +105,8 @@ type ProviderResponse struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
+	Metadata                 map[string]string                `json:"metadata,omitempty"`               // Operator-defined key/value metadata
+	Tags                     []string                         `json:"tags,omitempty"`                   // Operator-defined tags
 	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
 	Description              string                           `json:"description,omitempty"`            // Error/status description
@@ -134,6 +136,8 @@ type providerCreatePayload struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	Metadata                 map[string]string                 `json:"metadata,omitempty"`      // Operator-defined key/value metadata
+	Tags                     []string                          `json:"tags,omitempty"`          // Operator-defined tags
 }
 
 type providerUpdatePayload struct {
@@ -146,6 +150,8 @@ type providerUpdatePayload struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	Metadata                 map[string]string                `json:"metadata,omitempty"`      // Replaces the metadata as a whole when carried
+	Tags                     []string                         `json:"tags,omitempty"`          // Replaces the tags as a whole when carried
 }
 
 // applyProviderConfigUpdates copies onto config only the nested config blocks the
@@ -183,6 +189,14 @@ func applyProviderConfigUpdates(config *configstore.ProviderConfig, payload *pro
 	if carried("prompt_cache") {
 		config.PromptCache = payload.PromptCache
 	}
+	// Labels follow the same rule: omitted leaves them alone, and a supplied map or list
+	// (including {} / [] / null) replaces them as a whole.
+	if carried("metadata") {
+		config.Metadata = payload.Metadata
+	}
+	if carried("tags") {
+		config.Tags = payload.Tags
+	}
 }
 
 // RegisterRoutes registers all provider management routes
@@ -212,7 +226,21 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 }
 
 // listProviders handles GET /api/providers - List all providers
+//
+// Query parameters (optional, AND-ed together):
+//   - metadata_<key>=<value>: providers whose metadata has exactly this value for key
+//   - tags=a,b: providers carrying every listed tag
 func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
+	metadataFilters, err := parseMetadataLabelFilters(ctx.QueryArgs())
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	tagFilters, err := parseTagsFilter(ctx.QueryArgs())
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	// Fetching providers from database or in-memory store
 	var providers map[schemas.ModelProvider]configstore.ProviderConfig
 	if h.dbStore != nil {
@@ -235,6 +263,9 @@ func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
 	providerResponses := []ProviderResponse{}
 
 	for providerName, provider := range providers {
+		if !matchesLabelFilters(provider.Metadata, provider.Tags, metadataFilters, tagFilters) {
+			continue
+		}
 		config := provider.Redacted()
 
 		providerStatus := ProviderStatusError
@@ -392,6 +423,8 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
 		PromptCache:              payload.PromptCache,
+		Metadata:                 payload.Metadata,
+		Tags:                     payload.Tags,
 	}
 	if requireGenuineAuthForInterception(ctx, configstore.ProviderConfig{}, config) {
 		return
@@ -406,6 +439,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	// and then rejected by the provider at request time instead.
 	if err := lib.ValidatePromptCache(config.PromptCache); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
+		return
+	}
+	if err := lib.NormalizeProviderLabels(&config); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider labels: %v", err))
 		return
 	}
 	// Add provider to store (env vars will be processed by store)
@@ -446,6 +483,8 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
+			Metadata:                 config.Metadata,
+			Tags:                     config.Tags,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -542,6 +581,8 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
 		PromptCache:              oldConfigRaw.PromptCache,
+		Metadata:                 oldConfigRaw.Metadata,
+		Tags:                     oldConfigRaw.Tags,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
 		Description:              oldConfigRaw.Description,
@@ -616,6 +657,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	applyProviderConfigUpdates(&config, &payload.providerUpdatePayload, bodyFields)
+	if err := lib.NormalizeProviderLabels(&config); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider labels: %v", err))
+		return
+	}
 	// Runs after the redacted-echo restores above, so a UI save that sends the stored proxy
 	// and CA cert back masked compares equal to what is stored.
 	if requireGenuineAuthForInterception(ctx, *oldConfigRaw, config) {
@@ -691,6 +736,8 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
+			Metadata:                 config.Metadata,
+			Tags:                     config.Tags,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -1527,6 +1574,8 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
 		PromptCache:              config.PromptCache,
+		Metadata:                 config.Metadata,
+		Tags:                     config.Tags,
 		ProviderStatus:           status,
 		Status:                   config.Status,
 		Description:              config.Description,
@@ -1695,4 +1744,62 @@ func providerDialTargetChanged(old *schemas.NetworkConfig, next schemas.NetworkC
 		return true
 	}
 	return next.BaseURL != "" && next.BaseURL != oldBaseURL
+}
+
+// parseMetadataLabelFilters collects metadata_<key>=<value> query parameters, the same shape the logs
+// endpoints accept. An invalid key is a 400 rather than a silently ignored filter, which would
+// return everything.
+func parseMetadataLabelFilters(args *fasthttp.Args) (map[string]string, error) {
+	var filters map[string]string
+	var invalid string
+	for key, value := range args.All() {
+		metadataKey, ok := strings.CutPrefix(string(key), "metadata_")
+		if !ok {
+			continue
+		}
+		if !tables.IsValidMetadataKey(metadataKey) {
+			if invalid == "" {
+				invalid = metadataKey
+			}
+			continue
+		}
+		if filters == nil {
+			filters = make(map[string]string)
+		}
+		filters[metadataKey] = string(value)
+	}
+	if invalid != "" {
+		return nil, fmt.Errorf("invalid metadata filter key %q: keys must be 1-%d characters of letters, digits, '.', '_' or '-'", invalid, tables.MaxMetadataKeyLength)
+	}
+	return filters, nil
+}
+
+// parseTagsFilter reads the tags query parameter: a comma-separated list (repeating the parameter
+// also works) of tags that must all be present. Empty entries are ignored; an invalid tag is a 400.
+func parseTagsFilter(args *fasthttp.Args) ([]string, error) {
+	var tags []string
+	for _, raw := range args.PeekMulti("tags") {
+		for tag := range strings.SplitSeq(string(raw), ",") {
+			tag = strings.TrimSpace(tag)
+			if tag == "" {
+				continue
+			}
+			if !tables.IsValidTag(tag) {
+				return nil, fmt.Errorf("invalid tags filter %q: tags must be 1-%d characters of letters, digits, '.', '_' or '-'", tag, tables.MaxTagLength)
+			}
+			tags = append(tags, tag)
+		}
+	}
+	return tags, nil
+}
+
+// matchesLabelFilters reports whether an entity's metadata carries every metadataFilters entry
+// with the same value and its tags include every tag in tagFilters.
+func matchesLabelFilters(metadata map[string]string, tags []string, metadataFilters map[string]string, tagFilters []string) bool {
+	for key, want := range metadataFilters {
+		if got, ok := metadata[key]; !ok || got != want {
+			return false
+		}
+	}
+	return tables.HasAllTags(tags, tagFilters)
 }
