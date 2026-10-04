@@ -526,6 +526,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"make_mcp_oauth_flows_state_unique"}, run: migrationMakeMCPOauthFlowsStateUnique},
 	{IDs: []string{"add_ultrafast_above_272k_pricing_columns"}, run: migrationAddUltrafastAbove272kPricingColumns},
 	{IDs: []string{"add_priority_above_272k_cache_creation_pricing_column"}, run: migrationAddPriorityAbove272kCacheCreationPricingColumn},
+	{IDs: []string{"add_virtual_key_metadata_column"}, run: migrationAddVirtualKeyMetadataColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -15134,6 +15135,33 @@ func migrationAddPriorityAbove272kCacheCreationPricingColumn(ctx context.Context
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyMetadataColumn adds the nullable metadata column to
+// governance_virtual_keys. Existing keys keep NULL (no metadata), and
+// GenerateVirtualKeyHash only hashes metadata when the key has some, so no
+// config_hash backfill is needed.
+func migrationAddVirtualKeyMetadataColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_metadata_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "metadata"); err != nil {
+				return fmt.Errorf("failed to add metadata column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_virtual_key_metadata_column is non-rollbackable: dropping metadata would permanently delete every virtual key's metadata; the column is additive and older binaries safely ignore it")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
 }

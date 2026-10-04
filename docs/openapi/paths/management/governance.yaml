@@ -42,9 +42,17 @@ virtual-keys:
       - name: search
         in: query
         description: >-
-          Case-insensitive search across the virtual key name, its team name, and its
-          customer name. Enterprise additionally matches the name and email of the user
-          the key is assigned to.
+          Case-insensitive search across the virtual key name, its team name, its
+          customer name, and its metadata keys and values. Enterprise additionally matches
+          the name and email of the user the key is assigned to.
+        schema:
+          type: string
+      - name: metadata_<key>
+        in: query
+        description: >-
+          Metadata filter: only keys whose metadata has <key> set to exactly this value
+          (for example metadata_cost_center=cc-42). Repeat with different keys to AND them.
+          An invalid key (anything but letters, digits, '.', '_' and '-') is rejected with a 400.
         schema:
           type: string
       - name: customer_id
