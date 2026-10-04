@@ -188324,7 +188324,7 @@
       ]
     },
     {
-      "name": "146. Anthropic egress preserves stop_reason stop_sequence and the matched sequence (#7920 / PR #7921) (anthropic-stop-sequence)",
+      "name": "149. Anthropic egress preserves stop_reason stop_sequence and the matched sequence (#7920 / PR #7921) (anthropic-stop-sequence)",
       "description": "Pins that when Claude (Anthropic provider or Vertex) stops on a requested stop sequence, /anthropic/v1/messages reports stop_reason \"stop_sequence\" and the matched string in stop_sequence, in the non-streaming body and in the streaming terminal message_delta.\n\nBug (#7920): the response is converted Anthropic -> Bifrost Responses -> Anthropic. Anthropic's stop_sequence reason is folded into Bifrost \"stop\" and the matched string had no field on BifrostResponsesResponse, so the egress reported stop_reason end_turn with stop_sequence null. Clients that branch on stop_reason == \"stop_sequence\" could not tell a delimiter stop from a natural end of turn.\n\nFix: BifrostResponsesResponse gains an optional stop_sequence carrier, the Anthropic ingress (ToBifrostResponsesResponse and the streaming message_delta handling in core/providers/anthropic/responses.go) records it when the upstream reason is stop_sequence, and the egress restores stop_reason stop_sequence via anthropicStopReasonWithSequence (core/providers/anthropic/utils.go). An OpenAI-style \"stop\" with no matched sequence still maps to end_turn.\n\nCases use the issue repro: stop_sequences [\"5\"] with \"Count from 1 to 10 separated by spaces.\", which deterministically stops on \"5\". Anthropic non-streaming and streaming, Vertex Claude non-streaming and streaming. Red before the fix (end_turn / null), green after.",
       "item": [
         {
