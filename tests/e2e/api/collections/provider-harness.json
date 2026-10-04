@@ -188680,6 +188680,430 @@
           }
         }
       ]
+    },
+    {
+      "name": "151. Model tags on the management models API (PR #7944) (model-tags-api)",
+      "description": "PR #7944 adds PUT /api/models/tags, which replaces the tags of each listed provider/model (written to config_models in one transaction; an empty list clears them), returns the tags on GET /api/models and GET /api/models/details, and filters both with tags=a,b (every listed tag must match). An invalid tag is a 400 on the write and on the filter; an unconfigured provider is a 404. These rows record openai/gpt-4o-mini's current tags from GET /api/models, tag it, check both listings with the filter and the every-tag rule, check the 400 and 404 replies, then restore the recorded tags and confirm the filtered listing is empty. Before the PR the write route does not exist and the tags parameter is ignored, so the write, filter and 400 rows fail. Needs a config store (the default harness profile has one). No inference request is made; the listings read the gateway's model catalog.",
+      "item": [
+        {
+          "name": "openai model-tags-api record the current tags on gpt-4o-mini - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var model = (pm.response.json().models || []).find(function (m) { return m.provider === 'openai' && m.name === 'gpt-4o-mini'; });",
+                  "pm.test('gpt-4o-mini is listed for openai', function () { pm.expect(model, pm.response.text()).to.be.an('object'); });",
+                  "var original = (model && model.tags) || [];",
+                  "pm.collectionVariables.set('modelTagsApiRestoreBody', JSON.stringify([{ provider: 'openai', model: 'gpt-4o-mini', tags: original }]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models?provider=openai&query=gpt-4o-mini&limit=200",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "query",
+                  "value": "gpt-4o-mini"
+                },
+                {
+                  "key": "limit",
+                  "value": "200"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-204] openai model-tags-api PUT /api/models/tags sets tags on gpt-4o-mini - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(204); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/tags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "tags"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"provider\": \"openai\",\n    \"model\": \"gpt-4o-mini\",\n    \"tags\": [\n      \" harness-model-tags-api \",\n      \"harness-model-tags-api-b\"\n    ]\n  }\n]"
+            }
+          }
+        },
+        {
+          "name": "openai model-tags-api GET /api/models tags filter returns only tagged models including gpt-4o-mini - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var models = pm.response.json().models;",
+                  "pm.test('filtered listing is not empty', function () { pm.expect(models, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "pm.test('every returned model carries the requested tag', function () {",
+                  "  models.forEach(function (m) {",
+                  "    pm.expect(m.tags, 'model ' + m.provider + '/' + m.name + ' without the tag: ' + pm.response.text()).to.be.an('array').that.includes('harness-model-tags-api');",
+                  "  });",
+                  "});",
+                  "pm.test('the tagged model is listed', function () {",
+                  "  pm.expect(models.map(function (m) { return m.provider + '/' + m.name; }), pm.response.text()).to.include('openai/gpt-4o-mini');",
+                  "});",
+                  "pm.test('tags are stored trimmed', function () {",
+                  "  var m = models.find(function (x) { return x.provider === 'openai' && x.name === 'gpt-4o-mini'; });",
+                  "  pm.expect(m && m.tags, pm.response.text()).to.include.members(['harness-model-tags-api', 'harness-model-tags-api-b']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models?provider=openai&tags=harness-model-tags-api",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "tags",
+                  "value": "harness-model-tags-api"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai model-tags-api GET /api/models/details tags filter returns only tagged models including gpt-4o-mini - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var models = pm.response.json().models;",
+                  "pm.test('filtered details listing is not empty', function () { pm.expect(models, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "pm.test('every returned model carries the requested tag', function () {",
+                  "  models.forEach(function (m) {",
+                  "    pm.expect(m.tags, 'model ' + m.provider + '/' + m.name + ' without the tag: ' + pm.response.text()).to.be.an('array').that.includes('harness-model-tags-api');",
+                  "  });",
+                  "});",
+                  "pm.test('the tagged model is listed', function () {",
+                  "  pm.expect(models.map(function (m) { return m.provider + '/' + m.name; }), pm.response.text()).to.include('openai/gpt-4o-mini');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/details?provider=openai&tags=harness-model-tags-api",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "tags",
+                  "value": "harness-model-tags-api"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai model-tags-api GET /api/models tags filter requires every listed tag - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('no model carries both tags', function () { pm.expect(pm.response.json().models, pm.response.text()).to.be.an('array').that.is.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models?provider=openai&tags=harness-model-tags-api,harness-model-tags-api-absent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "tags",
+                  "value": "harness-model-tags-api,harness-model-tags-api-absent"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai model-tags-api GET /api/models rejects an invalid tags filter - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('error names the invalid tags filter', function () { pm.expect(pm.response.text()).to.include('invalid tags filter'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models?provider=openai&tags=bad%20tag",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "tags",
+                  "value": "bad%20tag"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai model-tags-api PUT /api/models/tags rejects an invalid tag on gpt-4o-mini - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('error names the invalid tags', function () { pm.expect(pm.response.text()).to.include('invalid tags for openai/gpt-4o-mini'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/tags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "tags"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"provider\": \"openai\",\n    \"model\": \"gpt-4o-mini\",\n    \"tags\": [\n      \"bad tag\"\n    ]\n  }\n]"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai model-tags-api PUT /api/models/tags rejects an unconfigured provider - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404); });",
+                  "pm.test('error names the missing provider', function () { pm.expect(pm.response.text()).to.include('provider harness-model-tags-api-absent not found'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/tags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "tags"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"provider\": \"harness-model-tags-api-absent\",\n    \"model\": \"gpt-4o-mini\",\n    \"tags\": [\n      \"harness-model-tags-api\"\n    ]\n  }\n]"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-204] openai model-tags-api restore the recorded tags on gpt-4o-mini - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(204); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/tags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "tags"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{modelTagsApiRestoreBody}}"
+            }
+          }
+        },
+        {
+          "name": "openai model-tags-api GET /api/models tags filter is empty after gpt-4o-mini's tags are restored - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('no model carries the removed tag', function () { pm.expect(pm.response.json().models, pm.response.text()).to.be.an('array').that.is.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models?provider=openai&tags=harness-model-tags-api",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "tags",
+                  "value": "harness-model-tags-api"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
