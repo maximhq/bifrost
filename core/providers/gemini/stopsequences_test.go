@@ -10,7 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Regression: the Anthropic (and Bedrock) ingress store stop sequences under
+// TestToGeminiResponsesRequest_StopSequencesFromAnthropicIngress is a regression test:
+// the Anthropic (and Bedrock) ingress store stop sequences under
 // ExtraParams["stop"], but the Gemini Responses converter only read
 // "stop_sequences", so stop_sequences sent to /anthropic/v1/messages never
 // reached generationConfig.stopSequences on Gemini/Vertex.
@@ -39,6 +40,9 @@ func TestToGeminiResponsesRequest_StopSequencesFromAnthropicIngress(t *testing.T
 	}
 }
 
+// TestToGeminiResponsesRequest_StopSequencesExtraParamKeys verifies that stop sequences are
+// read from "stop" first, falling back to legacy "stop_sequences" when "stop" is absent or
+// not a string list, and that neither key is forwarded as an extra wire parameter.
 func TestToGeminiResponsesRequest_StopSequencesExtraParamKeys(t *testing.T) {
 	tests := []struct {
 		name        string
