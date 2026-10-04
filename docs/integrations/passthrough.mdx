@@ -38,6 +38,10 @@ When you use passthrough endpoints, the request still flows through Bifrost core
 </Warning>
 
 <Note>
+When the URL path names a model (for example `models/{model}` or a deployment path), Bifrost uses that model. Otherwise, for JSON bodies, it reads the model from the top-level `model` key, the same key the provider reads. Virtual-key model restrictions apply to whichever model was resolved. A JSON body must carry that key at most once, spelled exactly `model` (lowercase), with a string value; a body that repeats it (in any letter case), spells it differently, gives it a non-string value, or is not valid JSON while sent as `application/json` is rejected with `400`. Bodies without a `model` key and multipart bodies are unaffected.
+</Note>
+
+<Note>
 Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) is handled separately on the regular `/anthropic` route, where Bifrost forwards the caller's token instead of selecting a key. Point Claude Code there — no passthrough endpoint needed. See [Claude Code authentication](../cli-agents/claude-code#anthropic_custom_headers-alternative).
 </Note>
 
