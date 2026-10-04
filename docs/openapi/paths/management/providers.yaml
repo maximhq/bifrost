@@ -743,9 +743,14 @@ models-tags:
     summary: Set model tags
     description: |
       Replaces the tags of each listed model. The provider must be configured; any model name is
-      accepted, including models that are not in the pricing datasheet. An empty tags list clears
-      a model's tags. The whole batch is validated first and written in one transaction. Requires
+      accepted, including models that are not in the pricing datasheet. Every entry must carry
+      tags; a missing or null tags field is rejected with a 400, and an empty tags list clears a
+      model's tags. The whole batch is validated first and written in one transaction. Requires
       a config store.
+
+      Entries are applied in request order, and the same (provider, model) pair may appear more
+      than once: each entry replaces that model's tags, so the last entry for a pair decides its
+      final tags (an empty list in that last entry clears them).
     tags:
       - Providers
     security:

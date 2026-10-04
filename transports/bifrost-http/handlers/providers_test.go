@@ -2694,7 +2694,7 @@ func TestListModels_FiltersAndReturnsTags(t *testing.T) {
 }
 
 // TestSetModelTags_ValidatesBeforeWriting pins PUT /api/models/tags: the whole batch is checked
-// (shape, model name length in bytes, known provider, valid tags and the 50-tag cap counted on
+// (shape, tags present and non-null with [] clearing, model name length in bytes, known provider, valid tags and the 50-tag cap counted on
 // the list as sent) before the write, tags reach the writer normalized, and
 // store errors map to the right status.
 func TestSetModelTags_ValidatesBeforeWriting(t *testing.T) {
@@ -2720,6 +2720,8 @@ func TestSetModelTags_ValidatesBeforeWriting(t *testing.T) {
 		{name: "invalid json", body: `{`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "empty batch", body: `[]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "missing model", body: `[{"provider":"openai","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "missing tags", body: `[{"provider":"openai","model":"gpt-5.1"}]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "null tags", body: `[{"provider":"openai","model":"gpt-5.1","tags":null}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "model name too long", body: `[{"provider":"openai","model":"` + strings.Repeat("m", configstoreTables.MaxModelNameLength+1) + `","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "model name within 255 characters but over 255 bytes", body: `[{"provider":"openai","model":"` + strings.Repeat("é", 128) + `","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "more than 50 tags even when duplicates leave 50", body: `[{"provider":"openai","model":"gpt-5.1","tags":[` + strings.Join(overCapTags, ",") + `]}]`, wantStatus: fasthttp.StatusBadRequest},
