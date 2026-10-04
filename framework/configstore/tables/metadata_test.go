@@ -44,12 +44,18 @@ func TestValidateMetadata(t *testing.T) {
 	}
 }
 
+// TestNormalizeTags covers trimming, de-duplication, sorting, the charset and length rules, and
+// the MaxTags cap, which counts the input list as sent (duplicates included).
 func TestNormalizeTags(t *testing.T) {
 	tooMany := make([]string, 0, MaxTags+1)
 	for i := range MaxTags + 1 {
 		tooMany = append(tooMany, fmt.Sprintf("t%d", i))
 	}
-	atLimitWithDuplicates := append(append([]string{}, tooMany[:MaxTags]...), "t0", " t1 ")
+	// MaxTags entries in which duplicates (after trimming) leave fewer distinct tags.
+	atLimitWithDuplicates := append(append([]string{}, tooMany[:MaxTags-2]...), "t0", " t1 ")
+	// MaxTags distinct tags plus one duplicate: the raw list is over the cap even though the
+	// normalized set is not, and the config-file schema (maxItems) refuses the same list.
+	overLimitOnlyWithDuplicates := append(append([]string{}, tooMany[:MaxTags]...), "t0")
 	tests := []struct {
 		name    string
 		tags    []string
@@ -62,7 +68,8 @@ func TestNormalizeTags(t *testing.T) {
 		{name: "case-sensitive", tags: []string{"Prod", "prod"}, want: []string{"Prod", "prod"}},
 		{name: "dots and underscores", tags: []string{"team_payments", "env.prod"}, want: []string{"env.prod", "team_payments"}},
 		{name: "max length", tags: []string{strings.Repeat("t", MaxTagLength)}, want: []string{strings.Repeat("t", MaxTagLength)}},
-		{name: "duplicates do not count toward the limit", tags: atLimitWithDuplicates, want: slices.Sorted(slices.Values(tooMany[:MaxTags]))},
+		{name: "duplicates within the limit are dropped", tags: atLimitWithDuplicates, want: slices.Sorted(slices.Values(tooMany[:MaxTags-2]))},
+		{name: "duplicates count toward the limit", tags: overLimitOnlyWithDuplicates, wantErr: "at most 50 entries, got 51"},
 		{name: "too long", tags: []string{strings.Repeat("t", MaxTagLength+1)}, wantErr: "invalid tag"},
 		{name: "comma", tags: []string{"a,b"}, wantErr: "invalid tag"},
 		{name: "space inside", tags: []string{"a b"}, wantErr: "invalid tag"},

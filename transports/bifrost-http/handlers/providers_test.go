@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -2510,7 +2511,8 @@ func listModelsForTest(t *testing.T, h *ProviderHandler, uri string) ListModelsR
 
 // TestProviderLabels_CreateUpdateAndListFilters pins provider metadata and tags on the API:
 // create stores them normalized, update leaves omitted labels alone and replaces carried ones,
-// invalid labels are a 400 that writes nothing, and the list endpoint filters by
+// invalid labels (including more than 50 tags as sent, duplicates counted) are a 400 that writes
+// nothing, and the list endpoint filters by
 // metadata_<key>=<value> and tags=a,b (every tag must match).
 func TestProviderLabels_CreateUpdateAndListFilters(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -2573,6 +2575,17 @@ func TestProviderLabels_CreateUpdateAndListFilters(t *testing.T) {
 	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`,"metadata":{"bad key":"x"}}`)
 	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 	assert.Equal(t, map[string]string{"owner": "team-a"}, store.Providers["mock-c"].Metadata, "a refused update must write nothing")
+	// 50 distinct tags plus one duplicate: the cap counts the list as sent, as the config-file
+	// schema's maxItems does, so this is a 400 even though only 50 tags would be stored.
+	overCap := make([]string, 0, 51)
+	for i := range 50 {
+		overCap = append(overCap, fmt.Sprintf(`"t%d"`, i))
+	}
+	overCap = append(overCap, `"t0"`)
+	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`,"tags":[`+strings.Join(overCap, ",")+`]}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "at most 50 entries, got 51")
+	assert.Equal(t, []string{"eu", "prod"}, store.Providers["mock-c"].Tags, "a refused update must write nothing")
 
 	list := func(query string) ([]string, int) {
 		ctx := call(fasthttp.MethodGet, "/api/providers"+query, "", "")
@@ -2681,10 +2694,18 @@ func TestListModels_FiltersAndReturnsTags(t *testing.T) {
 }
 
 // TestSetModelTags_ValidatesBeforeWriting pins PUT /api/models/tags: the whole batch is checked
-// (shape, model name length, known provider, valid tags) before the write, tags reach the writer normalized, and
+// (shape, model name length in bytes, known provider, valid tags and the 50-tag cap counted on
+// the list as sent) before the write, tags reach the writer normalized, and
 // store errors map to the right status.
 func TestSetModelTags_ValidatesBeforeWriting(t *testing.T) {
 	SetLogger(&mockLogger{})
+
+	// 50 distinct tags plus one duplicate: the cap counts the list as sent.
+	overCapTags := make([]string, 0, configstoreTables.MaxTags+1)
+	for i := range configstoreTables.MaxTags {
+		overCapTags = append(overCapTags, fmt.Sprintf(`"t%d"`, i))
+	}
+	overCapTags = append(overCapTags, `"t0"`)
 
 	cases := []struct {
 		name       string
@@ -2700,6 +2721,8 @@ func TestSetModelTags_ValidatesBeforeWriting(t *testing.T) {
 		{name: "empty batch", body: `[]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "missing model", body: `[{"provider":"openai","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "model name too long", body: `[{"provider":"openai","model":"` + strings.Repeat("m", configstoreTables.MaxModelNameLength+1) + `","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "model name within 255 characters but over 255 bytes", body: `[{"provider":"openai","model":"` + strings.Repeat("é", 128) + `","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "more than 50 tags even when duplicates leave 50", body: `[{"provider":"openai","model":"gpt-5.1","tags":[` + strings.Join(overCapTags, ",") + `]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "unknown provider", body: `[{"provider":"nope","model":"x","tags":["prod"]}]`, wantStatus: fasthttp.StatusNotFound},
 		{name: "invalid tag", body: `[{"provider":"openai","model":"gpt-5.1","tags":["a,b"]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "no config store", body: `[{"provider":"openai","model":"gpt-5.1","tags":["prod"]}]`, noStore: true, wantStatus: fasthttp.StatusServiceUnavailable},

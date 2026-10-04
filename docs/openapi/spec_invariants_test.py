@@ -322,7 +322,9 @@ def test_virtual_key_request_contract_is_current():
 def test_provider_labels_contract():
     """Provider metadata and tags: the update request accepts null for both (null clears them),
     and the list endpoint documents its metadata_<key> filters in the description instead of
-    declaring a literal `metadata_<key>` query parameter, which a client would send verbatim."""
+    declaring a literal `metadata_<key>` query parameter, which a client would send verbatim.
+    Request tag patterns accept surrounding whitespace (the handler trims before validating, as
+    config.schema.json does), while the response keeps the strict pattern of the stored form."""
     import json
 
     source = load(HERE / "schemas" / "management" / "providers.yaml")
@@ -340,6 +342,25 @@ def test_provider_labels_contract():
             if sorted(types) != sorted([base, "null"]):
                 problems.append(f"{where} UpdateProviderRequest.{field}: type {types}, want [{base}, null]")
 
+    trimmed_tag = r"^\s*[a-zA-Z0-9._-]{1,64}\s*$"
+    stored_tag = r"^[a-zA-Z0-9._-]{1,64}$"
+
+    def tags_schema(doc_schemas, name):
+        tags = doc_schemas[name]["properties"]["tags"]
+        if "$ref" in tags:
+            tags = doc_schemas[tags["$ref"].split("/")[-1]]
+        return tags
+
+    for where, schemas in (("schemas/management/providers.yaml", source), ("openapi.json", bundle)):
+        for name, want in (
+            ("AddProviderRequest", trimmed_tag),
+            ("UpdateProviderRequest", trimmed_tag),
+            ("ProviderResponse", stored_tag),
+        ):
+            got = tags_schema(schemas, name).get("items", {}).get("pattern")
+            if got != want:
+                problems.append(f"{where} {name}.tags item pattern {got!r}, want {want!r}")
+
     source_list = load(PATHS_DIR / "providers.yaml")["providers"]["get"]
     bundle_list = bundle_doc["paths"]["/api/providers"]["get"]
     for where, operation in (("paths/management/providers.yaml", source_list), ("openapi.json", bundle_list)):
@@ -355,7 +376,9 @@ def test_provider_labels_contract():
 def test_model_tags_contract():
     """PUT /api/models/tags: every error response carries a BifrostError body (the handler sends
     one for 404 and 503 too), and batch items are closed objects so a misspelled field such as
-    `tag` is rejected instead of silently clearing the model's tags."""
+    `tag` is rejected instead of silently clearing the model's tags. Item tags accept surrounding
+    whitespace (the handler trims them), and the model name carries no maxLength: the handler's
+    255 limit counts UTF-8 bytes, which maxLength (characters) cannot express."""
     import json
 
     source_op = load(PATHS_DIR / "providers.yaml")["models-tags"]["put"]
@@ -370,6 +393,15 @@ def test_model_tags_contract():
     for where, entry in (("schemas/management/providers.yaml", source_entry), ("openapi.json", bundle_entry)):
         if entry.get("additionalProperties") is not False:
             problems.append(f"{where} ModelTagsEntry: additionalProperties is not false")
+        if "maxLength" in entry["properties"]["model"]:
+            problems.append(f"{where} ModelTagsEntry.model: maxLength counts characters, the limit is 255 bytes")
+    source_tags = source_entry["properties"]["tags"]
+    if "$ref" in source_tags:
+        source_tags = load(HERE / "schemas" / "management" / "providers.yaml")[source_tags["$ref"].split("/")[-1]]
+    for where, tags in (("schemas/management/providers.yaml", source_tags), ("openapi.json", bundle_entry["properties"]["tags"])):
+        pattern = tags.get("items", {}).get("pattern")
+        if pattern != r"^\s*[a-zA-Z0-9._-]{1,64}\s*$":
+            problems.append(f"{where} ModelTagsEntry.tags item pattern {pattern!r} rejects surrounding whitespace")
     assert not problems, "Model tags contract drift:\n    " + "\n    ".join(problems)
 
 
