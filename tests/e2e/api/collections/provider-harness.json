@@ -198079,7 +198079,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/models?provider=openai&tags=bad%20tag",
+              "raw": "{{baseUrl}}/api/models?provider=openai&tags=bad!tag",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -198094,7 +198094,7 @@
                 },
                 {
                   "key": "tags",
-                  "value": "bad%20tag"
+                  "value": "bad!tag"
                 }
               ]
             }
@@ -198136,6 +198136,45 @@
             "body": {
               "mode": "raw",
               "raw": "[\n  {\n    \"provider\": \"openai\",\n    \"model\": \"gpt-4o-mini\",\n    \"tags\": [\n      \"bad tag\"\n    ]\n  }\n]"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai model-tags-api PUT /api/models/tags rejects an entry without tags on gpt-4o-mini - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('error says tags is required and [] clears', function () { pm.expect(pm.response.text()).to.include('tags is required for openai/gpt-4o-mini').and.include('send [] to clear'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/tags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "tags"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"provider\": \"openai\",\n    \"model\": \"gpt-4o-mini\",\n    \"tags\": null\n  }\n]"
             }
           }
         },
