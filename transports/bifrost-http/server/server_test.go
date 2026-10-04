@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"slices"
 	"sync"
@@ -1323,4 +1324,57 @@ func TestSetModelTags_WritesBatchAndReloadsOverlay(t *testing.T) {
 
 	require.NoError(t, s.SetModelTags(ctx, []handlers.ModelTagsEntry{{Provider: "openai", Model: "gpt-5.1", Tags: nil}}))
 	assert.Nil(t, catalog.GetModelTags(schemas.OpenAI, "gpt-5.1"), "clearing must drop the tags from the overlay")
+}
+
+// flakyModelTagsStore fails the first failures GetModelTags calls, then reads from the wrapped
+// store, so a test can make the post-commit overlay reload fail.
+type flakyModelTagsStore struct {
+	configstore.ConfigStore
+	mu       sync.Mutex
+	failures int
+}
+
+func (f *flakyModelTagsStore) GetModelTags(ctx context.Context) (map[string]map[string][]string, error) {
+	f.mu.Lock()
+	fail := f.failures > 0
+	if fail {
+		f.failures--
+	}
+	f.mu.Unlock()
+	if fail {
+		return nil, errors.New("db unavailable")
+	}
+	return f.ConfigStore.GetModelTags(ctx)
+}
+
+// TestSetModelTags_ReloadFailureAfterCommit pins that a committed tag write is reported as a
+// success even when the immediate overlay reload fails, and that the overlay catches up through
+// the background retry.
+func TestSetModelTags_ReloadFailureAfterCommit(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	prevDelays := modelTagsReloadRetryDelays
+	modelTagsReloadRetryDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
+	t.Cleanup(func() { modelTagsReloadRetryDelays = prevDelays })
+
+	ctx := context.Background()
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/config.db"},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+	catalog := modelcatalog.NewTestCatalogWithConfigStore(&flakyModelTagsStore{ConfigStore: store, failures: 2})
+	s := &BifrostHTTPServer{Config: &lib.Config{ConfigStore: store, ModelCatalog: catalog}}
+
+	require.NoError(t, s.SetModelTags(ctx, []handlers.ModelTagsEntry{{Provider: "openai", Model: "gpt-5.1", Tags: []string{"prod"}}}),
+		"a committed write must not be reported as failed because the overlay reload failed")
+	stored, err := store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"prod"}, stored["openai"]["gpt-5.1"])
+	assert.Eventually(t, func() bool {
+		return slices.Equal(catalog.GetModelTags(schemas.OpenAI, "gpt-5.1"), []string{"prod"})
+	}, 5*time.Second, 10*time.Millisecond, "the background retry must refresh the overlay")
 }

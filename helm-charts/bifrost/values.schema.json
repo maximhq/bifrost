@@ -6211,11 +6211,11 @@
         },
         "tags": {
           "type": "array",
-          "description": "Free-form labels (for example prod, eu, approved-for-pii). Each tag: 1-64 characters of letters, digits, '.', '_' and '-'; at most 50 tags.",
+          "description": "Free-form labels (for example prod, eu, approved-for-pii). Each tag: 1-64 characters of letters, digits, '.', '_' and '-' after surrounding whitespace is trimmed; at most 50 tags. Tags are trimmed, de-duplicated and sorted when the config is loaded.",
           "maxItems": 50,
           "items": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+            "pattern": "^\\s*[a-zA-Z0-9._-]{1,64}\\s*$"
           }
         },
         "prompt_cache": {

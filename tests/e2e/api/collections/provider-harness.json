@@ -187532,8 +187532,45 @@
     },
     {
       "name": "143. Model tags filter on /v1/models (model-tags)",
-      "description": "Tags assigned through PUT /api/models/tags are returned on GET /v1/models and filter it with tags=a,b (every tag must match). The filter runs in the gateway after the provider listing, is not forwarded upstream, and pagination is cut from the filtered list. These rows tag openai/gpt-4o-mini, list with the filter (only tagged models, each carrying the tag), then clear the tag and confirm the filtered listing is empty. Needs a config store (the default harness profile has one). The list calls hit the OpenAI models endpoint only; no tokens are spent.",
+      "description": "Tags assigned through PUT /api/models/tags are returned on GET /v1/models and filter it with tags=a,b (every tag must match). The filter runs in the gateway after the provider listing, is not forwarded upstream, and pagination is cut from the filtered list. These rows record openai/gpt-4o-mini's current tags, tag it, list with the filter (only tagged models, each carrying the tag), then restore the recorded tags and confirm the filtered listing is empty. Needs a config store (the default harness profile has one). The list calls hit the OpenAI models endpoint only; no tokens are spent.",
       "item": [
+        {
+          "name": "openai model-tags record the current tags on gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var model = (pm.response.json().data || []).find(function (m) { return m.id === 'openai/gpt-4o-mini'; });",
+                  "var original = (model && model.tags) || [];",
+                  "pm.collectionVariables.set('modelTagsRestoreBody', JSON.stringify([{ provider: 'openai', model: 'gpt-4o-mini', tags: original }]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
         {
           "name": "[EXPECT-204] openai model-tags set tags on gpt-4o-mini",
           "event": [
@@ -187623,14 +187660,14 @@
           }
         },
         {
-          "name": "[EXPECT-204] openai model-tags clear tags on gpt-4o-mini",
+          "name": "[EXPECT-204] openai model-tags restore the recorded tags on gpt-4o-mini",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('model-tags clear is accepted with 204', function () {",
+                  "pm.test('model-tags restore is accepted with 204', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(204);",
                   "});"
                 ]
@@ -187658,12 +187695,12 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "[\n  {\n    \"provider\": \"openai\",\n    \"model\": \"gpt-4o-mini\",\n    \"tags\": []\n  }\n]"
+              "raw": "{{modelTagsRestoreBody}}"
             }
           }
         },
         {
-          "name": "openai model-tags /v1/models tags filter is empty after the tag is cleared from gpt-4o-mini",
+          "name": "openai model-tags /v1/models tags filter is empty after gpt-4o-mini's tags are restored",
           "event": [
             {
               "listen": "test",

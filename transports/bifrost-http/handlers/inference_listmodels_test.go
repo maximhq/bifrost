@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -95,9 +96,12 @@ func TestListModels_TagsFilterAndPagination(t *testing.T) {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
 
+	var upstreamMu sync.Mutex
 	var upstreamQueries []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamMu.Lock()
 		upstreamQueries = append(upstreamQueries, r.URL.RawQuery)
+		upstreamMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"object":"list","data":[
 			{"id":"gpt-4o","object":"model","owned_by":"openai"},
@@ -169,6 +173,8 @@ func TestListModels_TagsFilterAndPagination(t *testing.T) {
 	assert.Empty(t, page2.NextPageToken)
 	assert.ElementsMatch(t, []string{"openai/gpt-4o", "openai/gpt-5.1", "openai/o3"}, append(ids(page1), ids(page2)...))
 
+	upstreamMu.Lock()
+	defer upstreamMu.Unlock()
 	require.NotEmpty(t, upstreamQueries)
 	for _, q := range upstreamQueries {
 		assert.NotContains(t, q, "tags", "the tags filter must not be forwarded upstream")
@@ -176,4 +182,53 @@ func TestListModels_TagsFilterAndPagination(t *testing.T) {
 
 	_, status = list("provider=openai&tags=a%20b")
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
+}
+
+// TestListAllProviderModelPages pins the page walk behind a tag-filtered single-provider
+// listing: it asks for schemas.DefaultPageSize pages, follows NextPageToken until it is empty,
+// drops a repeated page from a provider that ignores page tokens, and fails on a page error.
+func TestListAllProviderModelPages(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	pages := map[string]*schemas.BifrostListModelsResponse{
+		"":   {Data: []schemas.Model{{ID: "p/a"}, {ID: "p/b"}}, NextPageToken: "t1"},
+		"t1": {Data: []schemas.Model{{ID: "p/c"}}, NextPageToken: "t2"},
+		"t2": {Data: []schemas.Model{{ID: "p/d"}}},
+	}
+	var seen []*schemas.BifrostListModelsRequest
+	paged := func(_ *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+		copied := *req
+		seen = append(seen, &copied)
+		page := *pages[req.PageToken]
+		return &page, nil
+	}
+	resp, bifrostErr := listAllProviderModelPages(ctx, paged, &schemas.BifrostListModelsRequest{Provider: "p", PageSize: 2, PageToken: "client-token"})
+	require.Nil(t, bifrostErr)
+	ids := make([]string, 0, len(resp.Data))
+	for _, m := range resp.Data {
+		ids = append(ids, m.ID)
+	}
+	assert.Equal(t, []string{"p/a", "p/b", "p/c", "p/d"}, ids)
+	assert.Empty(t, resp.NextPageToken)
+	require.Len(t, seen, 3)
+	assert.Equal(t, schemas.DefaultPageSize, seen[0].PageSize)
+	assert.Equal(t, "", seen[0].PageToken, "the client's own page token must not be sent upstream")
+
+	// A provider that ignores the page token returns the first page again with the same token.
+	ignoring := func(_ *schemas.BifrostContext, _ *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+		return &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "g/a"}}, NextPageToken: "same"}, nil
+	}
+	resp, bifrostErr = listAllProviderModelPages(ctx, ignoring, &schemas.BifrostListModelsRequest{Provider: "g"})
+	require.Nil(t, bifrostErr)
+	assert.Len(t, resp.Data, 1, "a repeated page must not duplicate models")
+
+	calls := 0
+	failing := func(_ *schemas.BifrostContext, _ *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+		calls++
+		if calls == 2 {
+			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream down"}}
+		}
+		return &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "f/a"}}, NextPageToken: "next"}, nil
+	}
+	_, bifrostErr = listAllProviderModelPages(ctx, failing, &schemas.BifrostListModelsRequest{Provider: "f"})
+	require.NotNil(t, bifrostErr, "a failed page must fail the listing")
 }
