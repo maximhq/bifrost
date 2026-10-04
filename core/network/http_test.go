@@ -2,10 +2,16 @@ package network
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1289,5 +1295,177 @@ func TestDefaultHTTPClientFactoryGetter(t *testing.T) {
 	SetDefaultHTTPClientFactory(factory)
 	if DefaultHTTPClientFactory() != factory {
 		t.Fatal("want the registered factory")
+	}
+}
+
+// tlsTarget is an HTTPS server for upstream.test whose certificate is signed by a CA
+// generated for the test, standing in for a provider (or a TLS-inspecting proxy's forged
+// certificate for it). caPEM is that CA.
+func tlsTarget(t *testing.T) (addr, caPEM string) {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "target test CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caCert, _ := x509.ParseCertificate(caDER)
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "upstream.test"}, DNSNames: []string{"upstream.test"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, KeyUsage: x509.KeyUsageDigitalSignature,
+	}, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{leafDER}, PrivateKey: leafKey}}}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return server.Listener.Addr().String(), string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))
+}
+
+// tunnelingHTTPSProxy is an https:// forward proxy (httptest's certificate, which no
+// system trusts) that tunnels every CONNECT to upstreamAddr. caPEM is its certificate.
+func tunnelingHTTPSProxy(t *testing.T, upstreamAddr string) (proxyURL, caPEM string) {
+	t.Helper()
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "CONNECT only", http.StatusMethodNotAllowed)
+			return
+		}
+		upstream, err := net.Dial("tcp", upstreamAddr)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			upstream.Close()
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+		go func() { _, _ = io.Copy(upstream, conn); upstream.Close() }()
+		go func() { _, _ = io.Copy(conn, upstream); conn.Close() }()
+	}))
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return "https://" + server.Listener.Addr().String(), string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
+}
+
+// TestGlobalProxyTLSScope pins what the global proxy's TLS settings cover, for the
+// factory's fasthttp and net/http clients. skip_tls_verify skips only the certificate of
+// the https:// proxy itself: targets reached through the proxy are always verified, so a
+// TLS-inspecting proxy cannot pass off a forged certificate. ca_cert_pem is trusted for
+// both hops: the proxy's own certificate and certificates through the proxy (a
+// TLS-inspecting proxy's CA).
+func TestGlobalProxyTLSScope(t *testing.T) {
+	targetAddr, targetCA := tlsTarget(t)
+	proxyURL, proxyCA := tunnelingHTTPSProxy(t, targetAddr)
+	_, targetPort, _ := net.SplitHostPort(targetAddr)
+	targetURL := "https://upstream.test:" + targetPort + "/"
+
+	for _, tc := range []struct {
+		name    string
+		skip    bool
+		caPEM   string
+		wantErr string
+	}{
+		{"skip covers the proxy hop only, not the target", true, "", "certificate"},
+		{"skip for the hop, target verified by the proxy CA", true, targetCA, ""},
+		{"no skip: the CA verifies the proxy and the target", false, proxyCA + targetCA, ""},
+		{"no skip, CA for the target only: the proxy hop is verified and refused", false, targetCA, "certificate"},
+	} {
+		cfg := enabledFor(ClientPurposeAPI, GlobalProxyTypeHTTP, proxyURL)
+		cfg.SkipTLSVerify = tc.skip
+		cfg.CACertPEM = tc.caPEM
+		factory := NewHTTPClientFactory(cfg, noopTestLogger{})
+
+		t.Run("fasthttp/"+tc.name, func(t *testing.T) {
+			req := fasthttp.AcquireRequest()
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseRequest(req)
+			defer fasthttp.ReleaseResponse(resp)
+			req.SetRequestURI(targetURL)
+			assertTLSOutcome(t, factory.GetFasthttpClient(ClientPurposeAPI).DoTimeout(req, resp, 5*time.Second), tc.wantErr)
+		})
+		t.Run("net/http/"+tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			r, _ := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+			resp, err := factory.GetHTTPClient(ClientPurposeAPI).Do(r)
+			if err == nil {
+				resp.Body.Close()
+			}
+			assertTLSOutcome(t, err, tc.wantErr)
+		})
+	}
+}
+
+func assertTLSOutcome(t *testing.T, err error, wantErr string) {
+	t.Helper()
+	if wantErr == "" {
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatalf("request succeeded, want a %q failure: an unverified certificate was accepted", wantErr)
+	}
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("got %v, want a %q failure", err, wantErr)
+	}
+}
+
+// TestGlobalProxyCAFollowsUpdates pins that clients handed out before a CA was added
+// trust it on their next request: the settings page adds the CA to a running server
+// through UpdateProxyConfig, and callers keep their factory clients for life.
+func TestGlobalProxyCAFollowsUpdates(t *testing.T) {
+	targetAddr, targetCA := tlsTarget(t)
+	proxyURL, proxyCA := tunnelingHTTPSProxy(t, targetAddr)
+	_, targetPort, _ := net.SplitHostPort(targetAddr)
+	targetURL := "https://upstream.test:" + targetPort + "/"
+
+	cfg := enabledFor(ClientPurposeAPI, GlobalProxyTypeHTTP, proxyURL)
+	factory := NewHTTPClientFactory(cfg, noopTestLogger{})
+	fasthttpClient := factory.GetFasthttpClient(ClientPurposeAPI)
+	httpClient := factory.GetHTTPClient(ClientPurposeAPI)
+	send := func() (error, error) {
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(resp)
+		req.SetRequestURI(targetURL)
+		fastErr := fasthttpClient.DoTimeout(req, resp, 5*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		r, _ := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+		res, httpErr := httpClient.Do(r)
+		if httpErr == nil {
+			res.Body.Close()
+		}
+		return fastErr, httpErr
+	}
+
+	if fastErr, httpErr := send(); fastErr == nil || httpErr == nil {
+		t.Fatalf("without the CA both requests must fail verification, got fasthttp=%v net/http=%v", fastErr, httpErr)
+	}
+	updated := *cfg
+	updated.CACertPEM = proxyCA + targetCA
+	factory.UpdateProxyConfig(&updated)
+	if fastErr, httpErr := send(); fastErr != nil || httpErr != nil {
+		t.Fatalf("after adding the CA both requests must pass, got fasthttp=%v net/http=%v", fastErr, httpErr)
 	}
 }

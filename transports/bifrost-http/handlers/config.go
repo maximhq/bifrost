@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1209,6 +1210,13 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// A proxy CA that is not a PEM certificate would be ignored by every client that
+	// should trust it, and proxied TLS would then fail with no hint why.
+	if strings.TrimSpace(payload.CACertPEM) != "" && !x509.NewCertPool().AppendCertsFromPEM([]byte(payload.CACertPEM)) {
+		SendError(ctx, fasthttp.StatusBadRequest, "proxy ca_cert_pem holds no valid PEM certificate")
+		return
+	}
+
 	// Handle password - if it's "<redacted>", keep the existing password
 	if payload.Password == "<redacted>" {
 		existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
@@ -1575,6 +1583,11 @@ func globalProxyInterceptionChanges(old *configstoreTables.GlobalProxyConfig, ne
 	// protocol (a bare host:port takes its scheme from the type).
 	if prev.Type != "" && next.Type != prev.Type {
 		changed = append(changed, "type")
+	}
+	// The proxy CA is trusted for targets reached through the proxy, so a new one lets
+	// the proxy sign provider certificates. Removing it only narrows trust.
+	if ca := strings.TrimSpace(next.CACertPEM); ca != "" && ca != strings.TrimSpace(prev.CACertPEM) {
+		changed = append(changed, "ca_cert_pem")
 	}
 	return changed
 }

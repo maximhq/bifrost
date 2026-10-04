@@ -1,5 +1,6 @@
 import { coreConfigApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { PROXY_TEST_CA_PEM } from './config.data'
 import { ConfigSettingsState } from './pages/config-settings.page'
 import { DefaultCoreConfig } from '../../../../ui/lib/types/config'
 
@@ -841,6 +842,7 @@ test.describe('Config Settings', () => {
       url: string
       username?: string
       password?: string
+      ca_cert_pem?: string
       no_proxy?: string
       timeout: number
       skip_tls_verify?: boolean
@@ -866,6 +868,7 @@ test.describe('Config Settings', () => {
           url: original.url || '',
           username: original.username || '',
           password: original.password || '',
+          ca_cert_pem: original.ca_cert_pem || '',
           no_proxy: original.no_proxy || '',
           timeout: original.timeout || 0,
           skip_tls_verify: original.skip_tls_verify || false,
@@ -915,6 +918,26 @@ test.describe('Config Settings', () => {
 
       await expect(configSettingsPage.page.getByText('A SOCKS5 proxy URL must start with socks5:// or socks5h://')).toBeVisible()
       await expect(configSettingsPage.proxySaveBtn).toBeDisabled()
+    })
+
+    test('should save the proxy CA certificate', async ({ configSettingsPage }) => {
+      await configSettingsPage.ensureSwitchOn(configSettingsPage.proxyEnabledSwitch)
+      await configSettingsPage.selectProxyType('http')
+      await configSettingsPage.proxyUrlInput.fill('https://127.0.0.1:3129')
+      await configSettingsPage.proxyCaCertInput.fill(PROXY_TEST_CA_PEM)
+
+      await expect(configSettingsPage.proxySaveBtn).toBeEnabled()
+      await configSettingsPage.proxySaveBtn.click()
+      await configSettingsPage.waitForSuccessToast()
+
+      const res = await configSettingsPage.page.request.get('/api/proxy-config')
+      expect(res.status(), await res.text()).toBe(200)
+      const stored = await res.json()
+      expect(stored.url).toBe('https://127.0.0.1:3129')
+      expect(stored.ca_cert_pem?.trim()).toBe(PROXY_TEST_CA_PEM.trim())
+
+      await configSettingsPage.goto('proxy')
+      await expect(configSettingsPage.proxyCaCertInput).toHaveValue(new RegExp('BEGIN CERTIFICATE'))
     })
 
     test('should keep TCP unavailable', async ({ configSettingsPage }) => {

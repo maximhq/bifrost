@@ -91,9 +91,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 		providerConfig.NetworkConfig = schemas.DefaultNetworkConfig
 	}
 	if inherited, ok := inheritGlobalProxy(providerConfig.ProxyConfig, baseAccount.store.GetGlobalProxyConfig()); ok {
-		// skip_tls_verify travels on inherited.proxy (ProxyConfig.SkipTLSVerify), which
-		// scopes it to TLS through the proxy. Setting NetworkConfig.InsecureSkipVerify
-		// instead would also skip verification for no_proxy hosts reached directly.
+		// skip_tls_verify and the proxy CA travel on inherited.proxy, which applies the
+		// skip to the https:// proxy's own certificate only. Setting
+		// NetworkConfig.InsecureSkipVerify instead would skip verification of targets.
 		providerConfig.ProxyConfig = inherited.proxy
 	}
 	if config.ConcurrencyAndBufferSize != nil {
@@ -157,11 +157,11 @@ func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.Glob
 			Username: plainSecret(global.Username),
 			Password: plainSecret(global.Password),
 			NoProxy:  global.NoProxy,
-			// The only carrier of the global skip_tls_verify: the proxy stacks skip
-			// verification for the TLS hop to an https:// proxy and for TLS through
-			// the proxy, and still verify no_proxy hosts reached directly.
-			// NetworkConfig is deliberately left alone.
+			// skip_tls_verify covers only the https:// proxy's own certificate; the
+			// proxy CA is trusted for that hop and for TLS through the proxy, so
+			// targets are always verified. NetworkConfig is deliberately left alone.
 			SkipTLSVerify: global.SkipTLSVerify,
+			CACertPEM:     plainSecret(global.CACertPEM),
 		},
 	}, true
 }
