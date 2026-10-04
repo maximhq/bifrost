@@ -15,6 +15,14 @@ virtual-keys:
     summary: List virtual keys
     description: |
       Returns a list of all virtual keys with their configurations.
+
+      **Metadata filters:** add one `metadata_<key>=<value>` query parameter per metadata
+      key to match, where `<key>` is the metadata key itself (for example
+      `?metadata_cost_center=cc-42&metadata_environment=prod`). Only virtual keys whose
+      metadata has every given key set to exactly the given value are returned. A key that
+      is not 1-256 characters of letters, digits, '.', '_' and '-' is rejected with a 400.
+      These parameters have dynamic names, so they are described here rather than declared
+      as individual parameters.
     tags:
       - Governance
     parameters:
@@ -45,14 +53,6 @@ virtual-keys:
           Case-insensitive search across the virtual key name, its team name, its
           customer name, and its metadata keys and values. Enterprise additionally matches
           the name and email of the user the key is assigned to.
-        schema:
-          type: string
-      - name: metadata_<key>
-        in: query
-        description: >-
-          Metadata filter: only keys whose metadata has <key> set to exactly this value
-          (for example metadata_cost_center=cc-42). Repeat with different keys to AND them.
-          An invalid key (anything but letters, digits, '.', '_' and '-') is rejected with a 400.
         schema:
           type: string
       - name: customer_id
