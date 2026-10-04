@@ -188325,7 +188325,7 @@
     },
     {
       "name": "144. Virtual key metadata on the management API (PR #7935) (vk-metadata-api)",
-      "description": "Virtual keys carry free-form metadata (cost center, owner, environment, ...). PR #7935 exposes it on the management API: POST and PUT /api/governance/virtual-keys accept a metadata object (PUT replaces it as a whole, omitting it leaves it unchanged, {} clears it), the key's JSON returns it, GET /api/governance/virtual-keys filters on metadata_<key>=<value> query parameters (several pairs AND together, the same shape the logs endpoints accept), and invalid metadata or an invalid filter key is a 400 instead of being dropped. The seed creates one key whose cost_center value carries the run id, so the filter reads can expect exactly that key on a shared gateway; every later row depends on the seed through {{vkMetadataApiRun}} / {{vkMetadataApiVkId}}, which keeps the folder in one newman process. Red before the change: the create drops metadata (the seed's echo check fails), the list ignores metadata_* and returns every key, and the reserved key and bad filter key come back 200. Leftover keys of an aborted run are named harness-vk-metadata-api-run-<ms> and swept by the seed once they are ten minutes old. Management calls only, no provider traffic; attributed to the openai fork by name.",
+      "description": "Virtual keys carry free-form metadata (cost center, owner, environment, ...). PR #7935 exposes it on the management API: POST and PUT /api/governance/virtual-keys accept a metadata object (PUT replaces it as a whole, omitting it leaves it unchanged, {} clears it), the key's JSON returns it, GET /api/governance/virtual-keys filters on metadata_<key>=<value> query parameters (several pairs AND together, the same shape the logs endpoints accept), and invalid metadata or an invalid filter key is a 400 instead of being dropped. The seed creates one key whose cost_center value carries the run id, so the filter reads can expect exactly that key on a shared gateway; every later row depends on the seed through {{vkMetadataApiRun}} / {{vkMetadataApiVkId}}, which keeps the folder in one newman process. Red before the change: the create drops metadata (the seed's echo check fails), the list ignores metadata_* and returns every key, and the reserved key and bad filter key come back 200. The folder only ever deletes keys it created in this run (the cleanup row and the reserved-key row); nothing sweeps by age, so a parallel run's key is never touched. A key left by an aborted run is named harness-vk-metadata-api-run-<ms>-<rand> for manual cleanup. Management calls only, no provider traffic; attributed to the openai fork by name.",
       "item": [
         {
           "name": "openai vk-metadata-api seed: create a virtual key with metadata",
@@ -188337,18 +188337,9 @@
                 "exec": [
                   "// A fresh run id per seed: collection variables outlive a run in Postman, and the filter",
                   "// reads must only ever see this run's key.",
-                  "pm.collectionVariables.set('vkMetadataApiRun', 'run-' + Date.now());",
-                  "// Leftovers of an aborted earlier run carry their run timestamp in their names. Only keys",
-                  "// older than ten minutes are swept, so a parallel run's live key is never touched.",
-                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys', method: 'GET' }, function (err, res) {",
-                  "  if (err || res.code !== 200) { return; }",
-                  "  ((res.json() || {}).virtual_keys || []).forEach(function (v) {",
-                  "    var m = String(v.name || '').match(/^harness-vk-metadata-api-(?:reserved-)?run-(\\d+)$/);",
-                  "    if (m && (Date.now() - Number(m[1])) > 10 * 60 * 1000) {",
-                  "      pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + v.id, method: 'DELETE' }, function () {});",
-                  "    }",
-                  "  });",
-                  "});"
+                  "// The random suffix keeps two runs started in the same millisecond apart. Only keys this",
+                  "// run creates are ever deleted (by the cleanup row), never another run's.",
+                  "pm.collectionVariables.set('vkMetadataApiRun', 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
                 ]
               }
             },
