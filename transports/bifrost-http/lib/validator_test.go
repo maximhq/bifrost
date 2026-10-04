@@ -3842,3 +3842,34 @@ func TestValidateConfigSchema_VirtualKeyMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateConfigSchema_ProviderMetadataAndTags(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		key      string
+		labels   string
+		wantErr  bool
+	}{
+		{name: "metadata and tags", provider: "openai", labels: `"metadata": {"owner": "team-a", "region.primary": "eu-west-1"}, "tags": ["prod", "approved-for-pii"]`},
+		{name: "labels on a provider-specific definition", provider: "bedrock", key: `, "bedrock_key_config": {"region": "us-west-2"}`, labels: `"metadata": {"owner": "team-a"}, "tags": ["prod"]`},
+		{name: "empty labels", provider: "openai", labels: `"metadata": {}, "tags": []`},
+		{name: "non-string metadata value", provider: "openai", labels: `"metadata": {"owner": 42}`, wantErr: true},
+		{name: "metadata key with space", provider: "openai", labels: `"metadata": {"cost center": "x"}`, wantErr: true},
+		{name: "tag with comma", provider: "openai", labels: `"tags": ["a,b"]`, wantErr: true},
+		{name: "tag too long", provider: "openai", labels: `"tags": ["` + strings.Repeat("t", 65) + `"]`, wantErr: true},
+		{name: "tags not an array", provider: "openai", labels: `"tags": "prod"`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := `{"providers": {"` + tt.provider + `": {"keys": [{"name": "k1", "weight": 1` + tt.key + `}], ` + tt.labels + `}}}`
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tt.wantErr && err == nil {
+				t.Errorf("expected %s to fail validation", tt.labels)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("expected %s to pass validation, got error: %v", tt.labels, err)
+			}
+		})
+	}
+}

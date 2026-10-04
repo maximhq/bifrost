@@ -1622,6 +1622,9 @@ func processProvider(
 	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
 		return err
 	}
+	if err := NormalizeProviderLabels(&providerCfgInFile); err != nil {
+		return err
+	}
 
 	baseProvider := provider
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
@@ -1659,6 +1662,13 @@ func processAuthoritativeProvider(
 	provider := schemas.ModelProvider(strings.ToLower(providerName))
 	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
 		logger.Warn("invalid custom provider config for %s (writing through): %v", provider, err)
+	}
+	// Invalid labels cannot be written through: the provider row would be refused and fail the
+	// whole sync. Drop them instead and keep the rest of the provider.
+	if err := NormalizeProviderLabels(&providerCfgInFile); err != nil {
+		logger.Warn("invalid metadata or tags for provider %s (dropping them): %v", provider, err)
+		providerCfgInFile.Metadata = nil
+		providerCfgInFile.Tags = nil
 	}
 	baseProvider := provider
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
@@ -7883,6 +7893,24 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 		return fmt.Errorf("custom provider validation failed: Bedrock providers cannot be keyless (is_key_less=true)")
 	}
 
+	return nil
+}
+
+// NormalizeProviderLabels validates a provider's metadata and normalizes its tags in place
+// (trimmed, de-duplicated, sorted), using the same rules the config store applies on save, so
+// the config hash is computed from what will be stored.
+func NormalizeProviderLabels(config *configstore.ProviderConfig) error {
+	if err := configstoreTables.ValidateMetadata(config.Metadata, nil); err != nil {
+		return err
+	}
+	if len(config.Metadata) == 0 {
+		config.Metadata = nil
+	}
+	tags, err := configstoreTables.NormalizeTags(config.Tags)
+	if err != nil {
+		return err
+	}
+	config.Tags = tags
 	return nil
 }
 

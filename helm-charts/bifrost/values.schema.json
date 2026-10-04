@@ -6197,6 +6197,27 @@
           "type": "boolean",
           "description": "Capture raw request/response for plugins only; stripped before returning to client"
         },
+        "metadata": {
+          "type": "object",
+          "description": "Custom key/value metadata for this provider (for example owner, region, cost_center). Keys: 1-256 characters of letters, digits, '.', '_' and '-'; values: strings of at most 512 characters; at most 50 entries.",
+          "maxProperties": 50,
+          "propertyNames": {
+            "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 512
+          }
+        },
+        "tags": {
+          "type": "array",
+          "description": "Free-form labels (for example prod, eu, approved-for-pii). Each tag: 1-64 characters of letters, digits, '.', '_' and '-'; at most 50 tags.",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+          }
+        },
         "prompt_cache": {
           "type": "object",
           "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default; requests that already carry their own cache markers are never modified.",

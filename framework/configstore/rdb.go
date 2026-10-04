@@ -748,6 +748,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
 			PromptCache:              providerConfig.PromptCache,
+			Metadata:                 providerConfig.Metadata,
+			Tags:                     providerConfig.Tags,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -1031,6 +1033,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
 	dbProvider.PromptCache = configCopy.PromptCache
+	dbProvider.Metadata = configCopy.Metadata
+	dbProvider.Tags = configCopy.Tags
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -1226,6 +1230,8 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
 		PromptCache:              configCopy.PromptCache,
+		Metadata:                 configCopy.Metadata,
+		Tags:                     configCopy.Tags,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -1406,6 +1412,8 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
 			PromptCache:              dbProvider.PromptCache,
+			Metadata:                 dbProvider.Metadata,
+			Tags:                     dbProvider.Tags,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -1440,6 +1448,8 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
 		PromptCache:              dbProvider.PromptCache,
+		Metadata:                 dbProvider.Metadata,
+		Tags:                     dbProvider.Tags,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
@@ -3134,6 +3144,76 @@ func (s *RDBConfigStore) UpsertModelPricingAttributes(ctx context.Context, model
 		return 0, s.parseGormError(res.Error)
 	}
 	return res.RowsAffected, nil
+}
+
+// GetModelTags returns the tags of every tagged model as provider name -> model name -> tags.
+func (s *RDBConfigStore) GetModelTags(ctx context.Context) (map[string]map[string][]string, error) {
+	var rows []struct {
+		Provider string
+		Name     string
+		Tags     []string `gorm:"serializer:json"`
+	}
+	if err := s.DB().WithContext(ctx).
+		Table(tables.TableModel{}.TableName() + " AS m").
+		Select("p.name AS provider, m.name AS name, m.tags AS tags").
+		Joins("JOIN " + tables.TableProvider{}.TableName() + " AS p ON p.id = m.provider_id").
+		Where("m.tags IS NOT NULL").
+		Scan(&rows).Error; err != nil {
+		return nil, s.parseGormError(err)
+	}
+	out := make(map[string]map[string][]string)
+	for _, row := range rows {
+		if len(row.Tags) == 0 {
+			continue
+		}
+		if out[row.Provider] == nil {
+			out[row.Provider] = make(map[string][]string)
+		}
+		out[row.Provider][row.Name] = row.Tags
+	}
+	return out, nil
+}
+
+// SetModelTags replaces the tags of one model of a configured provider. The model name is not
+// checked against the catalog, so models outside the pricing datasheet can be tagged too. The
+// config_models row is created on first tag and removed when the tags are cleared, so the table
+// only holds models that carry tags.
+func (s *RDBConfigStore) SetModelTags(ctx context.Context, provider, model string, tags []string, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	db := txDB.WithContext(ctx)
+	if strings.TrimSpace(model) == "" {
+		return fmt.Errorf("model name is required")
+	}
+	normalized, err := tables.NormalizeTags(tags)
+	if err != nil {
+		return err
+	}
+	var dbProvider tables.TableProvider
+	if err := db.Select("id").Where("name = ?", provider).First(&dbProvider).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return s.parseGormError(err)
+	}
+	if len(normalized) == 0 {
+		if err := db.Where("provider_id = ? AND name = ?", dbProvider.ID, model).Delete(&tables.TableModel{}).Error; err != nil {
+			return s.parseGormError(err)
+		}
+		return nil
+	}
+	row := tables.TableModel{ID: uuid.NewString(), ProviderID: dbProvider.ID, Name: model, Tags: normalized}
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "provider_id"}, {Name: "name"}},
+		DoUpdates: clause.AssignmentColumns([]string{"tags", "updated_at"}),
+	}).Create(&row).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // DeleteModelPrices deletes all model pricing records from the database.

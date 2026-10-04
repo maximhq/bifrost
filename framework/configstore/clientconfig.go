@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -531,6 +532,8 @@ type ProviderConfig struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
+	Metadata                 map[string]string                 `json:"metadata,omitempty"`                    // Operator-defined key/value metadata
+	Tags                     []string                          `json:"tags,omitempty"`                        // Operator-defined tags
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -552,6 +555,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
 		PromptCache:              p.PromptCache,
+		Metadata:                 p.Metadata,
+		Tags:                     p.Tags,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -778,6 +783,36 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 	return &redactedConfig
 }
 
+// hashLabels writes metadata and tags into hash, each only when non-empty. Metadata is written as
+// JSON-encoded [key, value] pairs in key order and tags as a sorted, de-duplicated JSON list, so
+// neither map iteration order nor tag order can move the hash, and no boundary is ambiguous.
+func hashLabels(h hash.Hash, metadata map[string]string, tags []string) error {
+	if len(metadata) > 0 {
+		pairs := make([][2]string, 0, len(metadata))
+		for k, v := range metadata {
+			pairs = append(pairs, [2]string{k, v})
+		}
+		sort.Slice(pairs, func(i, j int) bool { return pairs[i][0] < pairs[j][0] })
+		data, err := sonic.Marshal(pairs)
+		if err != nil {
+			return err
+		}
+		h.Write([]byte("metadata:"))
+		h.Write(data)
+	}
+	if len(tags) > 0 {
+		sorted := slices.Clone(tags)
+		slices.Sort(sorted)
+		data, err := sonic.Marshal(slices.Compact(sorted))
+		if err != nil {
+			return err
+		}
+		h.Write([]byte("tags:"))
+		h.Write(data)
+	}
+	return nil
+}
+
 // GenerateConfigHash generates a SHA256 hash of the provider configuration.
 // This is used to detect changes between config.json and database config.
 // Keys are excluded as they are hashed separately.
@@ -839,6 +874,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 			return "", err
 		}
 		hash.Write(data)
+	}
+
+	// Hash Metadata and Tags only when set, so every provider that predates them keeps its hash.
+	if err := hashLabels(hash, p.Metadata, p.Tags); err != nil {
+		return "", err
 	}
 
 	// Hash SendBackRawRequest
@@ -1082,18 +1122,8 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	// Hash Metadata only when the key has some, so every key that predates the column keeps its
 	// hash. Written as JSON-encoded [key, value] pairs in key order, so map iteration order cannot
 	// move the hash and no key/value boundary is ambiguous.
-	if len(vk.Metadata) > 0 {
-		pairs := make([][2]string, 0, len(vk.Metadata))
-		for k, v := range vk.Metadata {
-			pairs = append(pairs, [2]string{k, v})
-		}
-		sort.Slice(pairs, func(i, j int) bool { return pairs[i][0] < pairs[j][0] })
-		data, err := sonic.Marshal(pairs)
-		if err != nil {
-			return "", err
-		}
-		hash.Write([]byte("metadata:"))
-		hash.Write(data)
+	if err := hashLabels(hash, vk.Metadata, nil); err != nil {
+		return "", err
 	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {

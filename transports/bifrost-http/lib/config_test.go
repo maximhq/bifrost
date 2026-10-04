@@ -21480,3 +21480,32 @@ func TestLoadConfig_ClientConfigSyncPreservesClientMetadata(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, true, metadata["onboarding_dismissed"])
 }
+
+// TestProcessProvider_NormalizesLabelsBeforeHashing pins that config.json provider labels are
+// normalized before the config hash is computed, so reordering or repeating tags in the file does
+// not register as drift, and that invalid labels skip the provider instead of failing the store
+// write. The authoritative path drops invalid labels and keeps the provider.
+func TestProcessProvider_NormalizesLabelsBeforeHashing(t *testing.T) {
+	SetLogger(&testLogger{})
+	hashFor := func(tags []string) string {
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{}
+		cfg := configstore.ProviderConfig{
+			Keys:     []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}},
+			Metadata: map[string]string{"owner": "team-a"},
+			Tags:     tags,
+		}
+		require.NoError(t, processProvider(nil, "openai", cfg, providers))
+		assert.Equal(t, []string{"eu", "prod"}, providers[schemas.OpenAI].Tags)
+		return providers[schemas.OpenAI].ConfigHash
+	}
+	assert.Equal(t, hashFor([]string{"eu", "prod"}), hashFor([]string{" prod", "eu", "prod"}))
+
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{}
+	bad := configstore.ProviderConfig{Keys: []schemas.Key{{ID: "k1", Name: "k1", Weight: 1}}, Tags: []string{"bad tag"}}
+	assert.ErrorContains(t, processProvider(nil, "openai", bad, providers), "invalid tag")
+	assert.NotContains(t, providers, schemas.OpenAI)
+
+	processAuthoritativeProvider("openai", bad, configstore.ProviderConfig{}, false, providers)
+	require.Contains(t, providers, schemas.OpenAI)
+	assert.Nil(t, providers[schemas.OpenAI].Tags, "invalid labels must be dropped on the authoritative path")
+}

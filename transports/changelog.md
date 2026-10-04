@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **Provider Metadata and Tags in config.json** - `providers.<name>.metadata` (string key/value pairs, same rules as virtual key metadata) and `providers.<name>.tags` (up to 50 labels of 1-64 letters, digits, `.`, `_` or `-`) label providers by owner, region, environment or compliance status. Existing providers keep their config hash [@jimseiwert](https://github.com/jimseiwert)
 - **Virtual Key Metadata in config.json** - `governance.virtual_keys[].metadata` accepts string key/value pairs (for example `cost_center`, `owner`) for cost attribution. Keys use letters, digits, `.`, `_` and `-`; values are up to 512 characters; up to 50 entries per key [@jimseiwert](https://github.com/jimseiwert)
 - **Pinned Keys on Routing Fallbacks** - Each routing-rule fallback can pin a provider key via `key_id`, or `provider_key_name` in config.json. The UI rule editor lets you pick or clear a key per fallback. Unpinned fallbacks keep the legacy `provider/model` string, so existing rules keep their config hash (#7470, #7379, #7380, #7381)
 - **OpenAI Async Tool Execution** - The `async` flag on Responses tools and tool calls, `output_schema` on function tools and `tunnel_id` on MCP tools are now forwarded to OpenAI. `async` is stripped for models without support, and the datasheet `supports_async_tools` field can override this (#7242)

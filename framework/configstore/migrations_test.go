@@ -4332,6 +4332,75 @@ func TestMigrationAddVirtualKeyMetadataColumn(t *testing.T) {
 	}
 }
 
+// TestMigrationAddProviderMetadataAndTagsColumns pins the provider label columns: the migration
+// adds them and is idempotent, and the provider config hash only moves when labels are set, so
+// every pre-existing provider keeps the hash config sync already stored for it.
+func TestMigrationAddProviderMetadataAndTagsColumns(t *testing.T) {
+	db := setupProviderTestDBWithoutStoreRawColumn(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableProvider{}, "metadata"))
+	require.False(t, mg.HasColumn(&tables.TableProvider{}, "tags"))
+	require.NoError(t, migrationAddProviderMetadataAndTagsColumns(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableProvider{}, "metadata"))
+	assert.True(t, mg.HasColumn(&tables.TableProvider{}, "tags"))
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_provider_metadata_and_tags_columns").Error)
+	require.NoError(t, migrationAddProviderMetadataAndTagsColumns(ctx, db, testMigrationLogger), "a re-run must not fail")
+
+	base := ProviderConfig{SendBackRawRequest: true}
+	hashOf := func(metadata map[string]string, tags []string) string {
+		cfg := base
+		cfg.Metadata = metadata
+		cfg.Tags = tags
+		hash, err := cfg.GenerateConfigHash("openai")
+		require.NoError(t, err)
+		return hash
+	}
+	before := hashOf(nil, nil)
+	assert.Equal(t, before, hashOf(map[string]string{}, []string{}), "empty labels must hash like a provider from before the columns existed")
+	withMD := hashOf(map[string]string{"owner": "team-a"}, nil)
+	withTags := hashOf(nil, []string{"prod"})
+	assert.NotEqual(t, before, withMD, "adding metadata must change the hash")
+	assert.NotEqual(t, before, withTags, "adding tags must change the hash")
+	assert.NotEqual(t, withMD, withTags)
+	assert.NotEqual(t, withMD, hashOf(map[string]string{"owner": "team-b"}, nil), "changing a value must change the hash")
+	assert.NotEqual(t, hashOf(map[string]string{"a": "bc"}, nil), hashOf(map[string]string{"ab": "c"}, nil), "key/value boundaries must not be ambiguous")
+	assert.Equal(t, hashOf(nil, []string{"eu", "prod"}), hashOf(nil, []string{"prod", "eu", "prod"}), "tag order and duplicates must not move the hash")
+	for range 20 {
+		assert.Equal(t, hashOf(map[string]string{"a": "1", "b": "2", "c": "3"}, nil), hashOf(map[string]string{"c": "3", "b": "2", "a": "1"}, nil), "map order must not move the hash")
+	}
+}
+
+// TestMigrationAddModelTagsColumn pins that the tags column is added to an existing config_models
+// table, that the migration is idempotent, and that pre-existing rows read back without tags.
+func TestMigrationAddModelTagsColumn(t *testing.T) {
+	db := setupProviderTestDBWithoutStoreRawColumn(t)
+	ctx := context.Background()
+	require.NoError(t, db.Exec(`
+		CREATE TABLE config_models (
+			id VARCHAR(255) PRIMARY KEY,
+			provider_id INTEGER NOT NULL,
+			name VARCHAR(255),
+			created_at DATETIME,
+			updated_at DATETIME,
+			UNIQUE (provider_id, name)
+		)
+	`).Error)
+	require.NoError(t, db.Exec("INSERT INTO config_models (id, provider_id, name) VALUES ('m1', 1, 'gpt-5.1')").Error)
+
+	require.False(t, db.Migrator().HasColumn(&tables.TableModel{}, "tags"))
+	require.NoError(t, migrationAddModelTagsColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableModel{}, "tags"))
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_model_tags_column").Error)
+	require.NoError(t, migrationAddModelTagsColumn(ctx, db, testMigrationLogger), "a re-run must not fail")
+
+	var row tables.TableModel
+	require.NoError(t, db.First(&row, "id = ?", "m1").Error)
+	assert.Nil(t, row.Tags)
+}
+
 // TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable pins that rolling the
 // column back is refused rather than performed. The column is the only home for a key's own
 // content-logging decision, and a nil reads as "inherit": dropping it would not merely lose

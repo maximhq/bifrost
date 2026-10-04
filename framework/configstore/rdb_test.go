@@ -5079,3 +5079,98 @@ func TestUpsertModelPricesBatch_PriorityAbove272kCacheCreation_SurvivesResync(t 
 	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove272kTokensPriority)
 	assert.InDelta(t, 0.00006, *got[0].CacheCreationInputTokenCostAbove272kTokensPriority, 1e-12)
 }
+
+// TestProviderMetadataAndTags_PersistThroughAddUpdateAndSync pins the provider label round trip
+// on every write path (AddProvider, UpdateProvider, the config-file upsert in
+// UpdateProvidersConfig): labels are stored, tags come back normalized, clearing writes NULL, and
+// invalid labels are refused.
+func TestProviderMetadataAndTags_PersistThroughAddUpdateAndSync(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, ProviderConfig{
+		Metadata: map[string]string{"owner": "team-a", "region": "eu-west-1"},
+		Tags:     []string{"prod", " eu ", "prod"},
+	}))
+	got, err := store.GetProviderConfig(ctx, schemas.OpenAI)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"owner": "team-a", "region": "eu-west-1"}, got.Metadata)
+	assert.Equal(t, []string{"eu", "prod"}, got.Tags, "tags must be trimmed, de-duplicated and sorted")
+
+	got.Metadata = map[string]string{"owner": "team-b"}
+	got.Tags = []string{"staging"}
+	require.NoError(t, store.UpdateProvider(ctx, schemas.OpenAI, *got))
+	all, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"owner": "team-b"}, all[schemas.OpenAI].Metadata, "an update must replace the metadata")
+	assert.Equal(t, []string{"staging"}, all[schemas.OpenAI].Tags)
+
+	got.Metadata = map[string]string{}
+	got.Tags = []string{}
+	require.NoError(t, store.UpdateProvider(ctx, schemas.OpenAI, *got))
+	var raw struct {
+		Metadata *string
+		Tags     *string
+	}
+	require.NoError(t, store.DB().Table("config_providers").Select("metadata, tags").Where("name = ?", "openai").Scan(&raw).Error)
+	assert.Nil(t, raw.Metadata, "clearing the metadata must write NULL")
+	assert.Nil(t, raw.Tags, "clearing the tags must write NULL")
+
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		schemas.OpenAI: {Metadata: map[string]string{"owner": "file"}, Tags: []string{"from-file"}},
+	}))
+	got, err = store.GetProviderConfig(ctx, schemas.OpenAI)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"owner": "file"}, got.Metadata, "the config-file upsert must write metadata")
+	assert.Equal(t, []string{"from-file"}, got.Tags)
+
+	got.Tags = []string{"bad tag"}
+	require.ErrorContains(t, store.UpdateProvider(ctx, schemas.OpenAI, *got), "invalid tag")
+	require.ErrorContains(t, store.AddProvider(ctx, schemas.Anthropic, ProviderConfig{Metadata: map[string]string{"bad key": "x"}}), "invalid metadata key")
+}
+
+// TestModelTags_SetGetAndClear pins the sparse config_models override: a row is created on the
+// first tag, replaced on the next write, removed when the tags are cleared, refused for an unknown
+// provider, and any model name (in the catalog or not) can be tagged.
+func TestModelTags_SetGetAndClear(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableModel{}))
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, ProviderConfig{}))
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, ProviderConfig{}))
+
+	tags, err := store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, tags)
+
+	require.NoError(t, store.SetModelTags(ctx, "openai", "gpt-5.1", []string{"prod", " approved-for-pii ", "prod"}))
+	require.NoError(t, store.SetModelTags(ctx, "openai", "my-finetune-not-in-catalog", []string{"internal"}))
+	require.NoError(t, store.SetModelTags(ctx, "anthropic", "claude-sonnet-4-5", []string{"prod"}))
+	tags, err = store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]map[string][]string{
+		"openai":    {"gpt-5.1": {"approved-for-pii", "prod"}, "my-finetune-not-in-catalog": {"internal"}},
+		"anthropic": {"claude-sonnet-4-5": {"prod"}},
+	}, tags)
+
+	require.NoError(t, store.SetModelTags(ctx, "openai", "gpt-5.1", []string{"staging"}))
+	tags, err = store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"staging"}, tags["openai"]["gpt-5.1"], "a second write must replace the tags")
+
+	require.NoError(t, store.SetModelTags(ctx, "openai", "gpt-5.1", nil))
+	var count int64
+	require.NoError(t, store.DB().Model(&tables.TableModel{}).Where("name = ?", "gpt-5.1").Count(&count).Error)
+	assert.Zero(t, count, "clearing the tags must remove the override row")
+	require.NoError(t, store.SetModelTags(ctx, "openai", "never-tagged", nil), "clearing an untagged model is a no-op")
+
+	assert.ErrorIs(t, store.SetModelTags(ctx, "unknown", "gpt-5.1", []string{"prod"}), ErrNotFound)
+	assert.ErrorContains(t, store.SetModelTags(ctx, "openai", "gpt-5.1", []string{"a,b"}), "invalid tag")
+	assert.ErrorContains(t, store.SetModelTags(ctx, "openai", " ", []string{"prod"}), "model name is required")
+
+	// A deleted provider's model tags are no longer returned (FK cascade; the join also drops orphans).
+	require.NoError(t, store.DeleteProvider(ctx, schemas.Anthropic))
+	tags, err = store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, tags, "anthropic")
+}

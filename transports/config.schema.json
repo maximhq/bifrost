@@ -6903,9 +6903,36 @@
         }
       ]
     },
+    "provider_metadata": {
+      "type": "object",
+      "description": "Custom key/value metadata for this provider (for example owner, region, cost_center). Keys may contain letters, digits, '.', '_' and '-' (max 256 characters); values are strings of at most 512 characters; at most 50 entries. Returned by the providers API and filterable with metadata_<key>=<value>.",
+      "maxProperties": 50,
+      "propertyNames": {
+        "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 512
+      }
+    },
+    "tags": {
+      "type": "array",
+      "description": "Free-form labels (for example prod, eu, approved-for-pii). Each tag is 1-64 characters of letters, digits, '.', '_' and '-'; at most 50 tags. Tags are trimmed, de-duplicated and sorted on save, and are filterable with tags=a,b (all must match).",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+      }
+    },
     "provider": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -6953,6 +6980,12 @@
     "provider_with_bedrock_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -6994,6 +7027,12 @@
     "provider_with_bedrock_mantle_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -7035,6 +7074,12 @@
     "provider_with_vllm_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -7076,6 +7121,12 @@
     "provider_with_replicate_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -7117,6 +7168,12 @@
     "provider_with_databricks_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -7158,6 +7215,12 @@
     "provider_with_azure_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -7199,6 +7262,12 @@
     "provider_with_github_copilot_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -7240,6 +7309,12 @@
     "provider_with_vertex_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -7281,6 +7356,12 @@
     "provider_with_ollama_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -7319,6 +7400,12 @@
     "provider_with_sgl_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -7357,6 +7444,12 @@
     "provider_with_deepseek_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
@@ -7398,6 +7491,12 @@
     "provider_with_fireworks_config": {
       "type": "object",
       "properties": {
+        "metadata": {
+          "$ref": "#/$defs/provider_metadata"
+        },
+        "tags": {
+          "$ref": "#/$defs/tags"
+        },
         "keys": {
           "type": "array",
           "items": {
