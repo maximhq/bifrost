@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -149,6 +150,21 @@ func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handler
 		StripPrefix: []string{
 			"/azure_passthrough",
 		},
+	})
+}
+
+// NewBedrockPassthroughRouter creates a passthrough router for /bedrock_passthrough. Unlike the
+// other passthrough routers it is not a general proxy: the Bedrock provider forwards only
+// InvokeAgent, knowledge-base Retrieve and ApplyGuardrail, the operations Bifrost has no native
+// route for, and refuses every other path with a 400 before any request is built.
+func NewBedrockPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider: schemas.Bedrock,
+		StripPrefix: []string{
+			"/bedrock_passthrough",
+		},
+		// InvokeAgent answers with an event stream; nothing in its path or body says so.
+		StreamingPath: bedrock.IsPassthroughStreamPath,
 	})
 }
 

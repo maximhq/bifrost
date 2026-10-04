@@ -1061,6 +1061,29 @@ func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]stri
 	return headers
 }
 
+// ExtractPassthroughProviderResponseHeadersFromHTTP is the net/http twin of
+// ExtractPassthroughProviderResponseHeaders: a passthrough caller decodes the body by the upstream
+// Content-Type, so it is kept even though the generic provider-header filter drops it.
+func ExtractPassthroughProviderResponseHeadersFromHTTP(resp *http.Response) map[string]string {
+	if resp == nil {
+		return nil
+	}
+	headers := make(map[string]string)
+	for k, values := range resp.Header {
+		kLower := strings.ToLower(k)
+		if shouldFilterProviderResponseHeader(kLower) && kLower != "content-type" {
+			continue
+		}
+		if len(values) > 0 {
+			headers[k] = strings.Join(values, ", ")
+		}
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
 // SetExtraHeaders sets additional headers from NetworkConfig to the fasthttp request.
 // This allows users to configure custom headers for their provider requests.
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
