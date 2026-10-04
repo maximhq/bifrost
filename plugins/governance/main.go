@@ -1131,9 +1131,11 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	provider, model, _ := req.GetRequestFields()
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
-		RequestType: req.RequestType,
-		Provider:    provider,
-		Model:       model}
+		RequestType:      req.RequestType,
+		Provider:         provider,
+		Model:            model,
+		OpaqueBatchInput: isOpaqueBatchInput(req),
+	}
 	// A batch create fans out to many completions, each naming its own model, so
 	// every model it will run is evaluated before the request itself. Each pass
 	// settles that model's limits on the access and checks them; the request's own
@@ -1160,7 +1162,22 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		}, nil
 	}
 
+	// A batch addressed by id belongs to the virtual key that created it; see providerjobs.go.
+	if shortCircuit := p.enforceProviderJobOwnership(ctx, req); shortCircuit != nil {
+		return req, shortCircuit, nil
+	}
+
 	return req, nil, nil
+}
+
+// isOpaqueBatchInput reports whether a batch create's work is an uploaded file or blob rather than
+// inline requests, so the models it will run are not visible on the request.
+func isOpaqueBatchInput(req *schemas.BifrostRequest) bool {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil || len(req.BatchCreateRequest.Requests) > 0 {
+		return false
+	}
+	batch := req.BatchCreateRequest
+	return batch.InputFileID != "" || (batch.InputBlob != nil && strings.TrimSpace(*batch.InputBlob) != "")
 }
 
 // BatchCreateModels returns every distinct model an inline batch create will run,
@@ -1221,6 +1238,21 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// Extract request type, provider, and model
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
+
+	// A batch list is the provider's answer for the shared operator key; narrow it to what this
+	// virtual key may see before anything downstream reads it. See providerjobs.go.
+	if result != nil && result.BatchListResponse != nil {
+		if filterErr := p.filterProviderJobList(ctx, string(provider), result.BatchListResponse); filterErr != nil {
+			return nil, &schemas.BifrostError{
+				StatusCode: bifrost.Ptr(500),
+				Error:      &schemas.ErrorField{Message: "failed to verify access to the batch list"},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType: requestType,
+					Provider:    provider,
+				},
+			}, nil
+		}
+	}
 
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	billingNonce := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce)
@@ -1327,8 +1359,13 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, nil, nil
 	}
 
-	// Skip governance for codemode tools
+	// Codemode meta-tools are not governed as tool executions, but their
+	// discovery side (listToolFiles, readToolFile, getToolDocs) enumerates tools
+	// through GetToolPerClient(ctx), which only sees what ctx carries. Stamp the
+	// access's tool allow-list first so that enumeration is scoped to the grant,
+	// exactly as the LLM path and /mcp do, then skip evaluation as before.
 	if bifrost.IsCodemodeTool(toolName) {
+		p.stampMCPToolAccessForCodemode(ctx)
 		return req, nil, nil
 	}
 
@@ -1374,6 +1411,36 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	return req, nil, nil
+}
+
+// stampMCPToolAccessForCodemode narrows the request's MCP include-tools list to
+// the access's grant before a codemode meta-tool runs. A caller-provided list
+// can only narrow the grant, never expand it; with none provided the grant
+// itself is stamped. A request carrying no access is unrestricted and is left
+// untouched, as it is everywhere else. A credential that resolves to nothing,
+// or a context access cannot be resolved for at all (no grant installed), gets
+// an empty list: evaluation will refuse their tool calls, so discovery shows
+// them nothing either.
+func (p *GovernancePlugin) stampMCPToolAccessForCodemode(ctx *schemas.BifrostContext) {
+	access, err := p.ResolveAccess(ctx)
+	if err != nil {
+		if ctx != nil {
+			ctx.SetValue(schemas.MCPContextKeyIncludeTools, []string{})
+		}
+		return
+	}
+	if access == nil {
+		if presentedGrantBearingCredential(ctx) {
+			ctx.SetValue(schemas.MCPContextKeyIncludeTools, []string{})
+		}
+		return
+	}
+	if p.pruneMCPIncludeToolsFromContext(ctx, access) {
+		return
+	}
+	if tools := access.MCPToolIncludeList(); tools != nil {
+		ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
+	}
 }
 
 // PostMCPHook processes the MCP response and updates usage tracking (business logic execution)
