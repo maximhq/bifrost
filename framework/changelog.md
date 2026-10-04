@@ -1,3 +1,4 @@
+[feat]: model catalog keeps an in-memory model tags overlay, loaded at startup and refreshed by ReloadModelTags and ReloadFromDB [@jimseiwert](https://github.com/jimseiwert)
 [feat]: providers carry metadata and tags, models carry tags (shared label validation, migrated, included in the provider config hash only when set) [@jimseiwert](https://github.com/jimseiwert)
 [feat]: virtual keys carry custom key/value metadata (validated, migrated, included in the config hash only when set) [@jimseiwert](https://github.com/jimseiwert)
 [fix]: transcription cost uses the provider-reported usage.cost when present, as chat already does (#7819) [@hmdsefi](https://github.com/hmdsefi)

@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -43,6 +44,9 @@ type ModelCatalog struct {
 
 	providersForModel *gencache.Cache[[]schemas.ModelProvider]
 	modelsForProvider *gencache.Cache[[]string]
+
+	// modelTags holds operator-assigned model tags (see ReloadModelTags).
+	modelTags atomic.Pointer[modelTagsIndex]
 
 	// MCP library sync configuration (protected by syncMu)
 	mcpLibraryURL          string
@@ -273,6 +277,11 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	if err := mc.datasheet.LoadOverridesFromStore(ctx); err != nil {
 		return nil, fmt.Errorf("failed to load pricing overrides: %w", err)
 	}
+	// Tags are labels, not pricing: a failed load is logged rather than failing startup, and the
+	// next ReloadModelTags (after a tag write or a cluster reload) retries it.
+	if err := mc.ReloadModelTags(ctx); err != nil {
+		logger.Warn("failed to load model tags: %v", err)
+	}
 
 	mc.startSyncWorker(mc.syncCtx)
 	initSucceeded = true
@@ -290,14 +299,16 @@ func (mc *ModelCatalog) SetAfterSyncHook(fn func(ctx context.Context)) {
 	mc.afterSyncHook = fn
 }
 
-// ReloadFromDB reloads pricing + model-parameters caches from the database.
+// ReloadFromDB reloads pricing, model-parameters and model-tag caches from the database.
 // Gossip handler on non-leader pods.
 func (mc *ModelCatalog) ReloadFromDB(ctx context.Context) error {
 	if err := mc.datasheet.LoadFromDB(ctx); err != nil {
 		return err
 	}
-	_, err := mc.datasheet.LoadModelParamsFromDB(ctx)
-	return err
+	if _, err := mc.datasheet.LoadModelParamsFromDB(ctx); err != nil {
+		return err
+	}
+	return mc.ReloadModelTags(ctx)
 }
 
 // ReloadPricing re-reads the pricing table into the in-memory cache. The

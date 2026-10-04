@@ -92,6 +92,11 @@ type ServerCallbacks interface {
 	// succeeds it can broadcast a peer reload via the existing pricing
 	// EntityTypeModelCatalog/ActionReloadFromDB gossip path.
 	UpsertModelPricingAttributes(ctx context.Context, entries []handlers.ModelPricingAttributesEntry) error
+	// SetModelTags writes model tags to config_models and reloads the in-memory
+	// overlay. Enterprise wraps this, like UpsertModelPricingAttributes, to
+	// broadcast a peer reload after the local write succeeds; ModelCatalog.ReloadFromDB
+	// on the peers also refreshes model tags.
+	SetModelTags(ctx context.Context, entries []handlers.ModelTagsEntry) error
 	// Proxy related callbacks
 	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
 	// Client config related callbacks
@@ -2240,6 +2245,34 @@ func (s *BifrostHTTPServer) UpsertModelPricingAttributes(ctx context.Context, en
 	}
 	if err := s.Config.ModelCatalog.ReloadPricing(ctx); err != nil {
 		return fmt.Errorf("failed to reload pricing cache after attribute write: %w", err)
+	}
+	return nil
+}
+
+// SetModelTags replaces the tags of every listed model in one transaction, so
+// an unknown provider rolls back the whole batch, then reloads the in-memory
+// model tags overlay once. Enterprise overrides this method to broadcast a peer
+// reload after commit.
+func (s *BifrostHTTPServer) SetModelTags(ctx context.Context, entries []handlers.ModelTagsEntry) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("model catalog not initialized")
+	}
+	if s.Config.ConfigStore == nil {
+		return fmt.Errorf("model tags require a config store")
+	}
+	err := s.Config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		for _, e := range entries {
+			if err := s.Config.ConfigStore.SetModelTags(ctx, e.Provider, e.Model, e.Tags, tx); err != nil {
+				return fmt.Errorf("%s/%s: %w", e.Provider, e.Model, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.Config.ModelCatalog.ReloadModelTags(ctx); err != nil {
+		return fmt.Errorf("failed to reload model tags after write: %w", err)
 	}
 	return nil
 }

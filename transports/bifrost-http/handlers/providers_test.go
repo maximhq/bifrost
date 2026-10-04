@@ -44,6 +44,9 @@ type mockModelsManager struct {
 	access       schemas.Access
 	resolveCalls int
 	narrowCalls  int
+	// modelTagsCalls records SetModelTags batches; modelTagsErr is returned from it.
+	modelTagsCalls [][]ModelTagsEntry
+	modelTagsErr   error
 }
 
 func (m *mockModelsManager) ResolveAccess(_ *schemas.BifrostContext) (schemas.Access, error) {
@@ -92,6 +95,11 @@ func (m *mockModelsManager) GetUnfilteredModelsForProvider(provider schemas.Mode
 	result := make([]string, len(models))
 	copy(result, models)
 	return result
+}
+
+func (m *mockModelsManager) SetModelTags(_ context.Context, entries []ModelTagsEntry) error {
+	m.modelTagsCalls = append(m.modelTagsCalls, entries)
+	return m.modelTagsErr
 }
 
 func (m *mockModelsManager) UpsertModelPricingAttributes(_ context.Context, _ []ModelPricingAttributesEntry) error {
@@ -2604,5 +2612,118 @@ func TestProviderLabels_CreateUpdateAndListFilters(t *testing.T) {
 		}
 		require.Equal(t, fasthttp.StatusOK, status, tc.query)
 		assert.Equal(t, tc.want, names, tc.query)
+	}
+}
+
+// modelTagsConfigStore serves GetModelTags for a test catalog; nothing else is called.
+type modelTagsConfigStore struct {
+	configstore.ConfigStore
+	tags map[string]map[string][]string
+}
+
+func (s *modelTagsConfigStore) GetModelTags(context.Context) (map[string]map[string][]string, error) {
+	return s.tags, nil
+}
+
+// TestListModels_FiltersAndReturnsTags pins model tags on the management listings: both return
+// each model's tags, tags=a,b keeps only models carrying every tag, total and the limit window
+// count only matching models, and an invalid tag is a 400.
+func TestListModels_FiltersAndReturnsTags(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"gpt-4o", "gpt-4o-mini", "gpt-5.1", "my-finetune"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	catalog := modelcatalog.NewTestCatalogWithConfigStore(&modelTagsConfigStore{tags: map[string]map[string][]string{
+		"openai": {"gpt-4o": {"eu", "prod"}, "gpt-5.1": {"prod"}, "my-finetune": {"eu", "internal", "prod"}},
+	}})
+	require.NoError(t, catalog.ReloadModelTags(context.Background()))
+	h.inMemoryStore.ModelCatalog = catalog
+
+	get := func(handler func(*fasthttp.RequestCtx), uri string) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(uri)
+		handler(ctx)
+		return ctx
+	}
+
+	ctx := get(h.listModels, "/api/models?provider=openai&limit=10")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var all ListModelsResponse
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &all))
+	tagsByName := map[string][]string{}
+	for _, m := range all.Models {
+		tagsByName[m.Name] = m.Tags
+	}
+	assert.Equal(t, []string{"eu", "prod"}, tagsByName["gpt-4o"])
+	assert.Nil(t, tagsByName["gpt-4o-mini"], "an untagged model has no tags")
+
+	ctx = get(h.listModels, "/api/models?provider=openai&tags=prod,eu&limit=1")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var filtered ListModelsResponse
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &filtered))
+	assert.Equal(t, 2, filtered.Total, "total counts only models carrying every tag")
+	require.Len(t, filtered.Models, 1, "the limit applies after the tag filter")
+	assert.Equal(t, "gpt-4o", filtered.Models[0].Name)
+
+	ctx = get(h.listModelDetails, "/api/models/details?provider=openai&tags=internal")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var details ListModelDetailsResponse
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &details))
+	require.Len(t, details.Models, 1)
+	assert.Equal(t, "my-finetune", details.Models[0].Name, "models outside the datasheet can be tagged and filtered")
+	assert.Equal(t, []string{"eu", "internal", "prod"}, details.Models[0].Tags)
+
+	ctx = get(h.listModels, "/api/models?provider=openai&tags=a%20b")
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+}
+
+// TestSetModelTags_ValidatesBeforeWriting pins PUT /api/models/tags: the whole batch is checked
+// (shape, known provider, valid tags) before the write, tags reach the writer normalized, and
+// store errors map to the right status.
+func TestSetModelTags_ValidatesBeforeWriting(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name       string
+		body       string
+		noStore    bool
+		managerErr error
+		wantStatus int
+		wantCall   []ModelTagsEntry
+	}{
+		{name: "valid batch", body: `[{"provider":"openai","model":" gpt-5.1 ","tags":[" prod","eu","prod"]},{"provider":"openai","model":"my-finetune","tags":[]}]`, wantStatus: fasthttp.StatusNoContent,
+			wantCall: []ModelTagsEntry{{Provider: "openai", Model: "gpt-5.1", Tags: []string{"eu", "prod"}}, {Provider: "openai", Model: "my-finetune"}}},
+		{name: "invalid json", body: `{`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "empty batch", body: `[]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "missing model", body: `[{"provider":"openai","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "unknown provider", body: `[{"provider":"nope","model":"x","tags":["prod"]}]`, wantStatus: fasthttp.StatusNotFound},
+		{name: "invalid tag", body: `[{"provider":"openai","model":"gpt-5.1","tags":["a,b"]}]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "no config store", body: `[{"provider":"openai","model":"gpt-5.1","tags":["prod"]}]`, noStore: true, wantStatus: fasthttp.StatusServiceUnavailable},
+		{name: "store not found", body: `[{"provider":"openai","model":"gpt-5.1","tags":["prod"]}]`, managerErr: configstore.ErrNotFound, wantStatus: fasthttp.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := providerHandlerForTest(schemas.OpenAI, nil, nil, nil)
+			manager := h.modelsManager.(*mockModelsManager)
+			manager.modelTagsErr = tc.managerErr
+			if !tc.noStore {
+				h.dbStore = &modelTagsConfigStore{}
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			ctx.Request.SetRequestURI("/api/models/tags")
+			ctx.Request.SetBody([]byte(tc.body))
+
+			h.setModelTags(ctx)
+
+			assert.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantCall != nil {
+				require.Len(t, manager.modelTagsCalls, 1)
+				assert.Equal(t, tc.wantCall, manager.modelTagsCalls[0])
+			} else if tc.managerErr == nil {
+				assert.Empty(t, manager.modelTagsCalls, "a refused batch must not reach the writer")
+			}
+		})
 	}
 }

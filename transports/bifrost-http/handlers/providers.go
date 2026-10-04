@@ -32,6 +32,8 @@ type ModelsManager interface {
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
 	UpsertModelPricingAttributes(ctx context.Context, entries []ModelPricingAttributesEntry) error
+	// SetModelTags replaces the tags of each listed model and refreshes the in-memory overlay.
+	SetModelTags(ctx context.Context, entries []ModelTagsEntry) error
 	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
@@ -65,6 +67,14 @@ type ModelPricingAttributesEntry struct {
 	Model                string            `json:"model"`
 	Provider             string            `json:"provider"`
 	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
+}
+
+// ModelTagsEntry is the wire shape for PUT /api/models/tags. Tags replace the model's tags as a
+// whole; an empty list clears them.
+type ModelTagsEntry struct {
+	Provider string   `json:"provider"`
+	Model    string   `json:"model"`
+	Tags     []string `json:"tags"`
 }
 
 // ProviderHandler manages HTTP requests for provider operations
@@ -223,6 +233,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
 	r.PUT("/api/models/catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
+	r.PUT("/api/models/tags", lib.ChainMiddlewares(h.setModelTags, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers
@@ -792,6 +803,7 @@ type ModelResponse struct {
 	Provider         string   `json:"provider"`
 	IsDeprecated     bool     `json:"is_deprecated,omitempty"`
 	AccessibleByKeys []string `json:"accessible_by_keys,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
 }
 
 // ListModelsResponse represents the response for listing models
@@ -815,6 +827,7 @@ type ModelDetailsResponse struct {
 	IsDeprecated         bool                  `json:"is_deprecated,omitempty"`
 	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
 	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
+	Tags                 []string              `json:"tags,omitempty"`
 
 	// OverriddenPricing carries the post-override value of each cost field the
 	// UI displays, and only for fields the applied override actually changes —
@@ -878,6 +891,8 @@ type modelListQuery struct {
 	HideDeprecated bool
 	// IncludeDeprecated is the caller's explicit opt-out of HideDeprecated.
 	IncludeDeprecated bool
+	// Tags keeps only models carrying every listed tag.
+	Tags []string
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
 	HasVKFilter bool
@@ -890,6 +905,7 @@ type listedModel struct {
 	Provider         schemas.ModelProvider
 	IsDeprecated     bool
 	AccessibleByKeys []string
+	Tags             []string
 }
 
 // listModels handles GET /api/models - List models with filtering
@@ -901,6 +917,7 @@ type listedModel struct {
 //   - offset: Number of results to skip (for pagination)
 //   - include_deprecated: If true, list deprecated models even when nothing is searched for.
 //     Without it, deprecated models appear only in a search (`query`), sorted below live ones.
+//   - tags: Comma-separated tags; only models carrying every listed tag are returned
 //
 // Request headers:
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
@@ -930,6 +947,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 			Name:         model.Name,
 			Provider:     string(model.Provider),
 			IsDeprecated: model.IsDeprecated,
+			Tags:         model.Tags,
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			entry.AccessibleByKeys = model.AccessibleByKeys
@@ -951,6 +969,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - provider: Filter by specific provider name
 //   - keys: Comma-separated list of key IDs to filter models accessible by those keys
 //   - unfiltered: If true, bypass provider-level model pool restrictions only
+//   - tags: Comma-separated tags; only models carrying every listed tag are returned
 //   - limit: Maximum number of results to return (default: 20)
 //   - offset: Number of results to skip (for pagination)
 //
@@ -988,6 +1007,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		details := ModelDetailsResponse{
 			Name:     model.Name,
 			Provider: string(model.Provider),
+			Tags:     model.Tags,
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			details.AccessibleByKeys = model.AccessibleByKeys
@@ -1123,6 +1143,12 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 		Unfiltered: string(queryArgs.Peek("unfiltered")) == "true",
 	}
 	query.IncludeDeprecated = string(queryArgs.Peek("include_deprecated")) == "true"
+	tags, err := parseTagsFilter(queryArgs)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return modelListQuery{}, false
+	}
+	query.Tags = tags
 
 	if keysRaw := queryArgs.Peek("keys"); len(keysRaw) > 0 {
 		keyIDs := strings.Split(string(keysRaw), ",")
@@ -1196,6 +1222,12 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 
 	for i := range models {
 		models[i].IsDeprecated = h.isModelDeprecated(models[i].Name, models[i].Provider)
+		models[i].Tags = h.inMemoryStore.ModelCatalog.GetModelTags(models[i].Provider, models[i].Name)
+	}
+	// Filtered before the deprecation handling and pagination below, so total and the
+	// offset/limit window count only matching models.
+	if len(query.Tags) > 0 {
+		models = slices.DeleteFunc(models, func(m listedModel) bool { return !tables.HasAllTags(m.Tags, query.Tags) })
 	}
 
 	// Browsing with nothing typed is someone looking for a model to use, so the retired
@@ -1651,6 +1683,57 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 
 	if err := h.modelsManager.UpsertModelPricingAttributes(ctx, payload); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
+		return
+	}
+	ctx.SetStatusCode(fasthttp.StatusNoContent)
+}
+
+// setModelTags handles PUT /api/models/tags - replaces the tags of each listed model. The
+// provider must be configured; the model name is not checked against the catalog, so models
+// outside the pricing datasheet (fine-tunes, custom deployments) can be tagged too. The whole
+// batch is validated before anything is written, and written in one transaction.
+func (h *ProviderHandler) setModelTags(ctx *fasthttp.RequestCtx) {
+	var payload []ModelTagsEntry
+	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	if len(payload) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "at least one model tags entry is required")
+		return
+	}
+	if h.dbStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "model tags require a config store")
+		return
+	}
+	for i := range payload {
+		payload[i].Provider = strings.TrimSpace(payload[i].Provider)
+		payload[i].Model = strings.TrimSpace(payload[i].Model)
+		if payload[i].Provider == "" || payload[i].Model == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "provider and model are required for every model tags entry")
+			return
+		}
+		if _, err := h.inMemoryStore.GetProviderConfigRaw(schemas.ModelProvider(payload[i].Provider)); err != nil {
+			if errors.Is(err, lib.ErrNotFound) {
+				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("provider %s not found", payload[i].Provider))
+				return
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get provider %s: %v", payload[i].Provider, err))
+			return
+		}
+		tags, err := tables.NormalizeTags(payload[i].Tags)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid tags for %s/%s: %v", payload[i].Provider, payload[i].Model, err))
+			return
+		}
+		payload[i].Tags = tags
+	}
+	if err := h.modelsManager.SetModelTags(ctx, payload); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("failed to set model tags: %v", err))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to set model tags: %v", err))
 		return
 	}
 	ctx.SetStatusCode(fasthttp.StatusNoContent)

@@ -551,6 +551,23 @@ ModelResponse:
       type: array
       items:
         type: string
+    tags:
+      $ref: '#/Tags'
+
+ModelTagsEntry:
+  type: object
+  required:
+    - provider
+    - model
+  properties:
+    provider:
+      type: string
+      description: A configured provider
+    model:
+      type: string
+      description: Model name; does not have to be in the pricing datasheet
+    tags:
+      $ref: '#/Tags'
 
 Architecture:
   type: object
@@ -606,6 +623,8 @@ ModelDetailsResponse:
       type: array
       items:
         type: string
+    tags:
+      $ref: '#/Tags'
 
 ListModelsResponse:
   type: object

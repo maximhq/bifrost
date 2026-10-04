@@ -41515,6 +41515,14 @@
             }
           },
           {
+            "name": "tags",
+            "in": "query",
+            "description": "Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag are returned. Applied before limit/offset, so total counts matching models only. An invalid tag is rejected with a 400.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "unfiltered",
             "in": "query",
             "description": "If true, return all models including those filtered out by provider-level restrictions",
@@ -41558,6 +41566,15 @@
                             "items": {
                               "type": "string"
                             }
+                          },
+                          "tags": {
+                            "type": "array",
+                            "description": "Free-form labels (for example prod, eu, approved-for-pii), stored trimmed, de-duplicated and sorted. Omitted when there are none.",
+                            "maxItems": 50,
+                            "items": {
+                              "type": "string",
+                              "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+                            }
                           }
                         }
                       }
@@ -41566,6 +41583,16 @@
                       "type": "integer"
                     }
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (invalid tags filter)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -41629,6 +41656,14 @@
             "schema": {
               "type": "integer",
               "default": 20
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag are returned. Applied before limit/offset, so total counts matching models only. An invalid tag is rejected with a 400.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -41732,6 +41767,15 @@
                             "items": {
                               "type": "string"
                             }
+                          },
+                          "tags": {
+                            "type": "array",
+                            "description": "Free-form labels (for example prod, eu, approved-for-pii), stored trimmed, de-duplicated and sorted. Omitted when there are none.",
+                            "maxItems": 50,
+                            "items": {
+                              "type": "string",
+                              "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+                            }
                           }
                         }
                       }
@@ -41743,6 +41787,105 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Bad request (invalid tags filter)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/tags": {
+      "put": {
+        "operationId": "setModelTags",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Set model tags",
+        "description": "Replaces the tags of each listed model. The provider must be configured; any model name is accepted, including models that are not in the pricing datasheet. An empty tags list clears a model's tags. The whole batch is validated first and written in one transaction. Requires a config store.\n",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "provider",
+                    "model"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "description": "A configured provider"
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "Model name; does not have to be in the pricing datasheet"
+                    },
+                    "tags": {
+                      "type": "array",
+                      "description": "Free-form labels (for example prod, eu, approved-for-pii), stored trimmed, de-duplicated and sorted. Omitted when there are none.",
+                      "maxItems": 50,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Tags written"
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A provider in the batch is not configured"
+          },
+          "503": {
+            "description": "No config store is configured"
           },
           "500": {
             "description": "Internal server error",

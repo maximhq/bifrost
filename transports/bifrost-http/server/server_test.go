@@ -1289,3 +1289,38 @@ func TestNotificationPublisher_ResolvesPublisherSetAfterRegistration(t *testing.
 	require.Len(t, got, 1)
 	assert.Equal(t, "late", got[0].Title)
 }
+
+// TestSetModelTags_WritesBatchAndReloadsOverlay pins the model tags write path: the batch is
+// written in one transaction (an unknown provider rolls every entry back), and a successful
+// write is visible through the catalog overlay immediately.
+func TestSetModelTags_WritesBatchAndReloadsOverlay(t *testing.T) {
+	ctx := context.Background()
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/config.db"},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+	catalog := modelcatalog.NewTestCatalogWithConfigStore(store)
+	s := &BifrostHTTPServer{Config: &lib.Config{ConfigStore: store, ModelCatalog: catalog}}
+
+	require.NoError(t, s.SetModelTags(ctx, []handlers.ModelTagsEntry{
+		{Provider: "openai", Model: "gpt-5.1", Tags: []string{"prod"}},
+		{Provider: "openai", Model: "my-finetune", Tags: []string{"internal"}},
+	}))
+	assert.Equal(t, []string{"prod"}, catalog.GetModelTags(schemas.OpenAI, "gpt-5.1"))
+	assert.Equal(t, []string{"internal"}, catalog.GetModelTags(schemas.OpenAI, "my-finetune"))
+
+	err = s.SetModelTags(ctx, []handlers.ModelTagsEntry{
+		{Provider: "openai", Model: "gpt-5.1", Tags: []string{"staging"}},
+		{Provider: "unknown", Model: "x", Tags: []string{"prod"}},
+	})
+	require.ErrorIs(t, err, configstore.ErrNotFound)
+	stored, err := store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"prod"}, stored["openai"]["gpt-5.1"], "a failed batch must roll back every entry")
+
+	require.NoError(t, s.SetModelTags(ctx, []handlers.ModelTagsEntry{{Provider: "openai", Model: "gpt-5.1", Tags: nil}}))
+	assert.Nil(t, catalog.GetModelTags(schemas.OpenAI, "gpt-5.1"), "clearing must drop the tags from the overlay")
+}
