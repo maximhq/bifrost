@@ -263,6 +263,13 @@ const (
 	// header in precedence. Set by the bifrost governance plugin - DO NOT SET THIS MANUALLY.
 	BifrostContextKeyGovernanceDisableContentLogging BifrostContextKey = "bifrost-governance-disable-content-logging"
 
+	// BifrostContextKeyGovernanceVirtualKeyMetadata is the resolved virtual key's own metadata
+	// (map[string]string, a copy the request owns): operator-set attribution such as cost center or
+	// owner. The logging plugin merges it into the log row's metadata after request-supplied entries,
+	// so a caller cannot override a key the virtual key sets. Absent when the key has no metadata.
+	// Set by the bifrost governance plugin - DO NOT SET THIS MANUALLY.
+	BifrostContextKeyGovernanceVirtualKeyMetadata BifrostContextKey = "bifrost-governance-virtual-key-metadata"
+
 	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                 // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"               // string (to store the selected key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceVirtualKeyID              BifrostContextKey = "bifrost-governance-virtual-key-id"       // string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
