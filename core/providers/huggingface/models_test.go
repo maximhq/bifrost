@@ -493,6 +493,212 @@ func TestToBifrostListModelsResponseDiscoveredQualifiedAliases(t *testing.T) {
 	}
 }
 
+func TestListModelsByKeyEnrichesUnownedAliasMetadataAcrossProviders(t *testing.T) {
+	t.Parallel()
+	// Each response supplies only one of two alias targets. Whichever response
+	// finishes first, the other alias must recover metadata from a later pass.
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/models", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		body := `[{"_id":"embedding-hub-id","modelId":"org/embedding-model","pipeline_tag":"feature-extraction"}]`
+		if r.URL.Query().Get("inference_provider") == string(deepInfra) {
+			body = `[{"_id":"chat-hub-id","modelId":"org/chat-model","pipeline_tag":"conversational"}]`
+		}
+		_, err := w.Write([]byte(body))
+		assert.NoError(t, err)
+	}))
+	defer server.Close()
+	provider := &HuggingFaceProvider{
+		customProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "huggingface_custom", BaseProviderType: schemas.HuggingFace},
+		client: &fasthttp.Client{
+			Dial: func(string) (net.Conn, error) {
+				dialer := net.Dialer{Timeout: 5 * time.Second}
+				return dialer.DialContext(t.Context(), "tcp", server.Listener.Addr().String())
+			},
+			TLSConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // Test server certificate.
+		},
+	}
+	key := schemas.Key{
+		Value:  *schemas.NewSecretVar(""),
+		Models: schemas.WhiteList{"*"},
+		Aliases: schemas.KeyAliases{
+			"nebius/chat-alias":    {ModelID: "org/chat-model"},
+			"auto/embedding-alias": {ModelID: "org/embedding-model"},
+		},
+	}
+	response, bifrostErr := provider.listModelsByKey(schemas.NewBifrostContext(t.Context(), time.Time{}), key, &schemas.BifrostListModelsRequest{})
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, response)
+	var aliases []schemas.Model
+	for _, model := range response.Data {
+		if model.Alias != nil {
+			aliases = append(aliases, model)
+		}
+	}
+	require.Len(t, aliases, 2, "each configured alias keeps its single-pass ownership")
+	assert.ElementsMatch(t, []string{"huggingface_custom/nebius/chat-alias", "huggingface_custom/auto/embedding-alias"}, []string{aliases[0].ID, aliases[1].ID})
+	assert.ElementsMatch(t, []string{"org/chat-model", "org/embedding-model"}, []string{*aliases[0].Alias, *aliases[1].Alias})
+	for _, model := range aliases {
+		switch *model.Alias {
+		case "org/chat-model":
+			assert.Equal(t, "huggingface_custom/nebius/chat-alias", model.ID)
+			assert.Equal(t, schemas.Ptr("chat-hub-id"), model.HuggingFaceID)
+			assert.ElementsMatch(t, []string{
+				string(schemas.ChatCompletionRequest), string(schemas.ChatCompletionStreamRequest),
+				string(schemas.ResponsesRequest), string(schemas.ResponsesStreamRequest),
+			}, model.SupportedMethods)
+		case "org/embedding-model":
+			assert.Equal(t, "huggingface_custom/auto/embedding-alias", model.ID)
+			assert.Equal(t, schemas.Ptr("embedding-hub-id"), model.HuggingFaceID)
+			assert.Equal(t, []string{string(schemas.EmbeddingRequest)}, model.SupportedMethods)
+		default:
+			t.Errorf("unexpected alias target %q", *model.Alias)
+		}
+	}
+}
+
+func TestHuggingFaceModelMetadataAcrossResponses(t *testing.T) {
+	t.Parallel()
+	for _, aliasProvider := range []inferenceProvider{hyperbolic, nebius, sambanova, auto, deepInfra} {
+		for _, discoveredFirst := range []bool{false, true} {
+			label := string(aliasProvider) + "/discovered-later"
+			if discoveredFirst {
+				label = string(aliasProvider) + "/discovered-first"
+			}
+			t.Run(label, func(t *testing.T) {
+				t.Parallel()
+				aliasKey := string(aliasProvider) + "/org/aliased-model"
+				aliases := schemas.KeyAliases{aliasKey: {ModelID: "Org/Original-Model_name"}}
+				discovered := &HuggingFaceListModelsResponse{Models: []HuggingFaceModel{{
+					ID: "hub-id", ModelID: "org/original-model_name", PipelineTag: "conversational",
+				}}}
+				responses := []*HuggingFaceListModelsResponse{{}, discovered}
+				providers := []inferenceProvider{baseten, deepInfra}
+				if discoveredFirst {
+					responses[0], responses[1] = responses[1], responses[0]
+					providers[0], providers[1] = providers[1], providers[0]
+				}
+				metadata := make(huggingFaceModelMetadataIndex)
+				var models []schemas.Model
+				for i, response := range responses {
+					converted := response.toBifrostListModelsResponse(schemas.HuggingFace, providers[i], schemas.WhiteList{aliasKey}, nil, aliases, false, i == 0)
+					models = append(models, converted.Data...)
+					metadata.collect(response)
+				}
+				require.Len(t, models, 1, "metadata must not change the alias's single-pass ownership")
+				metadata.enrichAliases(models)
+				assert.Equal(t, "huggingface/"+aliasKey, models[0].ID)
+				assert.Equal(t, schemas.Ptr("Org/Original-Model_name"), models[0].Alias)
+				assert.Equal(t, schemas.Ptr("hub-id"), models[0].HuggingFaceID)
+				assert.ElementsMatch(t, []string{
+					string(schemas.ChatCompletionRequest), string(schemas.ChatCompletionStreamRequest),
+					string(schemas.ResponsesRequest), string(schemas.ResponsesStreamRequest),
+				}, models[0].SupportedMethods)
+			})
+		}
+	}
+
+	t.Run("blacklisted aliases are not reintroduced", func(t *testing.T) {
+		t.Parallel()
+		aliasKey := "nebius/org/aliased-model"
+		aliases := schemas.KeyAliases{aliasKey: {ModelID: "org/original-model"}}
+		response := &HuggingFaceListModelsResponse{Models: []HuggingFaceModel{{
+			ID: "hub-id", ModelID: "org/original-model", PipelineTag: "conversational",
+		}}}
+		converted := response.toBifrostListModelsResponse(schemas.HuggingFace, baseten, schemas.WhiteList{aliasKey}, schemas.BlackList{aliasKey}, aliases, false, true)
+		metadata := make(huggingFaceModelMetadataIndex)
+		metadata.collect(response)
+		metadata.enrichAliases(converted.Data)
+		assert.Empty(t, converted.Data)
+	})
+}
+
+func TestHuggingFaceAliasMetadataLookupAndPreservation(t *testing.T) {
+	t.Parallel()
+	metadata := make(huggingFaceModelMetadataIndex)
+	metadata.collect(&HuggingFaceListModelsResponse{Models: []HuggingFaceModel{
+		{ID: "hub-id", ModelID: "org/slug-model_name", PipelineTag: "conversational"},
+		{ID: "provider-org-id", ModelID: "deepinfra/slug-model_name", PipelineTag: "feature-extraction"},
+		{ID: "nebius-org-id", ModelID: "nebius/slug-model_name", PipelineTag: "conversational"},
+		{ID: "unknown-task-id", ModelID: "org/unknown-task", PipelineTag: "unknown-task"},
+		{ID: "single-segment-id", ModelID: "gpt2", PipelineTag: "conversational"},
+		{ID: "provider-org-gpt2-id", ModelID: "deepinfra/gpt2", PipelineTag: "feature-extraction"},
+	}})
+	for _, tt := range []struct {
+		name       string
+		model      schemas.Model
+		expectedID *string
+		method     string
+	}{
+		{name: "custom outer provider and case-insensitive exact target", model: schemas.Model{ID: "huggingface_custom/auto/alias", Alias: schemas.Ptr("Org/Slug-Model_name")}, expectedID: schemas.Ptr("hub-id"), method: string(schemas.ChatCompletionRequest)},
+		{name: "alias provider-named organization", model: schemas.Model{ID: "huggingface_custom/auto/alias", Alias: schemas.Ptr("DeepInfra/slug-model_name")}, expectedID: schemas.Ptr("provider-org-id"), method: string(schemas.EmbeddingRequest)},
+		{name: "alias retired-provider organization", model: schemas.Model{ID: "huggingface/auto/alias", Alias: schemas.Ptr("nebius/slug-model_name")}, expectedID: schemas.Ptr("nebius-org-id"), method: string(schemas.ChatCompletionRequest)},
+		{name: "unknown methods", model: schemas.Model{ID: "huggingface/auto/alias", Alias: schemas.Ptr("org/unknown-task")}, expectedID: schemas.Ptr("unknown-task-id")},
+		{name: "unknown target is not inferred from name", model: schemas.Model{ID: "huggingface/auto/alias", Alias: schemas.Ptr("org/missing"), Name: schemas.Ptr("org/slug-model_name")}},
+		{name: "unknown target is not inferred from listed ID", model: schemas.Model{ID: "huggingface/auto/org/slug-model_name", Alias: schemas.Ptr("org/missing")}},
+		{name: "empty fields can be filled", model: schemas.Model{ID: "huggingface/auto/alias", Alias: schemas.Ptr("org/slug-model_name"), HuggingFaceID: schemas.Ptr(""), SupportedMethods: []string{}}, expectedID: schemas.Ptr("hub-id"), method: string(schemas.ChatCompletionRequest)},
+		{name: "ordinary slug backfill is unchanged", model: schemas.Model{ID: "huggingface/baseten/org/slug-model_name", Name: schemas.Ptr("Org/Slug Model Name")}},
+		{name: "ordinary provider-named organization is unchanged", model: schemas.Model{ID: "huggingface/deepinfra/slug-model_name"}},
+		{name: "ambiguous ordinary single-segment model is unchanged", model: schemas.Model{ID: "huggingface/deepinfra/gpt2"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			models := []schemas.Model{tt.model}
+			metadata.enrichAliases(models)
+			assert.Equal(t, tt.model.ID, models[0].ID)
+			assert.Equal(t, tt.model.Name, models[0].Name)
+			assert.Equal(t, tt.model.Alias, models[0].Alias)
+			assert.Equal(t, tt.expectedID, models[0].HuggingFaceID)
+			if tt.method == "" {
+				assert.Nil(t, models[0].SupportedMethods)
+			} else {
+				assert.Contains(t, models[0].SupportedMethods, tt.method)
+			}
+		})
+	}
+
+	t.Run("collect fills independent fields and preserves nonempty metadata", func(t *testing.T) {
+		t.Parallel()
+		for _, methodsFirst := range []bool{false, true} {
+			index := make(huggingFaceModelMetadataIndex)
+			first := HuggingFaceModel{ID: "first-hub-id", ModelID: "org/model", PipelineTag: "unknown-task"}
+			if methodsFirst {
+				first.ID = ""
+				first.PipelineTag = "feature-extraction"
+			}
+			index.collect(&HuggingFaceListModelsResponse{Models: []HuggingFaceModel{first}})
+			index.collect(&HuggingFaceListModelsResponse{Models: []HuggingFaceModel{
+				{ID: "later-hub-id", ModelID: "Org/Model", PipelineTag: "conversational"},
+				{ID: "ignored", PipelineTag: "conversational"},
+			}})
+			models := []schemas.Model{
+				{ID: "huggingface/auto/alias", Alias: schemas.Ptr("org/model")},
+				{ID: "huggingface/nebius/alias", Alias: schemas.Ptr("org/model"), HuggingFaceID: schemas.Ptr("existing-hub-id"), SupportedMethods: []string{"existing-method"}},
+				{ID: "huggingface/baseten/alias", Alias: schemas.Ptr("org/model"), HuggingFaceID: schemas.Ptr("existing-hub-id")},
+				{ID: "huggingface/deepinfra/alias", Alias: schemas.Ptr("org/model"), SupportedMethods: []string{"existing-method"}},
+			}
+			index.enrichAliases(models)
+			expectedID := "first-hub-id"
+			if methodsFirst {
+				expectedID = "later-hub-id"
+			}
+			assert.Equal(t, schemas.Ptr(expectedID), models[0].HuggingFaceID)
+			if methodsFirst {
+				assert.Equal(t, []string{string(schemas.EmbeddingRequest)}, models[0].SupportedMethods)
+			} else {
+				assert.Contains(t, models[0].SupportedMethods, string(schemas.ChatCompletionRequest))
+			}
+			assert.Equal(t, schemas.Ptr("existing-hub-id"), models[1].HuggingFaceID)
+			assert.Equal(t, []string{"existing-method"}, models[1].SupportedMethods)
+			assert.Equal(t, schemas.Ptr("existing-hub-id"), models[2].HuggingFaceID)
+			assert.Equal(t, models[0].SupportedMethods, models[2].SupportedMethods)
+			assert.Equal(t, schemas.Ptr(expectedID), models[3].HuggingFaceID)
+			assert.Equal(t, []string{"existing-method"}, models[3].SupportedMethods)
+			assert.Len(t, index, 1, "responses without model IDs must be ignored")
+		}
+	})
+}
+
 func TestToBifrostListModelsResponseProviderNamedOrganization(t *testing.T) {
 	t.Parallel()
 	response := &HuggingFaceListModelsResponse{Models: []HuggingFaceModel{{

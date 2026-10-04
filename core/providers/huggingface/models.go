@@ -14,6 +14,51 @@ const (
 	maxModelFetchLimit     = 1000
 )
 
+type huggingFaceModelMetadata struct {
+	huggingFaceID    string
+	supportedMethods []string
+}
+
+type huggingFaceModelMetadataIndex map[string]huggingFaceModelMetadata
+
+func (index huggingFaceModelMetadataIndex) collect(response *HuggingFaceListModelsResponse) {
+	for _, model := range response.Models {
+		if model.ModelID == "" {
+			continue
+		}
+		key := strings.ToLower(model.ModelID)
+		metadata := index[key]
+		// A later response may know fields omitted by the first one. Preserve
+		// each field independently once a successful response supplies it.
+		if metadata.huggingFaceID == "" {
+			metadata.huggingFaceID = model.ID
+		}
+		if len(metadata.supportedMethods) == 0 {
+			metadata.supportedMethods = deriveSupportedMethods(model.PipelineTag, model.Tags)
+		}
+		index[key] = metadata
+	}
+}
+
+func (index huggingFaceModelMetadataIndex) enrichAliases(models []schemas.Model) {
+	for i := range models {
+		model := &models[i]
+		if model.Alias == nil {
+			continue
+		}
+		// Alias values are exact Hub IDs, even when their organization
+		// happens to have an inference provider's name. Listed IDs and
+		// friendly display names cannot reliably identify the target.
+		metadata := index[strings.ToLower(*model.Alias)]
+		if (model.HuggingFaceID == nil || *model.HuggingFaceID == "") && metadata.huggingFaceID != "" {
+			model.HuggingFaceID = new(metadata.huggingFaceID)
+		}
+		if len(model.SupportedMethods) == 0 && len(metadata.supportedMethods) > 0 {
+			model.SupportedMethods = metadata.supportedMethods
+		}
+	}
+}
+
 func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	includeUnownedBackfill := len(INFERENCE_PROVIDERS) > 0 && inferenceProvider == INFERENCE_PROVIDERS[0]
 	return response.toBifrostListModelsResponse(providerKey, inferenceProvider, allowedModels, blacklistedModels, aliases, unfiltered, includeUnownedBackfill)

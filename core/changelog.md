@@ -1,4 +1,4 @@
-- [fix]: refresh Hugging Face discovery providers and preserve configured provider and Hub model IDs [@XuJian](https://github.com/xujiantop-crypto)
+- [fix]: refresh Hugging Face discovery and preserve configured IDs and alias metadata [@XuJian](https://github.com/xujiantop-crypto)
 - [fix]: chat streams converted from a Responses upstream send the assistant role exactly once, on the first chunk. Turns with only reasoning and function_call items sent no role at all, so clients such as LangChain.js dropped the tool calls (#7693) [@hmdsefi](https://github.com/hmdsefi)
 - [fix]: preserve Mistral streaming text arrays and reject unsupported content blocks [@xujiantop-crypto](https://github.com/xujiantop-crypto)
 - [fix]: Anthropic error envelope always uses a documented error.type. Errors with no type were labelled api_error regardless of status (400 validation and unsupported-operation errors included), and Gemini/Vertex gRPC statuses such as INVALID_ARGUMENT were passed through verbatim. The type is now kept when already valid, mapped from google.rpc status names, or derived from the HTTP status the error is sent with [@jimseiwert](https://github.com/jimseiwert)
