@@ -66,6 +66,7 @@ var enterprisePlugins = []string{
 	"bigquery",
 	"pubsub",
 	"kafka",
+	"proxy",
 }
 
 // ServerCallbacks is a interface that defines the callbacks for the server.
