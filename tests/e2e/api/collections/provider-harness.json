@@ -188322,6 +188322,252 @@
           ]
         }
       ]
+    },
+    {
+      "name": "144. Virtual key metadata on the management API (PR #7935) (vk-metadata-api)",
+      "description": "Virtual keys carry free-form metadata (cost center, owner, environment, ...). PR #7935 exposes it on the management API: POST and PUT /api/governance/virtual-keys accept a metadata object (PUT replaces it as a whole, omitting it leaves it unchanged, {} clears it), the key's JSON returns it, GET /api/governance/virtual-keys filters on metadata_<key>=<value> query parameters (several pairs AND together, the same shape the logs endpoints accept), and invalid metadata or an invalid filter key is a 400 instead of being dropped. The seed creates one key whose cost_center value carries the run id, so the filter reads can expect exactly that key on a shared gateway; every later row depends on the seed through {{vkMetadataApiRun}} / {{vkMetadataApiVkId}}, which keeps the folder in one newman process. Red before the change: the create drops metadata (the seed's echo check fails), the list ignores metadata_* and returns every key, and the reserved key and bad filter key come back 200. Leftover keys of an aborted run are named harness-vk-metadata-api-run-<ms> and swept by the seed once they are ten minutes old. Management calls only, no provider traffic; attributed to the openai fork by name.",
+      "item": [
+        {
+          "name": "openai vk-metadata-api seed: create a virtual key with metadata",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh run id per seed: collection variables outlive a run in Postman, and the filter",
+                  "// reads must only ever see this run's key.",
+                  "pm.collectionVariables.set('vkMetadataApiRun', 'run-' + Date.now());",
+                  "// Leftovers of an aborted earlier run carry their run timestamp in their names. Only keys",
+                  "// older than ten minutes are swept, so a parallel run's live key is never touched.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys', method: 'GET' }, function (err, res) {",
+                  "  if (err || res.code !== 200) { return; }",
+                  "  ((res.json() || {}).virtual_keys || []).forEach(function (v) {",
+                  "    var m = String(v.name || '').match(/^harness-vk-metadata-api-(?:reserved-)?run-(\\d+)$/);",
+                  "    if (m && (Date.now() - Number(m[1])) > 10 * 60 * 1000) {",
+                  "      pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + v.id, method: 'DELETE' }, function () {});",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-metadata-api seed: create succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = (pm.response.json() || {}).virtual_key || {};",
+                  "pm.collectionVariables.set('vkMetadataApiVkId', vk.id);",
+                  "pm.test('vk-metadata-api seed: the created key echoes its metadata', function () {",
+                  "  pm.expect(vk.metadata, 'virtual_key: ' + pm.response.text()).to.eql({ cost_center: 'cc-' + pm.collectionVariables.get('vkMetadataApiRun'), owner: 'harness@example.com' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-vk-metadata-api-{{vkMetadataApiRun}}\",\"metadata\":{\"cost_center\":\"cc-{{vkMetadataApiRun}}\",\"owner\":\"harness@example.com\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "openai vk-metadata-api: metadata_<key> filter lists only the matching key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-metadata-api filter: list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var run = pm.collectionVariables.get('vkMetadataApiRun');",
+                  "var vks = (pm.response.json() || {}).virtual_keys || [];",
+                  "pm.test('vk-metadata-api filter: exactly the seeded key matches, with its metadata', function () {",
+                  "  pm.expect(vks.map(function (v) { return v.id; }), 'keys: ' + pm.response.text()).to.eql([pm.collectionVariables.get('vkMetadataApiVkId')]);",
+                  "  pm.expect(vks[0].metadata, 'metadata: ' + pm.response.text()).to.eql({ cost_center: 'cc-' + run, owner: 'harness@example.com' });",
+                  "});",
+                  "// Pairs AND together: the same cost center with an owner the key does not have matches nothing.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys?metadata_cost_center=cc-' + run + '&metadata_owner=nobody%40example.com&limit=10', method: 'GET' }, function (err, res) {",
+                  "  pm.test('vk-metadata-api filter: pairs AND together', function () {",
+                  "    pm.expect(err, 'list error').to.equal(null);",
+                  "    pm.expect(res.code, 'failed: ' + res.text()).to.equal(200);",
+                  "    pm.expect((res.json().virtual_keys || []).length, 'keys: ' + res.text()).to.equal(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys?metadata_cost_center=cc-{{vkMetadataApiRun}}&limit=10"
+          }
+        },
+        {
+          "name": "openai vk-metadata-api: update replaces metadata, omitting it leaves it, {} clears it",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + pm.collectionVariables.get('vkMetadataApiVkId');",
+                  "var run = pm.collectionVariables.get('vkMetadataApiRun');",
+                  "var replaced = { cost_center: 'cc-' + run, env: 'harness' };",
+                  "pm.test('vk-metadata-api update: replacing metadata succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(((pm.response.json() || {}).virtual_key || {}).metadata, 'virtual_key: ' + pm.response.text()).to.eql(replaced);",
+                  "});",
+                  "function put(body, cb) {",
+                  "  pm.sendRequest({ url: base, method: 'PUT', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+                  "    if (err) { pm.test('vk-metadata-api update: PUT reached the gateway', function () { pm.expect.fail(String(err)); }); return; }",
+                  "    cb(res, ((res.json() || {}).virtual_key || {}));",
+                  "  });",
+                  "}",
+                  "put({ description: 'harness vk-metadata-api' }, function (res, vk) {",
+                  "  pm.test('vk-metadata-api update: an update without metadata leaves it unchanged', function () {",
+                  "    pm.expect(res.code, 'failed: ' + res.text()).to.equal(200);",
+                  "    pm.expect(vk.metadata, 'virtual_key: ' + res.text()).to.eql(replaced);",
+                  "  });",
+                  "  put({ metadata: {} }, function (res2, vk2) {",
+                  "    pm.test('vk-metadata-api update: {} clears metadata', function () {",
+                  "      pm.expect(res2.code, 'failed: ' + res2.text()).to.equal(200);",
+                  "      pm.expect(vk2.metadata, 'virtual_key: ' + res2.text()).to.equal(undefined);",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"metadata\":{\"cost_center\":\"cc-{{vkMetadataApiRun}}\",\"env\":\"harness\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{vkMetadataApiVkId}}"
+          }
+        },
+        {
+          "name": "openai vk-metadata-api [EXPECT-400]: a reserved metadata key is refused on create",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-metadata-api reserved key: create is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error should name the reserved key').to.include('bifrost_alb_');",
+                  "});",
+                  "// A gateway without the validation creates the key; delete it so the run leaves nothing behind.",
+                  "var made = ((pm.response.code === 200 && pm.response.json()) || {}).virtual_key;",
+                  "if (made && made.id) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + made.id, method: 'DELETE' }, function () {});",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-vk-metadata-api-reserved-{{vkMetadataApiRun}}\",\"metadata\":{\"bifrost_alb_provider\":\"openai\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "openai vk-metadata-api [EXPECT-400]: an invalid metadata filter key is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-metadata-api bad filter key: list is refused with 400, not unfiltered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error should name the filter').to.include('invalid metadata filter key');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys?metadata_bad%20key=x&limit=10"
+          }
+        },
+        {
+          "name": "openai vk-metadata-api cleanup: delete the seeded virtual key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-metadata-api cleanup: delete succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('vkMetadataApiVkId');",
+                  "pm.collectionVariables.unset('vkMetadataApiRun');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{vkMetadataApiVkId}}"
+          }
+        }
+      ]
     }
   ]
 }
