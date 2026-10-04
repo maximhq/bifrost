@@ -1077,6 +1077,11 @@ type ConfigStore interface {
 	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error
 	// RevokeOAuth2RefreshTokensByMode revokes all active tokens for a given mode.
 	RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error
+	// RevokeOAuth2GrantsBySubject revokes, in one transaction, every grant bound to
+	// one identity (bf_mode + bf_sub): its consented but not yet exchanged
+	// authorization codes and its active refresh tokens. Used when a virtual key
+	// rotates; pass tx to commit it together with the key update.
+	RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error
 	// SweepOAuth2RefreshTokens deletes revoked tokens older than the given duration.
 	SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error)
 	// SweepOrphanedOAuth2Clients deletes registered clients that back no refresh
