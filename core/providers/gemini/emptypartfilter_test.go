@@ -283,6 +283,20 @@ func TestConvertBifrostMessagesToGemini_SkipsEmptyText(t *testing.T) {
 			wantRoles: []string{"user", "user"},
 		},
 		{
+			name: "mixed text blocks drop only the empty block",
+			messages: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+				{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("")},
+						{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("keep")},
+					},
+				}},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("again")}},
+			},
+			wantRoles: []string{"user", "model", "user"},
+		},
+		{
 			name: "empty system message omits systemInstruction",
 			messages: []schemas.ChatMessage{
 				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("")}},
