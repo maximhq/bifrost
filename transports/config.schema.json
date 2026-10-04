@@ -397,6 +397,12 @@
         "oauth2_server_config": {
           "type": "object",
           "properties": {
+            "allowed_redirect_uris": {
+              "type": "array",
+              "items": { "type": "string", "format": "uri" },
+              "default": [],
+              "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries. Remote callbacks are denied by default; changing this list through the API requires dashboard authentication."
+            },
             "issuer_url": {
               "anyOf": [
                 {
