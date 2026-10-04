@@ -3175,9 +3175,11 @@ func (s *RDBConfigStore) GetModelTags(ctx context.Context) (map[string]map[strin
 }
 
 // SetModelTags replaces the tags of one model of a configured provider. The model name is not
-// checked against the catalog, so models outside the pricing datasheet can be tagged too. The
-// config_models row is created on first tag and removed when the tags are cleared, so the table
-// only holds models that carry tags.
+// checked against the catalog, so models outside the pricing datasheet can be tagged too, but it
+// is capped at tables.MaxModelNameLength bytes so it always fits the (provider_id, name) index.
+// The config_models row is created on first tag. Clearing the tags sets the column to NULL and
+// keeps the row, because config_models can hold rows written for other reasons (seeded or older
+// installs) that clearing tags must not delete.
 func (s *RDBConfigStore) SetModelTags(ctx context.Context, provider, model string, tags []string, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
@@ -3188,6 +3190,9 @@ func (s *RDBConfigStore) SetModelTags(ctx context.Context, provider, model strin
 	db := txDB.WithContext(ctx)
 	if strings.TrimSpace(model) == "" {
 		return fmt.Errorf("model name is required")
+	}
+	if len(model) > tables.MaxModelNameLength {
+		return fmt.Errorf("model name can be at most %d bytes, got %d", tables.MaxModelNameLength, len(model))
 	}
 	normalized, err := tables.NormalizeTags(tags)
 	if err != nil {
@@ -3201,7 +3206,9 @@ func (s *RDBConfigStore) SetModelTags(ctx context.Context, provider, model strin
 		return s.parseGormError(err)
 	}
 	if len(normalized) == 0 {
-		if err := db.Where("provider_id = ? AND name = ?", dbProvider.ID, model).Delete(&tables.TableModel{}).Error; err != nil {
+		if err := db.Model(&tables.TableModel{}).
+			Where("provider_id = ? AND name = ?", dbProvider.ID, model).
+			Update("tags", gorm.Expr("NULL")).Error; err != nil {
 			return s.parseGormError(err)
 		}
 		return nil

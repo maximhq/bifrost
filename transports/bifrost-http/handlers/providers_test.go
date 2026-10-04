@@ -2603,6 +2603,8 @@ func TestProviderLabels_CreateUpdateAndListFilters(t *testing.T) {
 		{query: "?metadata_owner=team-a&tags=prod", want: []string{"mock-a", "mock-c"}},
 		{query: "?tags=a%20b", wantStatus: fasthttp.StatusBadRequest},
 		{query: "?metadata_bad%20key=x", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?metadata_=x", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?metadata_owner=team-a&metadata_=x", wantStatus: fasthttp.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		names, status := list(tc.query)
@@ -2679,7 +2681,7 @@ func TestListModels_FiltersAndReturnsTags(t *testing.T) {
 }
 
 // TestSetModelTags_ValidatesBeforeWriting pins PUT /api/models/tags: the whole batch is checked
-// (shape, known provider, valid tags) before the write, tags reach the writer normalized, and
+// (shape, model name length, known provider, valid tags) before the write, tags reach the writer normalized, and
 // store errors map to the right status.
 func TestSetModelTags_ValidatesBeforeWriting(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -2697,6 +2699,7 @@ func TestSetModelTags_ValidatesBeforeWriting(t *testing.T) {
 		{name: "invalid json", body: `{`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "empty batch", body: `[]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "missing model", body: `[{"provider":"openai","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "model name too long", body: `[{"provider":"openai","model":"` + strings.Repeat("m", configstoreTables.MaxModelNameLength+1) + `","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "unknown provider", body: `[{"provider":"nope","model":"x","tags":["prod"]}]`, wantStatus: fasthttp.StatusNotFound},
 		{name: "invalid tag", body: `[{"provider":"openai","model":"gpt-5.1","tags":["a,b"]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "no config store", body: `[{"provider":"openai","model":"gpt-5.1","tags":["prod"]}]`, noStore: true, wantStatus: fasthttp.StatusServiceUnavailable},

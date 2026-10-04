@@ -1016,6 +1016,8 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	// If provider is empty, list all models from all providers
 	if provider == "" {
 		resp, bifrostErr = h.client.ListAllModels(bifrostCtx, bifrostListModelsReq)
+	} else if len(tagFilters) > 0 {
+		resp, bifrostErr = listAllProviderModelPages(bifrostCtx, h.client.ListModelsRequest, bifrostListModelsReq)
 	} else {
 		resp, bifrostErr = h.client.ListModelsRequest(bifrostCtx, bifrostListModelsReq)
 	}
@@ -1040,6 +1042,51 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
+}
+
+// listAllProviderModelPages fetches every page of one provider's model listing, the way
+// ListAllModels does for each provider: pages of schemas.DefaultPageSize, following
+// NextPageToken for at most schemas.MaxPaginationRequests requests. A tag-filtered listing needs
+// the whole list before filtering; a single request with no page size would let a provider
+// apply its own default limit (Hugging Face caps it at 200 models per inference provider). A
+// page whose NextPageToken equals the token it was asked for is a provider that ignores page
+// tokens; it repeats an earlier page, so it is dropped and the loop stops. A failed page fails
+// the listing rather than returning a silently truncated one.
+func listAllProviderModelPages(
+	ctx *schemas.BifrostContext,
+	listModels func(*schemas.BifrostContext, *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError),
+	req *schemas.BifrostListModelsRequest,
+) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	pageReq := *req
+	pageReq.PageSize = schemas.DefaultPageSize
+	pageReq.PageToken = ""
+	var all *schemas.BifrostListModelsResponse
+	for range schemas.MaxPaginationRequests {
+		page, bifrostErr := listModels(ctx, &pageReq)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		if page == nil {
+			break
+		}
+		if pageReq.PageToken != "" && page.NextPageToken == pageReq.PageToken {
+			break
+		}
+		if all == nil {
+			all = page
+		} else {
+			all.Data = append(all.Data, page.Data...)
+			all.KeyStatuses = append(all.KeyStatuses, page.KeyStatuses...)
+		}
+		if page.NextPageToken == "" || len(page.Data) == 0 {
+			break
+		}
+		pageReq.PageToken = page.NextPageToken
+	}
+	if all != nil {
+		all.NextPageToken = ""
+	}
+	return all, nil
 }
 
 // modelRetrieve handles GET /v1/models/{model} - retrieve a single model's metadata

@@ -30,7 +30,8 @@ models:
       description: >-
         Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag
         are returned. Pagination applies to the filtered list. Not forwarded to providers.
-        An invalid tag is rejected with a 400.
+        An invalid tag is rejected with a 400. Not applied when large response mode streams the
+        provider's response through unchanged.
       schema:
         type: string
     responses:

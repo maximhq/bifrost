@@ -67,8 +67,10 @@ Model:
       description: >-
         Operator-assigned tags on the model (see PUT /api/models/tags). Omitted when the model
         has none. Never taken from the provider's response.
+      maxItems: 50
       items:
         type: string
+        pattern: '^[a-zA-Z0-9._-]{1,64}$'
 
 Architecture:
   type: object

@@ -1664,11 +1664,10 @@ func processAuthoritativeProvider(
 		logger.Warn("invalid custom provider config for %s (writing through): %v", provider, err)
 	}
 	// Invalid labels cannot be written through: the provider row would be refused and fail the
-	// whole sync. Drop them instead and keep the rest of the provider.
+	// whole sync. NormalizeProviderLabels clears only the invalid field, so a bad tag does not
+	// drop valid metadata (or the reverse); the rest of the provider is kept.
 	if err := NormalizeProviderLabels(&providerCfgInFile); err != nil {
-		logger.Warn("invalid metadata or tags for provider %s (dropping them): %v", provider, err)
-		providerCfgInFile.Metadata = nil
-		providerCfgInFile.Tags = nil
+		logger.Warn("invalid metadata or tags for provider %s (dropping the invalid field): %v", provider, err)
 	}
 	baseProvider := provider
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
@@ -7898,20 +7897,28 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 
 // NormalizeProviderLabels validates a provider's metadata and normalizes its tags in place
 // (trimmed, de-duplicated, sorted), using the same rules the config store applies on save, so
-// the config hash is computed from what will be stored.
+// the config hash is computed from what will be stored. The two fields are checked
+// independently: a field that fails is cleared and the other is kept, so a caller that drops
+// invalid labels instead of rejecting the provider loses only the invalid one. The returned
+// error is the metadata error if there is one, otherwise the tags error.
 func NormalizeProviderLabels(config *configstore.ProviderConfig) error {
+	var firstErr error
 	if err := configstoreTables.ValidateMetadata(config.Metadata, nil); err != nil {
-		return err
+		firstErr = err
+		config.Metadata = nil
 	}
 	if len(config.Metadata) == 0 {
 		config.Metadata = nil
 	}
 	tags, err := configstoreTables.NormalizeTags(config.Tags)
 	if err != nil {
-		return err
+		if firstErr == nil {
+			firstErr = err
+		}
+		tags = nil
 	}
 	config.Tags = tags
-	return nil
+	return firstErr
 }
 
 // PromptCacheTTLExtended is the only explicit prompt-cache TTL the gateway accepts.

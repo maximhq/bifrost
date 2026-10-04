@@ -11,7 +11,9 @@ import (
 
 // GetModelInfo returns pricing and capability metadata for a (provider, model)
 // pair in the same shape the /v1/models endpoint reports, or nil when the
-// catalog has no entry for it.
+// catalog has no entry for it. Operator-assigned tags count as an entry: a
+// tagged model with no datasheet row (a fine-tune or custom deployment) gets a
+// Model carrying only its ID and Tags, so plugins can still read its tags.
 //
 // Lookup order is pricing-row first (exact model+provider across every request
 // mode), then the capability entry, which additionally resolves through the
@@ -30,6 +32,9 @@ func (mc *ModelCatalog) GetModelInfo(provider schemas.ModelProvider, model strin
 		entry = mc.datasheet.GetCapabilityEntry(model, provider)
 	}
 	if entry == nil {
+		if tags := mc.GetModelTags(provider, model); tags != nil {
+			return &schemas.Model{ID: model, Tags: tags}
+		}
 		return nil
 	}
 
