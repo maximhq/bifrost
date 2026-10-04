@@ -188322,6 +188322,142 @@
           ]
         }
       ]
+    },
+    {
+      "name": "144. Gemini models honor stop_sequences from /anthropic/v1/messages (#7922 / PR #7923) (gemini-stop-sequences)",
+      "description": "Issue #7922: stop_sequences sent to /anthropic/v1/messages and routed to Gemini or Vertex Gemini never reached generationConfig.stopSequences. The Anthropic (and Bedrock) ingress store stop sequences under ExtraParams[\"stop\"], while ToGeminiResponsesRequest in core/providers/gemini/responses.go only read \"stop_sequences\", so the value was dropped and generation ran past the requested stop strings. The fix reads \"stop\" (falling back to \"stop_sequences\") and consumes the key so it is not forwarded as an unknown wire field. The request succeeds either way, so both cases assert on the outbound payload via x-bf-send-back-raw-request: generationConfig.stopSequences equals the client list, and neither stop nor stop_sequences appears at the top level. One case per provider because Vertex reaches the shared converter through its own provider and rewrites the body before sending it. The folder name deliberately omits the word vertex so the gemini rows stay in the gemini partition. Run with PROVIDER=gemini and PROVIDER=vertex, FEATURE=\"gemini-stop-sequences\".",
+      "item": [
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages stop_sequences reach generationConfig.stopSequences - #7922",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #7922: the Anthropic ingress stores stop_sequences under ExtraParams[\"stop\"], but the Gemini",
+                  "// Responses converter only read \"stop_sequences\", so generationConfig.stopSequences was never set and",
+                  "// the model ran past the stop strings. Nothing errors in the broken case, so the outbound payload",
+                  "// (raw_request) is the only reliable pin. Red pre-fix: stopSequences absent from generationConfig.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gemini/gemini-3.7-flash anthropic stop_sequences: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini/gemini-3.7-flash anthropic stop_sequences: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "rr = rr || {};",
+                  "var gc = rr.generationConfig || {};",
+                  "pm.test('gemini/gemini-3.7-flash anthropic stop_sequences: generationConfig.stopSequences carries the client stop_sequences - #7922', function () {",
+                  "  pm.expect(gc.stopSequences, 'generationConfig: ' + JSON.stringify(gc)).to.eql(['5', 'END']);",
+                  "});",
+                  "pm.test('gemini/gemini-3.7-flash anthropic stop_sequences: stop is not forwarded as an unknown top-level field', function () {",
+                  "  pm.expect(rr.stop, 'raw_request.stop leaked: ' + JSON.stringify(rr).slice(0, 800)).to.be.undefined;",
+                  "  pm.expect(rr.stop_sequences, 'raw_request.stop_sequences leaked: ' + JSON.stringify(rr).slice(0, 800)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"stop_sequences\": [\n    \"5\",\n    \"END\"\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from 1 to 10, comma separated.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-3.7-flash /anthropic/v1/messages stop_sequences reach generationConfig.stopSequences - #7922",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #7922: the Anthropic ingress stores stop_sequences under ExtraParams[\"stop\"], but the Gemini",
+                  "// Responses converter only read \"stop_sequences\", so generationConfig.stopSequences was never set and",
+                  "// the model ran past the stop strings. Nothing errors in the broken case, so the outbound payload",
+                  "// (raw_request) is the only reliable pin. Red pre-fix: stopSequences absent from generationConfig.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('vertex/gemini-3.7-flash anthropic stop_sequences: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('vertex/gemini-3.7-flash anthropic stop_sequences: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "rr = rr || {};",
+                  "var gc = rr.generationConfig || {};",
+                  "pm.test('vertex/gemini-3.7-flash anthropic stop_sequences: generationConfig.stopSequences carries the client stop_sequences - #7922', function () {",
+                  "  pm.expect(gc.stopSequences, 'generationConfig: ' + JSON.stringify(gc)).to.eql(['5', 'END']);",
+                  "});",
+                  "pm.test('vertex/gemini-3.7-flash anthropic stop_sequences: stop is not forwarded as an unknown top-level field', function () {",
+                  "  pm.expect(rr.stop, 'raw_request.stop leaked: ' + JSON.stringify(rr).slice(0, 800)).to.be.undefined;",
+                  "  pm.expect(rr.stop_sequences, 'raw_request.stop_sequences leaked: ' + JSON.stringify(rr).slice(0, 800)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"stop_sequences\": [\n    \"5\",\n    \"END\"\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from 1 to 10, comma separated.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
