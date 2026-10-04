@@ -47,6 +47,9 @@ type ModelCatalog struct {
 
 	// modelTags holds operator-assigned model tags (see ReloadModelTags).
 	modelTags atomic.Pointer[modelTagsIndex]
+	// modelTagsReloadMu serializes ReloadModelTags from the store read through publication, so
+	// an older snapshot cannot be published after a newer one.
+	modelTagsReloadMu sync.Mutex
 
 	// MCP library sync configuration (protected by syncMu)
 	mcpLibraryURL          string

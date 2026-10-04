@@ -1713,6 +1713,10 @@ func (h *ProviderHandler) setModelTags(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, "provider and model are required for every model tags entry")
 			return
 		}
+		if len(payload[i].Model) > tables.MaxModelNameLength {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("model name for provider %s can be at most %d bytes", payload[i].Provider, tables.MaxModelNameLength))
+			return
+		}
 		if _, err := h.inMemoryStore.GetProviderConfigRaw(schemas.ModelProvider(payload[i].Provider)); err != nil {
 			if errors.Is(err, lib.ErrNotFound) {
 				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("provider %s not found", payload[i].Provider))

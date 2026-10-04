@@ -41831,6 +41831,7 @@
                 "minItems": 1,
                 "items": {
                   "type": "object",
+                  "additionalProperties": false,
                   "required": [
                     "provider",
                     "model"
@@ -41842,7 +41843,8 @@
                     },
                     "model": {
                       "type": "string",
-                      "description": "Model name; does not have to be in the pricing datasheet"
+                      "maxLength": 255,
+                      "description": "Model name of at most 255 bytes; does not have to be in the pricing datasheet"
                     },
                     "tags": {
                       "type": "array",
@@ -41874,10 +41876,24 @@
             }
           },
           "404": {
-            "description": "A provider in the batch is not configured"
+            "description": "A provider in the batch is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "503": {
-            "description": "No config store is configured"
+            "description": "No config store is configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal server error",

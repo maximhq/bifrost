@@ -568,6 +568,7 @@ ModelResponse:
 
 ModelTagsEntry:
   type: object
+  additionalProperties: false
   required:
     - provider
     - model
@@ -577,7 +578,8 @@ ModelTagsEntry:
       description: A configured provider
     model:
       type: string
-      description: Model name; does not have to be in the pricing datasheet
+      maxLength: 255
+      description: Model name of at most 255 bytes; does not have to be in the pricing datasheet
     tags:
       $ref: '#/Tags'
 

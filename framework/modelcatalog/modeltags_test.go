@@ -3,7 +3,9 @@ package modelcatalog
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -22,6 +24,8 @@ func (f *fakeModelTagsStore) GetModelTags(context.Context) (map[string]map[strin
 	return f.tags, f.err
 }
 
+// TestModelTagsOverlay covers the overlay's nil and store-less no-ops, copy-on-read, whole
+// replacement on reload, and keeping the last good overlay when a reload fails.
 func TestModelTagsOverlay(t *testing.T) {
 	ctx := context.Background()
 
@@ -52,4 +56,55 @@ func TestModelTagsOverlay(t *testing.T) {
 	store.err = errors.New("db down")
 	require.Error(t, mc.ReloadModelTags(ctx))
 	assert.Equal(t, []string{"prod"}, mc.GetModelTags(schemas.Anthropic, "claude-sonnet-4-5"), "a failed reload keeps the last good overlay")
+}
+
+// sequencedModelTagsStore returns snapshots[i] on the i-th GetModelTags call. The first call
+// signals entered and then waits for release, so a test can hold one reload inside its read.
+type sequencedModelTagsStore struct {
+	configstore.ConfigStore
+	mu        sync.Mutex
+	calls     int
+	snapshots []map[string]map[string][]string
+	entered   chan struct{}
+	release   chan struct{}
+}
+
+func (s *sequencedModelTagsStore) GetModelTags(context.Context) (map[string]map[string][]string, error) {
+	s.mu.Lock()
+	call := s.calls
+	s.calls++
+	s.mu.Unlock()
+	if call == 0 {
+		close(s.entered)
+		<-s.release
+	}
+	return s.snapshots[call], nil
+}
+
+// TestReloadModelTags_OlderSnapshotCannotPublishLast holds a first reload inside its store read
+// (it has read the older snapshot) while a second reload runs. Reloads are serialized, so the
+// second one reads only after the first has published, and the newer snapshot ends up live.
+func TestReloadModelTags_OlderSnapshotCannotPublishLast(t *testing.T) {
+	ctx := context.Background()
+	store := &sequencedModelTagsStore{
+		snapshots: []map[string]map[string][]string{
+			{"openai": {"gpt-5.1": {"old"}}},
+			{"openai": {"gpt-5.1": {"new"}}},
+		},
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	mc := &ModelCatalog{configStore: store}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); assert.NoError(t, mc.ReloadModelTags(ctx)) }()
+	<-store.entered
+	go func() { defer wg.Done(); assert.NoError(t, mc.ReloadModelTags(ctx)) }()
+	// Give the second reload time to run ahead if it were not serialized.
+	time.Sleep(50 * time.Millisecond)
+	close(store.release)
+	wg.Wait()
+
+	assert.Equal(t, []string{"new"}, mc.GetModelTags(schemas.OpenAI, "gpt-5.1"), "the newer snapshot must be the one left live")
 }

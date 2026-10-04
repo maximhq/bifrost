@@ -767,8 +767,16 @@ models-tags:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
         description: A provider in the batch is not configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '503':
         description: No config store is configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

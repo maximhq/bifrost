@@ -352,6 +352,27 @@ def test_provider_labels_contract():
     assert not problems, "Provider labels contract drift:\n    " + "\n    ".join(problems)
 
 
+def test_model_tags_contract():
+    """PUT /api/models/tags: every error response carries a BifrostError body (the handler sends
+    one for 404 and 503 too), and batch items are closed objects so a misspelled field such as
+    `tag` is rejected instead of silently clearing the model's tags."""
+    import json
+
+    source_op = load(PATHS_DIR / "providers.yaml")["models-tags"]["put"]
+    source_entry = load(HERE / "schemas" / "management" / "providers.yaml")["ModelTagsEntry"]
+    bundle_op = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))["paths"]["/api/models/tags"]["put"]
+    problems = []
+    for where, op in (("paths/management/providers.yaml", source_op), ("openapi.json", bundle_op)):
+        for status in ("404", "503"):
+            if "application/json" not in op["responses"][status].get("content", {}):
+                problems.append(f"{where} setModelTags {status}: no application/json error body")
+    bundle_entry = bundle_op["requestBody"]["content"]["application/json"]["schema"]["items"]
+    for where, entry in (("schemas/management/providers.yaml", source_entry), ("openapi.json", bundle_entry)):
+        if entry.get("additionalProperties") is not False:
+            problems.append(f"{where} ModelTagsEntry: additionalProperties is not false")
+    assert not problems, "Model tags contract drift:\n    " + "\n    ".join(problems)
+
+
 def test_warp_credential_contract_is_current():
     """Warp's settings API carries `api_key_id`, a reference to a configured provider key.
     There is no write-only `api_key` and no `api_key_set` presence flag, so no redaction
@@ -821,6 +842,7 @@ check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_c
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
 check("provider labels contract: nullable update, no templated filter param", test_provider_labels_contract)
+check("model tags contract: error bodies, closed batch items", test_model_tags_contract)
 check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
 check("warp config input models its embedding contract", test_warp_config_input_models_the_embedding_contract)
 check("warp chat response contract matches the agent", test_warp_chat_response_contract_is_current)
