@@ -87873,7 +87873,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPLogs:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Delete MCP tool logs",
-        "description": "Deletes MCP tool logs by their IDs.\n",
+        "description": "Deletes MCP tool logs by their IDs.\nRequires authenticated management access. Requests admitted without checking\ncredentials because dashboard authentication is disabled, unconfigured, or\nbypassed by an auth whitelist receive 403 before any logs are deleted.\n",
         "tags": ["Logging"],
         "requestBody": {
           "required": true,
@@ -87917,6 +87917,16 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authentication was bypassed; authenticated management access is required",
             "content": {
               "application/json": {
                 "schema": {
