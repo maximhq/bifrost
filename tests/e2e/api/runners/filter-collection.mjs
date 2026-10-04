@@ -291,6 +291,12 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
   if (provider === "vertex") return isVertex;
   if (isVertex && (provider === "gemini" || provider === "anthropic")) return false;
+  // Rows that send a Gemini, OpenAI or Azure model through the Anthropic Messages ingress
+  // (POST /anthropic/v1/messages with model "gemini/...", "openai/..." or "azure/...") contain
+  // "anthropic" only because of the route or folder name, yet the upstream call goes to the
+  // model's own provider - same collision class as vertex above. Keep them out of the anthropic
+  // partition; they still match their own provider's keywords through the model prefix.
+  if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure)\//.test(item.request?.body?.raw || "")) return false;
   // Runware rows name the upstream vendor inside the AIR model id ("runware/anthropic:claude@...",
   // "runware/google:gemini@...", "runware/minimax:..."), so they'd otherwise be claimed by those
   // partitions too - same collision class as openrouter/bedrock_mantle/vertex above. Route them
