@@ -45530,7 +45530,15 @@
           {
             "name": "search",
             "in": "query",
-            "description": "Case-insensitive search across the virtual key name, its team name, and its customer name. Enterprise additionally matches the name and email of the user the key is assigned to.",
+            "description": "Case-insensitive search across the virtual key name, its team name, its customer name, and its metadata keys and values. Enterprise additionally matches the name and email of the user the key is assigned to.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Metadata filter: only keys whose metadata has <key> set to exactly this value (for example metadata_cost_center=cc-42). Repeat with different keys to AND them. An invalid key (anything but letters, digits, '.', '_' and '-') is rejected with a 400.",
             "schema": {
               "type": "string"
             }
@@ -110675,6 +110683,18 @@
           "description": {
             "type": "string"
           },
+          "metadata": {
+            "type": "object",
+            "description": "Custom key/value metadata attached to the key (for example cost_center, project, owner, environment). Omitted when the key has none.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
           "is_active": {
             "type": "boolean"
           },
@@ -111092,6 +111112,18 @@
           "description": {
             "type": "string"
           },
+          "metadata": {
+            "type": "object",
+            "description": "Custom key/value metadata for cost attribution (for example cost_center, project, owner, environment). Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
           "provider_configs": {
             "type": "array",
             "description": "Provider configurations. When allow_all_providers is omitted or false, an empty list allows no providers (deny-by-default); when true, providers without a config are allowed with all models and keys.",
@@ -111233,6 +111265,18 @@
           },
           "description": {
             "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Replaces the key's metadata as a whole. Omit (or send null) to leave it unchanged; send {} to clear it. Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
           },
           "provider_configs": {
             "type": "array",

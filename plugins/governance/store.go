@@ -4,6 +4,7 @@ package governance
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -1322,6 +1323,7 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, virtualKey.ID)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, virtualKey.Name)
 	stampVirtualKeyContentLogging(ctx, virtualKey)
+	stampVirtualKeyMetadata(ctx, virtualKey)
 	if virtualKey.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, virtualKey.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
@@ -1355,6 +1357,17 @@ func stampVirtualKeyContentLogging(ctx *schemas.BifrostContext, virtualKey *conf
 	if *virtualKey.DisableContentLogging {
 		ctx.SetTraceAttribute(schemas.AttrBifrostContentLoggingDisabled, true)
 	}
+}
+
+// stampVirtualKeyMetadata publishes the key's metadata for the logging plugin, which snapshots it
+// onto the log row so spend can be filtered by it. The context gets its own copy: the key is shared
+// by every in-flight request and replaced wholesale on reload, and nothing a request does to its
+// copy may reach the store. A key without metadata leaves the context alone.
+func stampVirtualKeyMetadata(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) {
+	if ctx == nil || virtualKey == nil || len(virtualKey.Metadata) == 0 {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyMetadata, maps.Clone(virtualKey.Metadata))
 }
 
 // recordVirtualKeyIdentity completes the request's identity with what the presented key resolved to:
