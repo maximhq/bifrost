@@ -4164,7 +4164,7 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 	hasFunctionTool := false
 
 	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeFunction && tool.ResponsesToolFunction != nil && tool.Name != nil {
+		if tool.Type == schemas.ResponsesToolTypeFunction && tool.Name != nil {
 			hasFunctionTool = true
 			break
 		}
@@ -4174,27 +4174,27 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 
 	for _, tool := range tools {
 		if tool.Type == schemas.ResponsesToolTypeFunction {
-			// Extract function information from ResponsesExtendedTool
-			if tool.ResponsesToolFunction != nil {
-				if tool.Name != nil && tool.ResponsesToolFunction != nil {
-					funcDecl := &FunctionDeclaration{
-						Name: *tool.Name,
-						Description: func() string {
-							if tool.Description != nil {
-								return *tool.Description
-							}
-							return ""
-						}(),
-					}
-					if tool.ResponsesToolFunction.Parameters != nil {
-						raw, err := providerUtils.MarshalSorted(tool.ResponsesToolFunction.Parameters)
-						if err != nil {
-							return []Tool{}, fmt.Errorf("marshal tool %q parameters: %w", *tool.Name, err)
+			// A function tool declared without a schema (e.g. an Anthropic tool with no
+			// input_schema) has a nil ResponsesToolFunction; it is still a callable tool, so it is
+			// declared by name and description alone, which Gemini accepts.
+			if tool.Name != nil {
+				funcDecl := &FunctionDeclaration{
+					Name: *tool.Name,
+					Description: func() string {
+						if tool.Description != nil {
+							return *tool.Description
 						}
-						funcDecl.ParametersJSONSchema = json.RawMessage(raw)
-					}
-					functionDeclarations = append(functionDeclarations, funcDecl)
+						return ""
+					}(),
 				}
+				if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
+					raw, err := providerUtils.MarshalSorted(tool.ResponsesToolFunction.Parameters)
+					if err != nil {
+						return []Tool{}, fmt.Errorf("marshal tool %q parameters: %w", *tool.Name, err)
+					}
+					funcDecl.ParametersJSONSchema = json.RawMessage(raw)
+				}
+				functionDeclarations = append(functionDeclarations, funcDecl)
 			}
 		}
 		if tool.Type == schemas.ResponsesToolTypeWebSearch && !dropGoogleSearch {
@@ -4505,6 +4505,18 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	// Track consecutive function call output messages to group them for parallel function calling
 	// According to Gemini docs, all function responses must be in a single message
 	var pendingFunctionResponseParts []*Part
+	// CallIDs of the function calls emitted since the last flush, in order. Vertex strips
+	// FunctionCall.ID / FunctionResponse.ID and pairs results with calls by position, so each
+	// batch of responses is reordered to follow the calls before it is flushed.
+	var pendingFunctionCallIDs []string
+	flushFunctionResponses := func() {
+		contents = append(contents, Content{
+			Parts: orderFunctionResponsesByCallID(pendingFunctionResponseParts, pendingFunctionCallIDs),
+			Role:  "user", // Function responses use "user" role in Gemini
+		})
+		pendingFunctionResponseParts = nil
+		pendingFunctionCallIDs = nil
+	}
 
 	// Set once the leading system prompt ends (first non-system message). Only the leading run is
 	// hoisted into systemInstruction; a system turn that arrives after the conversation has
@@ -4574,11 +4586,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 				// Flush first: the reminder is a user turn of its own and must not be filed
 				// behind function responses that precede it.
 				if len(pendingFunctionResponseParts) > 0 {
-					contents = append(contents, Content{
-						Parts: pendingFunctionResponseParts,
-						Role:  "user",
-					})
-					pendingFunctionResponseParts = nil
+					flushFunctionResponses()
 				}
 				contents = append(contents, *inlined)
 			}
@@ -4620,11 +4628,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		// If we have pending function responses and current message is NOT a function output,
 		// flush the pending responses as a single Content (for parallel function calling)
 		if len(pendingFunctionResponseParts) > 0 && !isFunctionOutput {
-			contents = append(contents, Content{
-				Parts: pendingFunctionResponseParts,
-				Role:  "user", // Function responses use "user" role in Gemini
-			})
-			pendingFunctionResponseParts = nil
+			flushFunctionResponses()
 		}
 
 		// Handle regular messages
@@ -4681,6 +4685,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						}
 						// Keep the full CallID as-is (don't strip thought signature)
 						part.FunctionCall.ID = *msg.ResponsesToolMessage.CallID
+						pendingFunctionCallIDs = append(pendingFunctionCallIDs, part.FunctionCall.ID)
 					}
 					if thoughtSig != "" {
 						var err error
@@ -4807,11 +4812,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 					// If this is the last message, flush pending responses
 					if i == len(messages)-1 && len(pendingFunctionResponseParts) > 0 {
-						contents = append(contents, Content{
-							Parts: pendingFunctionResponseParts,
-							Role:  "user",
-						})
-						pendingFunctionResponseParts = nil
+						flushFunctionResponses()
 					}
 
 					continue // Skip normal content handling
@@ -4849,6 +4850,33 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	}
 
 	return contents, systemInstruction, nil
+}
+
+// orderFunctionResponsesByCallID returns the function response parts reordered to follow the
+// order of callIDs (the CallIDs of the preceding function calls). Vertex drops the ids and pairs
+// responses with calls by position, so results returned out of call order would be mis-paired.
+// The sort is stable: responses whose ID matches no call keep their relative order at the end.
+func orderFunctionResponsesByCallID(parts []*Part, callIDs []string) []*Part {
+	if len(parts) < 2 || len(callIDs) == 0 {
+		return parts
+	}
+	rank := make(map[string]int, len(callIDs))
+	for i, id := range callIDs {
+		if _, seen := rank[id]; !seen {
+			rank[id] = i
+		}
+	}
+	rankOf := func(p *Part) int {
+		if p != nil && p.FunctionResponse != nil {
+			if r, ok := rank[p.FunctionResponse.ID]; ok {
+				return r
+			}
+		}
+		return len(callIDs)
+	}
+	ordered := slices.Clone(parts)
+	slices.SortStableFunc(ordered, func(a, b *Part) int { return rankOf(a) - rankOf(b) })
+	return ordered
 }
 
 // convertContentBlockToGeminiPart converts a content block to Gemini part, re-attaching any

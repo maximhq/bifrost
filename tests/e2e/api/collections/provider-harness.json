@@ -197151,7 +197151,293 @@
       ]
     },
     {
-      "name": "165. Gemini models honor stop_sequences from /anthropic/v1/messages (#7922 / PR #7923) (gemini-stop-sequences)",
+      "name": "164. Gemini keeps schemaless function tools and orders tool results by call id (#7926 / PR #7927) (gemini-tools-and-tool-results)",
+      "description": "Issue #7926, two request-translation bugs on the Anthropic Messages / Responses -> Gemini path (core/providers/gemini/responses.go). (1) A function tool declared without input_schema converts to a ResponsesTool with a nil ResponsesToolFunction, and convertResponsesToolsToGemini skipped it, so the request reached Gemini with no tools. It is now declared by name and description. (2) Vertex blanks functionCall.id and functionResponse.id (stripVertexGeminiUnsupportedFields) and pairs results with calls by position, but the converter forwarded function responses in client order, so tool_result blocks returned out of tool_use order were attached to the wrong calls. Each batch of function responses is now reordered to follow the preceding calls (orderFunctionResponsesByCallID). Neither bug errors, so every case asserts the outbound payload via x-bf-send-back-raw-request: the schemaless tool appears in tools[].functionDeclarations (gemini and vertex), and the reversed tool_result pair reaches the wire in call order (vertex, where pairing is positional, and gemini, which shares the converter). Fixture is the issue repro: do not put the tool_result blocks back in call order, or the ordering cases pass vacuously. The folder name deliberately omits the word vertex so the gemini rows stay in the gemini partition. Run with PROVIDER=gemini and PROVIDER=vertex, FEATURE=\"gemini-tools-and-tool-results\".",
+      "item": [
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages tool without input_schema reaches functionDeclarations - #7926",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #7926: an Anthropic tool with no input_schema converts to a function tool with a nil",
+                  "// ResponsesToolFunction, and convertResponsesToolsToGemini only declared tools that had one, so the",
+                  "// request reached Gemini with no tools and the model answered as if it had none. Nothing errors, so",
+                  "// raw_request is the pin. Red pre-fix: no functionDeclaration named get_time in raw_request.tools.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gemini/gemini-3.7-flash schemaless tool: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini/gemini-3.7-flash schemaless tool: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "rr = rr || {};",
+                  "var decls = [];",
+                  "(rr.tools || []).forEach(function (t) { (t.functionDeclarations || []).forEach(function (d) { decls.push(d); }); });",
+                  "var decl = decls.filter(function (d) { return d.name === 'get_time'; })[0];",
+                  "pm.test('gemini/gemini-3.7-flash schemaless tool: get_time is declared by name and description - #7926', function () {",
+                  "  pm.expect(decl, 'functionDeclarations: ' + JSON.stringify(rr.tools || null)).to.be.an('object');",
+                  "  pm.expect((decl || {}).description, 'declaration: ' + JSON.stringify(decl || null)).to.eql('Returns the current time');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"name\": \"get_time\",\n      \"description\": \"Returns the current time\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_time.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-3.7-flash /anthropic/v1/messages tool without input_schema reaches functionDeclarations - #7926",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #7926: an Anthropic tool with no input_schema converts to a function tool with a nil",
+                  "// ResponsesToolFunction, and convertResponsesToolsToGemini only declared tools that had one, so the",
+                  "// request reached Gemini with no tools and the model answered as if it had none. Nothing errors, so",
+                  "// raw_request is the pin. Red pre-fix: no functionDeclaration named get_time in raw_request.tools.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('vertex/gemini-3.7-flash schemaless tool: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('vertex/gemini-3.7-flash schemaless tool: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "rr = rr || {};",
+                  "var decls = [];",
+                  "(rr.tools || []).forEach(function (t) { (t.functionDeclarations || []).forEach(function (d) { decls.push(d); }); });",
+                  "var decl = decls.filter(function (d) { return d.name === 'get_time'; })[0];",
+                  "pm.test('vertex/gemini-3.7-flash schemaless tool: get_time is declared by name and description - #7926', function () {",
+                  "  pm.expect(decl, 'functionDeclarations: ' + JSON.stringify(rr.tools || null)).to.be.an('object');",
+                  "  pm.expect((decl || {}).description, 'declaration: ' + JSON.stringify(decl || null)).to.eql('Returns the current time');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"name\": \"get_time\",\n      \"description\": \"Returns the current time\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_time.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-3.7-flash /anthropic/v1/messages parallel tool_result blocks follow tool_use order - #7926",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #7926: Vertex strips functionCall.id / functionResponse.id and pairs results with calls by position.",
+                  "// The client returns the tool_result blocks in reverse order (b, a); without reordering, Vertex attaches",
+                  "// \"contents of B\" to the a.txt call. The function responses must be sent in tool_use order (a, b). The",
+                  "// request succeeds either way, so raw_request is the pin. Red pre-fix: B precedes A on the wire.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('vertex/gemini-3.7-flash tool result order: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('vertex/gemini-3.7-flash tool result order: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "rr = rr || {};",
+                  "var calls = [];",
+                  "var responses = [];",
+                  "(rr.contents || []).forEach(function (c) {",
+                  "  (c.parts || []).forEach(function (p) {",
+                  "    if (p.functionCall) { calls.push(JSON.stringify(p.functionCall.args || {})); }",
+                  "    if (p.functionResponse) { responses.push(JSON.stringify(p.functionResponse.response || {})); }",
+                  "  });",
+                  "});",
+                  "var dump = JSON.stringify(rr.contents || null).slice(0, 1500);",
+                  "pm.test('vertex/gemini-3.7-flash tool result order: both calls and both results reached the wire - #7926', function () {",
+                  "  pm.expect(calls.length, 'functionCall parts: ' + dump).to.eql(2);",
+                  "  pm.expect(responses.length, 'functionResponse parts: ' + dump).to.eql(2);",
+                  "  pm.expect(calls[0], 'call order changed: ' + dump).to.include('a.txt');",
+                  "  pm.expect(calls[1], 'call order changed: ' + dump).to.include('b.txt');",
+                  "});",
+                  "pm.test('vertex/gemini-3.7-flash tool result order: function responses follow the call order (a, then b) - #7926', function () {",
+                  "  pm.expect(responses[0] || '', 'first functionResponse should answer a.txt: ' + dump).to.include('contents of A');",
+                  "  pm.expect(responses[1] || '', 'second functionResponse should answer b.txt: ' + dump).to.include('contents of B');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"name\": \"read_file\",\n      \"description\": \"Read a file\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read a.txt and b.txt and tell me which file says what.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_a\",\n          \"name\": \"read_file\",\n          \"input\": {\n            \"path\": \"a.txt\"\n          }\n        },\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_b\",\n          \"name\": \"read_file\",\n          \"input\": {\n            \"path\": \"b.txt\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_b\",\n          \"content\": \"contents of B\"\n        },\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_a\",\n          \"content\": \"contents of A\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages parallel tool_result blocks follow tool_use order - #7926",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #7926: Vertex strips functionCall.id / functionResponse.id and pairs results with calls by position.",
+                  "// The client returns the tool_result blocks in reverse order (b, a); without reordering, Vertex attaches",
+                  "// \"contents of B\" to the a.txt call. The function responses must be sent in tool_use order (a, b). The",
+                  "// request succeeds either way, so raw_request is the pin. Red pre-fix: B precedes A on the wire.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gemini/gemini-3.7-flash tool result order: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini/gemini-3.7-flash tool result order: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "rr = rr || {};",
+                  "var calls = [];",
+                  "var responses = [];",
+                  "(rr.contents || []).forEach(function (c) {",
+                  "  (c.parts || []).forEach(function (p) {",
+                  "    if (p.functionCall) { calls.push(JSON.stringify(p.functionCall.args || {})); }",
+                  "    if (p.functionResponse) { responses.push(JSON.stringify(p.functionResponse.response || {})); }",
+                  "  });",
+                  "});",
+                  "var dump = JSON.stringify(rr.contents || null).slice(0, 1500);",
+                  "pm.test('gemini/gemini-3.7-flash tool result order: both calls and both results reached the wire - #7926', function () {",
+                  "  pm.expect(calls.length, 'functionCall parts: ' + dump).to.eql(2);",
+                  "  pm.expect(responses.length, 'functionResponse parts: ' + dump).to.eql(2);",
+                  "  pm.expect(calls[0], 'call order changed: ' + dump).to.include('a.txt');",
+                  "  pm.expect(calls[1], 'call order changed: ' + dump).to.include('b.txt');",
+                  "});",
+                  "pm.test('gemini/gemini-3.7-flash tool result order: function responses follow the call order (a, then b) - #7926', function () {",
+                  "  pm.expect(responses[0] || '', 'first functionResponse should answer a.txt: ' + dump).to.include('contents of A');",
+                  "  pm.expect(responses[1] || '', 'second functionResponse should answer b.txt: ' + dump).to.include('contents of B');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"name\": \"read_file\",\n      \"description\": \"Read a file\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read a.txt and b.txt and tell me which file says what.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_a\",\n          \"name\": \"read_file\",\n          \"input\": {\n            \"path\": \"a.txt\"\n          }\n        },\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_b\",\n          \"name\": \"read_file\",\n          \"input\": {\n            \"path\": \"b.txt\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_b\",\n          \"content\": \"contents of B\"\n        },\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_a\",\n          \"content\": \"contents of A\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "166. Gemini models honor stop_sequences from /anthropic/v1/messages (#7922 / PR #7923) (gemini-stop-sequences)",
       "description": "Issue #7922: stop_sequences sent to /anthropic/v1/messages and routed to Gemini or Vertex Gemini never reached generationConfig.stopSequences. The Anthropic (and Bedrock) ingress store stop sequences under ExtraParams[\"stop\"], while ToGeminiResponsesRequest in core/providers/gemini/responses.go only read \"stop_sequences\", so the value was dropped and generation ran past the requested stop strings. The fix reads \"stop\" (falling back to \"stop_sequences\") and consumes the key so it is not forwarded as an unknown wire field. The request succeeds either way, so both cases assert on the outbound payload via x-bf-send-back-raw-request: generationConfig.stopSequences equals the client list, and neither stop nor stop_sequences appears at the top level. One case per provider because Vertex reaches the shared converter through its own provider and rewrites the body before sending it. The folder name deliberately omits the word vertex so the gemini rows stay in the gemini partition. Run with PROVIDER=gemini and PROVIDER=vertex, FEATURE=\"gemini-stop-sequences\".",
       "item": [
         {
