@@ -584,6 +584,7 @@ ModelTagsEntry:
   required:
     - provider
     - model
+    - tags
   properties:
     provider:
       type: string
@@ -597,6 +598,9 @@ ModelTagsEntry:
         is not expressed as maxLength.
     tags:
       $ref: '#/TagsInput'
+      description: >-
+        Replaces the model's tags. Required: a missing or null value is rejected with a 400, and
+        an empty list clears the model's tags.
 
 Architecture:
   type: object
