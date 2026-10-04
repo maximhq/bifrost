@@ -1,7 +1,6 @@
 package schemas
 
-// DecisionKind identifies how a single question is decided. The vocabulary
-// mirrors Typesafe's System One question types.
+// DecisionKind identifies how a single question is decided across providers.
 type DecisionKind string
 
 const (
@@ -23,8 +22,8 @@ type DecisionQuestion struct {
 	Criteria     interface{}  `json:"criteria,omitempty"`
 }
 
-// BifrostDecisionRequest represents a request to evaluate state against a map
-// of named questions. The shape mirrors Typesafe's System One endpoint.
+// BifrostDecisionRequest represents a provider-neutral request to evaluate
+// state against a map of named questions.
 type BifrostDecisionRequest struct {
 	Provider       ModelProvider               `json:"provider"`
 	Model          string                      `json:"model"`

@@ -28,6 +28,7 @@ func TestPerplexity(t *testing.T) {
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.Perplexity,
 		ChatModel:      "sonar-pro",
+		DecisionModel:  "pplx-decider-v1-27b",
 		TextModel:      "", // Perplexity doesn't support text completion
 		EmbeddingModel: "", // Perplexity doesn't support embedding
 		Scenarios: llmtests.TestScenarios{
@@ -47,6 +48,7 @@ func TestPerplexity(t *testing.T) {
 			FileURL:                false,
 			Embedding:              false, // Not supported yet
 			ListModels:             false,
+			Decision:               true,
 			PassThroughExtraParams: true,
 		},
 	}

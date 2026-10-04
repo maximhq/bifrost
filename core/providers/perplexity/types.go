@@ -45,6 +45,49 @@ type PerplexityChatRequest struct {
 	ExtraParams             map[string]interface{}  `json:"-"`
 }
 
+// PerplexityDecisionQuestion represents one native Decisions API question.
+type PerplexityDecisionQuestion struct {
+	Type         string      `json:"type"`
+	Instructions interface{} `json:"instructions,omitempty"`
+	Criteria     interface{} `json:"criteria,omitempty"`
+}
+
+// PerplexityDecisionRequest represents a native Decisions API request.
+type PerplexityDecisionRequest struct {
+	State     interface{}                           `json:"state"`
+	Model     string                                `json:"model"`
+	Questions map[string]PerplexityDecisionQuestion `json:"questions"`
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface.
+func (r *PerplexityDecisionRequest) GetExtraParams() map[string]interface{} {
+	return nil
+}
+
+// PerplexityDecisionAnswer represents one native Decisions API answer.
+type PerplexityDecisionAnswer struct {
+	Type          string             `json:"type"`
+	Noul          *float64           `json:"noul,omitempty"`
+	Choice        *string            `json:"choice,omitempty"`
+	Score         *float64           `json:"score,omitempty"`
+	Probabilities map[string]float64 `json:"probabilities,omitempty"`
+	Legend        map[string]any     `json:"legend,omitempty"`
+	Confidence    *float64           `json:"confidence,omitempty"`
+}
+
+// PerplexityDecisionUsage represents native Decisions API token usage.
+type PerplexityDecisionUsage struct {
+	InputTokens int `json:"input_tokens"`
+}
+
+// PerplexityDecisionResponse represents a native Decisions API response.
+type PerplexityDecisionResponse struct {
+	ID      string                              `json:"id,omitempty"`
+	Model   string                              `json:"model"`
+	Answers map[string]PerplexityDecisionAnswer `json:"answers"`
+	Usage   *PerplexityDecisionUsage            `json:"usage,omitempty"`
+}
+
 // GetExtraParams implements the RequestBodyWithExtraParams interface
 func (r *PerplexityChatRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
@@ -87,14 +130,14 @@ type PerplexityChatResponse struct {
 }
 
 type Usage struct {
-	PromptTokens      int                  `json:"prompt_tokens"`
-	CompletionTokens  int                  `json:"completion_tokens"`
-	TotalTokens       int                  `json:"total_tokens"`
-	SearchContextSize *string              `json:"search_context_size,omitempty"`
-	CitationTokens    *int                 `json:"citation_tokens,omitempty"`
-	NumSearchQueries  *int                 `json:"num_search_queries,omitempty"`
-	ReasoningTokens   *int                 `json:"reasoning_tokens,omitempty"`
-	Cost              *perplexityCost      `json:"cost,omitempty"`
+	PromptTokens      int             `json:"prompt_tokens"`
+	CompletionTokens  int             `json:"completion_tokens"`
+	TotalTokens       int             `json:"total_tokens"`
+	SearchContextSize *string         `json:"search_context_size,omitempty"`
+	CitationTokens    *int            `json:"citation_tokens,omitempty"`
+	NumSearchQueries  *int            `json:"num_search_queries,omitempty"`
+	ReasoningTokens   *int            `json:"reasoning_tokens,omitempty"`
+	Cost              *perplexityCost `json:"cost,omitempty"`
 }
 
 // perplexityCost is Perplexity's raw cost object, a flat per-category shape. It

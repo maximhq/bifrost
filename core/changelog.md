@@ -1,3 +1,4 @@
+- [feat]: native Perplexity Decisions API support. `/v1/decisions` requests for `perplexity/pplx-decider-v1-27b` are translated to Perplexity's native decisions endpoint (noul, choice and score questions), with request validation, answer normalization against the requested options, and input-token usage mapping; other Perplexity models still return unsupported [@mukul-atomicwork](https://github.com/mukul-atomicwork)
 - feat: pinned provider keys on routing fallbacks via key_id on each fallback (#7470)
 - feat: forward OpenAI async tools, output_schema and tunnel_id on Responses, stripping async for unsupported models with a SupportsAsyncTools datasheet override (#7242)
 - feat: prompt-cache breakpoints for the GPT-6 family with a SupportsPromptCacheBreakpoint datasheet override (#7240)
