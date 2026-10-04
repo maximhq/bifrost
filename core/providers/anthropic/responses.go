@@ -2942,6 +2942,9 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 // own -- the branch chose a block type the delta it later emits cannot land on -- so
 // the tests in streamblocktype_test.go assert the emitted shape directly rather than
 // relying on this to launder it.
+//
+// It also records when a client tool_use block opens (state.sawToolUse), so the
+// terminal message_delta can report tool_use for translated tool-call turns.
 func enforceStreamBlockTypes(state *anthropicToResponsesStreamState, events []*AnthropicStreamEvent) []*AnthropicStreamEvent {
 	kept := events[:0]
 	for _, event := range events {
@@ -2976,6 +2979,10 @@ func enforceStreamBlockTypes(state *anthropicToResponsesStreamState, events []*A
 	return kept
 }
 
+// toAnthropicResponsesStreamEvents maps one Bifrost Responses stream event to the
+// Anthropic stream events it produces. On response.completed it emits the terminal
+// message_delta, reporting tool_use instead of end_turn when the turn opened a
+// tool_use block or its output carries a tool call, and stop_sequence null.
 func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *schemas.BifrostResponsesStreamResponse) []*AnthropicStreamEvent {
 	if bifrostResp == nil {
 		return nil
@@ -5076,7 +5083,9 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 	return bifrostResp
 }
 
-// ToAnthropicResponsesResponse converts a BifrostResponse with Responses structure back to AnthropicMessageResponse
+// ToAnthropicResponsesResponse converts a BifrostResponse with Responses structure back to AnthropicMessageResponse.
+// A natural stop on a turn that produced a tool_use block is reported as stop_reason
+// tool_use, since translated upstreams (Gemini, OpenAI-shaped Responses) do not say so.
 func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *schemas.BifrostResponsesResponse) *AnthropicMessageResponse {
 	anthropicResp := &AnthropicMessageResponse{
 		Type: "message",
