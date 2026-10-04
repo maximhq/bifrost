@@ -197035,6 +197035,120 @@
           ]
         }
       ]
+    },
+    {
+      "name": "163. MCP log deletion requires dashboard auth (#7769) (mcp-log-delete-auth)",
+      "description": "Management-plane regression for #7769 using the default harness profile with dashboard auth disabled or unconfigured. A caller admitted without an authenticated admin session must receive 403 from DELETE /api/mcp-logs before body parsing or storage deletion. The session-status precondition fails loudly when this folder is run against an auth-enabled profile. The valid-body probe uses a fresh GUID sentinel rather than an existing log ID, so even an unfixed gateway cannot delete real records; the handler Go tests independently assert zero storage calls and preserve authenticated deletion. Cookies, inherited auth, and redirect following are disabled. No authentication configuration is changed and no provider calls are made; openai is only a harness filter label. Run the whole folder in order with FEATURE=mcp-log-delete-auth and PARALLEL=0.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-log-delete-auth dashboard bypass precondition - #7769",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/session/is-auth-enabled"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mcp-log-delete-auth runs without dashboard authentication or an admin token', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.is_auth_enabled, 'use the default no-auth harness profile: ' + pm.response.text()).to.equal(false);",
+                  "  pm.expect(body.has_valid_token, 'request must not carry an admin session: ' + pm.response.text()).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-403] openai mcp-log-delete-auth nonempty IDs refused without dashboard auth - #7769",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/mcp-logs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ids\": [\"harness-mcp-log-delete-auth-{{$guid}}\"]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mcp-log-delete-auth rejects unauthenticated deletion with 403', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('authenticated admin session');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-403] openai mcp-log-delete-auth malformed body refused before parsing - #7769",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/mcp-logs",
+            "body": {
+              "mode": "raw",
+              "raw": "{"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mcp-log-delete-auth checks authentication before parsing the body', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('authenticated admin session');",
+                  "  pm.expect(pm.response.text(), 'body parsing ran before authentication: ' + pm.response.text()).to.not.include('Invalid JSON');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
