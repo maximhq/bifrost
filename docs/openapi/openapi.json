@@ -41848,7 +41848,7 @@
                     },
                     "tags": {
                       "type": "array",
-                      "description": "Replaces the model's tags. Required: a missing or null value is rejected with a 400, and an empty list clears the model's tags.",
+                      "description": "Replaces the model's tags. Required: a missing or null value is rejected with a 400, and an empty list clears the model's tags. Each tag is 1-64 characters of letters, digits, '.', '_' and '-' once surrounding whitespace is trimmed; at most 50 entries, duplicates included. Stored trimmed, de-duplicated and sorted.",
                       "maxItems": 50,
                       "items": {
                         "type": "string",
