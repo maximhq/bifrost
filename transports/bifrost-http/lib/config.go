@@ -3073,6 +3073,49 @@ func entityIDSet[T any](existing []T, id func(T) string, toAdd []T) map[string]b
 }
 
 // mergeGovernanceConfig merges governance config from file with store
+// matchConfigVirtualKey returns the index in stored of the virtual key a config.json entry refers
+// to, or -1 when it refers to none. An entry with an id matches by id only. An entry without one
+// falls back to its name: names are unique per owner (team, customer, business unit, or none), so
+// the stored key with the same name and owner is the match. Without one, a lone key with that name
+// still matches, as it did when names were globally unique (e.g. its owner was changed in the UI).
+// Several same-name keys, none with the entry's owner, are ambiguous: the entry must set its id.
+func matchConfigVirtualKey(stored []configstoreTables.TableVirtualKey, entry configstoreTables.TableVirtualKey) (idx int, ambiguous bool) {
+	if entry.ID != "" {
+		for i := range stored {
+			if stored[i].ID == entry.ID {
+				return i, false
+			}
+		}
+		return -1, false
+	}
+	sameName := -1
+	sameNameCount := 0
+	for i := range stored {
+		if stored[i].Name != entry.Name {
+			continue
+		}
+		if sameVirtualKeyOwner(stored[i], entry) {
+			return i, false
+		}
+		sameName = i
+		sameNameCount++
+	}
+	if sameNameCount > 1 {
+		return -1, true
+	}
+	return sameName, false
+}
+
+// sameVirtualKeyOwner reports whether a and b have the same owner: the same team, customer or
+// business unit, or none.
+func sameVirtualKeyOwner(a, b configstoreTables.TableVirtualKey) bool {
+	same := func(x, y *string) bool {
+		x, y = configstoreTables.NormalizeVirtualKeyOwnerID(x), configstoreTables.NormalizeVirtualKeyOwnerID(y)
+		return (x == nil && y == nil) || (x != nil && y != nil && *x == *y)
+	}
+	return same(a.TeamID, b.TeamID) && same(a.CustomerID, b.CustomerID) && same(a.BusinessUnitID, b.BusinessUnitID)
+}
+
 func mergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData, governanceConfig *configstore.GovernanceConfig) {
 	logger.Debug("merging governance config from config file with store")
 	// When config.json is the source of truth, file-present entities must be
@@ -3255,12 +3298,15 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		}
 		configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
 		// Preparing hash
+		matchIdx, ambiguous := matchConfigVirtualKey(governanceConfig.VirtualKeys, newVirtualKey)
+		if ambiguous {
+			logger.Warn("virtual key %q in config.json has no id and its name matches several existing virtual keys, none with the same owner; set its id to choose one. Skipping it", newVirtualKey.Name)
+			continue
+		}
 		found := false
 		for j, existingVirtualKey := range governanceConfig.VirtualKeys {
-			idMatch := existingVirtualKey.ID == newVirtualKey.ID
-			nameMatch := newVirtualKey.ID == "" && existingVirtualKey.Name == newVirtualKey.Name
-			if idMatch || nameMatch {
-				if nameMatch {
+			if j == matchIdx {
+				if newVirtualKey.ID == "" {
 					// Config file has no ID; adopt the DB record's ID so updates use the right primary key.
 					configData.Governance.VirtualKeys[i].ID = existingVirtualKey.ID
 				}

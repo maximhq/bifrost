@@ -1037,7 +1037,7 @@ users-access-profile-virtual-keys:
             schema:
               $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '409':
-        description: A virtual key with this name already exists
+        description: A virtual key with this name already exists for this owner
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

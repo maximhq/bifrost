@@ -2264,7 +2264,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if errors.Is(err, configstore.ErrAlreadyExists) {
-			SendError(ctx, 409, "A virtual key with this name already exists")
+			SendError(ctx, 409, "A virtual key with this name already exists for this owner")
 			return
 		}
 		SendError(ctx, 500, err.Error())
@@ -2870,7 +2870,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if errors.Is(err, configstore.ErrAlreadyExists) {
-			SendError(ctx, 409, "A virtual key with this name already exists")
+			SendError(ctx, 409, "A virtual key with this name already exists for this owner")
 			return
 		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to update virtual key: %v", err))

@@ -1942,6 +1942,41 @@ func TestMergeGovernanceConfig_ForceFileSyncPreservesBudgetRuntimeState(t *testi
 		inMemory.LastReset.UTC(), lastReset)
 }
 
+// TestMatchConfigVirtualKey pins how a config.json virtual key finds its stored row: by id when it
+// has one, otherwise by name within its own owner, falling back to a lone key of that name, and
+// refusing to guess between several keys of that name owned by others.
+func TestMatchConfigVirtualKey(t *testing.T) {
+	team1, team2, team3, customer1, blank := "team-1", "team-2", "team-3", "customer-1", ""
+	stored := []tables.TableVirtualKey{
+		{ID: "vk-prod-team1", Name: "prod", TeamID: &team1},
+		{ID: "vk-prod-team2", Name: "prod", TeamID: &team2},
+		{ID: "vk-prod-unowned", Name: "prod"},
+		{ID: "vk-ci-customer1", Name: "ci", CustomerID: &customer1},
+	}
+	tests := []struct {
+		name          string
+		entry         tables.TableVirtualKey
+		wantIdx       int
+		wantAmbiguous bool
+	}{
+		{name: "id wins over name and owner", entry: tables.TableVirtualKey{ID: "vk-prod-team2", Name: "other", TeamID: &team1}, wantIdx: 1},
+		{name: "unknown id is new", entry: tables.TableVirtualKey{ID: "vk-new", Name: "prod", TeamID: &team1}, wantIdx: -1},
+		{name: "name within the same team", entry: tables.TableVirtualKey{Name: "prod", TeamID: &team2}, wantIdx: 1},
+		{name: "name among unowned keys", entry: tables.TableVirtualKey{Name: "prod"}, wantIdx: 2},
+		{name: "blank owner id means unowned", entry: tables.TableVirtualKey{Name: "prod", TeamID: &blank}, wantIdx: 2},
+		{name: "lone key of that name with another owner", entry: tables.TableVirtualKey{Name: "ci"}, wantIdx: 3},
+		{name: "several keys of that name none with the owner", entry: tables.TableVirtualKey{Name: "prod", TeamID: &team3}, wantIdx: -1, wantAmbiguous: true},
+		{name: "unknown name is new", entry: tables.TableVirtualKey{Name: "dev", TeamID: &team1}, wantIdx: -1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			idx, ambiguous := matchConfigVirtualKey(stored, tc.entry)
+			assert.Equal(t, tc.wantIdx, idx)
+			assert.Equal(t, tc.wantAmbiguous, ambiguous)
+		})
+	}
+}
+
 func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	initTestLogger()
 

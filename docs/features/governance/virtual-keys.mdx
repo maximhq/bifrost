@@ -24,7 +24,12 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 - **Rate Limiting** - Token and request-based throttling (VK-level only)
 - **Key Restrictions** - Limit VK to specific provider API keys (if configured, VK can only use those keys)
 - **Exclusive Attachment** - Belongs to either one team OR one customer OR neither (mutually exclusive)
+- **Names Scoped to the Owner** - A name is unique within its team, customer or business unit, and among keys with no owner, so two teams can each have a key called `prod`
 - **Active/Inactive Status** - Enable/disable access instantly
+
+<Note>
+Because names are only unique per owner, `config.json` should reference existing virtual keys by `id`. An entry without an `id` is matched by name to the key with the same owner; if several keys share the name and none has that owner, the entry is skipped with a warning until you set its `id`.
+</Note>
 
 ## Configuration
 
