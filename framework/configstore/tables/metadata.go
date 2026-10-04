@@ -76,9 +76,15 @@ func IsValidTag(tag string) bool {
 // NormalizeTags trims each tag, validates it, removes duplicates and sorts the result, so a tag
 // set has one stored representation and one config hash regardless of input order. Tags are
 // case-sensitive. A nil or empty input (or one that is empty after normalization) returns nil.
+// The MaxTags cap applies to the input list as sent, duplicates included: config.schema.json
+// caps the config-file array with maxItems, so the API accepts exactly what the file accepts,
+// and the work done on an untrusted list stays bounded.
 func NormalizeTags(tags []string) ([]string, error) {
 	if len(tags) == 0 {
 		return nil, nil
+	}
+	if len(tags) > MaxTags {
+		return nil, fmt.Errorf("tags can have at most %d entries, got %d", MaxTags, len(tags))
 	}
 	seen := make(map[string]struct{}, len(tags))
 	out := make([]string, 0, len(tags))
@@ -92,9 +98,6 @@ func NormalizeTags(tags []string) ([]string, error) {
 		}
 		seen[tag] = struct{}{}
 		out = append(out, tag)
-	}
-	if len(out) > MaxTags {
-		return nil, fmt.Errorf("tags can have at most %d entries, got %d", MaxTags, len(out))
 	}
 	sort.Strings(out)
 	return out, nil
