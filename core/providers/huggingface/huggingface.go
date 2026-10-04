@@ -386,6 +386,7 @@ func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext
 	var successCount int
 	var firstError *schemas.BifrostError
 	var rawResponses []map[string]interface{}
+	seenModelIDs := make(map[string]struct{})
 
 	for result := range resultsChan {
 		if result.err != nil {
@@ -396,9 +397,19 @@ func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext
 		}
 
 		if result.response != nil {
-			providerResponse := result.response.toBifrostListModelsResponse(providerName, result.provider, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered, successCount == 0)
+			// Unowned configured entries (retired-provider/auto aliases and
+			// provider-named Hub IDs) may be discovered by any successful provider.
+			// Let every response backfill them, then keep the first copy by ID so a
+			// target that appears only in a later response is not lost.
+			providerResponse := result.response.toBifrostListModelsResponse(providerName, result.provider, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered, true)
 			if providerResponse != nil {
-				aggregatedResponse.Data = append(aggregatedResponse.Data, providerResponse.Data...)
+				for _, model := range providerResponse.Data {
+					if _, exists := seenModelIDs[model.ID]; exists {
+						continue
+					}
+					seenModelIDs[model.ID] = struct{}{}
+					aggregatedResponse.Data = append(aggregatedResponse.Data, model)
+				}
 				totalLatency += result.latency
 				successCount++
 				if result.rawResp != nil {

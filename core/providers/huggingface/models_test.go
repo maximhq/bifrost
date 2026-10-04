@@ -460,6 +460,56 @@ func TestListModelsByKeyPreservesConfiguredLegacyProviderModels(t *testing.T) {
 	}
 }
 
+// An unowned alias may be discovered only by a later provider response. The
+// aggregate must keep that alias instead of assigning it solely to whichever
+// response happens to arrive first.
+func TestListModelsByKeyDiscoversUnownedAliasFromLaterProvider(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/models", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("inference_provider") == string(deepInfra) {
+			_, err := w.Write([]byte(`[{"_id":"hub-id","modelId":"org/original-model","pipeline_tag":"conversational"}]`))
+			assert.NoError(t, err)
+			return
+		}
+		_, err := w.Write([]byte(`[]`))
+		assert.NoError(t, err)
+	}))
+	defer server.Close()
+
+	provider := &HuggingFaceProvider{
+		client: &fasthttp.Client{
+			Dial: func(string) (net.Conn, error) {
+				dialer := net.Dialer{Timeout: 5 * time.Second}
+				return dialer.DialContext(t.Context(), "tcp", server.Listener.Addr().String())
+			},
+			TLSConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // Test server certificate.
+		},
+	}
+
+	key := schemas.Key{
+		Models:  schemas.WhiteList{"*"},
+		Aliases: schemas.KeyAliases{"nebius/org/aliased-model": {ModelID: "org/original-model"}},
+		Value:   *schemas.NewSecretVar(""),
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	response, bifrostErr := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{})
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, response)
+
+	var aliases []schemas.Model
+	for _, model := range response.Data {
+		if model.Alias != nil {
+			aliases = append(aliases, model)
+		}
+	}
+	require.Len(t, aliases, 1)
+	assert.Equal(t, "huggingface/nebius/org/aliased-model", aliases[0].ID)
+	assert.Equal(t, "org/original-model", *aliases[0].Alias)
+}
+
 func TestToBifrostListModelsResponseDiscoveredQualifiedAliases(t *testing.T) {
 	t.Parallel()
 	for _, aliasProvider := range []inferenceProvider{hyperbolic, nebius, sambanova, auto, deepInfra} {
