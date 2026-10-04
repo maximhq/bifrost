@@ -15,5 +15,8 @@ export const buildProviderUpdatePayload = (provider: ModelProvider, updates: Par
 		custom_provider_config: updates.custom_provider_config ?? provider.custom_provider_config,
 		openai_config: updates.openai_config ?? provider.openai_config,
 		prompt_cache: updates.prompt_cache ?? provider.prompt_cache,
+		// Labels are only sent by the form that edits them; omitted leaves them unchanged.
+		...(updates.metadata !== undefined ? { metadata: updates.metadata } : {}),
+		...(updates.tags !== undefined ? { tags: updates.tags } : {}),
 	};
 };

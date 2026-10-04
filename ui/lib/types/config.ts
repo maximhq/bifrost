@@ -508,6 +508,9 @@ export interface ModelProviderConfig {
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	// Operator-defined labels; omitted when the provider has none.
+	metadata?: Record<string, string>;
+	tags?: string[];
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -537,6 +540,8 @@ export interface AddProviderRequest {
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	metadata?: Record<string, string>;
+	tags?: string[];
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -550,6 +555,9 @@ export interface UpdateProviderRequest {
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	// Omit to leave unchanged; {} / [] clears.
+	metadata?: Record<string, string>;
+	tags?: string[];
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}

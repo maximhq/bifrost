@@ -437,12 +437,83 @@ export class ProvidersPage extends BasePage {
   /**
    * Select a configuration tab
    */
-  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging'): Promise<void> {
+  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging' | 'labels'): Promise<void> {
     await this.openConfigSheet()
 
     const tab = this.page.getByTestId(`provider-tab-${tabName}`)
+    // Tabs that do not fit the sheet width are moved into the tab list's overflow menu.
+    if (!(await tab.isVisible().catch(() => false))) {
+      const overflow = this.page.getByTestId('tabs-overflow-trigger')
+      if (await overflow.isVisible().catch(() => false)) {
+        const labels: Record<string, string> = {
+          network: 'Network',
+          proxy: 'Proxy',
+          performance: 'Performance',
+          governance: 'Governance',
+          debugging: 'Debugging',
+          labels: 'Metadata & Tags',
+        }
+        await overflow.click()
+        await this.page.getByRole('menuitem', { name: labels[tabName] }).click()
+        await this.page.waitForTimeout(300)
+        return
+      }
+    }
     await tab.click()
     await this.page.waitForTimeout(300)
+  }
+
+  // ============================================
+  // Metadata & Tags
+  // ============================================
+
+  /**
+   * Add tags in the open Metadata & Tags tab. Each tag is committed with Enter.
+   */
+  async addProviderTags(tags: string[]): Promise<void> {
+    const input = this.page.getByTestId('provider-labels-tags-input')
+    for (const tag of tags) {
+      await input.fill(tag)
+      await input.press('Enter')
+    }
+  }
+
+  /**
+   * Remove one tag in the open Metadata & Tags tab.
+   */
+  async removeProviderTag(tag: string): Promise<void> {
+    await this.page.getByTestId('provider-config-labels-content').getByRole('button', { name: `Remove ${tag}` }).click()
+  }
+
+  /**
+   * Set metadata entries in the open Metadata & Tags tab. An existing key gets its value
+   * replaced; a new key is typed into the table's trailing empty row.
+   */
+  async setProviderMetadata(entries: Record<string, string>): Promise<void> {
+    const section = this.page.getByTestId('provider-labels-metadata-section')
+    const keyInputs = section.locator('input[data-column="key"]')
+    for (const [key, value] of Object.entries(entries)) {
+      let row = -1
+      const count = await keyInputs.count()
+      for (let i = 0; i < count; i++) {
+        if ((await keyInputs.nth(i).inputValue()) === key) row = i
+      }
+      if (row === -1) {
+        row = count - 1
+        await keyInputs.nth(row).fill(key)
+      }
+      const valueInput = section.locator('input[data-column="value"]').nth(row)
+      await valueInput.fill(value)
+      await expect(valueInput).toHaveValue(value)
+    }
+  }
+
+  /**
+   * Save the Metadata & Tags tab and wait for the success toast.
+   */
+  async saveProviderLabels(): Promise<void> {
+    await this.page.getByTestId('provider-labels-save-button').click()
+    await this.waitForSuccessToast()
   }
 
   /**

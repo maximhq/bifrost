@@ -1,4 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
+import { normalizeTags, validateMetadata } from "@/lib/utils/metadataTags";
 import { isRedacted } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -1081,6 +1082,20 @@ export const performanceFormSchema = z.object({
 });
 
 // Debugging tab (raw request/response toggles)
+// Provider metadata & tags form schema, validated with the same rules as the server.
+export const providerLabelsFormSchema = z.object({
+	metadata: z.record(z.string(), z.string()).superRefine((metadata, ctx) => {
+		const error = validateMetadata(metadata);
+		if (error) ctx.addIssue({ code: "custom", message: error });
+	}),
+	tags: z.array(z.string()).superRefine((tags, ctx) => {
+		const { error } = normalizeTags(tags);
+		if (error) ctx.addIssue({ code: "custom", message: error });
+	}),
+});
+
+export type ProviderLabelsFormSchema = z.infer<typeof providerLabelsFormSchema>;
+
 export const debuggingFormSchema = z.object({
 	send_back_raw_request: z.boolean(),
 	send_back_raw_response: z.boolean(),

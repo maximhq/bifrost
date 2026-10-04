@@ -2,6 +2,7 @@ import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderCo
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { MultiSelect } from "@/components/ui/multiSelect";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -21,11 +22,12 @@ import {
 import { KnownProvider, ModelProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { DATABRICKS_PROVIDER, isCustomDatabricksProvider } from "@/lib/utils/databricksMigration";
+import { collectTags, hasAllTags } from "@/lib/utils/metadataTags";
 import { findCustomProviderCollisions, normalizeProviderName } from "@/lib/utils/providerCollision";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertCircle, ArrowLeft, Server } from "lucide-react";
-import { useQueryState } from "nuqs";
+import { parseAsArrayOf, parseAsString, useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import AddCustomProviderSheet from "./dialogs/addNewCustomProviderSheet";
@@ -60,6 +62,8 @@ export default function Providers() {
 	const [showCustomProviderSheet, setShowCustomProviderSheet] = useState(false);
 	const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 	const [provider, setProvider] = useQueryState("provider");
+	// Tag filter for the providers list only; selection and the redirects below still see every provider.
+	const [tagFilter, setTagFilter] = useQueryState("tags", parseAsArrayOf(parseAsString).withDefault([]));
 	const { dismissed: dismissedCollisions, dismiss: dismissCollision, hydrated: collisionsHydrated } = useDismissedProviderCollisions();
 	const [handledCollisions, setHandledCollisions] = useState<Set<string>>(() => new Set());
 	// Custom Databricks provider the user chose not to migrate for now; cleared on every re-selection.
@@ -76,6 +80,8 @@ export default function Providers() {
 	const configuredProviderNamesArr = configuredProviders.map((p) => p.name);
 	const configuredProviderNamesKey = JSON.stringify(configuredProviderNamesArr);
 	const existingInSidebarNames = new Set(configuredProviders.map((p) => p.name));
+	const availableTags = collectTags(configuredProviders);
+	const listedProviders = configuredProviders.filter((p) => hasAllTags(p.tags, tagFilter));
 
 	const knownProviders = VisibleProviderNames.map((name) => ({ name }));
 
@@ -289,11 +295,26 @@ export default function Providers() {
 					<div className="flex min-h-0 flex-1 flex-col rounded-md bg-zinc-50/50 md:p-4 md:pb-0 dark:bg-zinc-800/20">
 						{/* Pinned lane title */}
 						<div className="text-muted-foreground mb-2 shrink-0 text-xs font-medium">Configured Providers</div>
+						{(availableTags.length > 0 || tagFilter.length > 0) && (
+							<div className="mb-2 shrink-0">
+								<MultiSelect
+									data-testid="providers-tag-filter"
+									options={collectTags([...configuredProviders, { tags: tagFilter }]).map((tag) => ({ label: tag, value: tag }))}
+									defaultValue={tagFilter}
+									resetOnDefaultValueChange
+									onValueChange={(values) => setTagFilter(values.length > 0 ? values : null)}
+									placeholder="Filter by tags"
+									emptyIndicator="No tags found."
+									maxCount={2}
+									className="border-input text-foreground hover:bg-accent hover:text-accent-foreground min-h-8 rounded-sm bg-transparent text-xs font-normal"
+								/>
+							</div>
+						)}
 
 						{/* Configured providers (standard with keys + custom): the only scrolling region */}
 						<div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
-							{configuredProviders.length > 0 ? (
-								configuredProviders.map((p) => {
+							{listedProviders.length > 0 ? (
+								listedProviders.map((p) => {
 									const isCustom = !!p.custom_provider_config || !ProviderNames.includes(p.name as KnownProvider);
 									const label = isCustom ? p.name : ProviderLabels[p.name as keyof typeof ProviderLabels];
 									const selectProviderItem = () => {
@@ -336,6 +357,7 @@ export default function Providers() {
 												className="h-4 w-4 shrink-0"
 											/>
 											<TruncatedLabel className="flex-1 text-sm">{label}</TruncatedLabel>
+											<ProviderTagBadges tags={p.tags} />
 											<KeyDiscoveryFailedBadge provider={p} />
 											<ProviderStatusBadge status={p.provider_status} />
 											{isCustom && (
@@ -349,7 +371,9 @@ export default function Providers() {
 							) : (
 								<div data-testid="providers-lane-empty" className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center">
 									<Server className="text-muted-foreground h-8 w-8" strokeWidth={1} />
-									<div className="text-muted-foreground text-xs">No providers configured yet</div>
+									<div className="text-muted-foreground text-xs">
+										{tagFilter.length > 0 ? "No providers carry all of the selected tags" : "No providers configured yet"}
+									</div>
 								</div>
 							)}
 
@@ -422,5 +446,28 @@ function KeyDiscoveryFailedBadge({
 			</TooltipTrigger>
 			<TooltipContent>{provider.description || "Provider model discovery failed."}</TooltipContent>
 		</Tooltip>
+	);
+}
+
+// Shows the first tag inline and the rest behind a "+N" tooltip, keeping list rows one line.
+function ProviderTagBadges({ tags }: { tags?: string[] }) {
+	if (!tags || tags.length === 0) return null;
+	const [first, ...rest] = tags;
+	return (
+		<span className="flex shrink-0 items-center gap-1" data-testid="provider-item-tags">
+			<Badge variant="outline" className="max-w-20 truncate px-1.5 py-0 text-[10px] font-normal">
+				{first}
+			</Badge>
+			{rest.length > 0 && (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">
+							+{rest.length}
+						</Badge>
+					</TooltipTrigger>
+					<TooltipContent>{rest.join(", ")}</TooltipContent>
+				</Tooltip>
+			)}
+		</span>
 	);
 }
