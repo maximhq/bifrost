@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/url"
@@ -412,6 +413,12 @@ func (h *OAuth2ConsentHandler) resolveVKIdentity(ctx *fasthttp.RequestCtx, vkVal
 	}
 	if !vk.IsActiveValue() {
 		return "", "", clientConsentError("virtual key is inactive")
+	}
+	// During a rotation cooldown the lookup also resolves the key's previous value, so
+	// direct calls keep working while clients switch over. Consent mints a new grant
+	// that outlives the cooldown, so it needs the key's current value.
+	if subtle.ConstantTimeCompare([]byte(vk.Value.GetValue()), []byte(vkValue)) != 1 {
+		return "", "", clientConsentError("this virtual key value has been rotated; use the key's current value")
 	}
 
 	// Check for a VK→user binding. If the VK is bound to a specific user,
