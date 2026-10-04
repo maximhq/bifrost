@@ -590,10 +590,13 @@ ModelTagsEntry:
       description: A configured provider
     model:
       type: string
-      maxLength: 255
-      description: Model name of at most 255 bytes; does not have to be in the pricing datasheet
+      description: >-
+        Model name; does not have to be in the pricing datasheet. Surrounding whitespace is
+        trimmed, and the trimmed name can be at most 255 bytes of UTF-8 (the config_models column
+        size); a longer name is rejected with a 400. The limit is in bytes, not characters, so it
+        is not expressed as maxLength.
     tags:
-      $ref: '#/Tags'
+      $ref: '#/TagsInput'
 
 Architecture:
   type: object

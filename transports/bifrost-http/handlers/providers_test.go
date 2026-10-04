@@ -2694,10 +2694,18 @@ func TestListModels_FiltersAndReturnsTags(t *testing.T) {
 }
 
 // TestSetModelTags_ValidatesBeforeWriting pins PUT /api/models/tags: the whole batch is checked
-// (shape, model name length, known provider, valid tags) before the write, tags reach the writer normalized, and
+// (shape, model name length in bytes, known provider, valid tags and the 50-tag cap counted on
+// the list as sent) before the write, tags reach the writer normalized, and
 // store errors map to the right status.
 func TestSetModelTags_ValidatesBeforeWriting(t *testing.T) {
 	SetLogger(&mockLogger{})
+
+	// 50 distinct tags plus one duplicate: the cap counts the list as sent.
+	overCapTags := make([]string, 0, configstoreTables.MaxTags+1)
+	for i := range configstoreTables.MaxTags {
+		overCapTags = append(overCapTags, fmt.Sprintf(`"t%d"`, i))
+	}
+	overCapTags = append(overCapTags, `"t0"`)
 
 	cases := []struct {
 		name       string
@@ -2713,6 +2721,8 @@ func TestSetModelTags_ValidatesBeforeWriting(t *testing.T) {
 		{name: "empty batch", body: `[]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "missing model", body: `[{"provider":"openai","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "model name too long", body: `[{"provider":"openai","model":"` + strings.Repeat("m", configstoreTables.MaxModelNameLength+1) + `","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "model name within 255 characters but over 255 bytes", body: `[{"provider":"openai","model":"` + strings.Repeat("é", 128) + `","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "more than 50 tags even when duplicates leave 50", body: `[{"provider":"openai","model":"gpt-5.1","tags":[` + strings.Join(overCapTags, ",") + `]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "unknown provider", body: `[{"provider":"nope","model":"x","tags":["prod"]}]`, wantStatus: fasthttp.StatusNotFound},
 		{name: "invalid tag", body: `[{"provider":"openai","model":"gpt-5.1","tags":["a,b"]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "no config store", body: `[{"provider":"openai","model":"gpt-5.1","tags":["prod"]}]`, noStore: true, wantStatus: fasthttp.StatusServiceUnavailable},

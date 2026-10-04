@@ -188722,7 +188722,7 @@
     },
     {
       "name": "151. Model tags on the management models API (PR #7944) (model-tags-api)",
-      "description": "PR #7944 adds PUT /api/models/tags, which replaces the tags of each listed provider/model (written to config_models in one transaction; an empty list clears them), returns the tags on GET /api/models and GET /api/models/details, and filters both with tags=a,b (every listed tag must match). An invalid tag is a 400 on the write and on the filter; an unconfigured provider is a 404. These rows record openai/gpt-4o-mini's current tags from GET /api/models, tag it, check both listings with the filter and the every-tag rule, check the 400 and 404 replies, then restore the recorded tags and confirm the filtered listing is empty. Before the PR the write route does not exist and the tags parameter is ignored, so the write, filter and 400 rows fail. Needs a config store (the default harness profile has one). No inference request is made; the listings read the gateway's model catalog.",
+      "description": "PR #7944 adds PUT /api/models/tags, which replaces the tags of each listed provider/model (written to config_models in one transaction; an empty list clears them), returns the tags on GET /api/models and GET /api/models/details, and filters both with tags=a,b (every listed tag must match). An invalid tag is a 400 on the write and on the filter; an unconfigured provider is a 404. These rows record openai/gpt-4o-mini's current tags from GET /api/models, tag it, check both listings with the filter and the every-tag rule, check the 400 replies (an invalid tag, and 51 tags of which only 50 are distinct: the cap counts the list as sent, as config.schema.json's maxItems does) and the 404 reply, then restore the recorded tags and confirm the filtered listing is empty. Before the PR the write route does not exist and the tags parameter is ignored, so the write, filter and 400 rows fail. Needs a config store (the default harness profile has one). No inference request is made; the listings read the gateway's model catalog.",
       "item": [
         {
           "name": "openai model-tags-api record the current tags on gpt-4o-mini - #7944",
@@ -189023,6 +189023,45 @@
             "body": {
               "mode": "raw",
               "raw": "[\n  {\n    \"provider\": \"openai\",\n    \"model\": \"gpt-4o-mini\",\n    \"tags\": [\n      \"bad tag\"\n    ]\n  }\n]"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai model-tags-api PUT /api/models/tags rejects more than 50 tags on gpt-4o-mini even when duplicates leave 50 - #7944",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); });",
+                  "pm.test('error names the invalid tags and the 50-tag cap on the list as sent', function () { pm.expect(pm.response.text()).to.include('invalid tags for openai/gpt-4o-mini').and.include('at most 50 entries, got 51'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/tags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "tags"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"provider\": \"openai\",\n    \"model\": \"gpt-4o-mini\",\n    \"tags\": [\n      \"harness-model-tags-api-t0\",\n      \"harness-model-tags-api-t1\",\n      \"harness-model-tags-api-t2\",\n      \"harness-model-tags-api-t3\",\n      \"harness-model-tags-api-t4\",\n      \"harness-model-tags-api-t5\",\n      \"harness-model-tags-api-t6\",\n      \"harness-model-tags-api-t7\",\n      \"harness-model-tags-api-t8\",\n      \"harness-model-tags-api-t9\",\n      \"harness-model-tags-api-t10\",\n      \"harness-model-tags-api-t11\",\n      \"harness-model-tags-api-t12\",\n      \"harness-model-tags-api-t13\",\n      \"harness-model-tags-api-t14\",\n      \"harness-model-tags-api-t15\",\n      \"harness-model-tags-api-t16\",\n      \"harness-model-tags-api-t17\",\n      \"harness-model-tags-api-t18\",\n      \"harness-model-tags-api-t19\",\n      \"harness-model-tags-api-t20\",\n      \"harness-model-tags-api-t21\",\n      \"harness-model-tags-api-t22\",\n      \"harness-model-tags-api-t23\",\n      \"harness-model-tags-api-t24\",\n      \"harness-model-tags-api-t25\",\n      \"harness-model-tags-api-t26\",\n      \"harness-model-tags-api-t27\",\n      \"harness-model-tags-api-t28\",\n      \"harness-model-tags-api-t29\",\n      \"harness-model-tags-api-t30\",\n      \"harness-model-tags-api-t31\",\n      \"harness-model-tags-api-t32\",\n      \"harness-model-tags-api-t33\",\n      \"harness-model-tags-api-t34\",\n      \"harness-model-tags-api-t35\",\n      \"harness-model-tags-api-t36\",\n      \"harness-model-tags-api-t37\",\n      \"harness-model-tags-api-t38\",\n      \"harness-model-tags-api-t39\",\n      \"harness-model-tags-api-t40\",\n      \"harness-model-tags-api-t41\",\n      \"harness-model-tags-api-t42\",\n      \"harness-model-tags-api-t43\",\n      \"harness-model-tags-api-t44\",\n      \"harness-model-tags-api-t45\",\n      \"harness-model-tags-api-t46\",\n      \"harness-model-tags-api-t47\",\n      \"harness-model-tags-api-t48\",\n      \"harness-model-tags-api-t49\",\n      \"harness-model-tags-api-t0\"\n    ]\n  }\n]"
             }
           }
         },
