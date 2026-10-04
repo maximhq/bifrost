@@ -45497,7 +45497,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List virtual keys",
-        "description": "Returns a list of all virtual keys with their configurations.\n",
+        "description": "Returns a list of all virtual keys with their configurations.\n\n**Metadata filters:** add one `metadata_<key>=<value>` query parameter per metadata\nkey to match, where `<key>` is the metadata key itself (for example\n`?metadata_cost_center=cc-42&metadata_environment=prod`). Only virtual keys whose\nmetadata has every given key set to exactly the given value are returned. A key that\nis not 1-256 characters of letters, digits, '.', '_' and '-' is rejected with a 400.\nThese parameters have dynamic names, so they are described here rather than declared\nas individual parameters.\n",
         "tags": ["Governance"],
         "parameters": [
           {
@@ -45531,14 +45531,6 @@
             "name": "search",
             "in": "query",
             "description": "Case-insensitive search across the virtual key name, its team name, its customer name, and its metadata keys and values. Enterprise additionally matches the name and email of the user the key is assigned to.",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "metadata_<key>",
-            "in": "query",
-            "description": "Metadata filter: only keys whose metadata has <key> set to exactly this value (for example metadata_cost_center=cc-42). Repeat with different keys to AND them. An invalid key (anything but letters, digits, '.', '_' and '-') is rejected with a 400.",
             "schema": {
               "type": "string"
             }
@@ -111117,7 +111109,17 @@
             "description": "Custom key/value metadata for cost attribution (for example cost_center, project, owner, environment). Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
             "maxProperties": 50,
             "propertyNames": {
-              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$",
+              "not": {
+                "anyOf": [
+                  {
+                    "const": "isAsyncRequest"
+                  },
+                  {
+                    "pattern": "^bifrost_alb_"
+                  }
+                ]
+              }
             },
             "additionalProperties": {
               "type": "string",
@@ -111267,11 +111269,21 @@
             "type": "string"
           },
           "metadata": {
-            "type": "object",
+            "type": ["object", "null"],
             "description": "Replaces the key's metadata as a whole. Omit (or send null) to leave it unchanged; send {} to clear it. Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
             "maxProperties": 50,
             "propertyNames": {
-              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$",
+              "not": {
+                "anyOf": [
+                  {
+                    "const": "isAsyncRequest"
+                  },
+                  {
+                    "pattern": "^bifrost_alb_"
+                  }
+                ]
+              }
             },
             "additionalProperties": {
               "type": "string",

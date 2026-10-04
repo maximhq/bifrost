@@ -42,7 +42,7 @@ func TestResolveAccessStampsVirtualKeyMetadata(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, vk.ID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID), "the key resolved")
 
-			stamped := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyMetadata)
+			stamped := ctx.Value(VirtualKeyMetadataContextKey)
 			if tc.metadata == nil {
 				assert.Nil(t, stamped, "a key without metadata must leave the context key absent")
 				return
@@ -72,5 +72,12 @@ func TestPreMCPConnectionHook_StampsVirtualKeyMetadata(t *testing.T) {
 	_, shortCircuit, err := plugin.PreMCPConnectionHook(ctx, connectReq("sentry"))
 	require.NoError(t, err)
 	require.Nil(t, shortCircuit)
-	assert.Equal(t, map[string]string{"cost_center": "cc-42"}, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyMetadata))
+	assert.Equal(t, map[string]string{"cost_center": "cc-42"}, ctx.Value(VirtualKeyMetadataContextKey))
+}
+
+// TestVirtualKeyMetadataContextKeyValue pins the context key's wire string. The logging plugin and
+// the HTTP transport declare their own copy of it, so changing it here alone would silently stop
+// virtual key metadata from reaching the logs.
+func TestVirtualKeyMetadataContextKeyValue(t *testing.T) {
+	assert.Equal(t, schemas.BifrostContextKey("bifrost-governance-virtual-key-metadata"), VirtualKeyMetadataContextKey)
 }

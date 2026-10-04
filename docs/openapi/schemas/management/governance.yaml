@@ -376,7 +376,7 @@ VirtualKey:
       type: string
     metadata:
       type: object
-      description: >
+      description: >-
         Custom key/value metadata attached to the key (for example cost_center, project, owner, environment). Omitted when the key has none.
       maxProperties: 50
       propertyNames:
@@ -489,11 +489,15 @@ CreateVirtualKeyRequest:
       type: string
     metadata:
       type: object
-      description: >
+      description: >-
         Custom key/value metadata for cost attribution (for example cost_center, project, owner, environment). Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.
       maxProperties: 50
       propertyNames:
         pattern: '^[a-zA-Z0-9._-]{1,256}$'
+        not:
+          anyOf:
+            - const: isAsyncRequest
+            - pattern: '^bifrost_alb_'
       additionalProperties:
         type: string
         maxLength: 512
@@ -604,12 +608,16 @@ UpdateVirtualKeyRequest:
     description:
       type: string
     metadata:
-      type: object
-      description: >
+      type: [object, 'null']
+      description: >-
         Replaces the key's metadata as a whole. Omit (or send null) to leave it unchanged; send {} to clear it. Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.
       maxProperties: 50
       propertyNames:
         pattern: '^[a-zA-Z0-9._-]{1,256}$'
+        not:
+          anyOf:
+            - const: isAsyncRequest
+            - pattern: '^bifrost_alb_'
       additionalProperties:
         type: string
         maxLength: 512
