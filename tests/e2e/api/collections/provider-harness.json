@@ -187529,6 +187529,348 @@
           ]
         }
       ]
+    },
+    {
+      "name": "143. MCP shared initialization retry (mcp-shared-handshake-retry)",
+      "description": "Management API regression using the opt-in MCP_HANDSHAKE_RETRY_FIXTURE=1 routes of examples/mcps/http-no-ping-server on localhost:3018 and an isolated auth-enabled gateway. The fixture assigns session-1, rejects its initialized notification with HTTP 503, and rejects initialize carrying an existing session with HTTP 400. POST /api/mcp/client with needs_session_stickiness=true must close the damaged transport and complete initialize plus initialized on session-2. The fixture wire witness pins the actual 503 and fresh-session handshake; GET /api/mcp/clients pins healthy runtime state and echo discovery. Gateway, upstream sessions, per-run fixture state and dashboard session are cleaned up in order. All rows are PREVIEW because the normal provider profile has no dashboard auth and must refuse local MCP targets. Run INCLUDE_PREVIEW=1 FEATURE=\"mcp-shared-handshake-retry\" with ENV_FILE containing mcpHandshakeRetryUsername/mcpHandshakeRetryPassword and an auth-enabled clone of tests/integrations/python. No LLM request or live provider spend.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-200] Login to the isolated authenticated gateway - mcp-shared-handshake-retry",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\":\"{{mcpHandshakeRetryUsername}}\",\"password\":\"{{mcpHandshakeRetryPassword}}\"}"
+            },
+            "url": "{{baseUrl}}/api/session/login"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('mcpHandshakeRetryToken');",
+                  "pm.collectionVariables.unset('mcpHandshakeRetryRegistrationAttempted');",
+                  "pm.collectionVariables.unset('mcpHandshakeRetryDeleteAttempted');",
+                  "var nonce = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.collectionVariables.set('mcpHandshakeRetryNonce', nonce);",
+                  "pm.collectionVariables.set('mcpHandshakeRetryClientId', 'harness-handshake-' + nonce);",
+                  "pm.collectionVariables.set('mcpHandshakeRetryClientName', 'retry_' + nonce.replace(/-/g, ''));",
+                  "pm.test('explicit fixture credentials are provided - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.variables.get('mcpHandshakeRetryUsername'), 'ENV_FILE must provide the isolated test username').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.variables.get('mcpHandshakeRetryPassword'), 'ENV_FILE must provide the isolated test password').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('login captures a real dashboard session - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.json().message, pm.response.text()).to.equal('Login successful');",
+                  "  var cookie = pm.response.headers.get('Set-Cookie') || '';",
+                  "  var token = cookie.match(/(?:^|;\\s*)token=([^;]+)/);",
+                  "  pm.expect(token, 'login did not issue a token cookie').not.to.equal(null);",
+                  "  pm.collectionVariables.set('mcpHandshakeRetryToken', token[1]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Register a shared sticky client after initialized notification 503 - mcp-shared-handshake-retry",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpHandshakeRetryToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_id\":\"{{mcpHandshakeRetryClientId}}\",\"name\":\"{{mcpHandshakeRetryClientName}}\",\"connection_type\":\"http\",\"connection_string\":\"http://localhost:3018/handshake-retry/{{mcpHandshakeRetryNonce}}/mcp\",\"auth_type\":\"none\",\"needs_session_stickiness\":true,\"is_ping_available\":false,\"tools_to_execute\":[\"*\"]}"
+            },
+            "url": "{{baseUrl}}/api/mcp/client"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('mcpHandshakeRetryRegistrationAttempted', '1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('shared registration returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('shared initialization recovers using a fresh session - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "  pm.expect(pm.response.text()).not.to.include('session already initialized');",
+                  "  pm.expect(pm.response.text()).not.to.include('Failed to connect MCP client');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Inspect the transient failure and fresh handshake wire sequence - mcp-shared-handshake-retry",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "http://localhost:3018/api/handshake-retry/{{mcpHandshakeRetryNonce}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fixture wire witness returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the first notification failed and retry created a fresh session - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryRegistrationAttempted'), 'registration must run first').to.equal('1');",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.sessions, pm.response.text()).to.equal(2);",
+                  "  pm.expect(body.requests.slice(0, 4), pm.response.text()).to.deep.equal([",
+                  "    {method: 'initialize', session_id: '', status: 200},",
+                  "    {method: 'notifications/initialized', session_id: 'session-1', status: 503},",
+                  "    {method: 'initialize', session_id: '', status: 200},",
+                  "    {method: 'notifications/initialized', session_id: 'session-2', status: 202}",
+                  "  ]);",
+                  "  var initializes = body.requests.filter(function (r) { return r.method === 'initialize'; });",
+                  "  pm.expect(initializes.length, pm.response.text()).to.equal(2);",
+                  "  pm.expect(initializes.every(function (r) { return r.session_id === '' && r.status === 200; }), pm.response.text()).to.equal(true);",
+                  "  var tools = body.requests.filter(function (r) { return r.method === 'tools/list'; });",
+                  "  pm.expect(tools.length, pm.response.text()).to.be.above(0);",
+                  "  pm.expect(tools.every(function (r) { return r.session_id === 'session-2' && r.status === 200; }), pm.response.text()).to.equal(true);",
+                  "  pm.expect(body.closed_sessions, pm.response.text()).to.include('session-1');",
+                  "  pm.expect(body.closed_sessions, pm.response.text()).not.to.include('session-2');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] List the recovered healthy client and discovered echo tool - mcp-shared-handshake-retry",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpHandshakeRetryToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/mcp/clients?server={{mcpHandshakeRetryClientId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('recovered client list returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('runtime state and tool discovery belong to the sticky client - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryRegistrationAttempted'), 'registration must run first').to.equal('1');",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.clients, pm.response.text()).to.have.lengthOf(1);",
+                  "  pm.expect(body.total_count, pm.response.text()).to.equal(1);",
+                  "  var row = body.clients[0];",
+                  "  pm.expect(row.config.client_id).to.equal(pm.collectionVariables.get('mcpHandshakeRetryClientId'));",
+                  "  pm.expect(row.config.name).to.equal(pm.collectionVariables.get('mcpHandshakeRetryClientName'));",
+                  "  pm.expect(row.config.needs_session_stickiness).to.equal(true);",
+                  "  pm.expect(row.state, pm.response.text()).to.equal('healthy');",
+                  "  pm.expect(row.last_failure || null, pm.response.text()).to.equal(null);",
+                  "  pm.expect(row.tools.map(function (tool) { return tool.name; }), pm.response.text()).to.deep.equal(['echo']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Delete the recovered gateway client - mcp-shared-handshake-retry",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpHandshakeRetryToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/mcp/client/{{mcpHandshakeRetryClientId}}"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('mcpHandshakeRetryDeleteAttempted', '1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gateway client cleanup returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('client cleanup succeeds - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryRegistrationAttempted'), 'registration must run first').to.equal('1');",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Confirm the deleted gateway client is absent - mcp-shared-handshake-retry",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpHandshakeRetryToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/mcp/clients?server={{mcpHandshakeRetryClientId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted client list returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('gateway cleanup removes the persisted client - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.clients, pm.response.text()).to.deep.equal([]);",
+                  "  pm.expect(body.total_count, pm.response.text()).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Inspect cleanup of both failed and successful MCP sessions - mcp-shared-handshake-retry",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "http://localhost:3018/api/handshake-retry/{{mcpHandshakeRetryNonce}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fixture session cleanup witness returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('both transports close their upstream sessions - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.sessions, pm.response.text()).to.equal(2);",
+                  "  pm.expect(body.closed_sessions.slice().sort(), pm.response.text()).to.deep.equal(['session-1', 'session-2']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Delete the isolated per-run MCP fixture state - mcp-shared-handshake-retry",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "http://localhost:3018/api/handshake-retry/{{mcpHandshakeRetryNonce}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fixture cleanup returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('fixture cleanup follows gateway cleanup - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Log out the isolated dashboard session - mcp-shared-handshake-retry",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpHandshakeRetryToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/session/logout"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('dashboard session cleanup returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('logout invalidates the test session - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
+                  "  pm.expect(pm.response.json().message, pm.response.text()).to.equal('Logout successful');",
+                  "  pm.collectionVariables.unset('mcpHandshakeRetryToken');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
