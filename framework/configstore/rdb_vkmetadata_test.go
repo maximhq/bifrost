@@ -31,6 +31,10 @@ func vkMetadataStoreBackends(t *testing.T) map[string]*RDBConfigStore {
 	return backends
 }
 
+// trySetupPostgresVKMetadataStore returns a Postgres store in its own schema, or nil when the
+// local test Postgres is not reachable. Once the server answers, any setup error (schema
+// creation, migration) fails the test instead of quietly dropping the Postgres backend, so the
+// dialect-specific metadata filter cannot go untested while the run still passes on SQLite.
 func trySetupPostgresVKMetadataStore(t *testing.T) *RDBConfigStore {
 	t.Helper()
 	db, err := gorm.Open(postgres.Open(strings.Replace(postgresDSN, pgTestSchema, vkMetadataPGSchema, 1)), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
@@ -38,17 +42,20 @@ func trySetupPostgresVKMetadataStore(t *testing.T) *RDBConfigStore {
 		return nil
 	}
 	sqlDB, err := db.DB()
-	if err != nil || sqlDB.Ping() != nil {
+	if err != nil {
 		return nil
 	}
-	db.Exec("DROP SCHEMA IF EXISTS " + vkMetadataPGSchema + " CASCADE")
-	if db.Exec("CREATE SCHEMA "+vkMetadataPGSchema).Error != nil {
+	if sqlDB.Ping() != nil {
+		_ = sqlDB.Close()
 		return nil
 	}
+	// Registered before the schema statements so the connection is closed even if they fail.
 	t.Cleanup(func() {
-		db.Exec("DROP SCHEMA IF EXISTS " + vkMetadataPGSchema + " CASCADE")
-		sqlDB.Close()
+		_ = db.Exec("DROP SCHEMA IF EXISTS " + vkMetadataPGSchema + " CASCADE").Error
+		_ = sqlDB.Close()
 	})
+	require.NoError(t, db.Exec("DROP SCHEMA IF EXISTS "+vkMetadataPGSchema+" CASCADE").Error)
+	require.NoError(t, db.Exec("CREATE SCHEMA "+vkMetadataPGSchema).Error)
 	require.NoError(t, db.AutoMigrate(
 		&tables.TableCustomer{},
 		&tables.TableTeam{},

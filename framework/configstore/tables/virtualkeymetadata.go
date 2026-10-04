@@ -6,8 +6,6 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/maximhq/bifrost/core/schemas"
 )
 
 const (
@@ -30,6 +28,12 @@ var virtualKeyMetadataKeyRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 var virtualKeyMetadataReservedKeys = map[string]struct{}{
 	"isAsyncRequest": {},
 }
+
+// virtualKeyMetadataLoadBalancerPrefix is the log metadata key prefix the enterprise load balancer
+// writes under (schemas.LoadBalancerMetadataPrefix in core, which the log store also treats as
+// system metadata). It is duplicated here rather than referenced so this module keeps building
+// against the published core release it pins; the two values must stay identical.
+const virtualKeyMetadataLoadBalancerPrefix = "bifrost_alb_"
 
 // IsValidVirtualKeyMetadataKey reports whether key is acceptable as a virtual key metadata key.
 func IsValidVirtualKeyMetadataKey(key string) bool {
@@ -54,7 +58,7 @@ func ValidateVirtualKeyMetadata(metadata map[string]string) error {
 		if !IsValidVirtualKeyMetadataKey(key) {
 			return fmt.Errorf("invalid metadata key %q: keys must be 1-%d characters of letters, digits, '.', '_' or '-'", key, MaxVirtualKeyMetadataKeyLength)
 		}
-		if _, reserved := virtualKeyMetadataReservedKeys[key]; reserved || strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix) {
+		if _, reserved := virtualKeyMetadataReservedKeys[key]; reserved || strings.HasPrefix(key, virtualKeyMetadataLoadBalancerPrefix) {
 			return fmt.Errorf("invalid metadata key %q: the key is reserved for system metadata", key)
 		}
 		if n := utf8.RuneCountInString(metadata[key]); n > MaxVirtualKeyMetadataValueLength {
