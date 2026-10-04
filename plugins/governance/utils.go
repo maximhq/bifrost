@@ -61,6 +61,19 @@ func IsModelRequiredForRequest(requestType schemas.RequestType) bool {
 	return true
 }
 
+// batchModelBoundByProvider reports whether a provider's batch API runs the model named on the
+// batch create request. Gemini (models/{m}:batchGenerateContent), Vertex (job model) and Bedrock
+// (required modelId) do; OpenAI and Azure take only the uploaded input, whose rows each name their
+// own model, so the request's model is at most a pricing hint there.
+func batchModelBoundByProvider(provider schemas.ModelProvider) bool {
+	switch provider {
+	case schemas.OpenAI, schemas.Azure:
+		return false
+	default:
+		return true
+	}
+}
+
 // IsModelCheckedWhenPresent reports whether a request type whose model is optional
 // should still be checked against the model allowlist when it does carry one.
 //

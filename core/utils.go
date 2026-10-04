@@ -816,6 +816,7 @@ func isPromptOptionalVideoEditType(t *string) bool {
 // responses produced by a type-converted request are converted back to the
 // caller's original type before the post-hook runs.
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
+	roleSent := false
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -830,6 +831,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				// chat→responses: convert responses stream chunk back to chat
 				if result.ResponsesStreamResponse != nil {
 					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+						roleSent = setAssistantRoleOnce(converted, roleSent)
 						result = &schemas.BifrostResponse{ChatResponse: converted}
 					}
 				}
@@ -837,4 +839,21 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 		}
 		return postHookRunner(ctx, result, bifrostErr)
 	}
+}
+
+// setAssistantRoleOnce puts the assistant role on the first delta of a
+// converted chat stream and clears it from later deltas. OpenAI-compatible
+// clients read the role from the first chunk only, and some concatenate a
+// repeated one. The stream converter emits a single choice per event. It
+// reports whether the role has been sent.
+func setAssistantRoleOnce(resp *schemas.BifrostChatResponse, roleSent bool) bool {
+	if len(resp.Choices) == 0 || resp.Choices[0].ChatStreamResponseChoice == nil || resp.Choices[0].Delta == nil {
+		return roleSent
+	}
+	if roleSent {
+		resp.Choices[0].Delta.Role = nil
+	} else {
+		resp.Choices[0].Delta.Role = schemas.Ptr(string(schemas.ChatMessageRoleAssistant))
+	}
+	return true
 }
