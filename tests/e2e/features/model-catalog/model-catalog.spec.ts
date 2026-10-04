@@ -16,8 +16,10 @@ async function modelTags(request: APIRequestContext): Promise<string[]> {
   return body.models.find((m) => m.name === MODEL)?.tags ?? []
 }
 
-async function clearModelTags(request: APIRequestContext): Promise<void> {
-  const response = await request.put('/api/models/tags', { data: [{ provider: PROVIDER, model: MODEL, tags: [] }] })
+// MODEL is a shared bundled model, so the tests restore whatever tags it carried before they ran
+// instead of clearing it.
+async function setModelTags(request: APIRequestContext, tags: string[]): Promise<void> {
+  const response = await request.put('/api/models/tags', { data: [{ provider: PROVIDER, model: MODEL, tags }] })
   expect(response.status()).toBe(204)
 }
 
@@ -31,8 +33,9 @@ async function openModelSheet(page: Page): Promise<void> {
 test.describe('Model Catalog Tags', () => {
   test.describe.configure({ mode: 'serial' })
 
-  test('should tag a model, filter the models list by tag and clear the tag', async ({ page, request }) => {
+  test('should tag a model, filter the models list by tag and remove the tag', async ({ page, request }) => {
     const tag = `e2e-model-${Date.now()}`
+    const originalTags = await modelTags(request)
     try {
       await openModelSheet(page)
       const tagsInput = page.getByTestId('model-catalog-tags-input')
@@ -40,7 +43,7 @@ test.describe('Model Catalog Tags', () => {
       await tagsInput.press('Enter')
       await page.getByTestId('model-catalog-attribute-submit').click()
       await expect(page.getByTestId('model-catalog-attribute-sheet')).toBeHidden()
-      expect(await modelTags(request)).toEqual([tag])
+      expect(await modelTags(request)).toEqual([...originalTags, tag].sort())
 
       // The row shows the tag, and the tags filter keeps only models carrying it.
       await expect(page.getByTestId(`model-catalog-tags-${ROW_KEY}`)).toContainText(tag)
@@ -50,24 +53,25 @@ test.describe('Model Catalog Tags', () => {
       await expect(rows).toHaveCount(1)
       await expect(page.getByTestId(`model-catalog-row-${ROW_KEY}`)).toBeVisible()
 
-      // Removing the tag in the sheet clears it.
+      // Removing the tag in the sheet leaves the model's original tags.
       await openModelSheet(page)
       await page.getByTestId('model-catalog-attribute-sheet').getByRole('button', { name: `Remove ${tag}` }).click()
       await page.getByTestId('model-catalog-attribute-submit').click()
       await expect(page.getByTestId('model-catalog-attribute-sheet')).toBeHidden()
-      expect(await modelTags(request)).toEqual([])
+      expect(await modelTags(request)).toEqual(originalTags)
     } finally {
-      await clearModelTags(request)
+      await setModelTags(request, originalTags)
     }
   })
 
   test('should reject an invalid model tag before saving', async ({ page, request }) => {
+    const originalTags = await modelTags(request)
     await openModelSheet(page)
     const tagsInput = page.getByTestId('model-catalog-tags-input')
     await tagsInput.fill('bad tag')
     await tagsInput.press('Enter')
     await expect(page.getByTestId('model-catalog-tags-error')).toContainText('Invalid tag "bad tag"')
     await expect(page.getByTestId('model-catalog-attribute-submit')).toBeDisabled()
-    expect(await modelTags(request)).toEqual([])
+    expect(await modelTags(request)).toEqual(originalTags)
   })
 })

@@ -221,11 +221,16 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 		if (desc !== "") attributes.description = desc;
 		for (const r of cleaned) attributes[r.key] = r.value;
 
+		// The two stores are written one after the other, so the tags can be saved while the
+		// attributes write fails. Track that so the error says the tags were kept instead of
+		// reporting the whole save as failed.
+		let tagsSaved = false;
 		try {
 			// Each store is written only when it changed: attributes need an existing pricing row,
 			// so a tags-only edit must not touch them (it would fail for models outside the datasheet).
 			if (tagsDirty) {
 				await setModelTags([{ provider: model.provider, model: model.name, tags: tagsCheck.tags }]).unwrap();
+				tagsSaved = true;
 			}
 			if (attributesDirty) {
 				await upsertEntries([
@@ -239,6 +244,10 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 			toast.success("Attributes saved");
 			handleClose();
 		} catch (err) {
+			if (tagsSaved) {
+				toast.error(`Tags saved, but the attributes were not: ${getErrorMessage(err)}`);
+				return;
+			}
 			toast.error(getErrorMessage(err));
 		}
 	};
@@ -415,8 +424,11 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 
 						{/* Tags */}
 						<div>
-							<Label className="text-sm font-medium">Tags</Label>
+							<Label htmlFor="model-catalog-tags-input" className="text-sm font-medium">
+								Tags
+							</Label>
 							<TagInput
+								id="model-catalog-tags-input"
 								className="mt-2"
 								value={tags}
 								onValueChange={setTags}

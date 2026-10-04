@@ -47,10 +47,17 @@ function TagsCell({ tags }: { tags?: string[] }) {
 			{rest.length > 0 && (
 				<TooltipProvider>
 					<Tooltip>
+						{/* A button, not the Badge's span, so keyboard users can focus it to open the tooltip. */}
 						<TooltipTrigger asChild>
-							<Badge variant="outline" className="font-normal">
-								+{rest.length}
-							</Badge>
+							<button
+								type="button"
+								className="focus-visible:ring-ring inline-flex rounded-md outline-none focus-visible:ring-2"
+								aria-label={`${rest.length} more tags: ${rest.join(", ")}`}
+							>
+								<Badge variant="outline" className="font-normal">
+									+{rest.length}
+								</Badge>
+							</button>
 						</TooltipTrigger>
 						<TooltipContent>{rest.join(", ")}</TooltipContent>
 					</Tooltip>
