@@ -26,7 +26,11 @@ type PassthroughStreamParams struct {
 	// appears in a framed event — for providers (Gemini/Vertex) that emit it before the HTTP
 	// body closes.
 	UseTerminalDetector bool
-	Logger              schemas.Logger
+	// SkipFraming forwards the bytes without scanning them for SSE frames, for binary or otherwise
+	// unframed streams (an AWS event stream) where there is no usage to observe and a "\n\n" byte
+	// pair means nothing.
+	SkipFraming bool
+	Logger      schemas.Logger
 	// HasUsage is an optional cheap gjson presence check: it returns true only when an event
 	// carries a usage field worth parsing. When set, Observe is skipped (no full unmarshal) for
 	// events that fail it — the common case on long streams (content deltas, pings). When nil,
@@ -54,6 +58,30 @@ func StreamPassthrough(
 	rawBodyStream io.Reader,
 	params PassthroughStreamParams,
 ) chan *schemas.BifrostStreamChunk {
+	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func() { ReleaseStreamingResponse(ctx, resp) }, rawBodyStream, params)
+}
+
+// StreamPassthroughHTTP is StreamPassthrough for providers built on net/http (Bedrock): the response
+// body is closed instead of a fasthttp response being released, and everything else - idle timeout,
+// cancellation, byte-exact forwarding, post hooks - is the same loop.
+func StreamPassthroughHTTP(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	postHookSpanFinalizer func(context.Context),
+	body io.ReadCloser,
+	params PassthroughStreamParams,
+) chan *schemas.BifrostStreamChunk {
+	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func() { _ = body.Close() }, body, params)
+}
+
+func streamPassthrough(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	postHookSpanFinalizer func(context.Context),
+	release func(),
+	rawBodyStream io.Reader,
+	params PassthroughStreamParams,
+) chan *schemas.BifrostStreamChunk {
 	// Wrap reader with idle timeout to detect stalled streams.
 	bodyStream, stopIdleTimeout := NewIdleTimeoutReader(rawBodyStream, rawBodyStream, GetStreamIdleTimeout(ctx), ctx)
 	// Cancellation must close the raw stream to unblock reads.
@@ -75,7 +103,7 @@ func StreamPassthrough(
 			}
 			close(ch)
 		}()
-		defer ReleaseStreamingResponse(ctx, resp)
+		defer release()
 		defer stopIdleTimeout()
 		defer stopCancellation()
 
@@ -194,10 +222,12 @@ func StreamPassthrough(
 					},
 				}, ch, postHookSpanFinalizer)
 
-				pending.Write(chunk)
-				if drainFrames() {
-					finalize()
-					return
+				if !params.SkipFraming {
+					pending.Write(chunk)
+					if drainFrames() {
+						finalize()
+						return
+					}
 				}
 			}
 			if readErr == io.EOF {
