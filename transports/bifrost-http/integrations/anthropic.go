@@ -142,6 +142,8 @@ func validateAnthropicMessageRequest(req *anthropic.AnthropicMessageRequest, raw
 	return nil
 }
 
+// newAnthropicInvalidRequestError builds the 400 invalid_request_error that
+// validateAnthropicMessageRequest returns, so it renders in Anthropic's error shape.
 func newAnthropicInvalidRequestError(message string) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
