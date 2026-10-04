@@ -4,6 +4,7 @@ package deepseek
 import (
 	"context"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -73,17 +74,18 @@ func (provider *DeepSeekProvider) anthropicHeaders(key schemas.Key) map[string]s
 // applyDeepSeekThinkingCompatibility returns a request with thinking forced off when
 // DeepSeek's OpenAI-compatible endpoint would otherwise reject it. Thinking is enabled by
 // default upstream (effort "high"), so this shim stays as narrow as possible: anything it
-// catches silently loses reasoning, with no error surfaced to the caller.
+// catches silently loses reasoning, with no error surfaced to the caller. Every other
+// request keeps its thinking mode and goes through backfillDeepSeekToolCallReasoning.
 //
-// The original request is never mutated. Params and ExtraParams are shared with the caller
-// and with any fallback attempt against a different provider, so writing through would leak
-// thinking:disabled well beyond this call.
+// The original request is never mutated. Params, ExtraParams and Input are shared with the
+// caller and with any fallback attempt against a different provider, so writing through
+// would leak DeepSeek-specific changes well beyond this call.
 func applyDeepSeekThinkingCompatibility(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
-	if request == nil || request.Params == nil {
+	if request == nil {
 		return request
 	}
-	if !requiresDeepSeekThinkingDisabled(request) {
-		return request
+	if request.Params == nil || !requiresDeepSeekThinkingDisabled(request) {
+		return backfillDeepSeekToolCallReasoning(request)
 	}
 
 	paramsCopy := *request.Params
@@ -98,23 +100,14 @@ func applyDeepSeekThinkingCompatibility(request *schemas.BifrostChatRequest) *sc
 }
 
 // requiresDeepSeekThinkingDisabled reports whether DeepSeek's OpenAI-compatible endpoint
-// would reject this request with thinking on. Two cases qualify:
+// would reject this request with thinking on. One case qualifies: a forced tool_choice
+// ("required"/"any", or the struct form pinning a specific function/custom/allowed_tools
+// call) — DeepSeek returns 400 "Thinking mode does not support this tool_choice" while
+// thinking is enabled.
 //
-//  1. A forced tool_choice ("required"/"any", or the struct form pinning a specific
-//     function/custom/allowed_tools call) — DeepSeek returns 400 "Thinking mode does not
-//     support this tool_choice" while thinking is enabled.
-//  2. A history containing an assistant tool_call turn that carries no replayable
-//     reasoning. DeepSeek requires reasoning_content to be replayed on tool_call turns and
-//     400s without it; when the caller cannot supply it, thinking has to stay off. Only
-//     ChatAssistantMessage.Reasoning counts here - reasoning_details is inbound-only and
-//     never reaches the wire - and this is judged from the messages alone, since a caller
-//     may replay tool_call turns without re-declaring Params.Tools.
-//
-// Everything else keeps thinking on. In particular, a plain multi-turn conversation needs no
-// reasoning replay whatsoever — per DeepSeek's thinking-mode guide, "the intermediate
-// assistant's reasoning_content does not need to participate in the context concatenation"
-// when there is no tool call. Assistant turns without reasoning are therefore expected and
-// must not disable thinking (issue #5887).
+// The history never qualifies. A plain multi-turn conversation needs no reasoning replay
+// (issue #5887), and a tool_call turn without reasoning is filled in by
+// backfillDeepSeekToolCallReasoning (issue #7213).
 func requiresDeepSeekThinkingDisabled(request *schemas.BifrostChatRequest) bool {
 	if tc := request.Params.ToolChoice; tc != nil {
 		switch {
@@ -133,26 +126,60 @@ func requiresDeepSeekThinkingDisabled(request *schemas.BifrostChatRequest) bool 
 		}
 	}
 
-	// The replay requirement follows the messages, not the tool declarations: a caller that
-	// drops Params.Tools on a final summarizing turn still replays the assistant tool_call
-	// turns, and DeepSeek still demands reasoning_content on them.
-	for _, msg := range request.Input {
+	return false
+}
+
+// backfillDeepSeekToolCallReasoning returns a request whose assistant tool_call turns all
+// carry reasoning, using an empty string where none was replayed. In thinking mode DeepSeek
+// returns 400 "The `reasoning_content` in the thinking mode must be passed back to the API"
+// for a tool_call turn without it while the tool loop is still running. It accepts an empty
+// value, so thinking stays as the caller asked (issue #7213).
+//
+// Only Reasoning counts as replayed: ReasoningDetails never reaches the wire (see
+// core/providers/openai/types.go). A request with thinking turned off by the caller is
+// returned untouched. Changed messages are copied, never written through.
+func backfillDeepSeekToolCallReasoning(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if deepSeekThinkingDisabledByCaller(request.Params) {
+		return request
+	}
+
+	var input []schemas.ChatMessage
+	for i, msg := range request.Input {
 		if msg.Role != schemas.ChatMessageRoleAssistant || msg.ChatAssistantMessage == nil {
 			continue
 		}
-		if len(msg.ChatAssistantMessage.ToolCalls) == 0 {
+		if len(msg.ChatAssistantMessage.ToolCalls) == 0 || msg.ChatAssistantMessage.Reasoning != nil {
 			continue
 		}
-		// Only Reasoning can satisfy the replay requirement: it is the sole field
-		// ConvertBifrostMessagesToOpenAIMessages copies onto the outbound assistant
-		// message, as reasoning_content. ReasoningDetails is inbound-only and never
-		// reaches the wire (see core/providers/openai/types.go), so a details-only turn
-		// would keep thinking on and then 400 for the missing reasoning_content.
-		if msg.ChatAssistantMessage.Reasoning == nil {
-			return true
+		if input == nil {
+			input = slices.Clone(request.Input)
 		}
+		assistantCopy := *msg.ChatAssistantMessage
+		assistantCopy.Reasoning = schemas.Ptr("")
+		input[i].ChatAssistantMessage = &assistantCopy
+	}
+	if input == nil {
+		return request
 	}
 
+	requestCopy := *request
+	requestCopy.Input = input
+	return &requestCopy
+}
+
+// deepSeekThinkingDisabledByCaller reports whether the caller turned thinking off through
+// the passthrough thinking param.
+func deepSeekThinkingDisabledByCaller(params *schemas.ChatParameters) bool {
+	if params == nil {
+		return false
+	}
+	switch thinking := params.ExtraParams["thinking"].(type) {
+	case map[string]any:
+		thinkingType, _ := thinking["type"].(string)
+		return thinkingType == "disabled"
+	case map[string]string:
+		return thinking["type"] == "disabled"
+	}
 	return false
 }
 

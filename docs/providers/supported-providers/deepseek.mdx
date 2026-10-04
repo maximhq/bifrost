@@ -183,6 +183,13 @@ DeepSeek models run with thinking enabled by default, even when no `reasoning` p
 - **Default (OpenAI-compatible):** Thinking is disabled when `tool_choice` is the generic `"required"` string (forcing some tool call, without pinning a specific one).
 - **`use_anthropic_endpoints: true`:** Thinking is disabled when `tool_choice` pins a specific named function, for both Chat Completions and the Responses API. `tool_choice: "required"`/`"any"` is left untouched in this mode, since DeepSeek's Anthropic-compatible endpoint accepts that combination with thinking on.
 
+### Tool-Call History
+
+DeepSeek's thinking mode expects `reasoning_content` to be replayed on assistant tool-call turns. A turn can have none to replay: the model returned no reasoning for it, or the client does not send the field back.
+
+- **Default (OpenAI-compatible):** Bifrost sends `reasoning_content: ""` on an assistant tool-call turn that carries no reasoning, and leaves the `thinking` setting of the request unchanged. Nothing is added when thinking is off for the request (you sent `thinking: {"type": "disabled"}`, or a forced `tool_choice` disabled it). This applies to Chat Completions and to the Responses API, which uses the same path.
+- **`use_anthropic_endpoints: true`:** Not applied. The history is mapped through the Anthropic converters.
+
 ### Extra Parameters
 
 DeepSeek enables passthrough extra parameters for Chat Completions and Text Completions when using the default OpenAI-compatible endpoints. Extra parameters are **not** passed through by default when `use_anthropic_endpoints` is enabled.
@@ -295,7 +302,14 @@ Lists available models from DeepSeek through `/models`.
 **Severity**: Medium
 **Behavior**: When thinking is on (the default), Bifrost forces `thinking: {"type": "disabled"}` in the outbound request — for the generic `tool_choice: "required"` on the default OpenAI-compatible endpoint, or for a `tool_choice` pinning a specific named function on the Anthropic-compatible endpoint
 **Impact**: Prevents DeepSeek's `"Thinking mode does not support this tool_choice"` error for the combination each endpoint mode actually rejects; the other combination is left untouched on each path
-**Code**: `disableThinkingForForcedToolChoice` in `core/providers/deepseek/deepseek.go` (OpenAI-compatible path); `core/providers/anthropic/chat.go` and `core/providers/anthropic/responses.go`, gated on `Provider == DeepSeek` (Anthropic-compatible path)
+**Code**: `applyDeepSeekThinkingCompatibility` in `core/providers/deepseek/deepseek.go` (OpenAI-compatible path); `core/providers/anthropic/chat.go` and `core/providers/anthropic/responses.go`, gated on `Provider == DeepSeek` (Anthropic-compatible path)
+</Accordion>
+
+<Accordion title="Empty reasoning_content on Tool-Call Turns Without Reasoning">
+**Severity**: Low
+**Behavior**: On the default OpenAI-compatible endpoint, an assistant tool-call turn in the history that carries no reasoning is sent with `reasoning_content: ""`. The `thinking` setting of the request is not changed. Nothing is added when thinking is off for the request
+**Impact**: A tool-calling conversation keeps thinking on even when the client does not replay `reasoning_content`
+**Code**: `backfillDeepSeekToolCallReasoning` in `core/providers/deepseek/deepseek.go`
 </Accordion>
 
 <Accordion title="Extra Parameters Not Passed Through in Anthropic-Compatible Mode">
