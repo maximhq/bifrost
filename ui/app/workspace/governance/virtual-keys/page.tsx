@@ -21,6 +21,8 @@ export default function GovernanceVirtualKeysPage() {
 			customer_id: parseAsString.withDefault(""),
 			team_id: parseAsString.withDefault(""),
 			user_id: parseAsString.withDefault(""),
+			metadata_key: parseAsString.withDefault(""),
+			metadata_value: parseAsString.withDefault(""),
 			offset: parseAsInteger.withDefault(0),
 			sort_by: parseAsString.withDefault(""),
 			order: parseAsString.withDefault(""),
@@ -43,6 +45,7 @@ export default function GovernanceVirtualKeysPage() {
 			customer_id: urlState.customer_id || undefined,
 			team_id: urlState.team_id || undefined,
 			user_id: urlState.user_id || undefined,
+			metadata: urlState.metadata_key ? { [urlState.metadata_key]: urlState.metadata_value } : undefined,
 			sort_by: (urlState.sort_by as "name" | "budget_spent" | "created_at" | "status") || undefined,
 			order: (urlState.order as "asc" | "desc") || undefined,
 		},
@@ -95,6 +98,10 @@ export default function GovernanceVirtualKeysPage() {
 		setUrlState({ user_id: value || null, offset: 0 });
 	};
 
+	const handleMetadataFilterChange = (key: string, value: string) => {
+		setUrlState({ metadata_key: key || null, metadata_value: key ? value : null, offset: 0 });
+	};
+
 	const handleOffsetChange = (newOffset: number) => {
 		setUrlState({ offset: newOffset });
 	};
@@ -131,6 +138,9 @@ export default function GovernanceVirtualKeysPage() {
 				onTeamFilterChange={handleTeamFilterChange}
 				userFilter={urlState.user_id}
 				onUserFilterChange={handleUserFilterChange}
+				metadataFilterKey={urlState.metadata_key}
+				metadataFilterValue={urlState.metadata_value}
+				onMetadataFilterChange={handleMetadataFilterChange}
 				offset={urlState.offset}
 				limit={PAGE_SIZE}
 				onOffsetChange={handleOffsetChange}

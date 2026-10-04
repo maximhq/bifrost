@@ -514,6 +514,48 @@ test.describe('Virtual Key Management', () => {
     await virtualKeysPage.closeSheet()
   })
 
+  test('should create, edit and remove virtual key metadata', async ({ virtualKeysPage, request }) => {
+    const vkName = `Metadata VK ${Date.now()}`
+    managementVKs.push(vkName)
+    await virtualKeysPage.createVirtualKey(
+      createVirtualKeyData({
+        name: vkName,
+        metadata: { cost_center: 'cc-42', owner: 'team-a@example.com' },
+      }),
+    )
+
+    const metadataOf = async () =>
+      ((await findVirtualKeyByName(request, vkName)) as { metadata?: Record<string, string> }).metadata ?? {}
+    expect(await metadataOf()).toEqual({ cost_center: 'cc-42', owner: 'team-a@example.com' })
+
+    // Reopened, the editor shows what was saved.
+    await virtualKeysPage.viewVirtualKey(vkName)
+    expect(await virtualKeysPage.getMetadata()).toEqual({ cost_center: 'cc-42', owner: 'team-a@example.com' })
+    await virtualKeysPage.closeSheet()
+
+    // Edit one value, remove one entry and add another in a single save.
+    await virtualKeysPage.editVirtualKey(vkName, {
+      removeMetadataKeys: ['owner'],
+      metadata: { cost_center: 'cc-7', env: 'prod' },
+    })
+    expect(await metadataOf()).toEqual({ cost_center: 'cc-7', env: 'prod' })
+
+    // Removing every entry clears the metadata.
+    await virtualKeysPage.editVirtualKey(vkName, { removeMetadataKeys: ['cost_center', 'env'] })
+    expect(await metadataOf()).toEqual({})
+  })
+
+  test('should reject an invalid metadata key before saving', async ({ virtualKeysPage }) => {
+    await virtualKeysPage.createBtn.click()
+    await expect(virtualKeysPage.sheet).toBeVisible()
+    await virtualKeysPage.nameInput.fill(`Bad Metadata VK ${Date.now()}`)
+    await virtualKeysPage.setMetadata({ 'cost center': 'cc-42' })
+    await virtualKeysPage.saveBtn.click()
+
+    await expect(virtualKeysPage.metadataSection.getByText('Invalid key "cost center"')).toBeVisible()
+    await expect(virtualKeysPage.sheet).toBeVisible()
+  })
+
   test('should delete virtual key', async ({ virtualKeysPage }) => {
     const vkName = `Delete Test VK ${Date.now()}`
     const vkData = createVirtualKeyData({ name: vkName })

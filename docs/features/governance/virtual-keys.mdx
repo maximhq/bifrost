@@ -284,6 +284,76 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
 
 Precedence is client setting, then the key, then the `x-bf-disable-content-logging` header when per-request overrides are allowed. See [Content Logging](/features/observability/content-logging) for how each layer treats the log store and observability connectors.
 
+### Metadata per key
+
+A virtual key can carry custom key/value metadata for cost attribution, such as a cost center, project, owner or environment. Each request made with the key copies the key's metadata into the log entry's metadata, so logs and dashboard spend can be filtered by it without callers sending any headers.
+
+Rules:
+
+- keys use letters, digits, `.`, `_` and `-` (1-256 characters); `isAsyncRequest` and keys starting with `bifrost_alb_` are reserved
+- values are strings of at most 512 characters
+- at most 50 entries per key
+
+Invalid metadata is rejected with a `400` that names the offending key.
+
+Metadata is not secret: it is returned by the virtual key APIs and stored on log entries, so do not put credentials in it.
+
+<Tabs>
+<Tab title="Web UI">
+
+In the virtual key sheet, add entries under **Metadata**. The key's details sheet lists them, each with a **View spend** link that opens the logs filtered by that entry. The virtual keys table has a **Metadata** filter for one key/value pair.
+
+</Tab>
+<Tab title="API">
+
+```bash
+# Create a key with metadata
+curl -X POST http://localhost:8080/api/governance/virtual-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "checkout-service",
+    "metadata": { "cost_center": "cc-1234", "owner": "payments@example.com", "env": "prod" },
+    "provider_configs": [{ "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"] }]
+  }'
+
+# Replace the metadata (omit the field to leave it unchanged, send {} to clear it)
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
+  -H "Content-Type: application/json" \
+  -d '{ "metadata": { "cost_center": "cc-5678", "env": "prod" } }'
+
+# List keys by metadata (several metadata_<key> parameters are AND-ed; search also matches metadata)
+curl "http://localhost:8080/api/governance/virtual-keys?metadata_cost_center=cc-5678"
+
+# Spend for that cost center, from the logs
+curl "http://localhost:8080/api/logs?metadata_cost_center=cc-5678"
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-checkout",
+        "name": "checkout-service",
+        "value": "env.CHECKOUT_VK",
+        "metadata": { "cost_center": "cc-1234", "owner": "payments@example.com", "env": "prod" },
+        "provider_configs": [{ "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"] }]
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+Metadata is snapshotted onto each log entry when the request is made. Changing a key's metadata later does not rewrite older log entries, so spend stays attributed to the values in effect at the time.
+
+On a key collision the virtual key's value wins over request-supplied log metadata (configured logging headers, `x-bf-lh-*` headers and `x-bf-dim-*` dimensions), so a caller cannot override attribution set on the key. Other request-supplied entries are kept alongside it. See [Logging](/features/observability/default) for how request headers become log metadata.
+
 ### Provider access
 
 By default a virtual key is **deny-by-default** for providers: it can only use providers listed in `provider_configs`. An empty `provider_configs` blocks every provider.

@@ -25,6 +25,7 @@ import MultiBudgetLines from "@/components/ui/multibudgets";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { ProviderConfigsEditor } from "@/components/ui/providerConfigsEditor";
+import { HeadersTable } from "@/components/ui/headersTable";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
@@ -36,6 +37,7 @@ import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getBusinessUnitPicker } from "@/lib/registries/businessUnitPicker";
 import { getUserPicker } from "@/lib/registries/userPicker";
+import { validateVirtualKeyMetadata } from "@/lib/utils/virtualKeyMetadata";
 import {
 	getErrorMessage,
 	useAttachVirtualMCPVirtualKeyMutation,
@@ -175,6 +177,11 @@ const formSchema = z
 		expiresAt: z.string().nullable().optional(), // ISO 8601 datetime-local string, or null to clear
 		// Content logging for this key's traffic: inherit the client setting, force it off, or force it on.
 		contentLogging: z.enum(["inherit", "disabled", "enabled"]),
+		// Custom key/value attribution, validated against the same rules the server applies.
+		metadata: z.record(z.string(), z.string()).superRefine((metadata, ctx) => {
+			const error = validateVirtualKeyMetadata(metadata);
+			if (error) ctx.addIssue({ code: "custom", message: error });
+		}),
 		deleteAfterExpire: z.boolean(), // Only meaningful with an expiry; the daily cleanup job deletes the key once expired
 		// Budget
 		budgetCalendarAligned: z.boolean(),
@@ -598,6 +605,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			userId: "",
 			isActive: virtualKey?.is_active ?? true,
 			contentLogging: contentLoggingChoice(virtualKey?.disable_content_logging),
+			metadata: virtualKey?.metadata ?? {},
 			deleteAfterExpire: virtualKey?.delete_after_expire ?? deleteExpiredByDefault,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
@@ -1080,6 +1088,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 						// Content logging is the key's own privacy setting, not profile-governed access, so a
 						// managed key keeps it editable and the save must carry it (null clears to inherit).
 						disable_content_logging: contentLoggingValue(data.contentLogging),
+						// Metadata is attribution on the key itself, not profile-governed access, so it stays editable too.
+						metadata: data.metadata,
 					},
 				}).unwrap();
 				toast.success("Virtual key updated");
@@ -1143,6 +1153,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					// null clears the key back to inheriting the client setting; the server keeps omitted and
 					// null apart, so this is always sent.
 					disable_content_logging: contentLoggingValue(data.contentLogging),
+					// Replaces the metadata as a whole; {} clears it.
+					metadata: data.metadata,
 					...expiryPayload,
 					...deleteAfterExpirePayload,
 				};
@@ -1244,6 +1256,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 						: {}),
 					// Omitted means inherit on create.
 					...(data.contentLogging !== "inherit" ? { disable_content_logging: data.contentLogging === "disabled" } : {}),
+					...(Object.keys(data.metadata).length > 0 ? { metadata: data.metadata } : {}),
 				};
 
 				// Add budgets if enabled
@@ -1477,6 +1490,30 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 												Whether request and response content is stored in logs for this key&apos;s traffic. &quot;Off&quot; also strips
 												content from OpenTelemetry export. &quot;On&quot; overrides a gateway-wide off for the log store only. The
 												per-request header still applies when per-request overrides are allowed.
+											</p>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+								{/* Metadata is attribution on the key itself (cost center, owner, ...), so like content logging it
+								stays editable for a profile-managed key. */}
+								<FormField
+									control={form.control}
+									name="metadata"
+									render={({ field }) => (
+										<FormItem data-testid="vk-metadata-section">
+											<HeadersTable
+												label="Metadata"
+												value={field.value ?? {}}
+												onChange={field.onChange}
+												keyPlaceholder="e.g., cost_center"
+												valuePlaceholder="e.g., cc-1234"
+												useSecretVarInput={false}
+											/>
+											<p className="text-muted-foreground text-xs">
+												Key/value labels for cost attribution. They are copied onto every log entry this key produces, so logs and spend can
+												be filtered by them, and they override request headers with the same name. Keys use letters, digits, &quot;.&quot;,
+												&quot;_&quot; and &quot;-&quot;.
 											</p>
 											<FormMessage />
 										</FormItem>

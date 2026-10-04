@@ -1163,6 +1163,7 @@ func extractRealtimeTokenFromAuth(auth *authHeaders) string {
 var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyGovernanceVirtualKeyID,
 	schemas.BifrostContextKeyGovernanceVirtualKeyName,
+	schemas.BifrostContextKeyGovernanceVirtualKeyMetadata,
 	schemas.BifrostContextKeyGovernanceRoutingRuleID,
 	schemas.BifrostContextKeyGovernanceRoutingRuleName,
 	schemas.BifrostContextKeyGovernanceCustomerID,
