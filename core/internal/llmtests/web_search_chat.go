@@ -86,14 +86,14 @@ func RunWebSearchViaChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, c
 			if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
 				t.Parallel()
 			}
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			// One deadline bounds both stream setup and reading, and cancels the
+			// provider call if it stalls.
+			bfCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 2*time.Minute)
+			defer cancel()
 			stream, err := client.ChatCompletionStreamRequest(bfCtx, newRequest())
 			if err != nil {
 				t.Fatalf("web search chat stream failed: %s", GetErrorMessage(err))
 			}
-
-			streamCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			defer cancel()
 
 			var content strings.Builder
 			var toolCalls []schemas.ChatAssistantMessageToolCall
@@ -125,7 +125,7 @@ func RunWebSearchViaChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, c
 						toolCalls = append(toolCalls, delta.ToolCalls...)
 						annotations = append(annotations, delta.Annotations...)
 					}
-				case <-streamCtx.Done():
+				case <-bfCtx.Done():
 					t.Fatal("timed out reading the web search chat stream")
 				}
 			}
