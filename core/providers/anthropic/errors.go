@@ -67,29 +67,12 @@ var googleStatusToAnthropicErrorType = map[string]string{
 	"INTERNAL":            "api_error",
 }
 
-// anthropicErrorTypeForStatus derives an Anthropic error type from an HTTP status.
+// anthropicErrorTypeForStatus derives an Anthropic error type from an HTTP status,
+// falling back to the generic type for the status class when the status has no
+// dedicated type.
 func anthropicErrorTypeForStatus(status int) string {
-	switch status {
-	case fasthttp.StatusBadRequest, fasthttp.StatusUnprocessableEntity:
-		return "invalid_request_error"
-	case fasthttp.StatusUnauthorized:
-		return "authentication_error"
-	case fasthttp.StatusPaymentRequired:
-		return "billing_error"
-	case fasthttp.StatusForbidden:
-		return "permission_error"
-	case fasthttp.StatusNotFound:
-		return "not_found_error"
-	case fasthttp.StatusConflict:
-		return "conflict_error"
-	case fasthttp.StatusRequestEntityTooLarge:
-		return "request_too_large"
-	case fasthttp.StatusTooManyRequests:
-		return "rate_limit_error"
-	case fasthttp.StatusGatewayTimeout:
-		return "timeout_error"
-	case 529:
-		return "overloaded_error"
+	if errType, ok := dedicatedAnthropicErrorType(status); ok {
+		return errType
 	}
 	if status >= 400 && status < 500 {
 		// Anthropic uses invalid_request_error for 4xx statuses without a dedicated type.
@@ -98,19 +81,91 @@ func anthropicErrorTypeForStatus(status int) string {
 	return "api_error"
 }
 
+// dedicatedAnthropicErrorType returns the Anthropic error type documented for exactly
+// this HTTP status, and false for statuses that only imply a class (e.g. 500, 502,
+// 503). Only a dedicated status is specific enough to override a type taken from the
+// error body.
+func dedicatedAnthropicErrorType(status int) (string, bool) {
+	switch status {
+	case fasthttp.StatusBadRequest, fasthttp.StatusUnprocessableEntity:
+		return "invalid_request_error", true
+	case fasthttp.StatusUnauthorized:
+		return "authentication_error", true
+	case fasthttp.StatusPaymentRequired:
+		return "billing_error", true
+	case fasthttp.StatusForbidden:
+		return "permission_error", true
+	case fasthttp.StatusNotFound:
+		return "not_found_error", true
+	case fasthttp.StatusConflict:
+		return "conflict_error", true
+	case fasthttp.StatusRequestEntityTooLarge:
+		return "request_too_large", true
+	case fasthttp.StatusTooManyRequests:
+		return "rate_limit_error", true
+	case fasthttp.StatusGatewayTimeout:
+		return "timeout_error", true
+	case 529:
+		return "overloaded_error", true
+	}
+	return "", false
+}
+
+// isServerAnthropicErrorType reports whether an Anthropic error type describes a 5xx
+// (server-side) failure rather than a 4xx caller error.
+func isServerAnthropicErrorType(errType string) bool {
+	switch errType {
+	case "api_error", "timeout_error", "overloaded_error":
+		return true
+	}
+	return false
+}
+
+// anthropicErrorClassMismatch reports whether an Anthropic error type and an HTTP error
+// status disagree on 4xx vs 5xx, e.g. rate_limit_error sent with a 500.
+func anthropicErrorClassMismatch(errType string, status int) bool {
+	return isServerAnthropicErrorType(errType) != (status >= 500)
+}
+
 // anthropicErrorType picks the error.type for the Anthropic error envelope. Clients
 // branch on this field, so it must be one of Anthropic's documented types and agree
-// with the HTTP status the error is sent with. Bifrost's own wire-level types
-// (request_cancelled, request_timed_out, ...) are kept as-is.
+// with the HTTP status the error is sent with:
+//   - A documented type from the body is kept unless a real status puts it in the other
+//     4xx/5xx class; within a class the upstream's own type is the finer signal (a
+//     native Anthropic overloaded_error with 529 or 500 passes through untouched).
+//   - A google.rpc.Code mapping is only an approximation, so it yields to the status
+//     whenever the status has a dedicated type or a different class (DEADLINE_EXCEEDED
+//     sent as 504 becomes timeout_error).
+//   - Bifrost's own wire-level types (request_cancelled, request_timed_out, ...) are
+//     kept as-is: they are Bifrost's client-visible error contract (core/schemas/errors.go).
 func anthropicErrorType(bifrostErr *schemas.BifrostError) string {
 	errType := ""
 	if bifrostErr.Error != nil && bifrostErr.Error.Type != nil {
 		errType = *bifrostErr.Error.Type
 	}
+	// Only an explicit error status may override a type from the body; the defaults
+	// EffectiveHTTPStatus() fills in for a missing status carry no upstream signal.
+	status := 0
+	if bifrostErr.StatusCode != nil {
+		if effective := bifrostErr.EffectiveHTTPStatus(); effective >= 400 {
+			status = effective
+		}
+	}
 	if _, ok := anthropicErrorTypes[errType]; ok {
+		if status != 0 && anthropicErrorClassMismatch(errType, status) {
+			return anthropicErrorTypeForStatus(status)
+		}
 		return errType
 	}
 	if mapped, ok := googleStatusToAnthropicErrorType[errType]; ok {
+		if status != 0 {
+			if statusType, ok := dedicatedAnthropicErrorType(status); ok {
+				return statusType
+			}
+			if anthropicErrorClassMismatch(mapped, status) {
+				return anthropicErrorTypeForStatus(status)
+			}
+		}
 		return mapped
 	}
 	switch errType {

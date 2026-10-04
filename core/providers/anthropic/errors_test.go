@@ -8,6 +8,8 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
+// TestToAnthropicChatCompletionError checks that the envelope's error.type is always a
+// documented Anthropic type (or a Bifrost wire-level type) that agrees with the status.
 func TestToAnthropicChatCompletionError(t *testing.T) {
 	strPtr := func(s string) *string { return &s }
 	intPtr := func(i int) *int { return &i }
@@ -106,38 +108,83 @@ func TestToAnthropicChatCompletionError(t *testing.T) {
 		},
 		{
 			name:         "gRPC FAILED_PRECONDITION maps to invalid_request_error",
-			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("FAILED_PRECONDITION")}},
+			input:        &schemas.BifrostError{StatusCode: intPtr(400), Error: &schemas.ErrorField{Type: strPtr("FAILED_PRECONDITION")}},
 			expectedType: "invalid_request_error",
 		},
 		{
 			name:         "gRPC UNAUTHENTICATED maps to authentication_error",
-			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("UNAUTHENTICATED")}},
+			input:        &schemas.BifrostError{StatusCode: intPtr(401), Error: &schemas.ErrorField{Type: strPtr("UNAUTHENTICATED")}},
 			expectedType: "authentication_error",
 		},
 		{
 			name:         "gRPC PERMISSION_DENIED maps to permission_error",
-			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("PERMISSION_DENIED")}},
+			input:        &schemas.BifrostError{StatusCode: intPtr(403), Error: &schemas.ErrorField{Type: strPtr("PERMISSION_DENIED")}},
 			expectedType: "permission_error",
 		},
 		{
 			name:         "gRPC NOT_FOUND maps to not_found_error",
-			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("NOT_FOUND")}},
+			input:        &schemas.BifrostError{StatusCode: intPtr(404), Error: &schemas.ErrorField{Type: strPtr("NOT_FOUND")}},
 			expectedType: "not_found_error",
 		},
 		{
 			name:         "gRPC RESOURCE_EXHAUSTED maps to rate_limit_error",
-			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("RESOURCE_EXHAUSTED")}},
+			input:        &schemas.BifrostError{StatusCode: intPtr(429), Error: &schemas.ErrorField{Type: strPtr("RESOURCE_EXHAUSTED")}},
 			expectedType: "rate_limit_error",
 		},
 		{
 			name:         "gRPC UNAVAILABLE maps to overloaded_error",
-			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("UNAVAILABLE")}},
+			input:        &schemas.BifrostError{StatusCode: intPtr(503), Error: &schemas.ErrorField{Type: strPtr("UNAVAILABLE")}},
 			expectedType: "overloaded_error",
 		},
 		{
 			name:         "gRPC INTERNAL maps to api_error",
-			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("INTERNAL")}},
+			input:        &schemas.BifrostError{StatusCode: intPtr(500), Error: &schemas.ErrorField{Type: strPtr("INTERNAL")}},
 			expectedType: "api_error",
+		},
+		{
+			name:         "gRPC UNAVAILABLE without status maps to overloaded_error",
+			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("UNAVAILABLE")}},
+			expectedType: "overloaded_error",
+		},
+		{
+			name:         "gRPC DEADLINE_EXCEEDED without status maps to api_error",
+			input:        &schemas.BifrostError{Error: &schemas.ErrorField{Type: strPtr("DEADLINE_EXCEEDED")}},
+			expectedType: "api_error",
+		},
+		{
+			name:         "gRPC DEADLINE_EXCEEDED with 504 follows status to timeout_error",
+			input:        &schemas.BifrostError{StatusCode: intPtr(504), Error: &schemas.ErrorField{Type: strPtr("DEADLINE_EXCEEDED")}},
+			expectedType: "timeout_error",
+		},
+		{
+			name:         "gRPC UNAVAILABLE with 429 follows status to rate_limit_error",
+			input:        &schemas.BifrostError{StatusCode: intPtr(429), Error: &schemas.ErrorField{Type: strPtr("UNAVAILABLE")}},
+			expectedType: "rate_limit_error",
+		},
+		{
+			name:         "gRPC INVALID_ARGUMENT with 502 follows status class to api_error",
+			input:        &schemas.BifrostError{StatusCode: intPtr(502), Error: &schemas.ErrorField{Type: strPtr("INVALID_ARGUMENT")}},
+			expectedType: "api_error",
+		},
+		{
+			name:         "documented Type in the other status class follows status",
+			input:        &schemas.BifrostError{StatusCode: intPtr(500), Error: &schemas.ErrorField{Type: strPtr("rate_limit_error")}},
+			expectedType: "api_error",
+		},
+		{
+			name:         "documented server Type with 4xx status follows status",
+			input:        &schemas.BifrostError{StatusCode: intPtr(429), Error: &schemas.ErrorField{Type: strPtr("api_error")}},
+			expectedType: "rate_limit_error",
+		},
+		{
+			name:         "documented Type in the same status class is preserved",
+			input:        &schemas.BifrostError{StatusCode: intPtr(500), Error: &schemas.ErrorField{Type: strPtr("overloaded_error")}},
+			expectedType: "overloaded_error",
+		},
+		{
+			name:         "bifrost wire Type is preserved despite status",
+			input:        &schemas.BifrostError{StatusCode: intPtr(504), Error: &schemas.ErrorField{Type: strPtr("request_timed_out")}},
+			expectedType: "request_timed_out",
 		},
 		{
 			name: "unknown Type falls back to status",
