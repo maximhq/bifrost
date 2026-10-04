@@ -112,7 +112,7 @@
               }
             ]
           },
-          "description": "CORS allowed origins (supports \"*\" or URI strings)"
+          "description": "CORS allowed origins: exact URI strings, wildcard-host patterns such as https://*.example.com, or \"*\". While dashboard auth is disabled, browser requests to the management API are accepted only from localhost origins, the gateway's own origin, and origins listed here explicitly; the \"*\" entry does not admit them."
         },
         "enable_logging": {
           "type": "boolean",
