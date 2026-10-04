@@ -118,3 +118,41 @@ variable "ingress_annotations" {
   type        = map(string)
   default     = {}
 }
+
+# --- PostgreSQL ---
+variable "create_postgresql" {
+  description = "Create a PostgreSQL StatefulSet for config_store and logs_store."
+  type        = bool
+  default     = false
+}
+
+variable "postgresql_engine_version" {
+  description = "PostgreSQL major version (used as image tag, e.g. 16)."
+  type        = string
+  default     = "16"
+}
+
+variable "postgresql_storage_gb" {
+  description = "PostgreSQL persistent volume size in GB."
+  type        = number
+  default     = 20
+}
+
+variable "postgresql_database_name" {
+  description = "Name of the initial database."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "postgresql_username" {
+  description = "PostgreSQL username."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "postgresql_password" {
+  description = "PostgreSQL password. If null, a random password is generated."
+  type        = string
+  default     = null
+  sensitive   = true
+}
