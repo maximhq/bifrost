@@ -250,7 +250,7 @@
           {
             "name": "tags",
             "in": "query",
-            "description": "Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag are returned. Pagination applies to the filtered list. Not forwarded to providers. An invalid tag is rejected with a 400.",
+            "description": "Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag are returned. Pagination applies to the filtered list. Not forwarded to providers. An invalid tag is rejected with a 400. Not applied when large response mode streams the provider's response through unchanged.",
             "schema": {
               "type": "string"
             }
@@ -96383,8 +96383,10 @@
           "tags": {
             "type": "array",
             "description": "Operator-assigned tags on the model (see PUT /api/models/tags). Omitted when the model has none. Never taken from the provider's response.",
+            "maxItems": 50,
             "items": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9._-]{1,64}$"
             }
           }
         }

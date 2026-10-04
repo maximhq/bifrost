@@ -58,6 +58,8 @@ func TestModelTagsOverlay(t *testing.T) {
 	assert.Equal(t, []string{"prod"}, mc.GetModelTags(schemas.Anthropic, "claude-sonnet-4-5"), "a failed reload keeps the last good overlay")
 }
 
+// TestApplyModelTags pins the lookup by ID then alias, replacement of upstream tags, and the
+// nil-catalog behavior.
 func TestApplyModelTags(t *testing.T) {
 	mc := &ModelCatalog{configStore: &fakeModelTagsStore{tags: map[string]map[string][]string{
 		"openai": {"gpt-5.1": {"prod"}, "gpt-5.1-2026-01-01": {"pinned"}},
@@ -84,6 +86,8 @@ func TestApplyModelTags(t *testing.T) {
 	nilCatalog.ApplyModelTags(nil)
 }
 
+// TestGetModelInfoIncludesTags pins that GetModelInfo carries a model's tags, including for a
+// tagged model that has no datasheet entry, while an unknown untagged model stays nil.
 func TestGetModelInfoIncludesTags(t *testing.T) {
 	mc := modelInfoCatalog(t)
 	mc.configStore = &fakeModelTagsStore{tags: map[string]map[string][]string{"anthropic": {"claude-opus-5": {"prod"}}}}
@@ -91,6 +95,14 @@ func TestGetModelInfoIncludesTags(t *testing.T) {
 	info := mc.GetModelInfo(schemas.Anthropic, "claude-opus-5")
 	require.NotNil(t, info)
 	assert.Equal(t, []string{"prod"}, info.Tags)
+
+	// A tagged model outside the datasheet still reports its tags; an untagged one stays nil.
+	mc.configStore = &fakeModelTagsStore{tags: map[string]map[string][]string{"openai": {"my-finetune": {"internal"}}}}
+	require.NoError(t, mc.ReloadModelTags(context.Background()))
+	info = mc.GetModelInfo(schemas.OpenAI, "my-finetune")
+	require.NotNil(t, info, "a tagged model without a datasheet entry must still be returned")
+	assert.Equal(t, &schemas.Model{ID: "my-finetune", Tags: []string{"internal"}}, info)
+	assert.Nil(t, mc.GetModelInfo(schemas.OpenAI, "unknown-untagged-model"))
 }
 
 // sequencedModelTagsStore returns snapshots[i] on the i-th GetModelTags call. The first call
