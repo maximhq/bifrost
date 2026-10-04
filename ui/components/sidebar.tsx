@@ -879,6 +879,15 @@ export default function AppSidebar() {
 						hasAccess: hasVirtualKeysAccess,
 					},
 					{
+						title: "Org Chart",
+						url: "/workspace/governance/org-chart",
+						icon: Network,
+						description: "Budgets and usage across business units, teams and users",
+						// The chart is read from business units down, so it follows the Business Units entry.
+						hasAccess: hasBusinessUnitsAccess,
+						new: true,
+					},
+					{
 						title: "Users",
 						url: "/workspace/governance/users",
 						icon: Users,
