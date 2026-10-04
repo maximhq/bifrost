@@ -18,7 +18,7 @@ func TestMergeVirtualKeyMetadata(t *testing.T) {
 	if got := mergeVirtualKeyMetadata(nil, ctx); got != nil {
 		t.Fatalf("expected nil metadata when the context carries no key metadata, got %#v", got)
 	}
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyMetadata, map[string]string{
+	ctx.SetValue(virtualKeyMetadataContextKey, map[string]string{
 		"cost_center": "cc-42",
 		schemas.LoadBalancerMetadataPrefix + "decision": "forged",
 	})
@@ -65,7 +65,7 @@ func TestPostLLMHookSnapshotsVirtualKeyMetadata(t *testing.T) {
 			ctx.SetValue(schemas.BifrostContextKeyDimensions, map[string]string{"owner": "spoofed-by-dimension"})
 			vkMetadata := map[string]string{"cost_center": "cc-42", "owner": "a@example.com"}
 			if tc.stampBeforePre {
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyMetadata, vkMetadata)
+				ctx.SetValue(virtualKeyMetadataContextKey, vkMetadata)
 			}
 
 			req := &schemas.BifrostRequest{
@@ -76,7 +76,7 @@ func TestPostLLMHookSnapshotsVirtualKeyMetadata(t *testing.T) {
 				t.Fatalf("PreLLMHook() error = %v", err)
 			}
 			if !tc.stampBeforePre {
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyMetadata, vkMetadata)
+				ctx.SetValue(virtualKeyMetadataContextKey, vkMetadata)
 			}
 
 			statusCode := 500
@@ -108,5 +108,14 @@ func TestPostLLMHookSnapshotsVirtualKeyMetadata(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestVirtualKeyMetadataContextKeyValue pins the context key's wire string to the one the
+// governance plugin stamps (governance.VirtualKeyMetadataContextKey), which this module cannot
+// import.
+func TestVirtualKeyMetadataContextKeyValue(t *testing.T) {
+	if virtualKeyMetadataContextKey != schemas.BifrostContextKey("bifrost-governance-virtual-key-metadata") {
+		t.Fatalf("virtualKeyMetadataContextKey = %q, must match the governance plugin's key", virtualKeyMetadataContextKey)
 	}
 }

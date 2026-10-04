@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -599,5 +600,26 @@ func TestSetRemoteDescription_RecoversParserPanicAsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sdp rejected") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestRealtimeContextsCarryVirtualKeyMetadata pins the local copy of the governance plugin's
+// virtual key metadata context key and checks both realtime paths carry it, so realtime log rows
+// get the key's metadata like any other request.
+func TestRealtimeContextsCarryVirtualKeyMetadata(t *testing.T) {
+	if governanceVirtualKeyMetadataContextKey != schemas.BifrostContextKey("bifrost-governance-virtual-key-metadata") {
+		t.Fatalf("governanceVirtualKeyMetadataContextKey = %q, must match the governance plugin's key", governanceVirtualKeyMetadataContextKey)
+	}
+	if !slices.Contains(realtimeMiddlewareKeys, any(governanceVirtualKeyMetadataContextKey)) {
+		t.Fatal("realtimeMiddlewareKeys should snapshot the virtual key metadata")
+	}
+
+	requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	requestCtx.SetValue(governanceVirtualKeyMetadataContextKey, map[string]string{"cost_center": "cc-42"})
+	relayCtx, relayCancel := newRealtimeRelayContext(requestCtx)
+	defer relayCancel()
+	got, _ := relayCtx.Value(governanceVirtualKeyMetadataContextKey).(map[string]string)
+	if got["cost_center"] != "cc-42" {
+		t.Fatalf("relay virtual key metadata = %#v, want the request's", got)
 	}
 }

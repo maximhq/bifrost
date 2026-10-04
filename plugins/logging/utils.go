@@ -964,6 +964,12 @@ func mergeLoadBalancerMetadata(metadata map[string]interface{}, ctx *schemas.Bif
 	return metadata
 }
 
+// virtualKeyMetadataContextKey is the context key under which the governance plugin publishes the
+// resolved virtual key's metadata (governance.VirtualKeyMetadataContextKey). This module cannot
+// import the governance plugin, and the key is kept out of core so both plugins build against
+// published core; the string must stay identical to governance's.
+const virtualKeyMetadataContextKey schemas.BifrostContextKey = "bifrost-governance-virtual-key-metadata"
+
 // mergeVirtualKeyMetadata snapshots the resolved virtual key's metadata onto a log row's metadata,
 // so spend stays filterable by it (cost center, owner, ...) even after the key's metadata changes.
 // It is applied after every request-supplied source (logging headers, x-bf-lh-* and x-bf-dim-*), so
@@ -974,7 +980,7 @@ func mergeVirtualKeyMetadata(metadata map[string]interface{}, ctx *schemas.Bifro
 	if ctx == nil {
 		return metadata
 	}
-	vkMetadata, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyMetadata).(map[string]string)
+	vkMetadata, ok := ctx.Value(virtualKeyMetadataContextKey).(map[string]string)
 	if !ok || len(vkMetadata) == 0 {
 		return metadata
 	}
