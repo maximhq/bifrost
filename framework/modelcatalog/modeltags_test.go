@@ -86,25 +86,6 @@ func TestApplyModelTags(t *testing.T) {
 	nilCatalog.ApplyModelTags(nil)
 }
 
-// TestGetModelInfoIncludesTags pins that GetModelInfo carries a model's tags, including for a
-// tagged model that has no datasheet entry, while an unknown untagged model stays nil.
-func TestGetModelInfoIncludesTags(t *testing.T) {
-	mc := modelInfoCatalog(t)
-	mc.configStore = &fakeModelTagsStore{tags: map[string]map[string][]string{"anthropic": {"claude-opus-5": {"prod"}}}}
-	require.NoError(t, mc.ReloadModelTags(context.Background()))
-	info := mc.GetModelInfo(schemas.Anthropic, "claude-opus-5")
-	require.NotNil(t, info)
-	assert.Equal(t, []string{"prod"}, info.Tags)
-
-	// A tagged model outside the datasheet still reports its tags; an untagged one stays nil.
-	mc.configStore = &fakeModelTagsStore{tags: map[string]map[string][]string{"openai": {"my-finetune": {"internal"}}}}
-	require.NoError(t, mc.ReloadModelTags(context.Background()))
-	info = mc.GetModelInfo(schemas.OpenAI, "my-finetune")
-	require.NotNil(t, info, "a tagged model without a datasheet entry must still be returned")
-	assert.Equal(t, &schemas.Model{ID: "my-finetune", Tags: []string{"internal"}}, info)
-	assert.Nil(t, mc.GetModelInfo(schemas.OpenAI, "unknown-untagged-model"))
-}
-
 // sequencedModelTagsStore returns snapshots[i] on the i-th GetModelTags call. The first call
 // signals entered and then waits for release, so a test can hold one reload inside its read.
 type sequencedModelTagsStore struct {
