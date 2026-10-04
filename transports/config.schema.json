@@ -1175,6 +1175,18 @@
                 "type": "boolean",
                 "description": "Per-key override of client.disable_content_logging for requests made with this virtual key. Omit to inherit the client setting. true keeps request and response content out of the log store and out of OpenTelemetry export for this key's traffic; other observability connectors follow their own disable_content_logging until they adopt the trace mark. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. false forces content into the log store even when the client setting is true; observability connectors keep following their own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
               },
+              "metadata": {
+                "type": "object",
+                "description": "Custom key/value metadata for this virtual key (for example cost_center, project, owner, environment). Keys may contain letters, digits, '.', '_' and '-' (max 256 characters) and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
+                "maxProperties": 50,
+                "propertyNames": {
+                  "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "maxLength": 512
+                }
+              },
               "team_id": {
                 "type": "string",
                 "description": "Associated team ID (mutually exclusive with customer_id and business_unit_id)"
