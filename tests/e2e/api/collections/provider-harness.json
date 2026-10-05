@@ -197848,8 +197848,12 @@
                   "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
                   "var model = (pm.response.json().models || []).find(function (m) { return m.provider === 'openai' && m.name === 'gpt-4o-mini'; });",
                   "pm.test('gpt-4o-mini is listed for openai', function () { pm.expect(model, pm.response.text()).to.be.an('object'); });",
-                  "var original = (model && model.tags) || [];",
-                  "pm.collectionVariables.set('modelTagsApiRestoreBody', JSON.stringify([{ provider: 'openai', model: 'gpt-4o-mini', tags: original }]));"
+                  "// Record only what was read: if the lookup missed, leave no restore body so the restore row fails loudly instead of clearing real tags.",
+                  "if (model) {",
+                  "  pm.collectionVariables.set('modelTagsApiRestoreBody', JSON.stringify([{ provider: 'openai', model: 'gpt-4o-mini', tags: model.tags || [] }]));",
+                  "} else {",
+                  "  pm.collectionVariables.unset('modelTagsApiRestoreBody');",
+                  "}"
                 ]
               }
             }
@@ -198350,8 +198354,12 @@
                   "pm.test('status is 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
                   "var model = (pm.response.json().data || []).find(function (m) { return m.id === 'openai/gpt-4o-mini'; });",
                   "pm.test('gpt-4o-mini is listed for openai', function () { pm.expect(model, pm.response.text()).to.be.an('object'); });",
-                  "var original = (model && model.tags) || [];",
-                  "pm.collectionVariables.set('modelTagsRestoreBody', JSON.stringify([{ provider: 'openai', model: 'gpt-4o-mini', tags: original }]));"
+                  "// Record only what was read: if the lookup missed, leave no restore body so the restore row fails loudly instead of clearing real tags.",
+                  "if (model) {",
+                  "  pm.collectionVariables.set('modelTagsRestoreBody', JSON.stringify([{ provider: 'openai', model: 'gpt-4o-mini', tags: model.tags || [] }]));",
+                  "} else {",
+                  "  pm.collectionVariables.unset('modelTagsRestoreBody');",
+                  "}"
                 ]
               }
             }
