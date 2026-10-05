@@ -55,6 +55,15 @@ LIVE_UPSTREAM=real make test-live-long   # real: a 15-minute conversation per tr
 
 The fake busy call reports usage twice a minute, delegates a lookup every two minutes, switches backend model at eight minutes and checks the budget at ten; the silent one leaves OpenAI mute for the whole call so the gateway's stale check carries the row. The real conversation speaks a prompt every eighty seconds: web lookups, three app functions the test answers, a backend switch half way (from a sideband on WebRTC) and a stored recording at the end.
 
+### OpenAI Python SDK
+
+`python/` is a uv project on `openai>=3.24`, the first SDK with a live client, kept apart from `tests/integrations/python`, which pins an older SDK. `TestSDK_OpenAIPython` runs it with pytest in both upstream modes, against `/openai/v1`, with a key the Go suite mints; it skips when `uv` is not installed. The tests cover the SDK's WebSocket session resource end to end (sync and async), client-delegation commentary, recording download, the refusals the SDK raises, and a WebRTC session created with `client.live.create` from an `aiortc` offer and steered through `client.live.sideband.connect`.
+
+```bash
+make test-live TESTCASE=TestSDK_OpenAIPython
+cd tests/live/python && uv run pytest -q          # by hand, with BIFROST_BASE_URL and BIFROST_VK set
+```
+
 ## Environment
 
 | Variable | Default | Meaning |
@@ -79,5 +88,6 @@ Every test skips when the gateway does not answer `/health`.
 | `governance_test.go` | one request per session, token limits on backend usage, budgets debited mid-call (both transports) |
 | `load_test.go` | fifty WebSocket and ten WebRTC sessions at once, each logged once |
 | `long_test.go` | 17-minute busy and silent calls that outlive the pending-entry eviction (`LIVE_LONG=1`) |
-| `real_test.go` | the paid smoke set: delegation, client delegation and the voice-model guard on both transports, WebRTC recording and sideband |
+| `real_test.go` | the paid smoke set: delegation, client delegation and the voice-model guard on both transports, WebRTC recording and sideband; the 15-minute conversation (`LIVE_LONG=1`) |
+| `sdk_test.go`, `python/` | the OpenAI Python SDK's live client through the drop-in route |
 | `fakeopenai_test.go`, `client_test.go`, `gateway_test.go`, `speech_test.go` | the fake upstream, the test client, the gateway API helpers, speech synthesis |
