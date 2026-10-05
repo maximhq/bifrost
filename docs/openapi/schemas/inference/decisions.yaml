@@ -83,6 +83,9 @@ DecisionResponse:
       $ref: './usage.yaml#/BifrostLLMUsage'
     extra_fields:
       $ref: './common.yaml#/BifrostResponseExtraFields'
+    routing:
+      type: object
+      description: Laya only. The checkpoint that answered and why, passed through untouched
 
 DecisionAnswer:
   type: object
@@ -112,3 +115,21 @@ DecisionAnswer:
       additionalProperties:
         type: string
       description: Legend mapping levels to descriptions, when supplied
+    answer_confidence:
+      type: number
+      minimum: 0
+      maximum: 1
+      description: Laya only. Calibrated probability of the reported answer
+    action:
+      type: object
+      description: Laya only. Action head output, e.g. `{"act_probability":1.0}`, passed through untouched
+    abstention:
+      type: string
+      enum: [passed, abstained, unevaluated]
+      description: Laya only, when `min_confidence` is set. Whether the answer cleared the threshold
+    abstention_threshold:
+      type: number
+      description: Laya only, when `min_confidence` is set. The threshold the answer was gated on
+    low_confidence:
+      type: boolean
+      description: Laya only, when `min_confidence` is set. True when the answer fell below the threshold

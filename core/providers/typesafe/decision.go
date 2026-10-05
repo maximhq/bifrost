@@ -270,10 +270,15 @@ func ToBifrostDecisionResponse(resp *TypesafeDecisionResponse, request *schemas.
 		}
 
 		answer := schemas.DecisionAnswer{
-			Kind:          question.Kind,
-			Confidence:    native.Confidence,
-			Probabilities: native.Probabilities,
-			Legend:        native.Legend,
+			Kind:                question.Kind,
+			Confidence:          native.Confidence,
+			Probabilities:       native.Probabilities,
+			Legend:              native.Legend,
+			AnswerConfidence:    native.AnswerConfidence,
+			Action:              native.Action,
+			Abstention:          native.Abstention,
+			AbstentionThreshold: native.AbstentionThreshold,
+			LowConfidence:       native.LowConfidence,
 		}
 		switch question.Kind {
 		case schemas.DecisionKindNoul:
@@ -301,12 +306,17 @@ func ToBifrostDecisionResponse(resp *TypesafeDecisionResponse, request *schemas.
 	response := &schemas.BifrostDecisionResponse{
 		Model:   resp.Model,
 		Answers: answers,
+		Routing: resp.Routing,
 	}
 	if resp.Usage != nil {
 		response.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			PromptTokens:       resp.Usage.InputTokens,
+			CompletionTokens:   resp.Usage.OutputTokens,
+			TotalTokens:        resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			StateTokens:        resp.Usage.StateTokens,
+			StateTokensDropped: resp.Usage.StateTokensDropped,
+			Truncated:          resp.Usage.Truncated,
+			TruncatedQuestions: resp.Usage.TruncatedQuestions,
 		}
 	}
 	return response, nil
@@ -359,9 +369,14 @@ func ToTypesafeNativeDecisionResponse(resp *schemas.BifrostDecisionResponse) (*T
 	answers := make(map[string]TypesafeAnswer, len(resp.Answers))
 	for name, answer := range resp.Answers {
 		native := TypesafeAnswer{
-			Confidence:    answer.Confidence,
-			Probabilities: answer.Probabilities,
-			Legend:        answer.Legend,
+			Confidence:          answer.Confidence,
+			Probabilities:       answer.Probabilities,
+			Legend:              answer.Legend,
+			AnswerConfidence:    answer.AnswerConfidence,
+			Action:              answer.Action,
+			Abstention:          answer.Abstention,
+			AbstentionThreshold: answer.AbstentionThreshold,
+			LowConfidence:       answer.LowConfidence,
 		}
 		switch answer.Kind {
 		case schemas.DecisionKindNoul:
@@ -394,11 +409,16 @@ func ToTypesafeNativeDecisionResponse(resp *schemas.BifrostDecisionResponse) (*T
 	native := &TypesafeDecisionResponse{
 		Model:   resp.Model,
 		Answers: answers,
+		Routing: resp.Routing,
 	}
 	if resp.Usage != nil {
 		native.Usage = &TypesafeUsage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
+			InputTokens:        resp.Usage.PromptTokens,
+			OutputTokens:       resp.Usage.CompletionTokens,
+			StateTokens:        resp.Usage.StateTokens,
+			StateTokensDropped: resp.Usage.StateTokensDropped,
+			Truncated:          resp.Usage.Truncated,
+			TruncatedQuestions: resp.Usage.TruncatedQuestions,
 		}
 	}
 	return native, nil
