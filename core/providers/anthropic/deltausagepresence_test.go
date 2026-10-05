@@ -158,6 +158,30 @@ func TestMessageDeltaWithoutMessageStartUsageIsUnchanged(t *testing.T) {
 	}
 }
 
+// TestMessageDeltaWithCompactionIterationsIsNotDoubleCounted guards the
+// direction of the fill, which an earlier version of this change got wrong by
+// taking the maximum instead.
+//
+// When a delta carries compaction `usage.iterations`, its top-level input
+// counter covers only that message pass and billableAnthropicUsage adds the
+// iteration totals on top. Replacing a small top-level value with
+// message_start's full count therefore bills the prompt twice. A larger number
+// is not a more complete one.
+func TestMessageDeltaWithCompactionIterationsIsNotDoubleCounted(t *testing.T) {
+	start := `{"type":"message_start","message":{"id":"msg_4","type":"message","role":"assistant",` +
+		`"model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":100,"output_tokens":1}}}`
+	// 2 for this pass, 100 already accounted for by the compaction iteration.
+	delta := `{"type":"message_delta","delta":{"stop_reason":"end_turn"},` +
+		`"usage":{"input_tokens":2,"output_tokens":20,` +
+		`"iterations":[{"type":"compaction","input_tokens":100,"output_tokens":0}]}}`
+
+	usage := messageDeltaUsage(t, replayNativeStream(t, []string{start, delta}))
+
+	if got := usage.Get("input_tokens").Int(); got != 102 {
+		t.Errorf("input_tokens = %d, want 102 (2 for the pass + 100 compacted); 200 means the prompt was billed twice; got %s", got, usage.Raw)
+	}
+}
+
 // TestStreamStateDoesNotLeakStartUsage pins the pool resets. These states are
 // reused across requests, so a retained StartUsage would attribute one
 // request's input tokens to the next.

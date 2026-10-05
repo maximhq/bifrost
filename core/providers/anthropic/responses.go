@@ -4871,37 +4871,44 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 	return bifrostUsage
 }
 
-// usageWithStartInputTokens returns delta usage with its input-side counters
-// completed from message_start.
+// usageWithStartInputTokens returns delta usage with its *absent* input-side
+// counters completed from message_start.
 //
 // Anthropic reports usage as per-request totals, and the final message_delta may
 // carry only output_tokens. Because AnthropicUsage holds these counters as plain
 // ints, an omitted field is indistinguishable from zero after unmarshalling and
 // would be re-emitted as an explicit `input_tokens: 0`.
 //
-// Only the input side is filled, and only upwards: output_tokens on the delta is
-// the authoritative final count. Everything else the event carried (iterations,
-// service tier, thinking breakdown) is preserved, so this cannot drop a field the
-// upstream sent. Returns delta unchanged when there is nothing to complete.
+// Only a zero counter is filled, never a larger one. A bigger number is not a
+// more complete one: when the delta carries compaction `usage.iterations`, its
+// top-level input counter describes just that message pass, and
+// billableAnthropicUsage adds the iteration totals on top of it. Overwriting a
+// small top-level value with message_start's full count would then be counted
+// twice -- 2 + 100 would bill as 100 + 100 rather than 102.
+//
+// The output side is never touched: the delta is authoritative for it. Everything
+// else the event carried (iterations, service tier, thinking breakdown) is
+// preserved, so this cannot drop a field the upstream sent. Returns delta
+// unchanged when there is nothing to complete.
 func usageWithStartInputTokens(delta, start *AnthropicUsage) *AnthropicUsage {
 	if delta == nil || start == nil {
 		return delta
 	}
 
 	completed := *delta
-	if start.InputTokens > completed.InputTokens {
+	if completed.InputTokens == 0 {
 		completed.InputTokens = start.InputTokens
 	}
-	if start.CacheReadInputTokens > completed.CacheReadInputTokens {
+	if completed.CacheReadInputTokens == 0 {
 		completed.CacheReadInputTokens = start.CacheReadInputTokens
 	}
-	if start.CacheCreationInputTokens > completed.CacheCreationInputTokens {
+	if completed.CacheCreationInputTokens == 0 {
 		completed.CacheCreationInputTokens = start.CacheCreationInputTokens
 	}
-	if start.CacheCreation.Ephemeral5mInputTokens > completed.CacheCreation.Ephemeral5mInputTokens {
+	if completed.CacheCreation.Ephemeral5mInputTokens == 0 {
 		completed.CacheCreation.Ephemeral5mInputTokens = start.CacheCreation.Ephemeral5mInputTokens
 	}
-	if start.CacheCreation.Ephemeral1hInputTokens > completed.CacheCreation.Ephemeral1hInputTokens {
+	if completed.CacheCreation.Ephemeral1hInputTokens == 0 {
 		completed.CacheCreation.Ephemeral1hInputTokens = start.CacheCreation.Ephemeral1hInputTokens
 	}
 	return &completed
