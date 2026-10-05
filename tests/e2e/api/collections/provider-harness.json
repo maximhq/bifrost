@@ -197639,6 +197639,400 @@
       ]
     },
     {
+    "name": "166. SQLite client-config metadata write contention (sqlite-client-config)",
+    "description": "Management-only SQLite regression coverage for concurrent POST /api/config/metadata writers. The Go test pins the deterministic stale-reader SQLITE_BUSY_SNAPSHOT schedule; these two wire cases send 16 fixed concurrent metadata patches, assert every child response, verify recursive merge/null deletion and from_db persistence, and prove the visible client_config columns were not clobbered. No provider or model request is made. Run with an isolated SQLite config profile and SKIP_STREAM_CANCEL=1; FEATURE alone does not suppress the runner's post-pass paid probes.",
+    "item": [
+      {
+        "name": "openai sqlite-client-config concurrent recursive metadata merge preserves client columns",
+        "event": [
+          {
+            "listen": "prerequest",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var adminAuthHeader = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header') || '';",
+                "if (adminAuthHeader) { pm.request.headers.upsert({ key: 'Authorization', value: adminAuthHeader }); }"
+              ]
+            }
+          },
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "// Management-only SQLite contention pin. The outer GET is deliberately the only",
+                "// collection request; all child requests carry their own assertions and auth.",
+                "var marker = pm.variables.replaceIn('{{$guid}}').replace(/-/g, '');",
+                "var namespace = 'bifrost_harness_sqlite_client_config_' + marker;",
+                "var cleanupStarted = false;",
+                "var baselineConfig;",
+                "var baselineMetadata;",
+                "var expectedNamespace = { guard: marker, untouched: { keep: marker }, writes: {} };",
+                "",
+                "function authHeaders() {",
+                "  var h = { 'Content-Type': 'application/json' };",
+                "  var a = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header') || '';",
+                "  if (a) { h.Authorization = a; }",
+                "  return h;",
+                "}",
+                "",
+                "function send(method, path, body, callback) {",
+                "  var req = { url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: authHeaders() };",
+                "  if (body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                "  pm.sendRequest(req, callback);",
+                "}",
+                "",
+                "function equal(a, b) {",
+                "  if (a === b) { return true; }",
+                "  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') { return false; }",
+                "  var aa = Array.isArray(a), bb = Array.isArray(b);",
+                "  if (aa !== bb) { return false; }",
+                "  if (aa) {",
+                "    if (a.length !== b.length) { return false; }",
+                "    for (var i = 0; i < a.length; i += 1) { if (!equal(a[i], b[i])) { return false; } }",
+                "    return true;",
+                "  }",
+                "  var ak = Object.keys(a).sort(), bk = Object.keys(b).sort();",
+                "  if (ak.length !== bk.length) { return false; }",
+                "  for (var j = 0; j < ak.length; j += 1) {",
+                "    if (ak[j] !== bk[j] || !equal(a[ak[j]], b[bk[j]])) { return false; }",
+                "  }",
+                "  return true;",
+                "}",
+                "",
+                "function textOf(response) {",
+                "  try { return response && response.text ? response.text() : '<no response>'; } catch (e) { return '<unreadable response>'; }",
+                "}",
+                "",
+                "function checked(label, err, response, requireSuccess) {",
+                "  var body = null;",
+                "  var ok = !err && !!response && response.code === 200;",
+                "  if (ok) {",
+                "    try { body = response.json(); } catch (e) { ok = false; }",
+                "  }",
+                "  if (ok && requireSuccess && (!body || body.success !== true)) { ok = false; }",
+                "  pm.test(label + ' transport/status/body', function () {",
+                "    pm.expect(err, label + ' transport error; response=' + textOf(response)).to.equal(null);",
+                "    pm.expect(response, label + ' missing response').to.exist;",
+                "    pm.expect(response && response.code, label + ' response=' + textOf(response)).to.equal(200);",
+                "    pm.expect(ok, label + ' invalid JSON or success body: ' + textOf(response)).to.equal(true);",
+                "  });",
+                "  return ok;",
+                "}",
+                "",
+                "function fail(label, detail) {",
+                "  pm.test(label, function () { pm.expect.fail(detail); });",
+                "}",
+                "",
+                "function cleanup(reason) {",
+                "  if (cleanupStarted) { return; }",
+                "  cleanupStarted = true;",
+                "  var patch = {};",
+                "  patch[namespace] = null;",
+                "  send('POST', '/api/config/metadata', patch, function (err, response) {",
+                "    checked('cleanup ' + reason, err, response, true);",
+                "    send('GET', '/api/config?from_db=true', undefined, function (getErr, getResponse) {",
+                "      var ok = checked('cleanup verification', getErr, getResponse, false);",
+                "      var body = null;",
+                "      if (ok) { try { body = getResponse.json(); } catch (e) { ok = false; } }",
+                "      var absent = ok && (!body.metadata || !Object.prototype.hasOwnProperty.call(body.metadata, namespace));",
+                "      var othersUnchanged = ok && equal(body.metadata || {}, baselineMetadata);",
+                "      pm.test('cleanup removed only the generated namespace', function () {",
+                "        pm.expect(absent, 'namespace still present in ' + textOf(getResponse)).to.equal(true);",
+                "      });",
+                "      pm.test('cleanup preserved unrelated metadata', function () {",
+                "        pm.expect(othersUnchanged, 'unrelated metadata changed: ' + textOf(getResponse)).to.equal(true);",
+                "      });",
+                "    });",
+                "  });",
+                "}",
+                "",
+                "if (pm.response.code !== 200) { fail('baseline GET status', 'status=' + pm.response.code + ' body=' + textOf(pm.response)); return; }",
+                "var baseline;",
+                "try { baseline = pm.response.json(); } catch (e) { fail('baseline GET returned non-JSON', e.message); return; }",
+                "if (!baseline || !baseline.client_config || typeof baseline.client_config !== 'object') {",
+                "  fail('baseline GET did not expose client_config', JSON.stringify(baseline));",
+                "  return;",
+                "}",
+                "baselineConfig = baseline.client_config;",
+                "baselineMetadata = baseline.metadata || {};",
+                "if (baseline.metadata && Object.prototype.hasOwnProperty.call(baseline.metadata, namespace)) {",
+                "  fail('generated namespace unexpectedly existed before seed', namespace);",
+                "  return;",
+                "}",
+                "",
+                "var seed = {};",
+                "seed[namespace] = { guard: marker, untouched: { keep: marker }, writes: {} };",
+                "",
+                "var seedTimedOut = false;",
+                "var seedTimer = setTimeout(function () { if (!cleanupStarted) { seedTimedOut = true; fail('seed callback timeout', namespace); } }, 30000);",
+                "send('POST', '/api/config/metadata', seed, function (seedErr, seedResponse) {",
+                "  clearTimeout(seedTimer);",
+                "  if (cleanupStarted) { return; }",
+                "  if (seedTimedOut) { cleanup('seed-timeout-after-callback'); return; }",
+                "  if (!checked('seed metadata', seedErr, seedResponse, true)) { cleanup('seed-failed'); return; }",
+                "  var remaining = 16;",
+                "  var writerFailed = false;",
+                "  var writerTimedOut = false;",
+                "  var writerTimer = setTimeout(function () {",
+                "    if (remaining > 0 && !cleanupStarted) { writerTimedOut = true; fail('writer callback timeout', String(remaining) + ' callbacks outstanding'); }",
+                "  }, 30000);",
+                "  function doneWriter(ok) {",
+                "    if (!ok) { writerFailed = true; }",
+                "    remaining -= 1;",
+                "    if (remaining !== 0) { return; }",
+                "    clearTimeout(writerTimer);",
+                "    if (writerFailed || writerTimedOut || cleanupStarted) { if (writerFailed || writerTimedOut) { cleanup(writerTimedOut ? 'writer-timeout-after-callback' : 'writer-failed'); } return; }",
+                "    send('GET', '/api/config?from_db=true', undefined, function (getErr, getResponse) {",
+                "      var getOK = checked('final persisted GET', getErr, getResponse, false);",
+                "      var finalBody = null;",
+                "      if (getOK) { try { finalBody = getResponse.json(); } catch (e) { getOK = false; } }",
+                "      var configOK = getOK && equal(finalBody.client_config, baselineConfig);",
+                "      var metadataOK = getOK && !!finalBody.metadata && equal(finalBody.metadata[namespace], expectedNamespace);",
+                "      pm.test('final client_config columns are preserved', function () {",
+                "        pm.expect(configOK, 'client_config changed: ' + textOf(getResponse)).to.equal(true);",
+                "      });",
+                "      pm.test('final metadata namespace is exact and durable', function () {",
+                "        pm.expect(metadataOK, 'metadata mismatch: ' + textOf(getResponse)).to.equal(true);",
+                "      });",
+                "      cleanup(configOK && metadataOK ? 'success' : 'final-mismatch');",
+                "    });",
+                "  }",
+                "  for (var i = 0; i < 16; i += 1) {",
+                "    var patch = {};",
+                "    patch[namespace] = { writes: {} };",
+                "    patch[namespace].writes['k' + i] = { marker: marker + '-' + i, index: i };",
+                "    expectedNamespace.writes['k' + i] = { marker: marker + '-' + i, index: i };",
+                "    (function (writerIndex, writerPatch) {",
+                "      send('POST', '/api/config/metadata', writerPatch, function (err, response) {",
+                "        var ok = checked('writer ' + writerIndex, err, response, true);",
+                "        doneWriter(ok);",
+                "      });",
+                "    })(i, patch);",
+                "  }",
+                "});"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "GET",
+          "header": [],
+          "url": {
+            "raw": "{{baseUrl}}/api/config?from_db=true",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "config"
+            ],
+            "query": [
+              {
+                "key": "from_db",
+                "value": "true"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "openai sqlite-client-config concurrent metadata null deletion preserves sibling patches",
+        "event": [
+          {
+            "listen": "prerequest",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "var adminAuthHeader = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header') || '';",
+                "if (adminAuthHeader) { pm.request.headers.upsert({ key: 'Authorization', value: adminAuthHeader }); }"
+              ]
+            }
+          },
+          {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "// Management-only SQLite contention pin. The outer GET is deliberately the only",
+                "// collection request; all child requests carry their own assertions and auth.",
+                "var marker = pm.variables.replaceIn('{{$guid}}').replace(/-/g, '');",
+                "var namespace = 'bifrost_harness_sqlite_client_config_' + marker;",
+                "var cleanupStarted = false;",
+                "var baselineConfig;",
+                "var baselineMetadata;",
+                "var expectedNamespace = { guard: marker, untouched: { keep: marker }, writes: {} };",
+                "",
+                "function authHeaders() {",
+                "  var h = { 'Content-Type': 'application/json' };",
+                "  var a = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header') || '';",
+                "  if (a) { h.Authorization = a; }",
+                "  return h;",
+                "}",
+                "",
+                "function send(method, path, body, callback) {",
+                "  var req = { url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: authHeaders() };",
+                "  if (body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                "  pm.sendRequest(req, callback);",
+                "}",
+                "",
+                "function equal(a, b) {",
+                "  if (a === b) { return true; }",
+                "  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') { return false; }",
+                "  var aa = Array.isArray(a), bb = Array.isArray(b);",
+                "  if (aa !== bb) { return false; }",
+                "  if (aa) {",
+                "    if (a.length !== b.length) { return false; }",
+                "    for (var i = 0; i < a.length; i += 1) { if (!equal(a[i], b[i])) { return false; } }",
+                "    return true;",
+                "  }",
+                "  var ak = Object.keys(a).sort(), bk = Object.keys(b).sort();",
+                "  if (ak.length !== bk.length) { return false; }",
+                "  for (var j = 0; j < ak.length; j += 1) {",
+                "    if (ak[j] !== bk[j] || !equal(a[ak[j]], b[bk[j]])) { return false; }",
+                "  }",
+                "  return true;",
+                "}",
+                "",
+                "function textOf(response) {",
+                "  try { return response && response.text ? response.text() : '<no response>'; } catch (e) { return '<unreadable response>'; }",
+                "}",
+                "",
+                "function checked(label, err, response, requireSuccess) {",
+                "  var body = null;",
+                "  var ok = !err && !!response && response.code === 200;",
+                "  if (ok) {",
+                "    try { body = response.json(); } catch (e) { ok = false; }",
+                "  }",
+                "  if (ok && requireSuccess && (!body || body.success !== true)) { ok = false; }",
+                "  pm.test(label + ' transport/status/body', function () {",
+                "    pm.expect(err, label + ' transport error; response=' + textOf(response)).to.equal(null);",
+                "    pm.expect(response, label + ' missing response').to.exist;",
+                "    pm.expect(response && response.code, label + ' response=' + textOf(response)).to.equal(200);",
+                "    pm.expect(ok, label + ' invalid JSON or success body: ' + textOf(response)).to.equal(true);",
+                "  });",
+                "  return ok;",
+                "}",
+                "",
+                "function fail(label, detail) {",
+                "  pm.test(label, function () { pm.expect.fail(detail); });",
+                "}",
+                "",
+                "function cleanup(reason) {",
+                "  if (cleanupStarted) { return; }",
+                "  cleanupStarted = true;",
+                "  var patch = {};",
+                "  patch[namespace] = null;",
+                "  send('POST', '/api/config/metadata', patch, function (err, response) {",
+                "    checked('cleanup ' + reason, err, response, true);",
+                "    send('GET', '/api/config?from_db=true', undefined, function (getErr, getResponse) {",
+                "      var ok = checked('cleanup verification', getErr, getResponse, false);",
+                "      var body = null;",
+                "      if (ok) { try { body = getResponse.json(); } catch (e) { ok = false; } }",
+                "      var absent = ok && (!body.metadata || !Object.prototype.hasOwnProperty.call(body.metadata, namespace));",
+                "      var othersUnchanged = ok && equal(body.metadata || {}, baselineMetadata);",
+                "      pm.test('cleanup removed only the generated namespace', function () {",
+                "        pm.expect(absent, 'namespace still present in ' + textOf(getResponse)).to.equal(true);",
+                "      });",
+                "      pm.test('cleanup preserved unrelated metadata', function () {",
+                "        pm.expect(othersUnchanged, 'unrelated metadata changed: ' + textOf(getResponse)).to.equal(true);",
+                "      });",
+                "    });",
+                "  });",
+                "}",
+                "",
+                "if (pm.response.code !== 200) { fail('baseline GET status', 'status=' + pm.response.code + ' body=' + textOf(pm.response)); return; }",
+                "var baseline;",
+                "try { baseline = pm.response.json(); } catch (e) { fail('baseline GET returned non-JSON', e.message); return; }",
+                "if (!baseline || !baseline.client_config || typeof baseline.client_config !== 'object') {",
+                "  fail('baseline GET did not expose client_config', JSON.stringify(baseline));",
+                "  return;",
+                "}",
+                "baselineConfig = baseline.client_config;",
+                "baselineMetadata = baseline.metadata || {};",
+                "if (baseline.metadata && Object.prototype.hasOwnProperty.call(baseline.metadata, namespace)) {",
+                "  fail('generated namespace unexpectedly existed before seed', namespace);",
+                "  return;",
+                "}",
+                "",
+                "var seed = {};",
+                "seed[namespace] = { guard: marker, untouched: { keep: marker }, writes: {} };",
+                "for (var removeIndex = 0; removeIndex < 8; removeIndex += 1) { seed[namespace]['remove' + removeIndex] = marker + '-remove-' + removeIndex; }",
+                "var seedTimedOut = false;",
+                "var seedTimer = setTimeout(function () { if (!cleanupStarted) { seedTimedOut = true; fail('seed callback timeout', namespace); } }, 30000);",
+                "send('POST', '/api/config/metadata', seed, function (seedErr, seedResponse) {",
+                "  clearTimeout(seedTimer);",
+                "  if (cleanupStarted) { return; }",
+                "  if (seedTimedOut) { cleanup('seed-timeout-after-callback'); return; }",
+                "  if (!checked('seed metadata', seedErr, seedResponse, true)) { cleanup('seed-failed'); return; }",
+                "  var remaining = 16;",
+                "  var writerFailed = false;",
+                "  var writerTimedOut = false;",
+                "  var writerTimer = setTimeout(function () {",
+                "    if (remaining > 0 && !cleanupStarted) { writerTimedOut = true; fail('writer callback timeout', String(remaining) + ' callbacks outstanding'); }",
+                "  }, 30000);",
+                "  function doneWriter(ok) {",
+                "    if (!ok) { writerFailed = true; }",
+                "    remaining -= 1;",
+                "    if (remaining !== 0) { return; }",
+                "    clearTimeout(writerTimer);",
+                "    if (writerFailed || writerTimedOut || cleanupStarted) { if (writerFailed || writerTimedOut) { cleanup(writerTimedOut ? 'writer-timeout-after-callback' : 'writer-failed'); } return; }",
+                "    send('GET', '/api/config?from_db=true', undefined, function (getErr, getResponse) {",
+                "      var getOK = checked('final persisted GET', getErr, getResponse, false);",
+                "      var finalBody = null;",
+                "      if (getOK) { try { finalBody = getResponse.json(); } catch (e) { getOK = false; } }",
+                "      var configOK = getOK && equal(finalBody.client_config, baselineConfig);",
+                "      var metadataOK = getOK && !!finalBody.metadata && equal(finalBody.metadata[namespace], expectedNamespace);",
+                "      pm.test('final client_config columns are preserved', function () {",
+                "        pm.expect(configOK, 'client_config changed: ' + textOf(getResponse)).to.equal(true);",
+                "      });",
+                "      pm.test('final metadata namespace is exact and durable', function () {",
+                "        pm.expect(metadataOK, 'metadata mismatch: ' + textOf(getResponse)).to.equal(true);",
+                "      });",
+                "      cleanup(configOK && metadataOK ? 'success' : 'final-mismatch');",
+                "    });",
+                "  }",
+                "  for (var i = 0; i < 16; i += 1) {",
+                "    var patch = {};",
+                "    patch[namespace] = { writes: {} };",
+                "    if (i < 8) { patch[namespace]['remove' + i] = null; } else { patch[namespace].writes['k' + (i - 8)] = { marker: marker + '-' + (i - 8), index: i - 8 }; }",
+                "    if (i >= 8) { expectedNamespace.writes['k' + (i - 8)] = { marker: marker + '-' + (i - 8), index: i - 8 }; }",
+                "    (function (writerIndex, writerPatch) {",
+                "      send('POST', '/api/config/metadata', writerPatch, function (err, response) {",
+                "        var ok = checked('writer ' + writerIndex, err, response, true);",
+                "        doneWriter(ok);",
+                "      });",
+                "    })(i, patch);",
+                "  }",
+                "});"
+              ]
+            }
+          }
+        ],
+        "request": {
+          "method": "GET",
+          "header": [],
+          "url": {
+            "raw": "{{baseUrl}}/api/config?from_db=true",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "config"
+            ],
+            "query": [
+              {
+                "key": "from_db",
+                "value": "true"
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+    {
       "name": "Provider endpoint URL components (endpoint-url-components)",
       "description": "Reject ambiguous URL components before destination lookup, persistence, or discovery. Uses the default profile with dashboard auth disabled; no provider calls.",
       "item": [
@@ -198168,398 +198562,1047 @@
       ]
     },
     {
-    "name": "166. SQLite client-config metadata write contention (sqlite-client-config)",
-    "description": "Management-only SQLite regression coverage for concurrent POST /api/config/metadata writers. The Go test pins the deterministic stale-reader SQLITE_BUSY_SNAPSHOT schedule; these two wire cases send 16 fixed concurrent metadata patches, assert every child response, verify recursive merge/null deletion and from_db persistence, and prove the visible client_config columns were not clobbered. No provider or model request is made. Run with an isolated SQLite config profile and SKIP_STREAM_CANCEL=1; FEATURE alone does not suppress the runner's post-pass paid probes.",
-    "item": [
-      {
-        "name": "openai sqlite-client-config concurrent recursive metadata merge preserves client columns",
-        "event": [
-          {
-            "listen": "prerequest",
-            "script": {
-              "type": "text/javascript",
-              "exec": [
-                "var adminAuthHeader = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header') || '';",
-                "if (adminAuthHeader) { pm.request.headers.upsert({ key: 'Authorization', value: adminAuthHeader }); }"
-              ]
-            }
+      "name": "Code mode execution budget",
+      "description": "Requires the default Starlark code-mode implementation. Exercises local computations only, with no upstream provider requests.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-budget step-limit",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
           },
-          {
-            "listen": "test",
-            "script": {
-              "type": "text/javascript",
-              "exec": [
-                "// Management-only SQLite contention pin. The outer GET is deliberately the only",
-                "// collection request; all child requests carry their own assertions and auth.",
-                "var marker = pm.variables.replaceIn('{{$guid}}').replace(/-/g, '');",
-                "var namespace = 'bifrost_harness_sqlite_client_config_' + marker;",
-                "var cleanupStarted = false;",
-                "var baselineConfig;",
-                "var baselineMetadata;",
-                "var expectedNamespace = { guard: marker, untouched: { keep: marker }, writes: {} };",
-                "",
-                "function authHeaders() {",
-                "  var h = { 'Content-Type': 'application/json' };",
-                "  var a = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header') || '';",
-                "  if (a) { h.Authorization = a; }",
-                "  return h;",
-                "}",
-                "",
-                "function send(method, path, body, callback) {",
-                "  var req = { url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: authHeaders() };",
-                "  if (body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
-                "  pm.sendRequest(req, callback);",
-                "}",
-                "",
-                "function equal(a, b) {",
-                "  if (a === b) { return true; }",
-                "  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') { return false; }",
-                "  var aa = Array.isArray(a), bb = Array.isArray(b);",
-                "  if (aa !== bb) { return false; }",
-                "  if (aa) {",
-                "    if (a.length !== b.length) { return false; }",
-                "    for (var i = 0; i < a.length; i += 1) { if (!equal(a[i], b[i])) { return false; } }",
-                "    return true;",
-                "  }",
-                "  var ak = Object.keys(a).sort(), bk = Object.keys(b).sort();",
-                "  if (ak.length !== bk.length) { return false; }",
-                "  for (var j = 0; j < ak.length; j += 1) {",
-                "    if (ak[j] !== bk[j] || !equal(a[ak[j]], b[bk[j]])) { return false; }",
-                "  }",
-                "  return true;",
-                "}",
-                "",
-                "function textOf(response) {",
-                "  try { return response && response.text ? response.text() : '<no response>'; } catch (e) { return '<unreadable response>'; }",
-                "}",
-                "",
-                "function checked(label, err, response, requireSuccess) {",
-                "  var body = null;",
-                "  var ok = !err && !!response && response.code === 200;",
-                "  if (ok) {",
-                "    try { body = response.json(); } catch (e) { ok = false; }",
-                "  }",
-                "  if (ok && requireSuccess && (!body || body.success !== true)) { ok = false; }",
-                "  pm.test(label + ' transport/status/body', function () {",
-                "    pm.expect(err, label + ' transport error; response=' + textOf(response)).to.equal(null);",
-                "    pm.expect(response, label + ' missing response').to.exist;",
-                "    pm.expect(response && response.code, label + ' response=' + textOf(response)).to.equal(200);",
-                "    pm.expect(ok, label + ' invalid JSON or success body: ' + textOf(response)).to.equal(true);",
-                "  });",
-                "  return ok;",
-                "}",
-                "",
-                "function fail(label, detail) {",
-                "  pm.test(label, function () { pm.expect.fail(detail); });",
-                "}",
-                "",
-                "function cleanup(reason) {",
-                "  if (cleanupStarted) { return; }",
-                "  cleanupStarted = true;",
-                "  var patch = {};",
-                "  patch[namespace] = null;",
-                "  send('POST', '/api/config/metadata', patch, function (err, response) {",
-                "    checked('cleanup ' + reason, err, response, true);",
-                "    send('GET', '/api/config?from_db=true', undefined, function (getErr, getResponse) {",
-                "      var ok = checked('cleanup verification', getErr, getResponse, false);",
-                "      var body = null;",
-                "      if (ok) { try { body = getResponse.json(); } catch (e) { ok = false; } }",
-                "      var absent = ok && (!body.metadata || !Object.prototype.hasOwnProperty.call(body.metadata, namespace));",
-                "      var othersUnchanged = ok && equal(body.metadata || {}, baselineMetadata);",
-                "      pm.test('cleanup removed only the generated namespace', function () {",
-                "        pm.expect(absent, 'namespace still present in ' + textOf(getResponse)).to.equal(true);",
-                "      });",
-                "      pm.test('cleanup preserved unrelated metadata', function () {",
-                "        pm.expect(othersUnchanged, 'unrelated metadata changed: ' + textOf(getResponse)).to.equal(true);",
-                "      });",
-                "    });",
-                "  });",
-                "}",
-                "",
-                "if (pm.response.code !== 200) { fail('baseline GET status', 'status=' + pm.response.code + ' body=' + textOf(pm.response)); return; }",
-                "var baseline;",
-                "try { baseline = pm.response.json(); } catch (e) { fail('baseline GET returned non-JSON', e.message); return; }",
-                "if (!baseline || !baseline.client_config || typeof baseline.client_config !== 'object') {",
-                "  fail('baseline GET did not expose client_config', JSON.stringify(baseline));",
-                "  return;",
-                "}",
-                "baselineConfig = baseline.client_config;",
-                "baselineMetadata = baseline.metadata || {};",
-                "if (baseline.metadata && Object.prototype.hasOwnProperty.call(baseline.metadata, namespace)) {",
-                "  fail('generated namespace unexpectedly existed before seed', namespace);",
-                "  return;",
-                "}",
-                "",
-                "var seed = {};",
-                "seed[namespace] = { guard: marker, untouched: { keep: marker }, writes: {} };",
-                "",
-                "var seedTimedOut = false;",
-                "var seedTimer = setTimeout(function () { if (!cleanupStarted) { seedTimedOut = true; fail('seed callback timeout', namespace); } }, 30000);",
-                "send('POST', '/api/config/metadata', seed, function (seedErr, seedResponse) {",
-                "  clearTimeout(seedTimer);",
-                "  if (cleanupStarted) { return; }",
-                "  if (seedTimedOut) { cleanup('seed-timeout-after-callback'); return; }",
-                "  if (!checked('seed metadata', seedErr, seedResponse, true)) { cleanup('seed-failed'); return; }",
-                "  var remaining = 16;",
-                "  var writerFailed = false;",
-                "  var writerTimedOut = false;",
-                "  var writerTimer = setTimeout(function () {",
-                "    if (remaining > 0 && !cleanupStarted) { writerTimedOut = true; fail('writer callback timeout', String(remaining) + ' callbacks outstanding'); }",
-                "  }, 30000);",
-                "  function doneWriter(ok) {",
-                "    if (!ok) { writerFailed = true; }",
-                "    remaining -= 1;",
-                "    if (remaining !== 0) { return; }",
-                "    clearTimeout(writerTimer);",
-                "    if (writerFailed || writerTimedOut || cleanupStarted) { if (writerFailed || writerTimedOut) { cleanup(writerTimedOut ? 'writer-timeout-after-callback' : 'writer-failed'); } return; }",
-                "    send('GET', '/api/config?from_db=true', undefined, function (getErr, getResponse) {",
-                "      var getOK = checked('final persisted GET', getErr, getResponse, false);",
-                "      var finalBody = null;",
-                "      if (getOK) { try { finalBody = getResponse.json(); } catch (e) { getOK = false; } }",
-                "      var configOK = getOK && equal(finalBody.client_config, baselineConfig);",
-                "      var metadataOK = getOK && !!finalBody.metadata && equal(finalBody.metadata[namespace], expectedNamespace);",
-                "      pm.test('final client_config columns are preserved', function () {",
-                "        pm.expect(configOK, 'client_config changed: ' + textOf(getResponse)).to.equal(true);",
-                "      });",
-                "      pm.test('final metadata namespace is exact and durable', function () {",
-                "        pm.expect(metadataOK, 'metadata mismatch: ' + textOf(getResponse)).to.equal(true);",
-                "      });",
-                "      cleanup(configOK && metadataOK ? 'success' : 'final-mismatch');",
-                "    });",
-                "  }",
-                "  for (var i = 0; i < 16; i += 1) {",
-                "    var patch = {};",
-                "    patch[namespace] = { writes: {} };",
-                "    patch[namespace].writes['k' + i] = { marker: marker + '-' + i, index: i };",
-                "    expectedNamespace.writes['k' + i] = { marker: marker + '-' + i, index: i };",
-                "    (function (writerIndex, writerPatch) {",
-                "      send('POST', '/api/config/metadata', writerPatch, function (err, response) {",
-                "        var ok = checked('writer ' + writerIndex, err, response, true);",
-                "        doneWriter(ok);",
-                "      });",
-                "    })(i, patch);",
-                "  }",
-                "});"
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget step-limit', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"step\");",
+                  "  pm.expect(pm.response.json().is_error === true).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
               ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-step-limit\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 0\\\\nfor i in range(2000000):\\\\n    result += i\\\"}\"\n  }\n}"
             }
           }
-        ],
-        "request": {
-          "method": "GET",
-          "header": [],
-          "url": {
-            "raw": "{{baseUrl}}/api/config?from_db=true",
-            "host": [
-              "{{baseUrl}}"
-            ],
-            "path": [
-              "api",
-              "config"
-            ],
-            "query": [
-              {
-                "key": "from_db",
-                "value": "true"
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget allocation-limit",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget allocation-limit', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"resource limit\");",
+                  "  pm.expect(pm.response.json().is_error === true).to.equal(true);",
+                  "});"
+                ]
               }
-            ]
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-allocation-limit\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = len([0] * 200000000)\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget recovery",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget recovery', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"42\");",
+                  "  pm.expect(pm.response.json().is_error === true).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-recovery\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 6 * 7\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget try-except-hint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Canonical's parser reports try as an illegal token; the hint must still explain that Starlark has no exception handling.",
+                  "pm.test('code-mode-budget try-except-hint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, pm.response.text()).to.equal(true);",
+                  "  pm.expect(pm.response.text()).to.include('does NOT support try/except');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-try-except-hint\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"try:\\\\n    x = 1\\\\nexcept:\\\\n    x = 0\\\"}\"\n  }\n}"
+            }
           }
         }
-      },
-      {
-        "name": "openai sqlite-client-config concurrent metadata null deletion preserves sibling patches",
-        "event": [
-          {
-            "listen": "prerequest",
-            "script": {
-              "type": "text/javascript",
-              "exec": [
-                "var adminAuthHeader = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header') || '';",
-                "if (adminAuthHeader) { pm.request.headers.upsert({ key: 'Authorization', value: adminAuthHeader }); }"
-              ]
-            }
+      ]
+    },
+    {
+      "name": "Code mode value boundaries",
+      "description": "Bounds conversion of cyclic, repeated, and oversized values in the in-process interpreter. Local computations only; no provider requests.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-budget cyclic-result",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
           },
-          {
-            "listen": "test",
-            "script": {
-              "type": "text/javascript",
-              "exec": [
-                "// Management-only SQLite contention pin. The outer GET is deliberately the only",
-                "// collection request; all child requests carry their own assertions and auth.",
-                "var marker = pm.variables.replaceIn('{{$guid}}').replace(/-/g, '');",
-                "var namespace = 'bifrost_harness_sqlite_client_config_' + marker;",
-                "var cleanupStarted = false;",
-                "var baselineConfig;",
-                "var baselineMetadata;",
-                "var expectedNamespace = { guard: marker, untouched: { keep: marker }, writes: {} };",
-                "",
-                "function authHeaders() {",
-                "  var h = { 'Content-Type': 'application/json' };",
-                "  var a = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header') || '';",
-                "  if (a) { h.Authorization = a; }",
-                "  return h;",
-                "}",
-                "",
-                "function send(method, path, body, callback) {",
-                "  var req = { url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: authHeaders() };",
-                "  if (body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
-                "  pm.sendRequest(req, callback);",
-                "}",
-                "",
-                "function equal(a, b) {",
-                "  if (a === b) { return true; }",
-                "  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') { return false; }",
-                "  var aa = Array.isArray(a), bb = Array.isArray(b);",
-                "  if (aa !== bb) { return false; }",
-                "  if (aa) {",
-                "    if (a.length !== b.length) { return false; }",
-                "    for (var i = 0; i < a.length; i += 1) { if (!equal(a[i], b[i])) { return false; } }",
-                "    return true;",
-                "  }",
-                "  var ak = Object.keys(a).sort(), bk = Object.keys(b).sort();",
-                "  if (ak.length !== bk.length) { return false; }",
-                "  for (var j = 0; j < ak.length; j += 1) {",
-                "    if (ak[j] !== bk[j] || !equal(a[ak[j]], b[bk[j]])) { return false; }",
-                "  }",
-                "  return true;",
-                "}",
-                "",
-                "function textOf(response) {",
-                "  try { return response && response.text ? response.text() : '<no response>'; } catch (e) { return '<unreadable response>'; }",
-                "}",
-                "",
-                "function checked(label, err, response, requireSuccess) {",
-                "  var body = null;",
-                "  var ok = !err && !!response && response.code === 200;",
-                "  if (ok) {",
-                "    try { body = response.json(); } catch (e) { ok = false; }",
-                "  }",
-                "  if (ok && requireSuccess && (!body || body.success !== true)) { ok = false; }",
-                "  pm.test(label + ' transport/status/body', function () {",
-                "    pm.expect(err, label + ' transport error; response=' + textOf(response)).to.equal(null);",
-                "    pm.expect(response, label + ' missing response').to.exist;",
-                "    pm.expect(response && response.code, label + ' response=' + textOf(response)).to.equal(200);",
-                "    pm.expect(ok, label + ' invalid JSON or success body: ' + textOf(response)).to.equal(true);",
-                "  });",
-                "  return ok;",
-                "}",
-                "",
-                "function fail(label, detail) {",
-                "  pm.test(label, function () { pm.expect.fail(detail); });",
-                "}",
-                "",
-                "function cleanup(reason) {",
-                "  if (cleanupStarted) { return; }",
-                "  cleanupStarted = true;",
-                "  var patch = {};",
-                "  patch[namespace] = null;",
-                "  send('POST', '/api/config/metadata', patch, function (err, response) {",
-                "    checked('cleanup ' + reason, err, response, true);",
-                "    send('GET', '/api/config?from_db=true', undefined, function (getErr, getResponse) {",
-                "      var ok = checked('cleanup verification', getErr, getResponse, false);",
-                "      var body = null;",
-                "      if (ok) { try { body = getResponse.json(); } catch (e) { ok = false; } }",
-                "      var absent = ok && (!body.metadata || !Object.prototype.hasOwnProperty.call(body.metadata, namespace));",
-                "      var othersUnchanged = ok && equal(body.metadata || {}, baselineMetadata);",
-                "      pm.test('cleanup removed only the generated namespace', function () {",
-                "        pm.expect(absent, 'namespace still present in ' + textOf(getResponse)).to.equal(true);",
-                "      });",
-                "      pm.test('cleanup preserved unrelated metadata', function () {",
-                "        pm.expect(othersUnchanged, 'unrelated metadata changed: ' + textOf(getResponse)).to.equal(true);",
-                "      });",
-                "    });",
-                "  });",
-                "}",
-                "",
-                "if (pm.response.code !== 200) { fail('baseline GET status', 'status=' + pm.response.code + ' body=' + textOf(pm.response)); return; }",
-                "var baseline;",
-                "try { baseline = pm.response.json(); } catch (e) { fail('baseline GET returned non-JSON', e.message); return; }",
-                "if (!baseline || !baseline.client_config || typeof baseline.client_config !== 'object') {",
-                "  fail('baseline GET did not expose client_config', JSON.stringify(baseline));",
-                "  return;",
-                "}",
-                "baselineConfig = baseline.client_config;",
-                "baselineMetadata = baseline.metadata || {};",
-                "if (baseline.metadata && Object.prototype.hasOwnProperty.call(baseline.metadata, namespace)) {",
-                "  fail('generated namespace unexpectedly existed before seed', namespace);",
-                "  return;",
-                "}",
-                "",
-                "var seed = {};",
-                "seed[namespace] = { guard: marker, untouched: { keep: marker }, writes: {} };",
-                "for (var removeIndex = 0; removeIndex < 8; removeIndex += 1) { seed[namespace]['remove' + removeIndex] = marker + '-remove-' + removeIndex; }",
-                "var seedTimedOut = false;",
-                "var seedTimer = setTimeout(function () { if (!cleanupStarted) { seedTimedOut = true; fail('seed callback timeout', namespace); } }, 30000);",
-                "send('POST', '/api/config/metadata', seed, function (seedErr, seedResponse) {",
-                "  clearTimeout(seedTimer);",
-                "  if (cleanupStarted) { return; }",
-                "  if (seedTimedOut) { cleanup('seed-timeout-after-callback'); return; }",
-                "  if (!checked('seed metadata', seedErr, seedResponse, true)) { cleanup('seed-failed'); return; }",
-                "  var remaining = 16;",
-                "  var writerFailed = false;",
-                "  var writerTimedOut = false;",
-                "  var writerTimer = setTimeout(function () {",
-                "    if (remaining > 0 && !cleanupStarted) { writerTimedOut = true; fail('writer callback timeout', String(remaining) + ' callbacks outstanding'); }",
-                "  }, 30000);",
-                "  function doneWriter(ok) {",
-                "    if (!ok) { writerFailed = true; }",
-                "    remaining -= 1;",
-                "    if (remaining !== 0) { return; }",
-                "    clearTimeout(writerTimer);",
-                "    if (writerFailed || writerTimedOut || cleanupStarted) { if (writerFailed || writerTimedOut) { cleanup(writerTimedOut ? 'writer-timeout-after-callback' : 'writer-failed'); } return; }",
-                "    send('GET', '/api/config?from_db=true', undefined, function (getErr, getResponse) {",
-                "      var getOK = checked('final persisted GET', getErr, getResponse, false);",
-                "      var finalBody = null;",
-                "      if (getOK) { try { finalBody = getResponse.json(); } catch (e) { getOK = false; } }",
-                "      var configOK = getOK && equal(finalBody.client_config, baselineConfig);",
-                "      var metadataOK = getOK && !!finalBody.metadata && equal(finalBody.metadata[namespace], expectedNamespace);",
-                "      pm.test('final client_config columns are preserved', function () {",
-                "        pm.expect(configOK, 'client_config changed: ' + textOf(getResponse)).to.equal(true);",
-                "      });",
-                "      pm.test('final metadata namespace is exact and durable', function () {",
-                "        pm.expect(metadataOK, 'metadata mismatch: ' + textOf(getResponse)).to.equal(true);",
-                "      });",
-                "      cleanup(configOK && metadataOK ? 'success' : 'final-mismatch');",
-                "    });",
-                "  }",
-                "  for (var i = 0; i < 16; i += 1) {",
-                "    var patch = {};",
-                "    patch[namespace] = { writes: {} };",
-                "    if (i < 8) { patch[namespace]['remove' + i] = null; } else { patch[namespace].writes['k' + (i - 8)] = { marker: marker + '-' + (i - 8), index: i - 8 }; }",
-                "    if (i >= 8) { expectedNamespace.writes['k' + (i - 8)] = { marker: marker + '-' + (i - 8), index: i - 8 }; }",
-                "    (function (writerIndex, writerPatch) {",
-                "      send('POST', '/api/config/metadata', writerPatch, function (err, response) {",
-                "        var ok = checked('writer ' + writerIndex, err, response, true);",
-                "        doneWriter(ok);",
-                "      });",
-                "    })(i, patch);",
-                "  }",
-                "});"
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget cyclic-result', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"nesting limit\");",
+                  "  pm.expect(pm.response.json().is_error).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
               ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-cyclic-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = []\\\\nresult.append(result)\\\"}\"\n  }\n}"
             }
           }
-        ],
-        "request": {
-          "method": "GET",
-          "header": [],
-          "url": {
-            "raw": "{{baseUrl}}/api/config?from_db=true",
-            "host": [
-              "{{baseUrl}}"
-            ],
-            "path": [
-              "api",
-              "config"
-            ],
-            "query": [
-              {
-                "key": "from_db",
-                "value": "true"
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget expanded-result",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget expanded-result', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"size limit\");",
+                  "  pm.expect(pm.response.json().is_error).to.equal(true);",
+                  "});"
+                ]
               }
-            ]
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-expanded-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = [0]\\\\nfor i in range(30):\\\\n    result = [result, result]\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget integer-result",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget integer-result', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"integer exceeds size limit\");",
+                  "  pm.expect(pm.response.json().is_error).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-integer-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 1 << 10000\\\"}\"\n  }\n}"
+            }
           }
         }
-      }
-    ]
-  }
+      ]
+    },
+    {
+      "name": "Code mode configurable limits (code-mode-limits)",
+      "description": "Code mode limits set through PUT /api/config (client_config.mcp_code_mode_limits) persist and hot-reload: lowering max_steps makes a small loop fail, raising it lets a loop that exceeds the default pass, and an out-of-range limit is refused with 400 without changing state. The folder reads the stored limits first and restores them last; an interrupted run can leave the lowered limits in place. Local computations only; the openai keyword is a harness filter label and no provider calls are made.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-limits read current config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits read current config', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  pm.collectionVariables.set('codeModeLimitsClientConfig', JSON.stringify(cc));",
+                  "  pm.collectionVariables.set('codeModeLimitsOriginal', JSON.stringify(cc.mcp_code_mode_limits || {}));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits lower max_steps",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = { max_steps: 1000 };",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits lower max_steps', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits lowered max_steps persists",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits lowered max_steps persists', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var limits = pm.response.json().client_config.mcp_code_mode_limits || {};",
+                  "  pm.expect(limits.max_steps, pm.response.text()).to.equal(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits lowered max_steps applies",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 5000 iterations fit the default budget of 1000000 steps but not a budget of 1000.",
+                  "pm.test('code-mode-limits lowered max_steps applies', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include('step');",
+                  "  pm.expect(pm.response.json().is_error, pm.response.text()).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-limits-lowered-steps\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"for i in range(5000):\\\\n    pass\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits raise max_steps",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = { max_steps: 50000000 };",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits raise max_steps', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits raised max_steps applies",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 2000000 iterations exceed the default budget of 1000000 steps; the loop body allocates nothing.",
+                  "pm.test('code-mode-limits raised max_steps applies', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, pm.response.text()).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-limits-raised-steps\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"for i in range(2000000):\\\\n    pass\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai code-mode-limits rejects nesting depth above the bound",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = { max_nesting_depth: 5000 };",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits rejects nesting depth above the bound', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('max_nesting_depth');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits restore original limits",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = JSON.parse(pm.collectionVariables.get('codeModeLimitsOriginal'));",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits restore original limits', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits original limits restored",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits original limits restored', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var limits = pm.response.json().client_config.mcp_code_mode_limits || {};",
+                  "  pm.expect(limits, pm.response.text()).to.eql(JSON.parse(pm.collectionVariables.get('codeModeLimitsOriginal')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "170. Anthropic egress preserves stop_reason stop_sequence and the matched sequence (#7920 / PR #7921) (anthropic-stop-sequence)",
+      "description": "Pins that when Claude (Anthropic provider or Vertex) stops on a requested stop sequence, /anthropic/v1/messages reports stop_reason \"stop_sequence\" and the matched string in stop_sequence, in the non-streaming body and in the streaming terminal message_delta.\n\nBug (#7920): the response is converted Anthropic -> Bifrost Responses -> Anthropic. Anthropic's stop_sequence reason is folded into Bifrost \"stop\" and the matched string had no field on BifrostResponsesResponse, so the egress reported stop_reason end_turn with stop_sequence null. Clients that branch on stop_reason == \"stop_sequence\" could not tell a delimiter stop from a natural end of turn.\n\nFix: BifrostResponsesResponse gains an optional stop_sequence carrier, the Anthropic ingress (ToBifrostResponsesResponse and the streaming message_delta handling in core/providers/anthropic/responses.go) records it when the upstream reason is stop_sequence, and the egress restores stop_reason stop_sequence via anthropicStopReasonWithSequence (core/providers/anthropic/utils.go). An OpenAI-style \"stop\" with no matched sequence still maps to end_turn.\n\nCases use the issue repro (stop_sequences [\"5\"]) with the output pinned as far as a live model allows: temperature 0, a system prompt demanding the exact characters, the user turn \"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\", and max_tokens 30, so the upstream stops right after \"4\". The text-ends-on-4 check runs first and reports a model that ignored the prompt as a precondition failure, separate from the stop_reason/stop_sequence assertions under test; the conversion itself is pinned with fixed upstream payloads by the unit tests in core/providers/anthropic. Anthropic non-streaming and streaming, Vertex Claude non-streaming and streaming. Red before the fix (end_turn / null), green after.",
+      "item": [
+        {
+          "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages non-streaming stop_sequences hit reports stop_reason stop_sequence with the matched sequence - #7920",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic claude: non-streaming stop on a requested stop sequence reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  var text = (j.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + j.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(j.stop_reason, 'a turn that stopped on the requested stop sequence must report stop_reason stop_sequence, not end_turn: ' + raw.slice(0, 400)).to.equal('stop_sequence');",
+                  "  pm.expect(j.stop_sequence, 'stop_sequence must carry the matched sequence, not null: ' + raw.slice(0, 400)).to.equal('5');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages streaming stop_sequences hit message_delta reports stop_reason stop_sequence with the matched sequence - #7920",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic claude: streaming message_delta reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var frames = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    try { frames.push(JSON.parse(t.slice(5).trim())); } catch (e) { /* non-JSON keepalive */ }",
+                  "  });",
+                  "  pm.expect(frames.length, 'expected SSE data frames: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "  var deltas = frames.filter(function (f) { return f.type === 'message_delta'; });",
+                  "  pm.expect(deltas.length, 'stream must emit a terminal message_delta: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var d = deltas[deltas.length - 1].delta || {};",
+                  "  var text = frames.filter(function (f) { return f.type === 'content_block_delta' && f.delta && f.delta.type === 'text_delta'; }).map(function (f) { return f.delta.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the streamed text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + d.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(d.stop_reason, 'message_delta must report stop_reason stop_sequence, not end_turn: ' + JSON.stringify(d)).to.equal('stop_sequence');",
+                  "  pm.expect(d.stop_sequence, 'message_delta must carry the matched stop_sequence, not null: ' + JSON.stringify(d)).to.equal('5');",
+                  "  pm.expect(frames[frames.length - 1].type, 'stream must end on message_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stream\":true,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 /anthropic/v1/messages non-streaming stop_sequences hit reports stop_reason stop_sequence with the matched sequence - #7920",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex claude: non-streaming stop on a requested stop sequence reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  var text = (j.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + j.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(j.stop_reason, 'a turn that stopped on the requested stop sequence must report stop_reason stop_sequence, not end_turn: ' + raw.slice(0, 400)).to.equal('stop_sequence');",
+                  "  pm.expect(j.stop_sequence, 'stop_sequence must carry the matched sequence, not null: ' + raw.slice(0, 400)).to.equal('5');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 /anthropic/v1/messages streaming stop_sequences hit message_delta reports stop_reason stop_sequence with the matched sequence - #7920",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex claude: streaming message_delta reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var frames = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    try { frames.push(JSON.parse(t.slice(5).trim())); } catch (e) { /* non-JSON keepalive */ }",
+                  "  });",
+                  "  pm.expect(frames.length, 'expected SSE data frames: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "  var deltas = frames.filter(function (f) { return f.type === 'message_delta'; });",
+                  "  pm.expect(deltas.length, 'stream must emit a terminal message_delta: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var d = deltas[deltas.length - 1].delta || {};",
+                  "  var text = frames.filter(function (f) { return f.type === 'content_block_delta' && f.delta && f.delta.type === 'text_delta'; }).map(function (f) { return f.delta.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the streamed text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + d.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(d.stop_reason, 'message_delta must report stop_reason stop_sequence, not end_turn: ' + JSON.stringify(d)).to.equal('stop_sequence');",
+                  "  pm.expect(d.stop_sequence, 'message_delta must carry the matched stop_sequence, not null: ' + JSON.stringify(d)).to.equal('5');",
+                  "  pm.expect(frames[frames.length - 1].type, 'stream must end on message_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stream\":true,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    }
   ]
 }
