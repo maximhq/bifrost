@@ -97,7 +97,7 @@ Runs entirely in-process with no external dependency. Uses the embedded default 
 </Tab>
 <Tab title="Prompt Guardrails">
 
-Uses a configured Bifrost LLM provider and model to evaluate text against a natural-language policy. The judge model must support Chat Completions or the Responses API, plus `response_format`. Bifrost prefers Chat Completions when the model supports both.
+Uses a configured Bifrost LLM provider and model to evaluate text against a natural-language policy. The judge model must support Chat Completions or the Responses API; structured-output (`response_format`) support is not required. Bifrost prefers Chat Completions when the model supports both.
 
 ```json
 {
@@ -113,7 +113,7 @@ Uses a configured Bifrost LLM provider and model to evaluate text against a natu
           "judge_provider": "openai",
           "judge_model": "gpt-4o-mini",
           "rule": "Block responses that provide a definitive medical diagnosis for an individual.",
-          "max_output_tokens": 200
+          "max_output_tokens": 1000
         }
       }
     ]
@@ -710,11 +710,11 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | Field | Required | env.\* supported | Notes |
 |-------|----------|-----------------|-------|
 | `judge_provider` | Yes | **Plain only** | Configured Bifrost provider used for the judge request |
-| `judge_model` | Yes | **Plain only** | Judge model; must support Chat Completions or the Responses API, plus `response_format` |
+| `judge_model` | Yes | **Plain only** | Judge model; must support Chat Completions or the Responses API |
 | `rule` | Yes | **Plain only** | Natural-language policy to evaluate |
-| `prompt_template` | No | **Plain only** | Custom system-prompt template; must contain `{{rule}}` and must not contain `{{content}}` |
+| `prompt_template` | No | **Plain only** | Custom system-prompt template; must contain `{{rule}}` and must not contain `{{content}}`. Bifrost appends the required JSON output format |
 | `timeout` | No | **Plain only** | Judge-request timeout in seconds (default: `30`) |
-| `max_output_tokens` | No | **Plain only** | Judge response limit from `1` to `1024` (default: `200`) |
+| `max_output_tokens` | No | **Plain only** | Judge response limit from `1` to `1024`, including reasoning tokens (default: `1000`) |
 
 ---
 
