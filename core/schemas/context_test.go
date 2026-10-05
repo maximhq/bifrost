@@ -501,6 +501,20 @@ func TestReservedKey_SkipProviderCheckIsProtected(t *testing.T) {
 	}
 }
 
+// TestReservedKey_InjectedToolExecutionIsProtected pins the provider-injected tool
+// marker as reserved. It authorizes one MCP tool past every client and virtual key
+// tool filter, so a plugin must not be able to plant it under BlockRestrictedWrites.
+func TestReservedKey_InjectedToolExecutionIsProtected(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+	ctx.BlockRestrictedWrites()
+
+	ctx.SetValue(BifrostContextKeyInjectedToolExecution, InjectedToolAuthorization{ClientName: "admin", ToolName: "admin-delete_everything"})
+	if v := ctx.Value(BifrostContextKeyInjectedToolExecution); v != nil {
+		t.Fatalf("restricted write planted the injected tool marker: %v", v)
+	}
+}
+
 // TestReservedKey_NonComparableKeyDoesNotPanic guards the reserved-write path against
 // non-comparable keys. isReservedKey indexes reservedKeys, which panics on a slice/map/
 // func key unless the type is asserted first, and ClearValue reaches that guard even

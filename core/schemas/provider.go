@@ -657,6 +657,14 @@ type InjectedToolRef struct {
 	ToolName      string `json:"tool_name"`
 }
 
+// InjectedToolAuthorization is the value of BifrostContextKeyInjectedToolExecution: the
+// one provider-injected tool an MCP execution may run past tool filters. It names the
+// owning client and the prefixed tool name, and both must match the execution.
+type InjectedToolAuthorization struct {
+	ClientName string // MCP client that owns the tool
+	ToolName   string // prefixed tool name, "<client>-<tool>"
+}
+
 // IsEmpty reports whether no injected tool slot is configured.
 func (c *InjectedToolsConfig) IsEmpty() bool {
 	return c == nil || c.WebSearch == nil

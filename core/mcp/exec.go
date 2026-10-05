@@ -144,29 +144,8 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 	}
 	clientName := state.ExecutionConfig.Name
-	// Enforce the same filters that GetToolPerClient applies for tool
-	// discovery, in the same order. Without these a caller could invoke a
-	// tool by name that was deliberately hidden from the tool list.
-	//
-	//  1. Client lifecycle — a disabled client is not usable.
-	//  2. Client allow-list — request-context MCPContextKeyIncludeClients.
-	//  3. Tool allow-list   — client-level ToolsToExecute (most restrictive).
-	//  4. Tool narrowing    — request-context MCPContextKeyIncludeTools.
-	if state.State == schemas.MCPConnectionStateDisabled {
-		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (client %s is disabled)", toolName, clientName)
-	}
-	var includeClients []string
-	if v, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok {
-		includeClients = v
-	}
-	if !shouldIncludeClient(clientName, includeClients, m.logger) {
-		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (client %s is not in request-context include list)", toolName, clientName)
-	}
-	if shouldSkipToolForConfig(toolName, state.ExecutionConfig) {
-		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (not in client's ToolsToExecute allow-list)", toolName)
-	}
-	if shouldSkipToolForRequest(ctx, clientName, toolName) {
-		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (filtered by request context)", toolName)
+	if err := checkToolExecutionPermitted(ctx, state, toolName, m.logger); err != nil {
+		return nil, nil, nil, err
 	}
 	// NeedsReauth is the one hard gate left besides Disabled: the credential
 	// is confirmed permanently dead (see connectToMCPClient's typed
@@ -196,6 +175,45 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, nil, err
 	}
 	return state, conn, release, nil
+}
+
+// checkToolExecutionPermitted enforces the same filters that GetToolPerClient applies
+// for tool discovery, in the same order. Without these a caller could invoke a tool by
+// name that was deliberately hidden from the tool list.
+//
+//  1. Client lifecycle — a disabled client is not usable.
+//  2. Client allow-list — request-context MCPContextKeyIncludeClients.
+//  3. Tool allow-list   — client-level ToolsToExecute (most restrictive).
+//  4. Tool narrowing    — request-context MCPContextKeyIncludeTools.
+//
+// A provider-injected tool (BifrostContextKeyInjectedToolExecution names it) skips 2-4.
+// The operator chose it in the provider config, and the caller never saw it in the
+// request, so neither the client's allow-list nor the caller's include lists apply.
+// The marker names one client and one exact prefixed tool, and both must match, so it
+// never authorizes a sibling or another client's tool.
+func checkToolExecutionPermitted(ctx *schemas.BifrostContext, state *schemas.MCPClientState, toolName string, logger schemas.Logger) error {
+	clientName := state.ExecutionConfig.Name
+	if state.State == schemas.MCPConnectionStateDisabled {
+		return fmt.Errorf("tool '%s' is not permitted (client %s is disabled)", toolName, clientName)
+	}
+	if injected, ok := ctx.Value(schemas.BifrostContextKeyInjectedToolExecution).(schemas.InjectedToolAuthorization); ok &&
+		injected.ToolName != "" && injected.ToolName == toolName && injected.ClientName == clientName {
+		return nil
+	}
+	var includeClients []string
+	if v, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok {
+		includeClients = v
+	}
+	if !shouldIncludeClient(clientName, includeClients, logger) {
+		return fmt.Errorf("tool '%s' is not permitted (client %s is not in request-context include list)", toolName, clientName)
+	}
+	if shouldSkipToolForConfig(toolName, state.ExecutionConfig) {
+		return fmt.Errorf("tool '%s' is not permitted (not in client's ToolsToExecute allow-list)", toolName)
+	}
+	if shouldSkipToolForRequest(ctx, clientName, toolName) {
+		return fmt.Errorf("tool '%s' is not permitted (filtered by request context)", toolName)
+	}
+	return nil
 }
 
 // executeToolForAgent is the agent-mode-facing helper. The agent loop expects a

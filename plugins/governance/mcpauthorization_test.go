@@ -51,3 +51,32 @@ func TestMCPExecutionAuthorizationRequiresHeaders(t *testing.T) {
 	require.NotNil(t, short)
 	require.Equal(t, "missing_required_headers", *short.Error.Type)
 }
+
+// TestMCPExecutionAuthorizationForInjectedTool lets a provider-injected tool past the
+// virtual key's tool permits. The operator chose the tool in the provider config, so
+// the key's MCP grants never listed it; identity and limits still apply.
+func TestMCPExecutionAuthorizationForInjectedTool(t *testing.T) {
+	p := newPluginForMCPStamping(t, buildVKForMCPStamping(nil), false)
+	for _, tc := range []struct {
+		name, injectedClient, injected, tool, key string
+		allowed                                   bool
+	}{
+		{"injected tool", "local", "local-write", "local-write", mcpTestVKValue, true},
+		{"sibling of the injected tool", "local", "local-write", "local-delete", mcpTestVKValue, false},
+		{"another client's tool of the same name", "other", "local-write", "local-write", mcpTestVKValue, false},
+		{"invalid identity", "local", "local-write", "local-write", "invalid", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := presentCtx(tc.key)
+			ctx.SetValue(schemas.BifrostContextKeyInjectedToolExecution, schemas.InjectedToolAuthorization{ClientName: tc.injectedClient, ToolName: tc.injected})
+			req := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "local", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tc.tool, Arguments: "{}"}}}
+			_, short, err := p.PreMCPHook(ctx, req)
+			require.NoError(t, err)
+			if tc.allowed {
+				require.Nil(t, short)
+			} else {
+				require.NotNil(t, short)
+			}
+		})
+	}
+}
