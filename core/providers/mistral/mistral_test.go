@@ -219,7 +219,7 @@ func TestMistralContentArray(t *testing.T) {
 					server := mistralContentArrayServer(t, frames)
 					defer server.Close()
 					config := &schemas.ProviderConfig{
-						NetworkConfig:       schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true},
+						NetworkConfig:       schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL), AllowPrivateNetwork: true},
 						SendBackRawResponse: !tc.rawDisabled,
 					}
 					providerName := schemas.Mistral
@@ -631,7 +631,7 @@ func TestMistralModelRetrieve(t *testing.T) {
 	defer server.Close()
 
 	provider := mistral.NewMistralProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL), DefaultRequestTimeoutInSeconds: 30},
 	}, bifrost.NewNoOpLogger())
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
