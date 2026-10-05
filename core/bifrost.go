@@ -8014,9 +8014,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				lastAttemptFinalizer = postHookSpanFinalizer
 				var streamCh chan *schemas.BifrostStreamChunk
 				var streamErr *schemas.BifrostError
-				if set := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType); set != nil && req.RequestType == schemas.ChatCompletionStreamRequest {
+				set := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
+				switch {
+				case set != nil && req.RequestType == schemas.ChatCompletionStreamRequest:
 					streamCh, streamErr = bifrost.startInjectedChatStream(req.Context, provider, config, k, req.BifrostRequest.ChatRequest, set, postHookRunner, postHookSpanFinalizer)
-				} else {
+				case set != nil && req.RequestType == schemas.ResponsesStreamRequest:
+					streamCh, streamErr = bifrost.startInjectedResponsesStream(req.Context, provider, config, k, req.BifrostRequest.ResponsesRequest, set, postHookRunner, postHookSpanFinalizer)
+				default:
 					streamCh, streamErr = bifrost.handleProviderStreamRequest(provider, config, req, k, postHookRunner, postHookSpanFinalizer)
 				}
 				// If stream setup failed before any provider goroutine started,
