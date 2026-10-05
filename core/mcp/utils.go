@@ -271,6 +271,15 @@ func (m *MCPManager) GetInjectedTool(clientName, toolName string) (schemas.ChatT
 	return schemas.ChatTool{}, fmt.Errorf("mcp client %q not found", clientName)
 }
 
+// GetMaxAgentDepth returns the configured cap on model turns in a tool loop
+// (mcp_agent_depth), shared by agent mode and provider-injected tools.
+func (m *MCPManager) GetMaxAgentDepth() int {
+	if m.toolsManager == nil {
+		return schemas.DefaultMaxAgentDepth
+	}
+	return int(m.toolsManager.maxAgentDepth.Load())
+}
+
 // isTransientError determines if an error is transient and should be retried.
 // Permanent errors (auth failures, config errors, context deadline, etc.) return false.
 // Transient errors (network issues, temporary timeouts, etc.) return true.
