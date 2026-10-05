@@ -200534,6 +200534,136 @@
           }
         }
       ]
+    },
+    {
+      "name": "172. OpenAI Codex OAuth passthrough preserves caller auth (codex-oauth-passthrough)",
+      "description": "OpenAI passthrough must preserve caller OAuth credentials when the transport sets SkipKeySelection. Previously the core honored that flag only for Anthropic, so a configured OpenAI API key replaced the caller Authorization header. Unary and streaming probes use an invalid synthetic JWT and require ChatGPT to return an OAuth authentication-token rejection (401), not api_key_not_supported. Requires a configured OpenAI provider/key and no dashboard auth. No valid subscription credentials are needed; successful inference and subscription billing are not covered.",
+      "item": [
+        {
+          "name": "OpenAI gpt-5.4 Codex OAuth passthrough unary [EXPECT-401] (codex-oauth-passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Invalid caller OAuth token reaches ChatGPT, not a stored API key', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + text).to.equal(401);",
+                  "  pm.expect(text.toLowerCase(), 'expected an upstream OAuth-token rejection: ' + text).to.include('authentication token');",
+                  "  pm.expect(text.toLowerCase(), 'stored API key replaced caller OAuth: ' + text).not.to.include('api_key_not_supported');",
+                  "  pm.expect(text.toLowerCase(), 'stored API key replaced caller OAuth: ' + text).not.to.include('api keys are not supported');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJoYXJuZXNzLWludmFsaWQifQ.invalid-signature"
+              },
+              {
+                "key": "chatgpt-account-id",
+                "value": "harness-invalid-account"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.4\",\n  \"instructions\": \"Reply only OK.\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply only OK.\"\n    }\n  ],\n  \"store\": false,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "OpenAI gpt-5.4 Codex OAuth passthrough streaming [EXPECT-401] (codex-oauth-passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Invalid caller OAuth token reaches ChatGPT, not a stored API key', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + text).to.equal(401);",
+                  "  pm.expect(text.toLowerCase(), 'expected an upstream OAuth-token rejection: ' + text).to.include('authentication token');",
+                  "  pm.expect(text.toLowerCase(), 'stored API key replaced caller OAuth: ' + text).not.to.include('api_key_not_supported');",
+                  "  pm.expect(text.toLowerCase(), 'stored API key replaced caller OAuth: ' + text).not.to.include('api keys are not supported');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJoYXJuZXNzLWludmFsaWQifQ.invalid-signature"
+              },
+              {
+                "key": "chatgpt-account-id",
+                "value": "harness-invalid-account"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.4\",\n  \"instructions\": \"Reply only OK.\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply only OK.\"\n    }\n  ],\n  \"store\": false,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -3666,6 +3667,130 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 				t.Error("selected key lost UseAnthropicEndpoints")
 			}
 		})
+	}
+}
+
+// TestSelectKeyFromProviderForModelWithPool_OpenAIOAuthPassthrough verifies that
+// caller-authenticated OpenAI passthrough never selects a stored API key, while
+// ordinary OpenAI requests still select their configured key.
+func TestSelectKeyFromProviderForModelWithPool_OpenAIOAuthPassthrough(t *testing.T) {
+	account := NewMockAccount()
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Name: "openai-key", Value: schemas.SecretVar{Val: "sk-stored-api-key"}, Models: []string{"*"}, Weight: 1.0},
+	})
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	for _, requestType := range []schemas.RequestType{
+		schemas.PassthroughRequest,
+		schemas.PassthroughStreamRequest,
+		schemas.ResponsesRequest,
+		schemas.ResponsesStreamRequest,
+		schemas.ChatCompletionRequest,
+		schemas.ChatCompletionStreamRequest,
+		schemas.EmbeddingRequest,
+	} {
+		for _, skip := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/skip=%t", requestType, skip), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, skip)
+				keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, schemas.OpenAI, "gpt-5.4", schemas.OpenAI)
+				if err != nil {
+					t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+				}
+				if canRotate {
+					t.Fatal("expected no key rotation")
+				}
+				wantSkip := skip && (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest)
+				if wantSkip {
+					if len(keys) != 0 {
+						t.Fatalf("OAuth passthrough selected %d stored API keys; want an empty pool", len(keys))
+					}
+				} else if len(keys) != 1 || keys[0].ID != "openai-key" {
+					t.Fatalf("got %v, want the configured OpenAI key", keys)
+				}
+			})
+		}
+	}
+}
+
+// TestOpenAIOAuthPassthroughEndToEnd exercises the real provider queue, key
+// selection and TLS upstream call, including the host-backed Codex URL shape.
+func TestOpenAIOAuthPassthroughEndToEnd(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		for _, skip := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%t/skip=%t", streaming, skip), func(t *testing.T) {
+				const callerAuth = "Bearer synthetic-caller-token"
+				const path = "/backend-api/codex/responses?conversation=test"
+				received := make(chan [2]string, 1)
+				body := `{"ok":true}`
+				if streaming {
+					body = "data: {\"ok\":true}\n\ndata: [DONE]\n\n"
+				}
+				upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					received <- [2]string{r.Header.Get("Authorization"), r.URL.RequestURI()}
+					if streaming {
+						w.Header().Set("Content-Type", "text/event-stream")
+					} else {
+						w.Header().Set("Content-Type", "application/json")
+					}
+					if _, err := w.Write([]byte(body)); err != nil {
+						t.Errorf("write upstream response: %v", err)
+					}
+				}))
+				defer upstream.Close()
+
+				account := NewMockAccount()
+				account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, upstream.URL)
+				account.configs[schemas.OpenAI].NetworkConfig.InsecureSkipVerify = true // self-signed test upstream only
+				account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+				client, err := Init(context.Background(), schemas.BifrostConfig{
+					Account: account,
+					Logger:  NewDefaultLogger(schemas.LogLevelError),
+				})
+				require.NoError(t, err)
+				defer client.Shutdown()
+
+				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, skip)
+				request := &schemas.BifrostPassthroughRequest{
+					Provider:    schemas.OpenAI,
+					Method:      http.MethodPost,
+					Path:        "/backend-api/codex/responses",
+					RawQuery:    "conversation=test",
+					UpstreamURL: upstream.URL,
+					Body:        []byte(`{"input":"test"}`),
+					SafeHeaders: map[string]string{"authorization": callerAuth},
+				}
+				if streaming {
+					stream, bifrostErr := client.PassthroughStream(ctx, schemas.OpenAI, request)
+					require.Nil(t, bifrostErr)
+					var chunks strings.Builder
+					for chunk := range stream {
+						require.Nil(t, chunk.BifrostError)
+						if chunk.BifrostPassthroughResponse != nil {
+							chunks.Write(chunk.Body)
+						}
+					}
+					require.Equal(t, body, chunks.String())
+				} else {
+					response, bifrostErr := client.Passthrough(ctx, schemas.OpenAI, request)
+					require.Nil(t, bifrostErr)
+					require.Equal(t, http.StatusOK, response.StatusCode)
+					require.Equal(t, body, string(response.Body))
+				}
+				wantAuth := "Bearer sk-test-openai"
+				if skip {
+					wantAuth = callerAuth
+				}
+				select {
+				case got := <-received:
+					require.Equal(t, [2]string{wantAuth, path}, got)
+				case <-ctx.Done():
+					t.Fatal("upstream request did not arrive before the deadline")
+				}
+			})
+		}
 	}
 }
 
