@@ -1110,6 +1110,13 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 	)
 }
 
+// UpdateCodeModeLimits replaces the per-execution code mode limits; nil keeps them.
+func (m *ToolsManager) UpdateCodeModeLimits(limits *schemas.MCPCodeModeLimits) {
+	if m.codeMode != nil && limits != nil {
+		m.codeMode.UpdateConfig(&CodeModeConfig{Limits: limits})
+	}
+}
+
 // UpdateConfig updates tool manager configuration atomically.
 // This method is safe to call concurrently from multiple goroutines.
 func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
@@ -1123,11 +1130,12 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 		m.maxAgentDepth.Store(int32(config.MaxAgentDepth))
 	}
 
-	// Update CodeMode configuration — propagate whenever either field is set
-	if m.codeMode != nil && (config.CodeModeBindingLevel != "" || config.ToolExecutionTimeout > 0) {
+	// Update CodeMode configuration — propagate whenever any field is set
+	if m.codeMode != nil && (config.CodeModeBindingLevel != "" || config.ToolExecutionTimeout > 0 || config.CodeModeLimits != nil) {
 		m.codeMode.UpdateConfig(&CodeModeConfig{
 			BindingLevel:         config.CodeModeBindingLevel,
 			ToolExecutionTimeout: time.Duration(config.ToolExecutionTimeout),
+			Limits:               config.CodeModeLimits,
 		})
 	}
 

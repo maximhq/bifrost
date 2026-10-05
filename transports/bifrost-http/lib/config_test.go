@@ -20767,3 +20767,28 @@ func TestResolveSetupToken_TrimsSurroundingWhitespace(t *testing.T) {
 	configData := &ConfigData{SetupToken: schemas.NewSecretVar("  my-token  ")}
 	assert.Equal(t, "my-token", resolveSetupToken(configData))
 }
+
+// TestCodeModeLimitsFromConfigFile pins how code mode limits flow from config.json:
+// mcp.tool_manager_config.code_mode_limits wins when set, client_config.mcp_code_mode_limits
+// survives a tool_manager_config that omits them, and bifrost.Init receives the result.
+func TestCodeModeLimitsFromConfigFile(t *testing.T) {
+	fromClientConfig := &schemas.MCPCodeModeLimits{MaxToolCalls: 200}
+	fromToolManager := &schemas.MCPCodeModeLimits{MaxSteps: 9_000_000}
+
+	cc := &configstore.ClientConfig{MCPCodeModeLimits: fromClientConfig}
+	applyToolManagerToClientConfig(cc, &schemas.MCPToolManagerConfig{MaxAgentDepth: 5})
+	assert.Equal(t, fromClientConfig, cc.MCPCodeModeLimits, "a tool_manager_config without code_mode_limits must keep client_config's")
+
+	applyToolManagerToClientConfig(cc, &schemas.MCPToolManagerConfig{MaxAgentDepth: 5, CodeModeLimits: fromToolManager})
+	assert.Equal(t, fromToolManager, cc.MCPCodeModeLimits, "tool_manager_config.code_mode_limits must win when set")
+
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	require.NoError(t, store.UpdateClientConfig(ctx, cc))
+	cfg := &Config{ConfigStore: store, ClientConfig: cc}
+	mcpCfg := &schemas.MCPConfig{}
+	applyMCPGlobalSettingsToClientConfig(ctx, cfg, mcpCfg, false)
+	require.NotNil(t, mcpCfg.ToolManagerConfig)
+	assert.Equal(t, fromToolManager, mcpCfg.ToolManagerConfig.CodeModeLimits, "bifrost.Init must receive the configured limits")
+}

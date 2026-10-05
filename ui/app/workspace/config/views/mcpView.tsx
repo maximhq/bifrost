@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
-import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
+import { CoreConfig, DefaultCoreConfig, MCPCodeModeLimits } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
@@ -15,6 +15,8 @@ import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { codeModeLimitsEqual, validateCodeModeLimits } from "./codeModeLimits.utils";
+import { CodeModeLimitsSection } from "./codeModeLimitsSection";
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
@@ -74,6 +76,7 @@ export default function MCPView() {
 			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
 			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server") ||
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
+			!codeModeLimitsEqual(localConfig.mcp_code_mode_limits, config.mcp_code_mode_limits) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
 			clientURLChanged ||
@@ -120,6 +123,10 @@ export default function MCPView() {
 		if (!isNaN(numValue) && numValue >= 0) {
 			setLocalConfig((prev) => ({ ...prev, mcp_tool_sync_interval: numValue }));
 		}
+	}, []);
+
+	const handleCodeModeLimitsChange = useCallback((limits: MCPCodeModeLimits) => {
+		setLocalConfig((prev) => ({ ...prev, mcp_code_mode_limits: limits }));
 	}, []);
 
 	const handleDisableAutoToolInjectChange = useCallback((checked: boolean) => {
@@ -201,6 +208,12 @@ export default function MCPView() {
 
 			if (isNaN(toolTimeout) || toolTimeout <= 0) {
 				toast.error("Tool execution timeout must be a positive number.");
+				return;
+			}
+
+			const limitsError = validateCodeModeLimits(localConfig.mcp_code_mode_limits);
+			if (limitsError) {
+				toast.error(limitsError);
 				return;
 			}
 
@@ -411,6 +424,11 @@ export default function MCPView() {
 						)}
 					</div>
 				</div>
+				<CodeModeLimitsSection
+					value={localConfig.mcp_code_mode_limits}
+					onChange={handleCodeModeLimitsChange}
+					disabled={!hasSettingsUpdateAccess}
+				/>
 				{/* Advanced Settings — collapsed by default so people don't accidentally
 				    edit the redirect_uri, which would break already-authorized MCP clients. */}
 				<Accordion type="single" collapsible className="rounded-sm border px-4">

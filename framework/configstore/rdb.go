@@ -285,6 +285,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		CompatShouldConvertParams:             config.Compat.ShouldConvertParams,
 		CompatAzureDeepseek:                   config.Compat.AzureDeepseek,
 		MCPAgentDepth:                         config.MCPAgentDepth,
+		MCPCodeModeLimits:                     config.MCPCodeModeLimits,
 		MCPToolExecutionTimeout:               config.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel:               config.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   config.MCPToolSyncInterval,
@@ -572,6 +573,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 			AzureDeepseek:          dbConfig.CompatAzureDeepseek,
 		},
 		MCPAgentDepth:                         dbConfig.MCPAgentDepth,
+		MCPCodeModeLimits:                     dbConfig.MCPCodeModeLimits,
 		MCPToolExecutionTimeout:               dbConfig.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel:               dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   dbConfig.MCPToolSyncInterval,
@@ -1665,6 +1667,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 	toolManagerConfig := schemas.MCPToolManagerConfig{
 		ToolExecutionTimeout:  schemas.Duration(time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second),
 		MaxAgentDepth:         clientConfig.MCPAgentDepth,
+		CodeModeLimits:        clientConfig.MCPCodeModeLimits,
 		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
 		DisableAutoToolInject: clientConfig.MCPDisableAutoToolInject,
 	}

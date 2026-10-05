@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/gorm"
 )
 
@@ -79,6 +80,9 @@ type TableClientConfig struct {
 	// WebhookConfigJSON holds the webhook delivery settings as a JSON blob,
 	// deserialized into Webhooks by AfterFind.
 	WebhookConfigJSON string `gorm:"column:webhook_config_json;type:text" json:"-"`
+	// MCPCodeModeLimitsJSON holds the per-execution code mode limits as a JSON blob,
+	// deserialized into MCPCodeModeLimits by AfterFind.
+	MCPCodeModeLimitsJSON string `gorm:"column:mcp_code_mode_limits_json;type:text" json:"-"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -99,6 +103,8 @@ type TableClientConfig struct {
 	Metadata           map[string]any            `gorm:"-" json:"metadata,omitempty"`
 	OAuth2ServerConfig *OAuth2ServerConfig       `gorm:"-" json:"oauth2_server_config,omitempty"`
 	WebhookConfig      *WebhookConfig            `gorm:"-" json:"webhook_config,omitempty"`
+
+	MCPCodeModeLimits *schemas.MCPCodeModeLimits `gorm:"-" json:"mcp_code_mode_limits,omitempty"` // Virtual: per-execution code mode limits
 }
 
 // WebhookConfig holds global webhook delivery settings. Delivery
@@ -235,6 +241,16 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.WebhookConfigJSON = ""
 	}
 
+	if cc.MCPCodeModeLimits != nil {
+		data, err := json.Marshal(cc.MCPCodeModeLimits)
+		if err != nil {
+			return err
+		}
+		cc.MCPCodeModeLimitsJSON = string(data)
+	} else {
+		cc.MCPCodeModeLimitsJSON = ""
+	}
+
 	return nil
 }
 
@@ -318,6 +334,16 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 		cc.WebhookConfig = &webhooksCfg
 	} else {
 		cc.WebhookConfig = nil
+	}
+
+	if cc.MCPCodeModeLimitsJSON != "" {
+		var limits schemas.MCPCodeModeLimits
+		if err := json.Unmarshal([]byte(cc.MCPCodeModeLimitsJSON), &limits); err != nil {
+			return err
+		}
+		cc.MCPCodeModeLimits = &limits
+	} else {
+		cc.MCPCodeModeLimits = nil
 	}
 
 	return nil

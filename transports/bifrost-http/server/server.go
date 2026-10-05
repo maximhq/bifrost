@@ -154,7 +154,7 @@ type ServerCallbacks interface {
 	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
 	// UpdateMCPClientCredentials reconnects an existing MCP client using updated headers
 	UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error
-	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error
+	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, codeModeLimits *schemas.MCPCodeModeLimits) error
 	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary token and discovers tools.
 	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
 	// VerifyHeadersConnection verifies an MCP server using user-supplied header values and discovers tools.
@@ -1437,6 +1437,9 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 		); err != nil {
 			logger.Warn("failed to sync MCP tool manager config during client config reload: %v", err)
 		}
+		if err := s.Client.UpdateCodeModeLimits(s.Config.ClientConfig.MCPCodeModeLimits); err != nil {
+			logger.Warn("failed to sync code mode limits during client config reload: %v", err)
+		}
 		// The global tool sync interval is client-config-backed too (minutes).
 		// Re-time the checkers of every client that follows it, and keep the
 		// in-memory MCPConfig aligned so a later reload carries the current
@@ -1518,11 +1521,14 @@ func (s *BifrostHTTPServer) UpdateDropExcessRequests(ctx context.Context, value 
 
 // UpdateMCPToolManagerConfig updates the MCP tool manager config.
 // Always pass the current disableAutoToolInject value so it is never reset.
-func (s *BifrostHTTPServer) UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error {
+func (s *BifrostHTTPServer) UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, codeModeLimits *schemas.MCPCodeModeLimits) error {
 	if s.Config == nil {
 		return fmt.Errorf("config not found")
 	}
-	return s.Client.UpdateToolManagerConfig(maxAgentDepth, toolExecutionTimeoutInSeconds, codeModeBindingLevel, disableAutoToolInject)
+	if err := s.Client.UpdateToolManagerConfig(maxAgentDepth, toolExecutionTimeoutInSeconds, codeModeBindingLevel, disableAutoToolInject); err != nil {
+		return err
+	}
+	return s.Client.UpdateCodeModeLimits(codeModeLimits)
 }
 
 // reloadObservabilityPlugins reloads all observability plugins in the tracing middleware
