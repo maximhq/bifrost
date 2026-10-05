@@ -3514,11 +3514,12 @@ func OpenAILivePaths(pathPrefix string) []string {
 	}
 }
 
-// OpenAILiveAttachPaths returns WebSocket paths for GPT Live sideband attach under an integration prefix.
-func OpenAILiveAttachPaths(pathPrefix string) []string {
+// OpenAILiveSessionPaths returns paths for an action on an existing GPT Live session (attach,
+// content, ...) under an integration prefix.
+func OpenAILiveSessionPaths(pathPrefix, action string) []string {
 	return []string{
-		pathPrefix + "/v1/live/sessions/{session_id}/attach",
-		pathPrefix + "/live/sessions/{session_id}/attach",
+		pathPrefix + "/v1/live/sessions/{session_id}/" + action,
+		pathPrefix + "/live/sessions/{session_id}/" + action,
 	}
 }
 
