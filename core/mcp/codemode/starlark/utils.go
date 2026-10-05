@@ -3,116 +3,17 @@
 package starlark
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"unicode"
 
 	"github.com/bytedance/sonic"
+	"github.com/canonical/starlark/syntax"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
-	"go.starlark.net/starlark"
-	"go.starlark.net/starlarkstruct"
 )
-
-// starlarkToGo converts a Starlark value to a Go value
-func starlarkToGo(v starlark.Value) interface{} {
-	switch val := v.(type) {
-	case starlark.NoneType:
-		return nil
-	case starlark.Bool:
-		return bool(val)
-	case starlark.Int:
-		if i, ok := val.Int64(); ok {
-			return i
-		}
-		if i, ok := val.Uint64(); ok {
-			return i
-		}
-		return val.String()
-	case starlark.Float:
-		return float64(val)
-	case starlark.String:
-		return string(val)
-	case *starlark.List:
-		result := make([]interface{}, val.Len())
-		for i := 0; i < val.Len(); i++ {
-			result[i] = starlarkToGo(val.Index(i))
-		}
-		return result
-	case starlark.Tuple:
-		result := make([]interface{}, len(val))
-		for i, item := range val {
-			result[i] = starlarkToGo(item)
-		}
-		return result
-	case *starlark.Dict:
-		result := make(map[string]interface{})
-		for _, item := range val.Items() {
-			if keyStr, ok := item[0].(starlark.String); ok {
-				result[string(keyStr)] = starlarkToGo(item[1])
-			} else {
-				// Use string representation for non-string keys
-				result[item[0].String()] = starlarkToGo(item[1])
-			}
-		}
-		return result
-	case *starlarkstruct.Struct:
-		result := make(map[string]interface{})
-		for _, name := range val.AttrNames() {
-			if attrVal, err := val.Attr(name); err == nil {
-				result[name] = starlarkToGo(attrVal)
-			}
-		}
-		return result
-	default:
-		return val.String()
-	}
-}
-
-// goToStarlark converts a Go value to a Starlark value
-func goToStarlark(v interface{}) starlark.Value {
-	if v == nil {
-		return starlark.None
-	}
-
-	switch val := v.(type) {
-	case bool:
-		return starlark.Bool(val)
-	case int:
-		return starlark.MakeInt(val)
-	case int64:
-		return starlark.MakeInt64(val)
-	case uint64:
-		return starlark.MakeUint64(val)
-	case float64:
-		return starlark.Float(val)
-	case string:
-		return starlark.String(val)
-	case []interface{}:
-		items := make([]starlark.Value, len(val))
-		for i, item := range val {
-			items[i] = goToStarlark(item)
-		}
-		return starlark.NewList(items)
-	case map[string]interface{}:
-		dict := starlark.NewDict(len(val))
-		for k, v := range val {
-			dict.SetKey(starlark.String(k), goToStarlark(v))
-		}
-		return dict
-	default:
-		// Try to marshal to JSON and parse as a generic structure
-		if jsonBytes, err := schemas.MarshalSorted(val); err == nil {
-			var generic interface{}
-			if schemas.Unmarshal(jsonBytes, &generic) == nil {
-				return goToStarlark(generic)
-			}
-		}
-		return starlark.String(fmt.Sprintf("%v", val))
-	}
-}
 
 // extractResultFromChatMessage extracts the result from a chat message and parses it as JSON if possible.
 func extractResultFromChatMessage(msg *schemas.ChatMessage) interface{} {
@@ -180,6 +81,11 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 
 // formatResultForLog formats a result value for logging purposes.
 func formatResultForLog(result interface{}) string {
+	// Tool responses can be large even when code returns a small projection.
+	// Bound automatic diagnostic previews before JSON escaping/copying them.
+	if text, ok := result.(string); ok && len(text) > 2048 {
+		result = text[:2048] + "... (truncated)"
+	}
 	var resultStr string
 	if result == nil {
 		resultStr = "null"
@@ -191,17 +97,51 @@ func formatResultForLog(result interface{}) string {
 	return resultStr
 }
 
+// exceptionHandlingHints explains that Starlark has no exception handling.
+func exceptionHandlingHints() []string {
+	return []string{
+		"Starlark does NOT support try/except/finally/raise — there is no exception handling.",
+		"Instead, check return values for errors:",
+		"  result = server.tool(param=\"value\")",
+		"  if result == None or (type(result) == \"dict\" and \"error\" in result):",
+		"    print(\"Error:\", result)",
+	}
+}
+
+// unsupportedStatement returns the try/except/finally/raise keyword a parse error
+// stopped at. Canonical's scanner reports these keywords as "illegal token", so
+// the error text alone does not name them.
+func unsupportedStatement(code string, err error) string {
+	var syntaxErr syntax.Error
+	if !errors.As(err, &syntaxErr) || syntaxErr.Pos.Line < 1 || syntaxErr.Pos.Col < 1 {
+		return ""
+	}
+	lines := strings.Split(code, "\n")
+	if int(syntaxErr.Pos.Line) > len(lines) {
+		return ""
+	}
+	line := []rune(lines[syntaxErr.Pos.Line-1])
+	if int(syntaxErr.Pos.Col) > len(line) {
+		return ""
+	}
+	word := string(line[syntaxErr.Pos.Col-1:])
+	if end := strings.IndexFunc(word, func(r rune) bool { return !unicode.IsLetter(r) }); end >= 0 {
+		word = word[:end]
+	}
+	switch word {
+	case "try", "except", "finally", "raise":
+		return word
+	}
+	return ""
+}
+
 // generatePythonErrorHints generates helpful hints for Python/Starlark errors.
 func generatePythonErrorHints(errorMessage string, serverKeys []string) []string {
 	hints := []string{}
 
 	if strings.Contains(errorMessage, "got try") || strings.Contains(errorMessage, "got except") ||
 		strings.Contains(errorMessage, "got finally") || strings.Contains(errorMessage, "got raise") {
-		hints = append(hints, "Starlark does NOT support try/except/finally/raise — there is no exception handling.")
-		hints = append(hints, "Instead, check return values for errors:")
-		hints = append(hints, "  result = server.tool(param=\"value\")")
-		hints = append(hints, "  if result == None or (type(result) == \"dict\" and \"error\" in result):")
-		hints = append(hints, "    print(\"Error:\", result)")
+		hints = append(hints, exceptionHandlingHints()...)
 	} else if strings.Contains(errorMessage, "undefined") || strings.Contains(errorMessage, "not defined") {
 		var undefinedVar string
 		if match := regexp.MustCompile(`name ['"]([^'"]+)['"] is not defined`).FindStringSubmatch(errorMessage); len(match) > 1 {
@@ -263,44 +203,99 @@ func generatePythonErrorHints(errorMessage string, serverKeys []string) []string
 	return hints
 }
 
-// extractTextFromMCPResponse extracts text content from an MCP tool response.
-func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName string) string {
+// extractTextFromMCPResponse extracts text content from an MCP tool response,
+// bounded by valueLimit bytes.
+func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName string, valueLimit int) (string, error) {
 	if toolResponse == nil {
-		return fmt.Sprintf("MCP tool '%s' executed successfully", toolName)
+		return fmt.Sprintf("MCP tool '%s' executed successfully", toolName), nil
 	}
-
+	if len(toolResponse.Content) > valueLimit/128 {
+		return "", fmt.Errorf("code mode tool result exceeds size limit")
+	}
 	var result strings.Builder
 	for _, contentBlock := range toolResponse.Content {
-		// Handle typed content
+		// Both values and pointers implement MCP's sealed Content interface.
+		switch content := contentBlock.(type) {
+		case *mcp.TextContent:
+			if content == nil {
+				continue
+			}
+			contentBlock = *content
+		case *mcp.ImageContent:
+			if content == nil {
+				continue
+			}
+			contentBlock = *content
+		case *mcp.AudioContent:
+			if content == nil {
+				continue
+			}
+			contentBlock = *content
+		case *mcp.EmbeddedResource:
+			if content == nil {
+				continue
+			}
+			contentBlock = *content
+		case *mcp.ResourceLink:
+			if content == nil {
+				continue
+			}
+			contentBlock = *content
+		}
+		var parts []string
 		switch content := contentBlock.(type) {
 		case mcp.TextContent:
-			result.WriteString(content.Text)
+			parts = []string{content.Text}
 		case mcp.ImageContent:
-			result.WriteString(fmt.Sprintf("[Image Response: %s, MIME: %s]\n", content.Data, content.MIMEType))
+			parts = []string{"[Image Response: ", content.Data, ", MIME: ", content.MIMEType, "]\n"}
 		case mcp.AudioContent:
-			result.WriteString(fmt.Sprintf("[Audio Response: %s, MIME: %s]\n", content.Data, content.MIMEType))
+			parts = []string{"[Audio Response: ", content.Data, ", MIME: ", content.MIMEType, "]\n"}
 		case mcp.EmbeddedResource:
-			result.WriteString(fmt.Sprintf("[Embedded Resource Response: %s]\n", content.Type))
-		default:
-			// Fallback: try to extract from map structure
-			if jsonBytes, err := schemas.MarshalSorted(contentBlock); err == nil {
-				var contentMap map[string]interface{}
-				if json.Unmarshal(jsonBytes, &contentMap) == nil {
-					if text, ok := contentMap["text"].(string); ok {
-						result.WriteString(fmt.Sprintf("[Text Response: %s]\n", text))
-						continue
+			parts = []string{"[Embedded Resource Response: ", content.Type, "]\n"}
+		case mcp.ResourceLink:
+			remaining := valueLimit - 256
+			check := func(value string) bool {
+				if len(value) > remaining/6 {
+					return false
+				}
+				remaining -= 6 * len(value)
+				return true
+			}
+			for _, value := range []string{content.Type, content.URI, content.Name, content.Description, content.MIMEType} {
+				if !check(value) {
+					return "", fmt.Errorf("code mode tool result exceeds size limit")
+				}
+			}
+			if content.Annotations != nil {
+				if len(content.Annotations.Audience) > remaining/32 {
+					return "", fmt.Errorf("code mode tool result exceeds size limit")
+				}
+				remaining -= len(content.Annotations.Audience) * 32
+				for _, role := range content.Annotations.Audience {
+					if !check(string(role)) {
+						return "", fmt.Errorf("code mode tool result exceeds size limit")
 					}
 				}
-				// Final fallback: serialize as JSON
-				result.WriteString(string(jsonBytes))
 			}
+			encoded, err := schemas.MarshalSorted(content)
+			if err != nil {
+				return "", err
+			}
+			parts = []string{string(encoded)}
+		default:
+			return "", fmt.Errorf("unsupported code mode tool content type %T", contentBlock)
+		}
+		for _, part := range parts {
+			if len(part) > valueLimit-result.Len() {
+				return "", fmt.Errorf("code mode tool result exceeds size limit")
+			}
+			result.WriteString(part)
 		}
 	}
-
 	if result.Len() > 0 {
-		return strings.TrimSpace(result.String())
+		return strings.TrimSpace(result.String()), nil
 	}
-	return fmt.Sprintf("MCP tool '%s' executed successfully", toolName)
+	return fmt.Sprintf("MCP tool '%s' executed successfully", toolName), nil
 }
 
 // createToolResponseMessage creates a tool response message with the execution result.

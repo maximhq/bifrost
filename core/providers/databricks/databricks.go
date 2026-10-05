@@ -68,8 +68,17 @@ type DatabricksProvider struct {
 	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
 	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	authHTTPClient      *http.Client          // client for the OAuth M2M token exchange, routed through proxy_config like the fasthttp clients
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+
+	// tokenSources caches oauth2.TokenSource instances keyed by a hash of the workspace
+	// host and service principal credentials. The clientcredentials TokenSource refreshes
+	// on expiry and serialises concurrent refreshes, so caching the source avoids a token
+	// mint per request. It is per provider because each source is bound to
+	// authHTTPClient: a config change rebuilds the provider, and a source built for the
+	// old proxy must not outlive it.
+	tokenSources sync.Map
 
 	// responsesUnsupported records "<workspace host>|<model>" pairs whose Model Serving
 	// endpoint has declined the native Responses API, so those requests go straight to
@@ -105,6 +114,7 @@ func NewDatabricksProvider(config *schemas.ProviderConfig, logger schemas.Logger
 		client:              client,
 		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
+		authHTTPClient:      providerUtils.NewProviderHTTPClient(config.ProxyConfig, config.NetworkConfig, logger),
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
@@ -244,12 +254,6 @@ func (provider *DatabricksProvider) workspaceAPIURL(key schemas.Key, path string
 	return "https://" + host + path, nil
 }
 
-// tokenSourcePool caches oauth2.TokenSource instances keyed by a hash of the workspace host
-// and service principal credentials. The clientcredentials TokenSource refreshes on expiry
-// and serialises concurrent refreshes internally, so caching the source is all that is needed
-// to avoid a token mint per request.
-var tokenSourcePool sync.Map
-
 // tokenSourceCacheKey hashes the credential tuple so no secret is used as a map key in a form
 // that could be logged.
 func tokenSourceCacheKey(host, clientID, clientSecret string) string {
@@ -259,9 +263,9 @@ func tokenSourceCacheKey(host, clientID, clientSecret string) string {
 
 // getTokenSource returns a cached OAuth M2M token source for the given workspace and service
 // principal, creating one on first use.
-func getTokenSource(host, clientID, clientSecret string) oauth2.TokenSource {
+func (provider *DatabricksProvider) getTokenSource(host, clientID, clientSecret string) oauth2.TokenSource {
 	cacheKey := tokenSourceCacheKey(host, clientID, clientSecret)
-	if cached, ok := tokenSourcePool.Load(cacheKey); ok {
+	if cached, ok := provider.tokenSources.Load(cacheKey); ok {
 		return cached.(oauth2.TokenSource)
 	}
 	conf := &clientcredentials.Config{
@@ -274,27 +278,26 @@ func getTokenSource(host, clientID, clientSecret string) oauth2.TokenSource {
 	}
 	// oauth2.ReuseTokenSource caches the token until shortly before expiry and refreshes
 	// under a mutex, so a burst of concurrent requests mints exactly one token.
-	ts := oauth2.ReuseTokenSource(nil, conf.TokenSource(oauthContext()))
-	actual, _ := tokenSourcePool.LoadOrStore(cacheKey, ts)
+	ts := oauth2.ReuseTokenSource(nil, conf.TokenSource(provider.oauthContext()))
+	actual, _ := provider.tokenSources.LoadOrStore(cacheKey, ts)
 	return actual.(oauth2.TokenSource)
 }
 
-// oauthHTTPClient overrides the HTTP client the token exchange uses. It is nil in production,
-// where the oauth2 package uses http.DefaultClient; tests set it to reach a stub token endpoint.
-var oauthHTTPClient *http.Client
-
-// oauthContext returns the context the client-credentials token exchange runs under.
-func oauthContext() context.Context {
-	if oauthHTTPClient != nil {
-		return context.WithValue(context.Background(), oauth2.HTTPClient, oauthHTTPClient)
+// oauthContext returns the context the client-credentials token exchange runs under. It
+// carries authHTTPClient, so the exchange leaves through the provider's proxy_config with
+// its network_config TLS settings, instead of http.DefaultClient. The token source keeps
+// this context for every refresh.
+func (provider *DatabricksProvider) oauthContext() context.Context {
+	if provider.authHTTPClient != nil {
+		return context.WithValue(context.Background(), oauth2.HTTPClient, provider.authHTTPClient)
 	}
 	return context.Background()
 }
 
 // removeTokenSource evicts a cached token source so the next request re-mints. Called when
 // credentials are rejected, mirroring the eviction the Vertex provider performs on 401/403.
-func removeTokenSource(host, clientID, clientSecret string) {
-	tokenSourcePool.Delete(tokenSourceCacheKey(host, clientID, clientSecret))
+func (provider *DatabricksProvider) removeTokenSource(host, clientID, clientSecret string) {
+	provider.tokenSources.Delete(tokenSourceCacheKey(host, clientID, clientSecret))
 }
 
 // authHeader builds the Authorization header for a request: a personal access token when the
@@ -320,11 +323,11 @@ func (provider *DatabricksProvider) authHeader(key schemas.Key) (map[string]stri
 		return nil, bErr
 	}
 
-	token, err := getTokenSource(host, clientID, clientSecret).Token()
+	token, err := provider.getTokenSource(host, clientID, clientSecret).Token()
 	if err != nil {
 		// The credentials may have been rotated or revoked; drop the cached source so the
 		// next attempt re-mints rather than replaying a source pinned to a failing refresh.
-		removeTokenSource(host, clientID, clientSecret)
+		provider.removeTokenSource(host, clientID, clientSecret)
 		// err can embed the token endpoint response; never surface or log the secret itself.
 		return nil, providerUtils.NewBifrostOperationError("failed to acquire databricks oauth token", err)
 	}

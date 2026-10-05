@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **Typesafe Custom Providers** - `typesafe` is accepted as a custom provider `base_provider_type`. A custom Typesafe provider serves `/v1/decisions` and the native `/typesafe/v1/systemone` route under its own name, keeps native response passthrough, and honours `allowed_requests` and `request_path_overrides`
 - **Model Tags on /v1/models** - `GET /v1/models` and `GET /v1/models/{model}` return each model's `tags`, and `GET /v1/models?tags=a,b` keeps only models carrying every tag, paginating the filtered list. `tags` is no longer forwarded to providers as an extra query parameter [@jimseiwert](https://github.com/jimseiwert)
 - **Model Tags API** - `PUT /api/models/tags` sets tags on any model of a configured provider (including models outside the pricing datasheet). `GET /api/models` and `GET /api/models/details` return each model's `tags` and filter with `tags=a,b` (all tags must match) before pagination [@jimseiwert](https://github.com/jimseiwert)
 - **Provider Metadata and Tags API** - Provider create and update accept `metadata` and `tags` (update: omit to keep, `{}`/`[]`/`null` to clear; invalid labels are a 400). Provider responses include them, and `GET /api/providers` filters by `metadata_<key>=<value>` and `tags=a,b` (all tags must match) [@jimseiwert](https://github.com/jimseiwert)

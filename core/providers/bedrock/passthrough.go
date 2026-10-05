@@ -122,6 +122,13 @@ func hasBedrockSigningCredentials(cfg *schemas.BedrockKeyConfig) bool {
 // Host and x-amz-* names are never forwarded, so the request is authenticated and signed by Bifrost alone.
 var bedrockPassthroughForwardedHeaders = []string{"Content-Type", "Accept"}
 
+// IsPassthroughRoute reports whether a request is one of the allow-listed passthrough operations.
+// The HTTP route policy uses it so the gateway and the provider accept exactly the same list.
+func IsPassthroughRoute(method, path string) bool {
+	_, ok := matchBedrockPassthroughRoute(method, path)
+	return ok
+}
+
 // IsPassthroughStreamPath reports whether a request is an allow-listed operation whose AWS response is an
 // event stream (InvokeAgent). The HTTP router uses it to pick the streaming passthrough for exactly those
 // requests: the path and body of an InvokeAgent call carry no "stream" marker of their own.
