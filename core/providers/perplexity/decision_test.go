@@ -149,6 +149,58 @@ func TestToBifrostPerplexityDecisionResponseMapsChoiceAndUsage(t *testing.T) {
 	}
 }
 
+func TestToBifrostPerplexityDecisionResponseValidatesScoreRange(t *testing.T) {
+	request := &schemas.BifrostDecisionRequest{
+		Provider: schemas.Perplexity,
+		Model:    "pplx-decider-v1-27b",
+		State:    map[string]any{"content": "The whole team is locked out"},
+		Questions: map[string]schemas.DecisionQuestion{
+			"severity": {
+				Kind:         schemas.DecisionKindScore,
+				Instructions: "How severe is the customer impact?",
+				Criteria:     []string{"No impact", "Minor", "Blocks a workflow", "Outage"},
+			},
+		},
+	}
+	testCases := []struct {
+		name    string
+		score   float64
+		wantErr bool
+	}{
+		{name: "lowest level", score: 0},
+		{name: "fractional expected level", score: 2.98},
+		{name: "highest level", score: 3},
+		{name: "below range", score: -0.01, wantErr: true},
+		{name: "above range", score: 3.01, wantErr: true},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			score := testCase.score
+			response := &PerplexityDecisionResponse{
+				Model: "pplx-decider-v1-27b",
+				Answers: map[string]PerplexityDecisionAnswer{
+					"severity": {Type: perplexityQuestionTypeScore, Score: &score},
+				},
+			}
+
+			result, bifrostErr := toBifrostPerplexityDecisionResponse(response, request)
+			if testCase.wantErr {
+				if bifrostErr == nil {
+					t.Fatalf("toBifrostPerplexityDecisionResponse() accepted out-of-range score %v", score)
+				}
+				return
+			}
+			if bifrostErr != nil {
+				t.Fatalf("toBifrostPerplexityDecisionResponse() error = %v", bifrostErr)
+			}
+			if result.Answers["severity"].Value != score {
+				t.Fatalf("answer value = %#v, want %v", result.Answers["severity"].Value, score)
+			}
+		})
+	}
+}
+
 func TestPerplexityDecisionUsesNativeEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/decisions" {
