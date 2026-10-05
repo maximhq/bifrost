@@ -314,7 +314,7 @@ export default function MCPView() {
 	}, [bifrostConfig, localConfig, localValues, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-6" data-testid="mcp-settings-view">
+		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="mcp-settings-view">
 			<PageTitle title="MCP Settings">Configure MCP (Model Context Protocol) agent and tool settings.</PageTitle>
 			<div className="space-y-4">
 				{/* Max Agent Depth */}
@@ -729,7 +729,7 @@ export default function MCPView() {
 					</AccordionItem>
 				</Accordion>
 			</div>
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="mcp-settings-save-btn">
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>
