@@ -87,6 +87,19 @@ func TestSDKFidelityTypesafeSystemOneRouteRelaysNativeBodies(t *testing.T) {
 		t.Error("non-typesafe responses must be rebuilt, not relayed")
 	}
 
+	// A custom provider backed by Typesafe reports its own name; the base
+	// provider type on the context is what marks the body as native.
+	customCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	customCtx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Typesafe)
+	resp.ExtraFields.Provider = "my-typesafe"
+	out, err = route.DecisionResponseConverter(customCtx, resp)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if got, ok := out.(json.RawMessage); !ok || string(got) != native {
+		t.Errorf("custom typesafe provider's native body not relayed verbatim: %#v", out)
+	}
+
 	nativeErr := `{"detail":[{"type":"missing","loc":["body","state"],"msg":"Field required"}]}`
 	bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "state: Field required"}}
 	bifrostErr.ExtraFields.NativeErrorResponse = json.RawMessage(nativeErr)
