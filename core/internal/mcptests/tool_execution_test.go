@@ -717,9 +717,6 @@ func TestToolExecutionMalformedRequest(t *testing.T) {
 }
 
 // =============================================================================
-// CONTEXT AND CANCELLATION TESTS
-
-// =============================================================================
 // PROVIDER-INJECTED TOOL TESTS
 // =============================================================================
 
@@ -778,6 +775,8 @@ func (f *fakeOpenAI) toolNames(turn int) []string {
 		entry, _ := tool.(map[string]any)
 		if fn, ok := entry["function"].(map[string]any); ok {
 			names = append(names, fn["name"].(string))
+		} else if name, ok := entry["name"].(string); ok {
+			names = append(names, name)
 		} else {
 			names = append(names, entry["type"].(string))
 		}
@@ -1258,6 +1257,134 @@ func TestInjectedWebSearch_ChatStreamRelaxesForcedChoiceAfterSearch(t *testing.T
 		Provider: schemas.OpenAI, Model: "gpt-4o",
 		Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Weather?")}}},
 		Params: &schemas.ChatParameters{ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("required")}},
+	})
+	require.Nil(t, bifrostErr, "%v", bifrostErr)
+	drainStream(stream)
+
+	bodies := fake.requests()
+	require.Len(t, bodies, 2)
+	assert.Equal(t, "required", bodies[0]["tool_choice"])
+	assert.Equal(t, "auto", bodies[1]["tool_choice"], "after a search the model must be free to answer")
+}
+
+// sseEvents renders Responses API events as an SSE body.
+func sseEvents(events ...string) string {
+	var b strings.Builder
+	for _, event := range events {
+		b.WriteString("data: " + event + "\n\n")
+	}
+	return b.String()
+}
+
+// TestInjectedWebSearch_ResponsesStreamEndToEnd streams a Responses request across two
+// upstream turns. The client must see one response: one created and one completed
+// event, gapless sequence numbers, no function call events, and summed usage.
+func TestInjectedWebSearch_ResponsesStreamEndToEnd(t *testing.T) {
+	call := `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"` + injectedSearchTool + `","arguments":"{\"query\":\"weather in paris\"}","status":"completed"}`
+	fake := &fakeOpenAI{replies: []string{
+		sseEvents(
+			`{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":"gpt-4o","output":[]}}`,
+			`{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"`+injectedSearchTool+`","arguments":"","status":"in_progress"}}`,
+			`{"type":"response.function_call_arguments.delta","sequence_number":2,"output_index":0,"item_id":"fc_1","delta":"{\"query\":\"weather in paris\"}"}`,
+			`{"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":`+call+`}`,
+			`{"type":"response.completed","sequence_number":4,"response":{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4o","output":[`+call+`],"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}`,
+		),
+		sseEvents(
+			`{"type":"response.created","sequence_number":0,"response":{"id":"resp_2","object":"response","created_at":2,"status":"in_progress","model":"gpt-4o","output":[]}}`,
+			`{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"message","id":"msg_2","role":"assistant","status":"in_progress","content":[]}}`,
+			`{"type":"response.output_text.delta","sequence_number":2,"output_index":0,"item_id":"msg_2","content_index":0,"delta":"It is sunny."}`,
+			`{"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":{"type":"message","id":"msg_2","role":"assistant","status":"completed","content":[{"type":"output_text","text":"It is sunny.","annotations":[]}]}}`,
+			`{"type":"response.completed","sequence_number":4,"response":{"id":"resp_2","object":"response","created_at":2,"status":"completed","model":"gpt-4o","output":[{"type":"message","id":"msg_2","role":"assistant","status":"completed","content":[{"type":"output_text","text":"It is sunny.","annotations":[]}]}],"usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}}}`,
+		),
+	}}
+	var searches []string
+	b := setupInjectedToolsBifrost(t, fake, &searches)
+
+	stream, bifrostErr := b.ResponsesStreamRequest(createTestContext(), &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}}},
+	})
+	require.Nil(t, bifrostErr, "%v", bifrostErr)
+
+	var types []schemas.ResponsesStreamResponseType
+	var text strings.Builder
+	var completed *schemas.BifrostResponsesResponse
+	lastSeq := -1
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError, "%v", chunk.BifrostError)
+		ev := chunk.BifrostResponsesStreamResponse
+		require.NotNil(t, ev)
+		assert.Equal(t, lastSeq+1, ev.SequenceNumber, "sequence numbers are gapless across turns")
+		lastSeq = ev.SequenceNumber
+		types = append(types, ev.Type)
+		if ev.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && ev.Delta != nil {
+			text.WriteString(*ev.Delta)
+		}
+		if ev.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			completed = ev.Response
+		}
+	}
+
+	assert.Equal(t, []string{"weather in paris"}, searches)
+	assert.Equal(t, "It is sunny.", text.String())
+	count := func(typ schemas.ResponsesStreamResponseType) int {
+		n := 0
+		for _, got := range types {
+			if got == typ {
+				n++
+			}
+		}
+		return n
+	}
+	assert.Equal(t, 1, count(schemas.ResponsesStreamResponseTypeCreated))
+	assert.Equal(t, 1, count(schemas.ResponsesStreamResponseTypeCompleted))
+	assert.Zero(t, count(schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta), "no injected call event reaches the client")
+	require.NotNil(t, completed)
+	assert.Equal(t, "resp_1", *completed.ID)
+	assert.Equal(t, 30, completed.Usage.InputTokens)
+
+	bodies := fake.requests()
+	require.Len(t, bodies, 2)
+	assert.Equal(t, []string{injectedSearchTool}, fake.toolNames(0), "the native web_search tool is replaced")
+	input, _ := bodies[1]["input"].([]any)
+	var replayed []string
+	for _, item := range input {
+		if typ, ok := item.(map[string]any)["type"].(string); ok {
+			replayed = append(replayed, typ)
+		}
+	}
+	assert.Contains(t, replayed, "function_call")
+	assert.Contains(t, replayed, "function_call_output")
+}
+
+// A forced choice is relaxed for the Responses stream turn after a search too.
+func TestInjectedWebSearch_ResponsesStreamRelaxesForcedChoiceAfterSearch(t *testing.T) {
+	call := `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"` + injectedSearchTool + `","arguments":"{\"query\":\"paris\"}","status":"completed"}`
+	fake := &fakeOpenAI{replies: []string{
+		sseEvents(
+			`{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":"gpt-4o","output":[]}}`,
+			`{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":`+call+`}`,
+			`{"type":"response.output_item.done","sequence_number":2,"output_index":0,"item":`+call+`}`,
+			`{"type":"response.completed","sequence_number":3,"response":{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4o","output":[`+call+`],"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}`,
+		),
+		sseEvents(
+			`{"type":"response.created","sequence_number":0,"response":{"id":"resp_2","object":"response","created_at":2,"status":"in_progress","model":"gpt-4o","output":[]}}`,
+			`{"type":"response.completed","sequence_number":1,"response":{"id":"resp_2","object":"response","created_at":2,"status":"completed","model":"gpt-4o","output":[],"usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}}}`,
+		),
+	}}
+	var searches []string
+	b := setupInjectedToolsBifrost(t, fake, &searches)
+	stream, bifrostErr := b.ResponsesStreamRequest(createTestContext(), &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI, Model: "gpt-4o",
+		Input: []schemas.ResponsesMessage{{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather?")}}},
+		Params: &schemas.ResponsesParameters{ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")}},
 	})
 	require.Nil(t, bifrostErr, "%v", bifrostErr)
 	drainStream(stream)
