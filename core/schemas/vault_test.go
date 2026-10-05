@@ -2,6 +2,8 @@ package schemas
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -126,21 +128,62 @@ func TestStoreOwnedVaultSecretVars_WalksFields(t *testing.T) {
 		t.Fatalf("StoreOwnedVaultSecretVars: %v", err)
 	}
 
-	want := map[string]string{
-		"bifrost/m/1/plain_col": "p1",
-		"bifrost/m/1/ptr_col":   "p2",
-		"bifrost/m/1/snake":     "p3",
+	if len(stored) != 3 {
+		t.Fatalf("stored %d entries, want 3: %v", len(stored), stored)
 	}
-	if len(stored) != len(want) {
-		t.Fatalf("stored %d entries, want %d: %v", len(stored), len(want), stored)
-	}
-	for path, val := range want {
-		if stored[path] != val {
-			t.Errorf("stored[%q] = %q, want %q", path, stored[path], val)
+	for _, tc := range []struct {
+		field  *SecretVar
+		column string
+		value  string
+	}{
+		{&m.Plain, "plain_col", "p1"},
+		{m.Ptr, "ptr_col", "p2"},
+		{&m.Snake, "snake", "p3"},
+	} {
+		path := assertStoredUnder(t, stored, tc.field, "bifrost/m/1/"+tc.column)
+		if stored[path] != tc.value {
+			t.Errorf("stored[%q] = %q, want %q", path, stored[path], tc.value)
 		}
 	}
-	if !m.Plain.IsFromVault() || !m.Ptr.IsFromVault() || !m.Snake.IsFromVault() {
-		t.Error("SecretVar fields should be vault-backed after store")
+}
+
+// assertStoredUnder checks field was converted to a vault ref at prefix/<id> and returns the path.
+func assertStoredUnder(t *testing.T, stored map[string]string, field *SecretVar, prefix string) string {
+	t.Helper()
+	if !field.IsFromVault() {
+		t.Fatalf("field for %s should be vault-backed after store", prefix)
+	}
+	path := field.GetRef()
+	id, ok := strings.CutPrefix(path, prefix+"/")
+	if !ok || id == "" || strings.Contains(id, "/") {
+		t.Fatalf("ref %q is not %s/<id>", path, prefix)
+	}
+	if _, ok := stored[path]; !ok {
+		t.Fatalf("ref %q was not stored: %v", path, stored)
+	}
+	return path
+}
+
+// TestStoreOwnedVaultSecretVars_NewPathPerWrite pins that storing a field again never
+// overwrites the secret an earlier write left: the stored row may still reference it
+// until the transaction that replaces it commits.
+func TestStoreOwnedVaultSecretVars_NewPathPerWrite(t *testing.T) {
+	stored := withStubVaultStore(t)
+	type model struct {
+		Value SecretVar `gorm:"column:value"`
+	}
+	first := &model{Value: SecretVar{Val: "old"}}
+	second := &model{Value: SecretVar{Val: "new"}}
+	for _, m := range []*model{first, second} {
+		if err := StoreOwnedVaultSecretVars(context.Background(), "bifrost/m/1", m); err != nil {
+			t.Fatalf("StoreOwnedVaultSecretVars: %v", err)
+		}
+	}
+	if first.Value.GetRef() == second.Value.GetRef() {
+		t.Fatalf("both writes used %q", first.Value.GetRef())
+	}
+	if stored[first.Value.GetRef()] != "old" || stored[second.Value.GetRef()] != "new" {
+		t.Errorf("an earlier secret was overwritten: %v", stored)
 	}
 }
 
@@ -164,16 +207,53 @@ func TestStoreOwnedVaultSecretVars_WalksMap(t *testing.T) {
 	if len(stored) != 1 {
 		t.Fatalf("stored %d entries, want 1: %v", len(stored), stored)
 	}
-	if got := stored["bifrost/m/1/headers/Authorization"]; got != "secret-token" {
-		t.Errorf("stored Authorization = %q, want %q", got, "secret-token")
-	}
 	auth := m.Headers["Authorization"]
-	if !auth.IsFromVault() || auth.GetRawRef() != "vault.bifrost/m/1/headers/Authorization" {
-		t.Errorf("map entry not converted to vault ref: val=%q ref=%q fromVault=%v", auth.Val, auth.GetRawRef(), auth.IsFromVault())
+	path := assertStoredUnder(t, stored, &auth, "bifrost/m/1/headers/Authorization")
+	if stored[path] != "secret-token" {
+		t.Errorf("stored Authorization = %q, want %q", stored[path], "secret-token")
 	}
-	if env := m.Headers["X-Env"]; env.IsFromSecret() && env.GetRawRef() == "env.X" {
-		if stored["bifrost/m/1/headers/X-Env"] != "" {
-			t.Error("env-sourced header should not be vault-stored")
+	if env := m.Headers["X-Env"]; env.IsFromVault() || env.GetRawRef() != "env.X" {
+		t.Errorf("env-sourced header should be left as an env ref, got %q", env.GetRawRef())
+	}
+}
+
+func TestVaultSecretPaths(t *testing.T) {
+	type model struct {
+		Plain   SecretVar
+		Ptr     *SecretVar
+		NilPtr  *SecretVar
+		Env     SecretVar
+		Literal SecretVar
+		Headers map[string]SecretVar
+	}
+	m := &model{
+		Plain:   SecretVar{ref: "vault.bifrost/m/1/plain/a", SecretType: SecretTypeVault},
+		Ptr:     &SecretVar{ref: "vault.external/db#key", SecretType: SecretTypeVault},
+		Env:     SecretVar{ref: "env.X", SecretType: SecretTypeEnv},
+		Literal: SecretVar{Val: "plain"},
+		Headers: map[string]SecretVar{"H": {ref: "vault.bifrost/m/1/headers/H/b", SecretType: SecretTypeVault}},
+	}
+	got := VaultSecretPaths(m)
+	slices.Sort(got)
+	want := []string{"bifrost/m/1/headers/H/b", "bifrost/m/1/plain/a", "external/db#key"}
+	if !slices.Equal(got, want) {
+		t.Errorf("VaultSecretPaths = %v, want %v", got, want)
+	}
+}
+
+func TestOwnsVaultPath(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"bifrost/m/1/value/abc", true},
+		{"bifrost/m/10/value/abc", false},
+		{"bifrost/m/1", false},
+		{"bifrost/m/1/value#key", false},
+		{"", false},
+	} {
+		if got := OwnsVaultPath("bifrost/m/1", tc.path); got != tc.want {
+			t.Errorf("OwnsVaultPath(%q) = %v, want %v", tc.path, got, tc.want)
 		}
 	}
 }

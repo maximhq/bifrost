@@ -2,6 +2,8 @@ package schemas
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -129,16 +131,55 @@ func RemoveOwnedVaultSecretVars(ctx context.Context, ownedPrefix string, model i
 // Callers must check VaultStoreWriteEnabled first.
 func RemoveOwnedVaultSecretVar(ctx context.Context, ownedPrefix string, field *SecretVar) error {
 	path := field.GetRef()
-	if path == "" {
-		return nil
-	}
-	if strings.IndexByte(path, '#') >= 0 {
-		return nil
-	}
-	if !strings.HasPrefix(path, ownedPrefix+"/") {
+	if !OwnsVaultPath(ownedPrefix, path) {
 		return nil
 	}
 	return VaultRemoveHook(ctx, path)
+}
+
+// OwnsVaultPath reports whether path is a secret Bifrost owns under ownedPrefix: it sits
+// below the prefix and is not a fragment ref (#key), which points at a shared,
+// externally-managed secret.
+func OwnsVaultPath(ownedPrefix, path string) bool {
+	return path != "" && strings.IndexByte(path, '#') < 0 && strings.HasPrefix(path, ownedPrefix+"/")
+}
+
+// VaultSecretPaths returns the vault path of every vault-backed SecretVar field of model,
+// walking the same top-level fields and map[string]SecretVar entries as
+// StoreOwnedVaultSecretVars. Env refs and plain values are skipped.
+func VaultSecretPaths(model interface{}) []string {
+	rv := reflect.ValueOf(model)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return nil
+	}
+	var paths []string
+	add := func(e *SecretVar) {
+		if e != nil && e.IsFromVault() {
+			paths = append(paths, e.GetRef())
+		}
+	}
+	for i := 0; i < rv.NumField(); i++ {
+		fv := rv.Field(i)
+		switch fv.Type() {
+		case secretVarMapType:
+			iter := fv.MapRange()
+			for iter.Next() {
+				e := iter.Value().Interface().(SecretVar)
+				add(&e)
+			}
+		case secretVarType:
+			e := fv.Interface().(SecretVar)
+			add(&e)
+		case secretVarPtrType:
+			if !fv.IsNil() {
+				add(fv.Interface().(*SecretVar))
+			}
+		}
+	}
+	return paths
 }
 
 // StoreVaultSecretVar pushes a single plaintext SecretVar value into the vault at path
@@ -160,8 +201,13 @@ func StoreVaultSecretVar(ctx context.Context, path string, e *SecretVar) error {
 }
 
 // StoreOwnedVaultSecretVars stores every plaintext SecretVar / *SecretVar struct field of
-// model into the vault under basePath/<column>, converting each to a vault ref.
+// model into the vault under basePath/<column>/<id>, converting each to a vault ref.
 // The reflection walk mirrors RemoveOwnedVaultSecretVars.
+//
+// Each write gets a fresh <id>, so a new value never overwrites the secret the stored row
+// still references: the vault cannot roll back with the database transaction, and an
+// overwrite would leave a rolled-back row resolving to the value it was meant to replace.
+// The configstore vault callbacks remove the replaced secret once the transaction commits.
 func StoreOwnedVaultSecretVars(ctx context.Context, basePath string, model interface{}) error {
 	if VaultStoreHook == nil {
 		return nil
@@ -185,7 +231,7 @@ func StoreOwnedVaultSecretVars(ctx context.Context, basePath string, model inter
 			for iter.Next() {
 				key := iter.Key()
 				e := iter.Value().Interface().(SecretVar)
-				path := basePath + "/" + seg + "/" + url.PathEscape(key.String())
+				path := basePath + "/" + seg + "/" + url.PathEscape(key.String()) + "/" + newVaultPathID()
 				if err := StoreVaultSecretVar(ctx, path, &e); err != nil {
 					return fmt.Errorf("vault store field %s[%s]: %w", rt.Field(i).Name, key.String(), err)
 				}
@@ -207,12 +253,20 @@ func StoreOwnedVaultSecretVars(ctx context.Context, basePath string, model inter
 		if field == nil {
 			continue
 		}
-		path := basePath + "/" + seg
+		path := basePath + "/" + seg + "/" + newVaultPathID()
 		if err := StoreVaultSecretVar(ctx, path, field); err != nil {
 			return fmt.Errorf("vault store field %s: %w", rt.Field(i).Name, err)
 		}
 	}
 	return nil
+}
+
+// newVaultPathID returns a random final path segment, so every StoreOwnedVaultSecretVars
+// write lands on a path no row references yet.
+func newVaultPathID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // vaultFieldSegment returns the vault path segment for a struct field.

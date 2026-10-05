@@ -1105,6 +1105,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 // callback can compute the vault base path for this model automatically.
 func (k *TableKey) VaultPathKey() string { return k.KeyID }
 
+// VaultPathKeyColumn names the column holding VaultPathKey, so the vault callbacks can
+// load the stored row and remove the secrets a save replaces.
+func (k *TableKey) VaultPathKeyColumn() string { return "key_id" }
+
 // VaultStoreSelfManaged marks TableKey as storing its own vault secrets from within
 // BeforeSave (see the vault block there), so the global vault callback skips it. The
 // flat *SecretVar columns (AzureClientSecret, BedrockSecretKey, etc.) are populated

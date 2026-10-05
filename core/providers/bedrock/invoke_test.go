@@ -2422,13 +2422,13 @@ func TestBedrockInvokeRequest_ApplyGuardrailHeaders(t *testing.T) {
 // identifier or version, or no config at all, adds nothing.
 func TestInvokeGuardrailHeaders(t *testing.T) {
 	extra := map[string]any{"guardrailConfig": map[string]any{"guardrailIdentifier": "gr-1", "guardrailVersion": "3", "trace": "enabled_full"}}
-	static := map[string]string{"X-Custom": "kept"}
+	static := map[string]schemas.SecretVar{"X-Custom": {Val: "kept"}}
 
 	got := invokeGuardrailHeaders(static, extra)
-	assert.Equal(t, "gr-1", got[guardrailIdentifierHeader])
-	assert.Equal(t, "3", got[guardrailVersionHeader])
-	assert.Equal(t, "ENABLED_FULL", got[guardrailTraceHeader])
-	assert.Equal(t, "kept", got["X-Custom"])
+	assert.Equal(t, "gr-1", got[guardrailIdentifierHeader].Val)
+	assert.Equal(t, "3", got[guardrailVersionHeader].Val)
+	assert.Equal(t, "ENABLED_FULL", got[guardrailTraceHeader].Val)
+	assert.Equal(t, "kept", got["X-Custom"].Val)
 	assert.NotContains(t, static, guardrailIdentifierHeader, "the shared provider headers are not mutated")
 
 	assert.Equal(t, static, invokeGuardrailHeaders(static, nil))
@@ -2443,22 +2443,22 @@ func TestInvokeGuardrailHeaders(t *testing.T) {
 	// The stream headers carry the guardrail alongside identity encoding.
 	provider := &BedrockProvider{}
 	stream := provider.invokeStreamHeaders(extra)
-	assert.Equal(t, "identity", stream["Accept-Encoding"])
-	assert.Equal(t, "gr-1", stream[guardrailIdentifierHeader])
+	assert.Equal(t, "identity", stream["Accept-Encoding"].Val)
+	assert.Equal(t, "gr-1", stream[guardrailIdentifierHeader].Val)
 }
 
 // TestInvokeGuardrailHeaders_DoesNotMutateSharedHeaders: with no per-request guardrail config
 // the provider's static headers are returned as-is, and a configured trace header must not be
 // rewritten in place (that map is shared by every concurrent request).
 func TestInvokeGuardrailHeaders_DoesNotMutateSharedHeaders(t *testing.T) {
-	static := map[string]string{guardrailTraceHeader: "enabled", "X-Custom": "kept"}
+	static := map[string]schemas.SecretVar{guardrailTraceHeader: {Val: "enabled"}, "X-Custom": {Val: "kept"}}
 	_ = invokeGuardrailHeaders(static, nil)
-	assert.Equal(t, "enabled", static[guardrailTraceHeader])
+	assert.Equal(t, "enabled", static[guardrailTraceHeader].Val)
 
 	withConfig := map[string]any{"guardrailConfig": map[string]any{"guardrailIdentifier": "gr-1", "guardrailVersion": "3", "trace": "enabled"}}
 	got := invokeGuardrailHeaders(static, withConfig)
-	assert.Equal(t, "ENABLED", got[guardrailTraceHeader])
-	assert.Equal(t, "enabled", static[guardrailTraceHeader])
+	assert.Equal(t, "ENABLED", got[guardrailTraceHeader].Val)
+	assert.Equal(t, "enabled", static[guardrailTraceHeader].Val)
 	assert.NotContains(t, static, guardrailIdentifierHeader)
 }
 
