@@ -43,6 +43,10 @@ type ModelCatalog struct {
 
 	providersForModel *gencache.Cache[[]schemas.ModelProvider]
 	modelsForProvider *gencache.Cache[[]string]
+	// maxOutputTokens memoizes the datasheet output-token cap per provider+model.
+	// 0 means "no cap known" and is cached too, so a model missing from the
+	// sheet pays the full-table capability scan once per generation, not per request.
+	maxOutputTokens *gencache.Cache[int]
 
 	// MCP library sync configuration (protected by syncMu)
 	mcpLibraryURL          string
