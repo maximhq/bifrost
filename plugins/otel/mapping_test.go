@@ -252,7 +252,7 @@ func TestConvertTraceRequestHeaderFiltering(t *testing.T) {
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("svc", trace, []string{"x-tenant-id"}, false, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, []string{"x-tenant-id"}, false, false, false, false, false)
 	spans := rs.ScopeSpans[0].Spans
 
 	rootOut := findRoot(spans)
@@ -394,7 +394,7 @@ func TestConvertTraceContentFidelity(t *testing.T) {
 	}
 
 	// Content logging enabled (disableContentLogging=false, disableRootSpanContent=false).
-	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false, false)
 
 	// Find the fixture's llm.call span by its span ID, not by kind/position — other span
 	// kinds (MCP tool/client, embedding, speech, transcription) also map to CLIENT, so a
@@ -475,7 +475,7 @@ func TestExportNoContentLeakWithSharedFixture(t *testing.T) {
 	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
 	p := &OtelPlugin{}
 
-	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, true, false, false, false)
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, true, false, false, false, false)
 	payload, err := sonic.Marshal(resourceSpan)
 	if err != nil {
 		t.Fatalf("marshal ResourceSpan: %v", err)
@@ -491,7 +491,7 @@ func TestExportContentPresentWhenEnabled(t *testing.T) {
 	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
 	p := &OtelPlugin{}
 
-	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false, false)
 	payload, err := sonic.Marshal(resourceSpan)
 	if err != nil {
 		t.Fatalf("marshal ResourceSpan: %v", err)
@@ -540,7 +540,7 @@ func TestExportSpanFilterDropsExcludedPlugins(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &OtelPlugin{pluginSpanFilter: tc.filter}
-			resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
+			resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false, false)
 			payload, err := sonic.Marshal(resourceSpan)
 			if err != nil {
 				t.Fatalf("marshal ResourceSpan: %v", err)
@@ -558,7 +558,7 @@ func TestExportWithholdsOverheadSpans(t *testing.T) {
 	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{IncludeOverheadSpans: true})
 	p := &OtelPlugin{}
 
-	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false, false)
 	payload, err := sonic.Marshal(resourceSpan)
 	if err != nil {
 		t.Fatalf("marshal ResourceSpan: %v", err)
@@ -575,7 +575,7 @@ func TestExportWithholdsOverheadSpans(t *testing.T) {
 func TestExportCarriesCostBreakdown(t *testing.T) {
 	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
 	p := &OtelPlugin{}
-	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false, false)
 
 	// Read the cost attributes off the LLM span specifically. Merging every span
 	// would accept cost split across spans, or attached to the wrong one.
@@ -830,7 +830,7 @@ func TestExcludedAttributesDropConverterAddedKeys(t *testing.T) {
 	trace.Spans = []*schemas.Span{root}
 	trace.RootSpan = root
 
-	rs := p.convertTraceToResourceSpan("svc", trace, []string{"*"}, false, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, []string{"*"}, false, false, false, false, false)
 	got := kvMap(rs.ScopeSpans[0].Spans[0].Attributes)
 	for _, k := range []string{"session.id", schemas.AttrBifrostRequestID, "http.request.header.Authorization"} {
 		if _, ok := got[k]; !ok {

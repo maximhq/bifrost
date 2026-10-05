@@ -127,6 +127,12 @@ type Profile struct {
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
 
+	// ApplyTraceDimensionsToChildSpans controls whether x-bf-dim-* dimensions stored on
+	// the trace (TraceAttrDimensions) are merged onto every exported span. When false
+	// (default), these attributes are only present on the root span via the standard
+	// span-attribute mechanism.
+	ApplyTraceDimensionsToChildSpans bool `json:"apply_trace_dimensions_to_child_spans,omitempty"`
+
 	// ExportRawPayloads attaches raw provider bodies to LLM spans. Off by default;
 	// requires store_raw_request_response and is suppressed by disable_content_logging.
 	ExportRawPayloads bool `json:"export_raw_payloads,omitempty"`
@@ -303,8 +309,9 @@ type profileForStorage struct {
 	OverheadBreakdownEnabled bool              `json:"overhead_breakdown_enabled,omitempty"`
 	RequestHeaders           []string          `json:"request_headers,omitempty"`
 	DisableContentLogging    bool              `json:"disable_content_logging,omitempty"`
-	ExportRawPayloads        bool              `json:"export_raw_payloads,omitempty"`
-	ExcludedAttributes       []string          `json:"excluded_attributes,omitempty"`
+	ApplyTraceDimensionsToChildSpans bool              `json:"apply_trace_dimensions_to_child_spans,omitempty"`
+	ExportRawPayloads                bool              `json:"export_raw_payloads,omitempty"`
+	ExcludedAttributes               []string          `json:"excluded_attributes,omitempty"`
 	GroupTracesBySession     bool              `json:"group_traces_by_session,omitempty"`
 	DisableRootSpanContent   bool              `json:"disable_root_span_content,omitempty"`
 }
@@ -349,8 +356,9 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			OverheadBreakdownEnabled: p.OverheadBreakdownEnabled,
 			RequestHeaders:           p.RequestHeaders,
 			DisableContentLogging:    p.DisableContentLogging,
-			ExportRawPayloads:        p.ExportRawPayloads,
-			ExcludedAttributes:       p.ExcludedAttributes,
+			ApplyTraceDimensionsToChildSpans: p.ApplyTraceDimensionsToChildSpans,
+			ExportRawPayloads:                p.ExportRawPayloads,
+			ExcludedAttributes:               p.ExcludedAttributes,
 			GroupTracesBySession:     p.GroupTracesBySession,
 			DisableRootSpanContent:   p.DisableRootSpanContent,
 		})
@@ -432,8 +440,9 @@ type otelTarget struct {
 	metricsExporter          *MetricsExporter
 	requestHeaders           []string
 	disableContentLogging    bool
-	exportRawPayloads        bool
-	excludedAttributes       []string
+	applyTraceDimensionsToChildSpans bool
+	exportRawPayloads                bool
+	excludedAttributes               []string
 	groupTracesBySession     bool
 	disableRootSpanContent   bool
 	overheadBreakdownEnabled bool
@@ -635,8 +644,9 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		traceType:                profile.TraceType,
 		requestHeaders:           slices.Clone(profile.RequestHeaders),
 		disableContentLogging:    profile.DisableContentLogging,
-		exportRawPayloads:        profile.ExportRawPayloads,
-		excludedAttributes:       profile.ExcludedAttributes,
+		applyTraceDimensionsToChildSpans: profile.ApplyTraceDimensionsToChildSpans,
+		exportRawPayloads:                profile.ExportRawPayloads,
+		excludedAttributes:               profile.ExcludedAttributes,
 		groupTracesBySession:     profile.GroupTracesBySession,
 		disableRootSpanContent:   profile.DisableRootSpanContent,
 		overheadBreakdownEnabled: profile.OverheadBreakdownEnabled,
@@ -964,7 +974,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			}
 			// Free when unconfigured: an empty list returns the trace unchanged.
 			traceForTarget := schemas.StripTraceAttributes(trace, t.excludedAttributes)
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, t.requestHeaders, t.disableContentLogging, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, t.requestHeaders, t.disableContentLogging, t.applyTraceDimensionsToChildSpans, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
 			// Again after conversion: it adds root-span attributes of its own
 			// (session.id, request id, instance attrs, captured headers).
 			stripExcludedFromResourceSpan(resourceSpan, t.excludedAttributes)

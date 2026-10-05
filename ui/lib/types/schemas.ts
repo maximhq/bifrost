@@ -1150,7 +1150,9 @@ export const otelConfigSchema = z
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 		request_headers: z.array(z.string()).default([]),
 		disable_content_logging: z.boolean().default(false),
+		apply_trace_dimensions_to_child_spans: z.boolean().default(false),
 		export_raw_payloads: z.boolean().default(false),
+		excluded_attributes: z.array(z.string()).default([]),
 		group_traces_by_session: z.boolean().default(false),
 		disable_root_span_content: z.boolean().default(false),
 	})
