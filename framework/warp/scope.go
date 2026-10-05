@@ -46,6 +46,10 @@ type Scope struct {
 	// ("their teams' traffic"). Empty when the caller is unrestricted or the
 	// deployment has no resolver to say.
 	Visibility string
+	// Visible is the row ownership a restricted caller's reads are narrowed
+	// to, when the deployment can say. Semantic search prefilters the index
+	// with it; nil leaves the search unfiltered, as it is for everyone else.
+	Visible *LogVisibility
 }
 
 // CallerRestriction is what the deployment's row-level access control says
@@ -56,6 +60,9 @@ type CallerRestriction struct {
 	// Visibility is a short phrase for what the caller may see, written to
 	// follow "the person asking may see ...". Optional.
 	Visibility string
+	// Logs is the row ownership the store grants the caller on log reads.
+	// Optional: it only sharpens semantic search (see LogVisibility).
+	Logs *LogVisibility
 }
 
 // CallerRestrictionResolver reports whether row-level access control narrows
@@ -91,6 +98,7 @@ func withCallerRestriction(ctx context.Context, scope Scope, resolve CallerRestr
 	}
 	scope.Unrestricted = false
 	scope.Visibility = restriction.Visibility
+	scope.Visible = restriction.Logs
 	return scope
 }
 

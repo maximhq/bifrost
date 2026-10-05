@@ -708,7 +708,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	EnableLogging:                   new(true),
 	DisableContentLogging:           false,
 	RetainContentInObjectStorage:    false,
-	EnforceAuthOnInference:          false,
+	EnforceAuthOnInference:          true,
 	AllowedOrigins:                  []string{"*"},
 	AllowedHeaders:                  []string{},
 	WhitelistedRoutes:               []string{},
@@ -1410,6 +1410,9 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	}
 
 	fileInferenceAuthProvided := configData.Client != nil && configData.Client.HasInferenceAuthSetting()
+	// A fresh install (nothing stored yet) and first-admin setup default inference auth on;
+	// an existing deployment keeps whatever it has stored.
+	inferenceAuthDefault := firstAdmin || clientConfig == nil
 	if configData.Client == nil && firstAdmin {
 		if clientConfig != nil {
 			copied := *clientConfig
@@ -1432,13 +1435,13 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 			return fmt.Errorf("failed to hash client config: %w", err)
 		}
 		const defaultMarker = ":inference-auth-default"
-		if !fileInferenceAuthProvided && (firstAdmin ||
+		if !fileInferenceAuthProvided && (inferenceAuthDefault ||
 			(clientConfig != nil && strings.HasSuffix(clientConfig.ConfigHash, defaultMarker))) {
 			fileHash += defaultMarker
 		}
 	}
 	if configData.Client != nil && !fileInferenceAuthProvided {
-		if firstAdmin {
+		if inferenceAuthDefault {
 			configData.Client.EnforceAuthOnInference = true
 		} else if clientConfig != nil {
 			configData.Client.EnforceAuthOnInference = clientConfig.EnforceAuthOnInference

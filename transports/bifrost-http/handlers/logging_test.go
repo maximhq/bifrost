@@ -1060,10 +1060,10 @@ func TestDeleteMCPLogsRequiresAuthenticatedAdmin(t *testing.T) {
 		wantCallCount int
 		wantError     string
 	}{
-		{name: "auth unconfigured", body: validBody, wantStatus: fasthttp.StatusForbidden},
-		{name: "auth unconfigured malformed body", body: `{`, wantStatus: fasthttp.StatusForbidden},
-		{name: "auth disabled", authConfig: disabled, body: validBody, wantStatus: fasthttp.StatusForbidden},
-		{name: "auth disabled with credentials", authConfig: disabled, authorization: basic, body: validBody, wantStatus: fasthttp.StatusForbidden},
+		{name: "auth unconfigured", body: validBody, wantStatus: fasthttp.StatusForbidden, wantError: "management API is disabled"},
+		{name: "auth unconfigured malformed body", body: `{`, wantStatus: fasthttp.StatusForbidden, wantError: "management API is disabled"},
+		{name: "auth disabled", authConfig: disabled, body: validBody, wantStatus: fasthttp.StatusForbidden, wantError: "management API is disabled"},
+		{name: "auth disabled with credentials", authConfig: disabled, authorization: basic, body: validBody, wantStatus: fasthttp.StatusForbidden, wantError: "management API is disabled"},
 		{name: "no config store", noConfigStore: true, body: validBody, wantStatus: fasthttp.StatusForbidden},
 		{name: "exact whitelist", authConfig: enabled, whitelist: []string{"/api/mcp-logs"}, body: validBody, wantStatus: fasthttp.StatusForbidden},
 		{name: "wildcard whitelist with credentials", authConfig: enabled, whitelist: []string{"/api/*"}, authorization: basic, body: validBody, wantStatus: fasthttp.StatusForbidden},
@@ -1104,7 +1104,7 @@ func TestDeleteMCPLogsRequiresAuthenticatedAdmin(t *testing.T) {
 
 			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 			require.Equal(t, tc.wantCallCount, manager.deleteMCPCalls)
-			if tc.wantStatus == fasthttp.StatusForbidden {
+			if tc.wantStatus == fasthttp.StatusForbidden && tc.wantError == "" {
 				require.Contains(t, string(ctx.Response.Body()), "requires an authenticated admin session")
 			}
 			if tc.wantError != "" {

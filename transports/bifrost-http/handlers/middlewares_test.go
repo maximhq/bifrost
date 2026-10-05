@@ -798,7 +798,7 @@ func TestChainMiddlewares_ShortCircuitMiddlePosition(t *testing.T) {
 	}
 }
 
-// TestAuthMiddleware_NilAuthConfig tests that auth middleware allows requests when auth config is nil
+// TestAuthMiddleware_NilAuthConfig tests that the management API is closed when no admin account exists
 func TestAuthMiddleware_NilAuthConfig(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -817,13 +817,16 @@ func TestAuthMiddleware_NilAuthConfig(t *testing.T) {
 	handler := middleware(next)
 	handler(ctx)
 
-	// When auth config is nil, requests should be allowed through
-	if !nextCalled {
-		t.Error("Next handler should be called when auth config is nil")
+	// Without an admin account the dashboard is not password protected, so management calls fail
+	if nextCalled {
+		t.Error("Next handler should NOT be called when auth config is nil")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Errorf("Expected status code %d, got %d", fasthttp.StatusForbidden, ctx.Response.StatusCode())
 	}
 }
 
-// TestAuthMiddleware_DisabledAuthConfig tests that auth middleware allows requests when auth is disabled
+// TestAuthMiddleware_DisabledAuthConfig tests that the management API is closed when auth is disabled
 func TestAuthMiddleware_DisabledAuthConfig(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -846,103 +849,98 @@ func TestAuthMiddleware_DisabledAuthConfig(t *testing.T) {
 	handler := middleware(next)
 	handler(ctx)
 
-	// When auth is disabled, requests should be allowed through
-	if !nextCalled {
-		t.Error("Next handler should be called when auth is disabled")
+	// Stored credentials with auth switched off still leave the dashboard unprotected
+	if nextCalled {
+		t.Error("Next handler should NOT be called when auth is disabled")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Errorf("Expected status code %d, got %d", fasthttp.StatusForbidden, ctx.Response.StatusCode())
 	}
 }
 
-// TestAuthMiddleware_DisabledAuthConfig_CrossOrigin: while dashboard auth is disabled, a browser
-// request from an origin the operator did not name is refused on management routes. Localhost
-// origins, explicitly listed origins and domain patterns pass; the bare "*" default does not count.
-// Requests without an Origin, whitelisted routes and inference routes are unaffected.
-func TestAuthMiddleware_DisabledAuthConfig_CrossOrigin(t *testing.T) {
+// TestAuthMiddleware_DisabledAuthConfig_AdminSetupOnly: while the dashboard has no admin
+// password (no auth config, or auth disabled) every management route is refused, except the
+// PUT /api/config carrying the configured setup token that creates the admin account.
+// Whitelisted routes and inference routes are unaffected, and setup still refuses a browser
+// page from an unlisted origin.
+func TestAuthMiddleware_DisabledAuthConfig_AdminSetupOnly(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	run := func(am *AuthMiddleware, middleware schemas.BifrostHTTPMiddleware, path, origin string) (nextCalled bool, status int) {
+	run := func(middleware schemas.BifrostHTTPMiddleware, method, path, body, origin string) (nextCalled bool, status int) {
 		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(method)
 		ctx.Request.SetRequestURI(path)
+		ctx.Request.Header.SetHost("10.0.0.5:8080")
+		ctx.Request.SetBodyString(body)
 		if origin != "" {
 			ctx.Request.Header.Set("Origin", origin)
 		}
 		middleware(func(ctx *fasthttp.RequestCtx) { nextCalled = true })(ctx)
 		return nextCalled, ctx.Response.StatusCode()
 	}
+	setupBody := func(token string) string {
+		return `{"client_config":{},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"StrongPassword1!","setup_token":"` + token + `"}}`
+	}
 
-	t.Run("auth config nil, default origins", func(t *testing.T) {
-		am := &AuthMiddleware{}
-		api := am.APIMiddleware()
-
-		called, _ := run(am, api, "/api/providers", "")
-		assert.True(t, called, "no Origin header: CLI/SDK callers are unaffected")
-		called, _ = run(am, api, "/api/providers", "http://localhost:3000")
-		assert.True(t, called, "localhost origins are always allowed")
-		called, _ = run(am, api, "/api/providers", "http://[::1]:3000")
-		assert.True(t, called)
-		called, status := run(am, api, "/api/providers", "https://evil.example")
-		assert.False(t, called, "an unlisted origin must not reach the open management API")
-		assert.Equal(t, fasthttp.StatusForbidden, status)
-		called, _ = run(am, api, "/health", "https://evil.example")
-		assert.True(t, called, "whitelisted routes keep today's behaviour")
-		called, _ = run(am, am.InferenceMiddleware(), "/v1/chat/completions", "https://evil.example")
-		assert.True(t, called, "inference routes are governed by the governance plugin, not by this check")
-	})
-
-	t.Run("auth disabled, configured origins", func(t *testing.T) {
-		am := &AuthMiddleware{}
-		am.UpdateAuthConfig(&configstore.AuthConfig{
+	for name, authConfig := range map[string]*configstore.AuthConfig{
+		"auth config nil": nil,
+		"auth disabled": {
 			AdminUserName: schemas.NewSecretVar("admin"),
 			AdminPassword: schemas.NewSecretVar("password"),
 			IsEnabled:     false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			am := &AuthMiddleware{}
+			am.UpdateAuthConfig(authConfig)
+			token := "operator-setup-token"
+			am.setupToken.Store(&token)
+			api := am.APIMiddleware()
+
+			called, status := run(api, fasthttp.MethodGet, "/api/providers", "", "")
+			assert.False(t, called, "management routes are closed without an admin password")
+			assert.Equal(t, fasthttp.StatusForbidden, status)
+			called, status = run(api, fasthttp.MethodGet, "/api/config", "", "http://localhost:3000")
+			assert.False(t, called, "a localhost origin does not open the management API")
+			assert.Equal(t, fasthttp.StatusForbidden, status)
+
+			called, _ = run(api, fasthttp.MethodPut, "/api/config", setupBody(token), "")
+			assert.True(t, called, "setup with the configured token reaches the config handler")
+			called, _ = run(api, fasthttp.MethodPut, "/api/config", setupBody(token), "http://10.0.0.5:8080")
+			assert.True(t, called, "the dashboard's own same-origin setup call passes")
+			called, status = run(api, fasthttp.MethodPut, "/api/config", setupBody(token), "https://evil.example")
+			assert.False(t, called, "setup from an unlisted origin is refused")
+			assert.Equal(t, fasthttp.StatusForbidden, status)
+			called, status = run(api, fasthttp.MethodPut, "/api/config", setupBody("wrong-token"), "")
+			assert.False(t, called, "a wrong setup token is refused")
+			assert.Equal(t, fasthttp.StatusForbidden, status)
+			called, status = run(api, fasthttp.MethodPut, "/api/config", `{"client_config":{}}`, "")
+			assert.False(t, called, "a config write without a setup token is refused")
+			assert.Equal(t, fasthttp.StatusForbidden, status)
+			called, status = run(api, fasthttp.MethodPost, "/api/config", setupBody(token), "")
+			assert.False(t, called, "only PUT /api/config is the setup call")
+			assert.Equal(t, fasthttp.StatusForbidden, status)
+			called, status = run(api, fasthttp.MethodPut, "/api/providers", setupBody(token), "")
+			assert.False(t, called, "the setup token does not open other routes")
+			assert.Equal(t, fasthttp.StatusForbidden, status)
+
+			called, _ = run(api, fasthttp.MethodGet, "/health", "", "")
+			assert.True(t, called, "system whitelisted routes stay reachable")
+			called, _ = run(api, fasthttp.MethodGet, "/api/session/is-auth-enabled", "", "")
+			assert.True(t, called)
+			am.UpdateWhitelistedRoutes([]string{"/api/public/*"})
+			called, _ = run(api, fasthttp.MethodGet, "/api/public/status", "", "")
+			assert.True(t, called, "operator whitelisted routes stay reachable")
+			called, _ = run(am.InferenceMiddleware(), fasthttp.MethodPost, "/v1/chat/completions", "", "")
+			assert.True(t, called, "inference routes are governed by the governance plugin, not by this check")
 		})
-		api := am.APIMiddleware()
+	}
 
-		am.UpdateAllowedOrigins([]string{"*"})
-		called, status := run(am, api, "/api/providers", "https://evil.example")
-		assert.False(t, called, "the bare wildcard does not name an origin")
+	t.Run("no setup token configured", func(t *testing.T) {
+		am := &AuthMiddleware{}
+		called, status := run(am.APIMiddleware(), fasthttp.MethodPut, "/api/config", setupBody(""), "")
+		assert.False(t, called, "an empty token never matches when none is configured")
 		assert.Equal(t, fasthttp.StatusForbidden, status)
-
-		am.UpdateAllowedOrigins([]string{"https://app.example.com", "https://*.corp.example"})
-		called, _ = run(am, api, "/api/providers", "https://app.example.com")
-		assert.True(t, called, "an explicitly listed origin passes")
-		called, _ = run(am, api, "/api/providers", "https://tools.corp.example")
-		assert.True(t, called, "a domain pattern names the origin")
-		called, status = run(am, api, "/api/providers", "https://app.example.com.evil.example")
-		assert.False(t, called)
-		assert.Equal(t, fasthttp.StatusForbidden, status)
-
-		// The dashboard served from a non-localhost address sends its own Origin on writes;
-		// a same-origin request (Origin host:port equals Host) is not cross-origin.
-		sameOrigin := &fasthttp.RequestCtx{}
-		sameOrigin.Request.SetRequestURI("/api/config")
-		sameOrigin.Request.Header.SetMethod(fasthttp.MethodPut)
-		sameOrigin.Request.Header.SetHost("10.0.0.5:8080")
-		sameOrigin.Request.Header.Set("Origin", "http://10.0.0.5:8080")
-		sameOriginCalled := false
-		api(func(*fasthttp.RequestCtx) { sameOriginCalled = true })(sameOrigin)
-		assert.True(t, sameOriginCalled, "the dashboard's own same-origin write must not be refused (status %d)", sameOrigin.Response.StatusCode())
-
-		defaultPort := &fasthttp.RequestCtx{}
-		defaultPort.Request.SetRequestURI("/api/config")
-		defaultPort.Request.Header.SetHost("bifrost.internal:443")
-		defaultPort.Request.Header.Set("Origin", "https://bifrost.internal")
-		defaultPortCalled := false
-		api(func(*fasthttp.RequestCtx) { defaultPortCalled = true })(defaultPort)
-		assert.True(t, defaultPortCalled, "an explicit default port in Host is the same origin")
-
-		crossHost := &fasthttp.RequestCtx{}
-		crossHost.Request.SetRequestURI("/api/config")
-		crossHost.Request.Header.SetHost("10.0.0.5:8080")
-		crossHost.Request.Header.Set("Origin", "http://10.0.0.5:9090")
-		crossHostCalled := false
-		api(func(*fasthttp.RequestCtx) { crossHostCalled = true })(crossHost)
-		assert.False(t, crossHostCalled, "a different port is a different origin")
-		assert.Equal(t, fasthttp.StatusForbidden, crossHost.Response.StatusCode())
-
-		// Operator-configured whitelisted routes are exempt like the system ones.
-		am.UpdateWhitelistedRoutes([]string{"/api/public/*"})
-		called, _ = run(am, api, "/api/public/status", "https://evil.example")
-		assert.True(t, called)
 	})
 }
 
@@ -1447,7 +1445,7 @@ func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetRequestURI("/api/some-endpoint")
 
-	// First request should pass (nil config)
+	// First request is refused (nil config: no admin account yet)
 	nextCalled := false
 	next := func(ctx *fasthttp.RequestCtx) {
 		nextCalled = true
@@ -1457,8 +1455,8 @@ func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	handler := middleware(next)
 	handler(ctx)
 
-	if !nextCalled {
-		t.Error("First request should pass when auth config is nil")
+	if nextCalled {
+		t.Error("First request should be refused when auth config is nil")
 	}
 
 	// Now enable auth
@@ -1583,15 +1581,18 @@ func TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled(t *testing.T) {
 		IsEnabled:     false,
 	})
 
-	// Second request should pass (auth disabled)
+	// Second request is still refused (auth disabled leaves the dashboard unprotected)
 	ctx2 := &fasthttp.RequestCtx{}
 	ctx2.Request.SetRequestURI("/api/some-endpoint")
 
 	nextCalled = false
 	handler(ctx2)
 
-	if !nextCalled {
-		t.Error("Second request should pass after auth is disabled")
+	if nextCalled {
+		t.Error("Second request should be refused after auth is disabled")
+	}
+	if ctx2.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Errorf("Expected status code %d, got %d", fasthttp.StatusForbidden, ctx2.Response.StatusCode())
 	}
 }
 
