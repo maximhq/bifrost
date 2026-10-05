@@ -7352,6 +7352,12 @@ func executeRequestWithRetries[T any](
 			(bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled) {
 			break
 		}
+		// An attempt that ran a provider-injected tool is not retried: the retry would
+		// restart the loop from the original request, repeat the tool's side effects and
+		// re-send the finished turns. The error already bills those turns.
+		if executed, _ := ctx.Value(schemas.BifrostContextKeyInjectedToolsExecuted).(bool); executed {
+			break
+		}
 
 		// Classify the failure to decide whether to retry and whether to rotate the key.
 		// A transient failure (network, retryable 5xx) retries on the same key: a different
@@ -8043,6 +8049,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				applyRawCaptureSignals(req.Context, config)
 				applyProviderProxySignal(req.Context, config)
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+				req.Context.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, false)
+				if set := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType); set != nil {
+					return bifrost.runInjectedTools(provider, config, req, k, set)
+				}
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		}
