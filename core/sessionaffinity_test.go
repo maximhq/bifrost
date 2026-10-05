@@ -2,6 +2,8 @@ package bifrost
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -10,6 +12,173 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// A session's key the provider rejects outright does not fail the request beside a healthy
+// sibling: the request is served by the sibling, as one without a session would be, and the
+// session is bound to the sibling afterwards.
+func TestSessionKeyRejectedOutrightMovesToItsSibling(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "Bearer sk-a" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 5, 1000, upstream.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	kv := newMockKVStore()
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	// An earlier request served by key-a bound the session to it.
+	bind := sessionCtx("s")
+	bind.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+	client.observeSessionOutcome(bind, route, &route, false, nil)
+
+	ctx := sessionCtx("s")
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("the sibling should have served the request, got %v", bifrostErr.Error.Message)
+	}
+	if key := resp.ExtraFields.RoutingInfo.Key; key != "Key B" {
+		t.Fatalf("served by %q, want Key B", key)
+	}
+	if bound, _ := SessionStateString(kv, SessionStateKey(ctx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4")); bound != "key-b" {
+		t.Fatalf("session bound to %q after the request, want key-b", bound)
+	}
+}
+
+// threeKeySessionClient serves a session bound to key-a over keys a, b and c, each answering
+// with the status given for it (200 when absent), through a selector that picks the first key
+// it is offered, and returns the client and the keys the upstream saw, in order.
+func threeKeySessionClient(t *testing.T, status map[string]int, filter schemas.KeyPoolFilter) (*Bifrost, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var hits []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer sk-")
+		mu.Lock()
+		hits = append(hits, key)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch status[key] {
+		case http.StatusUnauthorized:
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`))
+		case http.StatusTooManyRequests:
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"Rate limit reached","type":"requests","code":"rate_limit_exceeded"}}`))
+		default:
+			_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 5, 1000, upstream.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = time.Millisecond
+	var keys []schemas.Key
+	for _, id := range []string{"a", "b", "c"} {
+		keys = append(keys, schemas.Key{ID: "key-" + id, Name: "Key " + strings.ToUpper(id), Value: *schemas.NewSecretVar("sk-" + id), Models: schemas.WhiteList{"*"}, Weight: 1})
+	}
+	account.SetKeysForProvider(schemas.OpenAI, keys)
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:       account,
+		Logger:        NewDefaultLogger(schemas.LogLevelError),
+		KVStore:       newMockKVStore(),
+		KeyPoolFilter: filter,
+		KeySelector: func(_ *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
+			return keys[0], nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	bind := sessionCtx("s")
+	bind.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+	client.observeSessionOutcome(bind, route, &route, false, nil)
+	return client, &hits
+}
+
+// sessionChat sends one chat request for the session "s" and returns the key that served it.
+func sessionChat(t *testing.T, client *Bifrost) string {
+	t.Helper()
+	resp, bifrostErr := client.ChatCompletionRequest(sessionCtx("s"), &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %v", bifrostErr.Error.Message)
+	}
+	return resp.ExtraFields.RoutingInfo.Key
+}
+
+// Once the session's key is rejected, a sibling already rate-limited by this request is passed
+// over for one that has not been tried, as a request without a session would.
+func TestSessionKeyRejectedSkipsARateLimitedSibling(t *testing.T) {
+	client, hits := threeKeySessionClient(t, map[string]int{"a": http.StatusUnauthorized, "b": http.StatusTooManyRequests}, nil)
+	if served := sessionChat(t, client); served != "Key C" {
+		t.Fatalf("served by %q, want Key C", served)
+	}
+	if got := strings.Join(*hits, ","); got != "a,b,c" {
+		t.Fatalf("upstream saw keys %s, want a,b,c", got)
+	}
+}
+
+// The key pool filter, such as the circuit breaker's, still applies to the key a rejected
+// session's request moves to.
+func TestSessionKeyRejectedHonoursTheKeyPoolFilter(t *testing.T) {
+	withoutB := func(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, keys []schemas.Key) ([]schemas.Key, error) {
+		kept := make([]schemas.Key, 0, len(keys))
+		for _, k := range keys {
+			if k.ID != "key-b" {
+				kept = append(kept, k)
+			}
+		}
+		return kept, nil
+	}
+	client, hits := threeKeySessionClient(t, map[string]int{"a": http.StatusUnauthorized}, withoutB)
+	if served := sessionChat(t, client); served != "Key C" {
+		t.Fatalf("served by %q, want Key C", served)
+	}
+	if got := strings.Join(*hits, ","); got != "a,c" {
+		t.Fatalf("upstream saw keys %s, want a,c", got)
+	}
+}
+
+// A realtime or WebSocket connection asks for one key up front. A session bound to a key gets
+// that key, not the selector's pick from the rest of the pool behind it.
+func TestSelectKeyForProviderRequestTypeKeepsTheSessionKey(t *testing.T) {
+	client, _ := threeKeySessionClient(t, nil, nil)
+	client.keySelector = func(_ *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
+		return keys[len(keys)-1], nil // anything but the session's key-a, were the pool handed to it
+	}
+	key, err := client.SelectKeyForProviderRequestType(sessionCtx("s"), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4")
+	if err != nil || key.ID != "key-a" {
+		t.Fatalf("got %q (err %v), want the session's key-a", key.ID, err)
+	}
+}
 
 func sessionCtx(sessionID string) *schemas.BifrostContext {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

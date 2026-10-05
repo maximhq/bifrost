@@ -1257,7 +1257,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 		t.Errorf("kvstore after the request served: expected key-a, got %v (err=%v)", raw, err)
 	}
 
-	// Second request: the bound key comes back alone, rotation off, selector not consulted.
+	// Second request: the bound key comes first with the rest of the pool behind it, rotation off,
+	// selector not consulted.
 	keys2, canRotate2, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
 		t.Fatalf("second selectKeyFromProviderForModelWithPool: %v", err)
@@ -1265,8 +1266,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	if canRotate2 {
 		t.Error("second call: canRotate should be false for a session-bound key")
 	}
-	if len(keys2) != 1 || keys2[0].ID != "key-a" {
-		t.Errorf("second call: expected [key-a] (bound), got %v", keys2)
+	if len(keys2) != 2 || keys2[0].ID != "key-a" || keys2[1].ID != "key-b" {
+		t.Errorf("second call: expected [key-a key-b] (bound first), got %v", keys2)
 	}
 	if keySelectorCalls != 0 {
 		t.Errorf("second call: keySelector should not run, got %d calls", keySelectorCalls)
@@ -1373,8 +1374,8 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	if canRotate {
 		t.Fatal("expected canRotate=false for session-sticky request")
 	}
-	if len(pool) != 1 || pool[0].ID != "key-a" {
-		t.Fatalf("expected sticky pool=[key-a], got %v", pool)
+	if len(pool) == 0 || pool[0].ID != "key-a" {
+		t.Fatalf("expected sticky pool led by key-a, got %v", pool)
 	}
 
 	fixedKey := pool[0]
