@@ -543,8 +543,7 @@ func getProviderFromHeader(ctx *fasthttp.RequestCtx, defaultProvider schemas.Mod
 // getPassthroughProvider resolves the provider for a passthrough request from the
 // x-model-provider header, falling back to defaultProvider when the header is absent. On the
 // catch-all passthrough routes the header picks which key pool and upstream a caller-shaped
-// path is dispatched to, so its value is constrained to the known provider set (built-ins
-// plus registered custom providers) before anything is looked up.
+// path is dispatched to, so it must match the route's resolved provider before anything is looked up.
 func getPassthroughProvider(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (schemas.ModelProvider, error) {
 	providerHeader := string(ctx.Request.Header.Peek("x-model-provider"))
 	if providerHeader == "" {
@@ -552,6 +551,9 @@ func getPassthroughProvider(ctx *fasthttp.RequestCtx, defaultProvider schemas.Mo
 	}
 	if !schemas.IsKnownProvider(providerHeader) {
 		return "", fmt.Errorf("unknown provider %q in x-model-provider header", providerHeader)
+	}
+	if schemas.ModelProvider(providerHeader) != defaultProvider {
+		return "", fmt.Errorf("provider does not match the passthrough route: expected %s", defaultProvider)
 	}
 	return schemas.ModelProvider(providerHeader), nil
 }

@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **Typesafe Custom Providers** - `typesafe` is accepted as a custom provider `base_provider_type`. A custom Typesafe provider serves `/v1/decisions` and the native `/typesafe/v1/systemone` route under its own name, keeps native response passthrough, and honours `allowed_requests` and `request_path_overrides`
 - **Virtual Key Metadata API** - Create and update virtual keys with a `metadata` object (on update, omit to keep, `{}` to clear); invalid metadata returns a 400 naming the key. The virtual key list accepts `metadata_<key>=<value>` filters (AND-ed) and `search` also matches metadata [@jimseiwert](https://github.com/jimseiwert)
 - **Virtual Key Metadata in config.json** - `governance.virtual_keys[].metadata` accepts string key/value pairs (for example `cost_center`, `owner`) for cost attribution. Keys use letters, digits, `.`, `_` and `-`; values are up to 512 characters; up to 50 entries per key [@jimseiwert](https://github.com/jimseiwert)
 - **Pinned Keys on Routing Fallbacks** - Each routing-rule fallback can pin a provider key via `key_id`, or `provider_key_name` in config.json. The UI rule editor lets you pick or clear a key per fallback. Unpinned fallbacks keep the legacy `provider/model` string, so existing rules keep their config hash (#7470, #7379, #7380, #7381)
