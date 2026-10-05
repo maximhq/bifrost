@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **Typesafe Custom Providers** - `typesafe` is accepted as a custom provider `base_provider_type`. A custom Typesafe provider serves `/v1/decisions` and the native `/typesafe/v1/systemone` route under its own name, keeps native response passthrough, and honours `allowed_requests` and `request_path_overrides`
 - **Pinned Keys on Routing Fallbacks** - Each routing-rule fallback can pin a provider key via `key_id`, or `provider_key_name` in config.json. The UI rule editor lets you pick or clear a key per fallback. Unpinned fallbacks keep the legacy `provider/model` string, so existing rules keep their config hash (#7470, #7379, #7380, #7381)
 - **OpenAI Async Tool Execution** - The `async` flag on Responses tools and tool calls, `output_schema` on function tools and `tunnel_id` on MCP tools are now forwarded to OpenAI. `async` is stripped for models without support, and the datasheet `supports_async_tools` field can override this (#7242)
 - **GPT-6 Prompt Cache Breakpoints** - Prompt-cache breakpoints now cover the GPT-6 family on OpenAI, Azure, Bedrock and Bedrock Mantle. The datasheet `supports_prompt_cache_breakpoint` field can override this (#7240)
@@ -7,6 +8,7 @@
 
 ## 🐞 Fixed
 
+- [fix]: require authenticated management access to delete MCP tool logs [@xujiantop-crypto](https://github.com/xujiantop-crypto)
 - **Anthropic Bedrock Request Metadata** - Cover Anthropic and PydanticAI request metadata passthrough to Bedrock [@wangrat](https://github.com/wangrat)
 - **Kimi and DeepSeek with Claude Code** - Tool-schema regex patterns are rewritten (`\0` to `\x00`, lookaround assertions stripped) for Moonshot and DeepSeek models only. kimi-k3 on Bedrock no longer returns an empty stream, and every other model gets byte-identical schemas (#7430)
 - **Anthropic Billing Header Leak** - Claude Code's `x-anthropic-billing-header` system block is removed at Messages ingress and restored only for Anthropic-family attempts, including fallbacks and alias targets, so it no longer pollutes GPT or Gemini prompts (#7431)
