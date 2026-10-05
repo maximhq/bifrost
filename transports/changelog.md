@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **Typesafe Custom Providers** - `typesafe` is accepted as a custom provider `base_provider_type`. A custom Typesafe provider serves `/v1/decisions` and the native `/typesafe/v1/systemone` route under its own name, keeps native response passthrough, and honours `allowed_requests` and `request_path_overrides`
 - **Provider Metadata and Tags in config.json** - `providers.<name>.metadata` (string key/value pairs, same rules as virtual key metadata) and `providers.<name>.tags` (up to 50 labels of 1-64 letters, digits, `.`, `_` or `-`) label providers by owner, region, environment or compliance status. Existing providers keep their config hash [@jimseiwert](https://github.com/jimseiwert)
 - **Virtual Key Metadata in config.json** - `governance.virtual_keys[].metadata` accepts string key/value pairs (for example `cost_center`, `owner`) for cost attribution. Keys use letters, digits, `.`, `_` and `-`; values are up to 512 characters; up to 50 entries per key [@jimseiwert](https://github.com/jimseiwert)
 - **Pinned Keys on Routing Fallbacks** - Each routing-rule fallback can pin a provider key via `key_id`, or `provider_key_name` in config.json. The UI rule editor lets you pick or clear a key per fallback. Unpinned fallbacks keep the legacy `provider/model` string, so existing rules keep their config hash (#7470, #7379, #7380, #7381)
@@ -9,6 +10,7 @@
 
 ## 🐞 Fixed
 
+- [fix]: require authenticated management access to delete MCP tool logs [@xujiantop-crypto](https://github.com/xujiantop-crypto)
 - **Anthropic Bedrock Request Metadata** - Cover Anthropic and PydanticAI request metadata passthrough to Bedrock [@wangrat](https://github.com/wangrat)
 - **Kimi and DeepSeek with Claude Code** - Tool-schema regex patterns are rewritten (`\0` to `\x00`, lookaround assertions stripped) for Moonshot and DeepSeek models only. kimi-k3 on Bedrock no longer returns an empty stream, and every other model gets byte-identical schemas (#7430)
 - **Anthropic Billing Header Leak** - Claude Code's `x-anthropic-billing-header` system block is removed at Messages ingress and restored only for Anthropic-family attempts, including fallbacks and alias targets, so it no longer pollutes GPT or Gemini prompts (#7431)

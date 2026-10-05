@@ -151,6 +151,7 @@ curl -X PUT http://localhost:8080/api/config \
 |-------|------|----------|-------------|
 | `mcp_server_auth_mode` | string | No | `headers` (default), `both`, or `oauth`. |
 | `oauth2_server_config.issuer_url` | string | Yes, when mode is `both` or `oauth` | Stable public URL advertised as the issuer in discovery docs and the JWT `iss` claim. Supports `env.MY_VAR` syntax. |
+| `oauth2_server_config.allowed_redirect_uris` | string[] | No | Exact approved remote callback URIs. Remote callbacks are denied unless listed. Loopback callbacks and `cursor://anysphere.cursor-mcp` remain available without entries. API changes require dashboard authentication. |
 | `oauth2_server_config.auth_code_ttl` | integer | No | Authorization code lifetime in seconds (default `300`, max `900` = 15 minutes). |
 | `oauth2_server_config.access_token_ttl` | integer | No | Issued JWT lifetime in seconds (default `600`). |
 | `oauth2_server_config.disable_vk_identity` | boolean | No | Require identity-provider login: removes the virtual-key option from consent and cuts off existing vk-mode grants (see [Token Lifetime & Revocation](#token-lifetime--revocation)). Only honored when an identity provider is configured, and only valid when `mcp_server_auth_mode` is `oauth` (400 otherwise). |
@@ -207,6 +208,7 @@ The **OAuth Grants** page lists credentials Bifrost **issued to clients** for in
 
 - **Access tokens** are JWTs valid for `access_token_ttl` (default 600s). On every `/mcp` request Bifrost validates the JWT (signature, expiry, issuer, and audience) and confirms the bound identity still exists: a user-mode token is rejected with `401` when the user is gone, and a vk-mode token resolves to its key, which governance refuses with `403` when it is inactive or expired, the same way the inference endpoints refuse it. The identity check reads an in-memory cache, so in the common case it adds no database round-trip (vk-mode falls back to a single store lookup only on a cache miss).
 - **Refresh tokens** rotate on each use and have no fixed expiry. A token is invalidated by rotation, by the bound virtual key or user becoming inactive or deleted, or by an explicit revoke.
+- **Rotating a virtual key** (`POST /api/governance/virtual-keys/{id}/rotate`, bulk rotation, or a scheduled rotation) revokes every vk-mode grant that key minted: their refresh tokens return `invalid_grant` on the next refresh, and authorization codes consented to with the key but not yet exchanged can no longer be exchanged. The revocation and the new key value are saved together, so a rotation that fails changes neither. Clients connected through the key must complete the OAuth flow again with the new value. The rotation cooldown keeps the old key value working for direct use; it does not keep grants alive.
 - An explicit revoke marks the grant's refresh-token row revoked, so renewals stop immediately — but it does **not** remove the bound identity, so the identity check still passes and the already-issued access token keeps working until it expires. Lower `access_token_ttl` to shorten that window.
 - **Deleting** the bound virtual key or user is stronger than revoking a grant: it revokes the grant immediately *and* the identity check rejects the grant's already-issued access token on its next `/mcp` request, instead of letting it live out its TTL.
 - Enabling `disable_vk_identity` (require identity-provider login) cuts off all **virtual-key**–mode grants immediately — they are rejected at `/mcp` and denied on refresh — so those clients must re-authenticate as a user. Only applies in `oauth` mode with an identity provider configured.
@@ -289,3 +291,7 @@ Client registration bounds its free-text fields: `client_name` up to 2048 bytes,
 - **[Bifrost as an MCP Gateway](./gateway)** — Expose aggregated tools to external MCP clients.
 - **[MCP Sessions](./sessions)** — Inspect and manage per-user credentials for upstream servers.
 - **[Virtual Keys](../features/governance/virtual-keys)** — Govern budgets, rate limits, and tool scope for the identities behind grants.
+
+### Callback destinations
+
+Remote OAuth clients must have their exact callback URI configured in `client.oauth2_server_config.allowed_redirect_uris` before registration or authorization. For example, add `"https://app.example.com/oauth/callback"`; wildcards are not supported. Existing registrations and pending flows are checked against the current list. URI credentials, fragments, missing hosts, and unsafe schemes are rejected. The consent page shows the client name and exact callback destination before you grant access. Only approve applications and destinations you recognize.

@@ -91,7 +91,7 @@ The Security Settings page (`/workspace/config/security`) exposes several more c
 | Setting | Config key | Recommendation for public hosts |
 |---|---|---|
 | **Allow Direct API Keys** | `allow_direct_keys` | Keep **off** (default). When on, callers can pass their own provider key in a header (`x-bf-direct-key: true`), bypassing your registered key pool. |
-| **Allowed Origins** | `allowed_origins` | Set an explicit list. Never `*` in production. A wildcard lets JavaScript from any page on the internet call your gateway. |
+| **Allowed Origins** | `allowed_origins` | Set an explicit list. Never `*` in production. A wildcard lets JavaScript from any page on the internet call your gateway. While dashboard auth is disabled, `*` does not admit browser requests to the management API; only localhost, the gateway's own origin, and explicitly listed origins do. |
 | **Allowed Headers** | `allowed_headers` | Narrow to the minimum your callers need (e.g. `Authorization`, `Content-Type`, your virtual-key and tracing headers). |
 | **Required Headers** | `required_headers` | Optionally require headers on every request; missing ones are rejected with 400. |
 | **Whitelisted Routes** | `whitelisted_routes` | Only add routes that must bypass auth. System routes (`/health`, login, etc.) are always whitelisted. |
@@ -235,3 +235,7 @@ Network-level controls limit the impact of a misconfiguration:
 - [Virtual keys](/features/governance/virtual-keys)
 - [Budgets and limits](/features/governance/budget-and-limits)
 - [Security at Bifrost](/security): how Bifrost itself is built and scanned
+
+## Provider endpoint URLs
+
+Provider create and update requests accept a base URL consisting of an origin and optional path. Credentials, query parameters (including an empty `?`), and fragments are rejected before saving or model discovery. Configure authentication through provider keys and extra headers. Changes that widen where a provider can dial (setting or changing a non-empty base URL, or turning on `allow_private_network`) require a genuinely authenticated request (with RBAC, the provider create or update permission); requests let through only because dashboard authentication is disabled or unconfigured are rejected. Clearing the base URL or turning the flag off is allowed either way. Without `allow_private_network`, private ranges (RFC 1918, IPv6 unique-local) are rejected; loopback stays allowed, and link-local addresses are always blocked.

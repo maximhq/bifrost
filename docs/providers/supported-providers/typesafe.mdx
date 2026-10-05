@@ -52,6 +52,45 @@ Configure TypeSafe as a provider with a bearer API key:
 }
 ```
 
+### Custom TypeSafe Providers
+
+A custom provider can use `typesafe` as its `base_provider_type`, for example to reach a second TypeSafe endpoint with its own keys alongside the standard `typesafe` provider:
+
+```json
+{
+  "providers": {
+    "typesafe-eu": {
+      "keys": [
+        {
+          "name": "TypeSafe EU Key",
+          "value": "env.TYPESAFE_EU_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "base_url": "https://typesafe-eu.example.com"
+      },
+      "custom_provider_config": {
+        "base_provider_type": "typesafe",
+        "allowed_requests": {
+          "list_models": true,
+          "decisions": true
+        }
+      }
+    }
+  }
+}
+```
+
+The custom provider is addressed by its own name: `typesafe-eu/jev-latest` on `/v1/decisions`, and on the native `/typesafe/v1/systemone` route. Responses, logs, and key selection report `typesafe-eu`. It supports the usual custom provider options:
+
+- **`allowed_requests`** - set `decisions` (and `list_models`) to `true`. When `allowed_requests` is present, an operation that is not listed is refused with `unsupported_operation`.
+- **`request_path_overrides`** - `decisions` and `list_models` accept a path on `base_url` or a full URL in place of `/v1/systemone` and `/v1/models`.
+- **`is_key_less`** - for endpoints that need no bearer token.
+
+To list a custom provider's models on the native `/typesafe/v1/models` route, send `x-bf-model-provider: typesafe-eu`. Model names come back bare (`jev-latest`), as on the standard provider. The pinned jev catalog is only merged in when no `base_url` is set.
+
 ## Decisions API
 
 `POST /v1/decisions` evaluates state against named questions. Each question has a `kind`, `instructions` (string or structured data), and kind-specific `criteria`:

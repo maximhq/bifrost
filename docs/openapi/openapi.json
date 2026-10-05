@@ -49994,8 +49994,8 @@
                           },
                           "dac": {
                             "type": "string",
-                            "enum": ["own-data", "team-data", "all-data"],
-                            "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                            "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
+                            "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `business-unit-data` - Own rows plus rows owned by any business unit they belong to.\n- `customer-data` - Everything under the customers they reach through their teams or business units.\n- `all-data` - No row filtering.\n"
                           },
                           "created_by_user_id": {
                             "type": "string",
@@ -50058,7 +50058,7 @@
                   },
                   "dac": {
                     "type": "string",
-                    "enum": ["own-data", "team-data", "all-data"],
+                    "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
                     "description": "Defaults to `all-data` when omitted."
                   }
                 }
@@ -50103,8 +50103,8 @@
                         },
                         "dac": {
                           "type": "string",
-                          "enum": ["own-data", "team-data", "all-data"],
-                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                          "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
+                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `business-unit-data` - Own rows plus rows owned by any business unit they belong to.\n- `customer-data` - Everything under the customers they reach through their teams or business units.\n- `all-data` - No row filtering.\n"
                         },
                         "created_by_user_id": {
                           "type": "string",
@@ -50206,8 +50206,8 @@
                         },
                         "dac": {
                           "type": "string",
-                          "enum": ["own-data", "team-data", "all-data"],
-                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                          "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
+                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `business-unit-data` - Own rows plus rows owned by any business unit they belong to.\n- `customer-data` - Everything under the customers they reach through their teams or business units.\n- `all-data` - No row filtering.\n"
                         },
                         "created_by_user_id": {
                           "type": "string",
@@ -50283,8 +50283,8 @@
                   },
                   "dac": {
                     "type": "string",
-                    "enum": ["own-data", "team-data", "all-data"],
-                    "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                    "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
+                    "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `business-unit-data` - Own rows plus rows owned by any business unit they belong to.\n- `customer-data` - Everything under the customers they reach through their teams or business units.\n- `all-data` - No row filtering.\n"
                   }
                 }
               }
@@ -50328,8 +50328,8 @@
                         },
                         "dac": {
                           "type": "string",
-                          "enum": ["own-data", "team-data", "all-data"],
-                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                          "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
+                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `business-unit-data` - Own rows plus rows owned by any business unit they belong to.\n- `customer-data` - Everything under the customers they reach through their teams or business units.\n- `all-data` - No row filtering.\n"
                         },
                         "created_by_user_id": {
                           "type": "string",
@@ -64598,8 +64598,8 @@
                           },
                           "dac": {
                             "type": "string",
-                            "enum": ["own-data", "team-data", "all-data"],
-                            "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                            "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
+                            "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `business-unit-data` - Own rows plus rows owned by any business unit they belong to.\n- `customer-data` - Everything under the customers they reach through their teams or business units.\n- `all-data` - No row filtering.\n"
                           },
                           "created_by_user_id": {
                             "type": "string",
@@ -64665,7 +64665,7 @@
                   },
                   "dac": {
                     "type": "string",
-                    "enum": ["own-data", "team-data", "all-data"],
+                    "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
                     "description": "Defaults to `all-data` when omitted."
                   }
                 }
@@ -64710,8 +64710,8 @@
                         },
                         "dac": {
                           "type": "string",
-                          "enum": ["own-data", "team-data", "all-data"],
-                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                          "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
+                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `business-unit-data` - Own rows plus rows owned by any business unit they belong to.\n- `customer-data` - Everything under the customers they reach through their teams or business units.\n- `all-data` - No row filtering.\n"
                         },
                         "created_by_user_id": {
                           "type": "string",
@@ -64816,8 +64816,8 @@
                         },
                         "dac": {
                           "type": "string",
-                          "enum": ["own-data", "team-data", "all-data"],
-                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                          "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
+                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `business-unit-data` - Own rows plus rows owned by any business unit they belong to.\n- `customer-data` - Everything under the customers they reach through their teams or business units.\n- `all-data` - No row filtering.\n"
                         },
                         "created_by_user_id": {
                           "type": "string",
@@ -64896,8 +64896,8 @@
                   },
                   "dac": {
                     "type": "string",
-                    "enum": ["own-data", "team-data", "all-data"],
-                    "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                    "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
+                    "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `business-unit-data` - Own rows plus rows owned by any business unit they belong to.\n- `customer-data` - Everything under the customers they reach through their teams or business units.\n- `all-data` - No row filtering.\n"
                   }
                 }
               }
@@ -64941,8 +64941,8 @@
                         },
                         "dac": {
                           "type": "string",
-                          "enum": ["own-data", "team-data", "all-data"],
-                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                          "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
+                          "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `business-unit-data` - Own rows plus rows owned by any business unit they belong to.\n- `customer-data` - Everything under the customers they reach through their teams or business units.\n- `all-data` - No row filtering.\n"
                         },
                         "created_by_user_id": {
                           "type": "string",
@@ -87687,7 +87687,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPLogs:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Delete MCP tool logs",
-        "description": "Deletes MCP tool logs by their IDs.\n",
+        "description": "Deletes MCP tool logs by their IDs.\nRequires authenticated management access. Requests admitted without checking\ncredentials because dashboard authentication is disabled, unconfigured, or\nbypassed by an auth whitelist receive 403 before any logs are deleted.\n",
         "tags": ["Logging"],
         "requestBody": {
           "required": true,
@@ -87731,6 +87731,16 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authentication was bypassed; authenticated management access is required",
             "content": {
               "application/json": {
                 "schema": {
@@ -95680,7 +95690,8 @@
           "fireworks",
           "sarvam",
           "wafer",
-          "databricks"
+          "databricks",
+          "typesafe"
         ]
       },
       "Fallback": {
@@ -108170,6 +108181,10 @@
                   "embedding": {
                     "type": "boolean"
                   },
+                  "decisions": {
+                    "type": "boolean",
+                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                  },
                   "speech": {
                     "type": "boolean"
                   },
@@ -108389,6 +108404,10 @@
                   "embedding": {
                     "type": "boolean"
                   },
+                  "decisions": {
+                    "type": "boolean",
+                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                  },
                   "speech": {
                     "type": "boolean"
                   },
@@ -108571,6 +108590,10 @@
                   },
                   "embedding": {
                     "type": "boolean"
+                  },
+                  "decisions": {
+                    "type": "boolean",
+                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
                   },
                   "speech": {
                     "type": "boolean"
