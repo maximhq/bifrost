@@ -2318,6 +2318,25 @@
         "hosted"
       ],
       "icon_url": "https://magichour.ai/logo.png"
+    },
+    {
+      "name": "FXMacroData",
+      "description": "Official-source macroeconomic, central-bank, and FX data for 22 currencies, including indicator releases, release calendars, policy rates, FX rates, COT positioning, and commodities. Hosted remotely by FXMacroData. Works without a key for USD announcement data from the most recent 90 days (each release readable 15 minutes after publication), the USD release calendar, USD press releases, USD COT, and the data catalogue, forecast coverage, market sessions, and risk sentiment for every currency. Other currencies, FX rates, commodities, real-time data, and full history need an API key sent as an Authorization: Bearer <key> header.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.fxmacrodata.com",
+      "auth_type": "none",
+      "docs_url": "https://fxmacrodata.com/documentation/mcp-server",
+      "publisher": "FXMacroData",
+      "tags": [
+        "macroeconomics",
+        "forex",
+        "central-banks",
+        "economic-calendar",
+        "market-data",
+        "finance"
+      ],
+      "icon_url": "https://fxmacrodata.com/static/logos/pwa-512.png"
     }
   ]
 }
