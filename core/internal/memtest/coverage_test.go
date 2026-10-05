@@ -104,6 +104,10 @@ var reviewedSites = map[string]siteReview{
 		status: covered,
 		test:   "TestRemapRawToolVersionsForProvider_AllocationScaling",
 	},
+	"anthropic.ApplyDefaultEagerInputStreamingToRawBody": {
+		status: covered,
+		test:   "TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling",
+	},
 	"anthropic.StripUnsupportedFieldsFromRawBody": {
 		status: covered,
 		test:   "TestStripUnsupportedFieldsFromRawBody_AllocationScaling",

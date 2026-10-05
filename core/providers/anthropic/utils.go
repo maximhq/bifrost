@@ -1311,18 +1311,34 @@ func ApplyDefaultEagerInputStreamingToRawBody(jsonBody []byte, provider schemas.
 	if !toolsResult.Exists() || !toolsResult.IsArray() || !ShouldDefaultEagerInputStreaming(provider, model) {
 		return jsonBody, nil
 	}
-	var err error
-	for i, tool := range toolsResult.Array() {
+	// Patch each tool element on its own and write tools back once. Setting
+	// tools.N.eager_input_streaming per tool would reserialise the entire
+	// request body every time, making this O(tools × body).
+	// Pinned by TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling.
+	tools := toolsResult.Array()
+	parts := make([][]byte, len(tools))
+	changed := false
+	for i, tool := range tools {
+		parts[i] = []byte(tool.Raw)
 		if tool.Get("eager_input_streaming").Exists() || tool.Get("name").String() == "" {
 			continue
 		}
 		if toolType := tool.Get("type"); toolType.Exists() && toolType.String() != string(AnthropicToolTypeCustom) {
 			continue
 		}
-		jsonBody, err = providerUtils.SetJSONField(jsonBody, fmt.Sprintf("tools.%d.eager_input_streaming", i), true)
+		updated, err := providerUtils.SetJSONField(parts[i], "eager_input_streaming", true)
 		if err != nil {
 			return nil, fmt.Errorf("set raw tools.%d.eager_input_streaming: %w", i, err)
 		}
+		parts[i] = updated
+		changed = true
+	}
+	if !changed {
+		return jsonBody, nil
+	}
+	jsonBody, err := providerUtils.SetRawJSONField(jsonBody, "tools", rawJSONArrayOf(parts))
+	if err != nil {
+		return nil, fmt.Errorf("set raw tools eager_input_streaming: %w", err)
 	}
 	return jsonBody, nil
 }
