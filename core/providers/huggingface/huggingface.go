@@ -1,6 +1,7 @@
 package huggingface
 
 import (
+	"github.com/maximhq/bifrost/core/jsonx"
 	"context"
 	"errors"
 	"fmt"
@@ -1183,8 +1184,8 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 			jsonData := string(data)
 
 			// Quick check for error/message fields (allocation-free using sonic.GetFromString)
-			errorNode, _ := sonic.GetFromString(jsonData, "error")
-			messageNode, _ := sonic.GetFromString(jsonData, "message")
+			errorNode, _ := jsonx.GetFromString(jsonData, "error")
+			messageNode, _ := jsonx.GetFromString(jsonData, "message")
 			if errorNode.Exists() || messageNode.Exists() {
 				// Only unmarshal when we know there might be an error
 				var errorResp HuggingFaceResponseError
@@ -1573,8 +1574,8 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 			jsonData := string(data)
 
 			// Quick check for error/message fields (allocation-free using sonic.GetFromString)
-			errorNode, _ := sonic.GetFromString(jsonData, "error")
-			messageNode, _ := sonic.GetFromString(jsonData, "message")
+			errorNode, _ := jsonx.GetFromString(jsonData, "error")
+			messageNode, _ := jsonx.GetFromString(jsonData, "message")
 			if errorNode.Exists() || messageNode.Exists() {
 				// Only unmarshal when we know there might be an error
 				var errorResp HuggingFaceResponseError
