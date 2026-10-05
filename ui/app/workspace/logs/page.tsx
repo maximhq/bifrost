@@ -764,21 +764,43 @@ export default function LogsPage() {
 	const displayLogs: DisplayLogEntry[] = useMemo(() => {
 		if (!grouped || (expandedChainIds.size === 0 && expandedSessionIds.size === 0)) return logs;
 		const out: DisplayLogEntry[] = [];
-		const pushChain = (log: LogEntry, depth: 1 | 2) => {
-			for (const child of chainChildren[log.id] ?? []) {
-				out.push({ ...child, __chainChild: true, __rowKind: "chain-child", __depth: depth });
-			}
+		// __isLast marks the final sibling at its depth so the expander column can
+		// close the tree branch (└ rather than ├).
+		// __parentIsLast tells a row under a session member whether the session's
+		// outer branch has already closed above it.
+		const pushChain = (log: LogEntry, depth: 1 | 2, closesBranch: boolean, parentIsLast?: boolean) => {
+			const children = chainChildren[log.id] ?? [];
+			children.forEach((child, index) => {
+				out.push({
+					...child,
+					__chainChild: true,
+					__rowKind: "chain-child",
+					__depth: depth,
+					__isLast: closesBranch && index === children.length - 1,
+					__parentIsLast: parentIsLast,
+				});
+			});
 		};
 		for (const log of logs) {
 			out.push(log);
 			if (expandedSessionIds.has(log.id)) {
-				pushChain(log, 1);
-				for (const member of sessionMembers[log.id] ?? []) {
-					out.push({ ...member, __chainChild: true, __rowKind: "session-member", __depth: 1 });
-					if (expandedChainIds.has(member.id)) pushChain(member, 2);
-				}
+				const members = sessionMembers[log.id] ?? [];
+				pushChain(log, 1, members.length === 0);
+				// Members arrive oldest first and the root is the session's earliest
+				// request, so the root is turn 1 and members count on from 2.
+				members.forEach((member, index) => {
+					out.push({
+						...member,
+						__chainChild: true,
+						__rowKind: "session-member",
+						__depth: 1,
+						__turn: index + 2,
+						__isLast: index === members.length - 1,
+					});
+					if (expandedChainIds.has(member.id)) pushChain(member, 2, true, index === members.length - 1);
+				});
 			} else if (expandedChainIds.has(log.id)) {
-				pushChain(log, 1);
+				pushChain(log, 1, true);
 			}
 		}
 		return out;

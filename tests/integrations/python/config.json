@@ -63,6 +63,49 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "typesafe_custom": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Typesafe Custom API Key",
+          "value": "env.TYPESAFE_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "typesafe",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "typesafe_custom_gated": {
+      "keys": [
+        {
+          "name": "Typesafe Custom Gated API Key",
+          "value": "env.TYPESAFE_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "typesafe",
+        "is_key_less": false,
+        "allowed_requests": {
+          "list_models": true,
+          "decisions": false
+        }
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "xai": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,

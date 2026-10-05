@@ -8,13 +8,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
-import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
+import { CoreConfig, DefaultCoreConfig, MCPCodeModeLimits } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { codeModeLimitsEqual, validateCodeModeLimits } from "./codeModeLimits.utils";
+import { CodeModeLimitsSection } from "./codeModeLimitsSection";
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
@@ -82,6 +84,7 @@ export default function MCPView() {
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
 			localConfig.mcp_max_instructions_per_client !== (config.mcp_max_instructions_per_client ?? 0) ||
 			localConfig.mcp_max_instructions_total !== (config.mcp_max_instructions_total ?? 0) ||
+			!codeModeLimitsEqual(localConfig.mcp_code_mode_limits, config.mcp_code_mode_limits) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
 			clientURLChanged ||
@@ -144,6 +147,10 @@ export default function MCPView() {
 		if (!isNaN(numValue) && numValue >= 0) {
 			setLocalConfig((prev) => ({ ...prev, mcp_max_instructions_total: numValue }));
 		}
+	}, []);
+
+	const handleCodeModeLimitsChange = useCallback((limits: MCPCodeModeLimits) => {
+		setLocalConfig((prev) => ({ ...prev, mcp_code_mode_limits: limits }));
 	}, []);
 
 	const handleDisableAutoToolInjectChange = useCallback((checked: boolean) => {
@@ -249,6 +256,12 @@ export default function MCPView() {
 				return;
 			}
 
+			const limitsError = validateCodeModeLimits(localConfig.mcp_code_mode_limits);
+			if (limitsError) {
+				toast.error(limitsError);
+				return;
+			}
+
 			// The TTL fields are only shown (and only relevant) in OAuth modes; the
 			// backend likewise validates oauth2_server_config only then. Guard the
 			// checks so a stale value can't dead-end the save after switching back to
@@ -281,13 +294,13 @@ export default function MCPView() {
 			// what the form shows.
 			const clientConfigToSave: CoreConfig = oauthModeActive
 				? {
-					...localConfig,
-					oauth2_server_config: {
-						...localConfig.oauth2_server_config,
-						auth_code_ttl: authCodeTTL,
-						access_token_ttl: accessTokenTTL,
-					},
-				}
+						...localConfig,
+						oauth2_server_config: {
+							...localConfig.oauth2_server_config,
+							auth_code_ttl: authCodeTTL,
+							access_token_ttl: accessTokenTTL,
+						},
+					}
 				: localConfig;
 
 			await updateCoreConfig({
@@ -301,7 +314,7 @@ export default function MCPView() {
 	}, [bifrostConfig, localConfig, localValues, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-6" data-testid="mcp-settings-view">
+		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="mcp-settings-view">
 			<PageTitle title="MCP Settings">Configure MCP (Model Context Protocol) agent and tool settings.</PageTitle>
 			<div className="space-y-4">
 				{/* Max Agent Depth */}
@@ -410,9 +423,7 @@ export default function MCPView() {
 						<label htmlFor="mcp-max-instructions-per-client" className="text-sm font-medium">
 							Max Instruction Length Per Server (bytes)
 						</label>
-						<p className="text-muted-foreground text-sm">
-							Longer text is truncated with a notice. Set to 0 to use the default of 4096.
-						</p>
+						<p className="text-muted-foreground text-sm">Longer text is truncated with a notice. Set to 0 to use the default of 4096.</p>
 					</div>
 					<Input
 						id="mcp-max-instructions-per-client"
@@ -500,6 +511,12 @@ export default function MCPView() {
 						)}
 					</div>
 				</div>
+
+				<CodeModeLimitsSection
+					value={localConfig.mcp_code_mode_limits}
+					onChange={handleCodeModeLimitsChange}
+					disabled={!hasSettingsUpdateAccess}
+				/>
 				{/* Advanced Settings — collapsed by default so people don't accidentally
 				    edit the redirect_uri, which would break already-authorized MCP clients. */}
 				<Accordion type="single" collapsible className="rounded-sm border px-4">
@@ -712,7 +729,7 @@ export default function MCPView() {
 					</AccordionItem>
 				</Accordion>
 			</div>
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="mcp-settings-save-btn">
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>

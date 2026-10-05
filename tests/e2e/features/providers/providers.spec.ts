@@ -298,6 +298,49 @@ test.describe("Providers", () => {
       await expect(providerItem).toBeVisible({ timeout: 15000 });
     });
 
+    test("should create a custom TypeSafe provider with decisions allowed", async ({
+      providersPage,
+      page,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-typesafe-${Date.now()}`,
+        baseProviderType: "typesafe",
+        baseUrl: "https://api.typesafe.ai",
+      });
+
+      // Track for cleanup
+      createdProviders.push(providerData.name);
+
+      await providersPage.fillCustomProviderForm(providerData);
+
+      // A TypeSafe base serves decisions and list models only
+      const decisionsSwitch = page.getByTestId("allowed-request-switch-decisions");
+      await expect(decisionsSwitch).toBeEnabled();
+      await expect(decisionsSwitch).toHaveAttribute("data-state", "checked");
+      await expect(page.getByTestId("allowed-request-switch-list_models")).toHaveAttribute("data-state", "checked");
+      await expect(page.getByTestId("allowed-request-switch-chat_completion")).toBeDisabled();
+
+      await providersPage.saveCustomProvider();
+
+      const providerItem = providersPage.getProviderItem(providerData.name);
+      await expect(providerItem).toBeVisible({ timeout: 15000 });
+
+      // The stored config must carry the typesafe base and allow decisions: Go treats an
+      // allowed_requests object without decisions as a denial.
+      const response = await page.request.get(`/api/providers/${providerData.name}`);
+      expect(response.ok(), await response.text()).toBe(true);
+      const saved = (await response.json()) as {
+        custom_provider_config?: {
+          base_provider_type?: string;
+          allowed_requests?: { decisions?: boolean; list_models?: boolean; chat_completion?: boolean };
+        };
+      };
+      expect(saved.custom_provider_config?.base_provider_type).toBe("typesafe");
+      expect(saved.custom_provider_config?.allowed_requests?.decisions).toBe(true);
+      expect(saved.custom_provider_config?.allowed_requests?.list_models).toBe(true);
+      expect(saved.custom_provider_config?.allowed_requests?.chat_completion).toBe(false);
+    });
+
     test("should cancel custom provider creation", async ({
       providersPage,
     }) => {

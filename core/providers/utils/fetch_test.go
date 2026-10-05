@@ -1,10 +1,21 @@
 package utils
 
 import (
+	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/maximhq/bifrost/core/network/proxytest"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestRedactURLForError pins that nothing a caller could authenticate with survives into
@@ -139,5 +150,214 @@ func TestFetchAndEncodeURL_ErrorsAreRedacted(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFetchAndEncodeURL_UsesProviderProxy pins that a URL fetch made on a provider's behalf
+// leaves through that provider's proxy_config, the same way its inference traffic does. A
+// deployment whose only egress is a proxy otherwise times out on every image or document
+// URL. The proxy here is a plain-HTTP forward proxy on loopback: an operator-configured
+// proxy may sit on a private or loopback address, so the SSRF gate must let Bifrost dial it
+// while still judging the target host.
+func TestFetchAndEncodeURL_UsesProviderProxy(t *testing.T) {
+	var hits atomic.Int32
+	var secretHits atomic.Int32
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host == "10.0.0.5" {
+			secretHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Host != "203.0.113.10" {
+			http.Error(w, "unexpected target "+r.URL.Host, http.StatusBadGateway)
+			return
+		}
+		hits.Add(1)
+		switch r.URL.Path {
+		case "/img.png":
+			w.Header().Set("Content-Type", "image/png; charset=binary")
+			_, _ = w.Write([]byte("PNGDATA"))
+		case "/redirect":
+			http.Redirect(w, r, "http://10.0.0.5/secret", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	proxyCtx := func(t *testing.T) context.Context {
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		t.Cleanup(cancel)
+		return context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+			Type: schemas.HTTPProxy,
+			URL:  schemas.NewSecretVar(proxy.URL),
+		})
+	}
+
+	t.Run("public target goes through the proxy", func(t *testing.T) {
+		hits.Store(0)
+		mediaType, encoded, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/img.png")
+		if err != nil {
+			t.Fatalf("fetch through proxy failed: %v", err)
+		}
+		if hits.Load() != 1 {
+			t.Fatalf("proxy saw %d requests, want 1", hits.Load())
+		}
+		if mediaType != "image/png" {
+			t.Errorf("mediaType = %q, want image/png", mediaType)
+		}
+		if want := base64.StdEncoding.EncodeToString([]byte("PNGDATA")); encoded != want {
+			t.Errorf("encoded = %q, want %q", encoded, want)
+		}
+	})
+
+	t.Run("private target is refused before reaching the proxy", func(t *testing.T) {
+		secretHits.Store(0)
+		_, _, err := FetchAndEncodeURL(proxyCtx(t), "http://10.0.0.5/secret")
+		if err == nil || !strings.Contains(err.Error(), "non-public address") {
+			t.Fatalf("expected a non-public address error, got %v", err)
+		}
+		if secretHits.Load() != 0 {
+			t.Fatalf("private target reached the proxy %d times", secretHits.Load())
+		}
+	})
+
+	t.Run("redirect to a private target is refused", func(t *testing.T) {
+		secretHits.Store(0)
+		_, _, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/redirect")
+		if err == nil || !strings.Contains(err.Error(), "non-public address") {
+			t.Fatalf("expected a non-public address error, got %v", err)
+		}
+		if secretHits.Load() != 0 {
+			t.Fatalf("redirected private target reached the proxy %d times", secretHits.Load())
+		}
+	})
+
+	t.Run("no proxy in context keeps the direct SSRF dialer", func(t *testing.T) {
+		_, _, err := FetchAndEncodeURL(t.Context(), proxy.URL+"/img.png")
+		if err == nil || !strings.Contains(err.Error(), "non-public address") {
+			t.Fatalf("expected the loopback proxy address itself to be refused as a direct target, got %v", err)
+		}
+	})
+}
+
+// TestFetchClientFor_OneClientPerResolvedProxy pins how fetch clients are cached: one
+// client per distinct resolved proxy (so connections pool across fetches), a different
+// client whenever any value that changes the route differs, the password included, and
+// one shared direct client for every config that means "no proxy".
+func TestFetchClientFor_OneClientPerResolvedProxy(t *testing.T) {
+	clientFor := func(pc *schemas.ProxyConfig) *http.Client {
+		t.Helper()
+		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyProviderProxyConfig, pc)
+		client, err := fetchClientFor(ctx)
+		if err != nil {
+			t.Fatalf("fetchClientFor: %v", err)
+		}
+		return client
+	}
+	proxy := func(password string) *schemas.ProxyConfig {
+		return &schemas.ProxyConfig{
+			Type:     schemas.HTTPProxy,
+			URL:      schemas.NewSecretVar("http://127.0.0.1:3128"),
+			Username: schemas.NewSecretVar("svc"),
+			Password: schemas.NewSecretVar(password),
+		}
+	}
+
+	reused := clientFor(proxy("one"))
+	if clientFor(proxy("one")) != reused {
+		t.Error("the same resolved proxy must reuse one client")
+	}
+	if clientFor(proxy("one")) == clientFor(proxy("two")) {
+		t.Error("a different proxy password must get its own client")
+	}
+	direct := clientFor(nil)
+	for name, pc := range map[string]*schemas.ProxyConfig{
+		"none":       {Type: schemas.NoProxy},
+		"empty type": {},
+	} {
+		if clientFor(pc) != direct {
+			t.Errorf("%s must share the direct client", name)
+		}
+	}
+	if clientFor(proxy("one")) == direct {
+		t.Error("a proxied config must not get the direct client")
+	}
+	// An inherited global skip_tls_verify changes the client's TLS, so toggling it
+	// must not keep serving the client built with the old setting.
+	skipping := proxy("one")
+	skipping.SkipTLSVerify = true
+	if clientFor(skipping) == clientFor(proxy("one")) {
+		t.Error("a proxy config that skips TLS verification must get its own client")
+	}
+
+	env := &schemas.ProxyConfig{Type: schemas.EnvProxy}
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:3128")
+	first := clientFor(env)
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:3129")
+	if clientFor(env) == first {
+		t.Error("type environment must get a new client when the proxy variables change")
+	}
+}
+
+// TestFetchAndEncodeURL_ProxiedHostnameTargetNeedsLocalDNS pins a deliberate limit: the
+// SSRF check resolves the target on the Bifrost host even when the fetch is proxied. A
+// hostname only the proxy can resolve is refused, never sent unchecked, because a name
+// that resolves only at a corporate proxy can just as well name an intranet host. The
+// target is under .invalid, which RFC 6761 guarantees never resolves, so the local lookup
+// fails on every resolver (unlike .test, which some local resolvers answer).
+func TestFetchAndEncodeURL_ProxiedHostnameTargetNeedsLocalDNS(t *testing.T) {
+	var hits atomic.Int32
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) { hits.Add(1) })
+	ctx := context.WithValue(t.Context(), schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar(proxy.URL),
+	})
+
+	_, _, err := FetchAndEncodeURL(ctx, "http://only-the-proxy-resolves.invalid/img.png")
+	if err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Fatalf("expected a local DNS failure, got %v", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("an unchecked target reached the proxy %d times", hits.Load())
+	}
+}
+
+// TestFetchAndEncodeURL_ProxiedTunnelIsBoundToTheCheckedAddress pins that a proxied
+// fetch opens its tunnel to the address the SSRF check approved, not to the hostname.
+// The proxy would otherwise resolve the name itself, so a DNS answer that changed after
+// the check could send the fetch to an internal address.
+func TestFetchAndEncodeURL_ProxiedTunnelIsBoundToTheCheckedAddress(t *testing.T) {
+	prev := fetchResolveTarget
+	fetchResolveTarget = func(_ context.Context, host string) ([]net.IP, error) {
+		if host == "pinned.example" {
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		}
+		return nil, fmt.Errorf("DNS lookup failed for %s", host)
+	}
+	t.Cleanup(func() { fetchResolveTarget = prev })
+
+	var targets []string
+	var mu sync.Mutex
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		targets = append(targets, r.URL.Host)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("PNGDATA"))
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar(proxy.URL),
+	})
+
+	if _, _, err := FetchAndEncodeURL(ctx, "http://pinned.example/img.png"); err != nil {
+		t.Fatalf("fetch through proxy failed: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(targets) != 1 || targets[0] != "203.0.113.10" {
+		t.Fatalf("proxy was asked for %v, want exactly the checked address [203.0.113.10]", targets)
 	}
 }
