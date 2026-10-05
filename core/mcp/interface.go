@@ -63,6 +63,9 @@ type MCPManagerInterface interface {
 	// by client name and unprefixed tool name, bypassing tool filters.
 	GetInjectedTool(clientName, toolName string) (schemas.ChatTool, error)
 
+	// GetMaxAgentDepth returns the configured cap on model turns in a tool loop.
+	GetMaxAgentDepth() int
+
 	// Client Management
 	// GetClients returns all MCP clients
 	GetClients() []schemas.MCPClientState
