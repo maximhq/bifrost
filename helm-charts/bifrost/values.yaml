@@ -604,6 +604,16 @@ bifrost:
       # maxInstructionsPerClient: 0
       # bifrost.mcp.toolManagerConfig.maxInstructionsTotal -- byte bound on the whole aggregate; 0 = default (16384)
       # maxInstructionsTotal: 0
+      # bifrost.mcp.toolManagerConfig.codeModeLimits -- limits on each code mode execution; omit a field or set 0 for its default.
+      # There is no limit on concurrent executions.
+      # codeModeLimits:
+      #   maxSourceBytes: 65536      # submitted code size
+      #   maxSteps: 1000000          # interpreter computation steps
+      #   maxMemoryBytes: 67108864   # estimated allocation budget
+      #   maxLogBytes: 65536         # print and tool log output
+      #   maxToolCalls: 64           # nested MCP tool calls
+      #   maxValueBytes: 1048576     # each tool payload / converted result; 0 or at least 1024
+      #   maxNestingDepth: 64        # value nesting depth; at most 1000
 
   # Plugins configuration
   plugins:

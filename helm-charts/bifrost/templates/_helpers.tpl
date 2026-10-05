@@ -1420,6 +1420,34 @@ false
 {{- if .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
 {{- $_ := set $tmConfig "max_instructions_total" .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
 {{- end }}
+{{- if hasKey .Values.bifrost.mcp.toolManagerConfig "codeModeLimits" }}
+{{- $limits := dict }}
+{{- with .Values.bifrost.mcp.toolManagerConfig.codeModeLimits }}
+{{- if .maxSourceBytes }}
+{{- $_ := set $limits "max_source_bytes" .maxSourceBytes }}
+{{- end }}
+{{- if .maxSteps }}
+{{- $_ := set $limits "max_steps" .maxSteps }}
+{{- end }}
+{{- if .maxMemoryBytes }}
+{{- $_ := set $limits "max_memory_bytes" .maxMemoryBytes }}
+{{- end }}
+{{- if .maxLogBytes }}
+{{- $_ := set $limits "max_log_bytes" .maxLogBytes }}
+{{- end }}
+{{- if .maxToolCalls }}
+{{- $_ := set $limits "max_tool_calls" .maxToolCalls }}
+{{- end }}
+{{- if .maxValueBytes }}
+{{- $_ := set $limits "max_value_bytes" .maxValueBytes }}
+{{- end }}
+{{- if .maxNestingDepth }}
+{{- $_ := set $limits "max_nesting_depth" .maxNestingDepth }}
+{{- end }}
+{{- end }}
+{{- /* Render the key even when every limit is 0, so an explicit setting resets stored limits to defaults. */}}
+{{- $_ := set $tmConfig "code_mode_limits" $limits }}
+{{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
 {{- end }}

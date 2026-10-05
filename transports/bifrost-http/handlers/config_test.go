@@ -728,3 +728,77 @@ func TestUpdateConfig_FirstAdminStillRequiresSetupToken(t *testing.T) {
 		})
 	}
 }
+
+// recordingToolManagerConfig records the code mode limits handed to the MCP hot reload.
+type recordingToolManagerConfig struct {
+	stubConfigManager
+	calls  int
+	limits *schemas.MCPCodeModeLimits
+}
+
+func (r *recordingToolManagerConfig) UpdateMCPToolManagerConfig(_ context.Context, _ int, _ int, _ string, _ bool, _ int, _ int, limits *schemas.MCPCodeModeLimits) error {
+	r.calls++
+	r.limits = limits
+	return nil
+}
+
+func TestUpdateConfig_MCPCodeModeLimits(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.MCPConfig = &schemas.MCPConfig{}
+	recorder := &recordingToolManagerConfig{}
+	h := &ConfigHandler{store: cfg, configManager: recorder}
+
+	save := func(t *testing.T, limitsJSON string) *fasthttp.RequestCtx {
+		t.Helper()
+		body := `{"client_config":{"log_retention_days":7}}`
+		if limitsJSON != "" {
+			body = `{"client_config":{"log_retention_days":7,"mcp_code_mode_limits":` + limitsJSON + `}}`
+		}
+		ctx := putConfigCtx(body)
+		h.updateConfig(ctx)
+		return ctx
+	}
+	persisted := func(t *testing.T) *schemas.MCPCodeModeLimits {
+		t.Helper()
+		stored, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return stored.MCPCodeModeLimits
+	}
+	limits := &schemas.MCPCodeModeLimits{MaxSteps: 5_000_000, MaxToolCalls: 500}
+
+	ctx := save(t, `{"max_steps":5000000,"max_tool_calls":500}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, limits, persisted(t), "limits must persist")
+	assert.Equal(t, limits, cfg.ClientConfig.MCPCodeModeLimits, "limits must apply in memory")
+	assert.Equal(t, limits, cfg.MCPConfig.ToolManagerConfig.CodeModeLimits, "the in-memory MCP config must carry the limits")
+	assert.Equal(t, limits, recorder.limits, "limits must be hot-reloaded")
+
+	calls := recorder.calls
+	ctx = save(t, "")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, limits, persisted(t), "an update that omits the limits must keep them")
+	assert.Equal(t, calls, recorder.calls, "an update that omits the limits must not reload")
+
+	for _, invalid := range []string{`{"max_steps":-1}`, `{"max_nesting_depth":5000}`, `{"max_value_bytes":10}`} {
+		ctx = save(t, invalid)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%s: %s", invalid, ctx.Response.Body())
+		assert.Equal(t, limits, persisted(t), "rejected limits %s must not persist", invalid)
+	}
+
+	// A save rejected after the MCP section must not have reloaded or published the limits.
+	calls = recorder.calls
+	ctx = putConfigCtx(`{"client_config":{"log_retention_days":0,"mcp_code_mode_limits":{"max_tool_calls":7}}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, calls, recorder.calls, "a rejected save must not hot-reload the limits")
+	assert.Equal(t, limits, recorder.limits, "a rejected save must leave the runtime limits alone")
+	assert.Equal(t, limits, cfg.MCPConfig.ToolManagerConfig.CodeModeLimits, "a rejected save must leave the in-memory MCP config alone")
+	assert.Equal(t, limits, persisted(t), "a rejected save must not persist")
+
+	ctx = save(t, `{}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, &schemas.MCPCodeModeLimits{}, persisted(t), "empty limits must reset to the defaults")
+	assert.Equal(t, &schemas.MCPCodeModeLimits{}, recorder.limits, "the reset must be hot-reloaded")
+}

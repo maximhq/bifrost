@@ -197639,6 +197639,348 @@
       ]
     },
     {
+      "name": "166. MCP shared initialization retry (mcp-shared-handshake-retry)",
+      "description": "Management API regression using the opt-in MCP_HANDSHAKE_RETRY_FIXTURE=1 routes of examples/mcps/http-no-ping-server on localhost:3018 and an isolated auth-enabled gateway. The fixture assigns session-1, rejects its initialized notification with HTTP 503, and rejects initialize carrying an existing session with HTTP 400. POST /api/mcp/client with needs_session_stickiness=true must close the damaged transport and complete initialize plus initialized on session-2. The fixture wire witness pins the actual 503 and fresh-session handshake; GET /api/mcp/clients pins healthy runtime state and echo discovery. Gateway, upstream sessions, per-run fixture state and dashboard session are cleaned up in order. All rows are PREVIEW because the normal provider profile has no dashboard auth and must refuse local MCP targets. Run INCLUDE_PREVIEW=1 FEATURE=\"mcp-shared-handshake-retry\" with ENV_FILE containing mcpHandshakeRetryUsername/mcpHandshakeRetryPassword and an auth-enabled clone of tests/integrations/python. No LLM request or live provider spend.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-200] Login to the isolated authenticated gateway - mcp-shared-handshake-retry",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\":\"{{mcpHandshakeRetryUsername}}\",\"password\":\"{{mcpHandshakeRetryPassword}}\"}"
+            },
+            "url": "{{baseUrl}}/api/session/login"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('mcpHandshakeRetryToken');",
+                  "pm.collectionVariables.unset('mcpHandshakeRetryRegistrationAttempted');",
+                  "pm.collectionVariables.unset('mcpHandshakeRetryDeleteAttempted');",
+                  "var nonce = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.collectionVariables.set('mcpHandshakeRetryNonce', nonce);",
+                  "pm.collectionVariables.set('mcpHandshakeRetryClientId', 'harness-handshake-' + nonce);",
+                  "pm.collectionVariables.set('mcpHandshakeRetryClientName', 'retry_' + nonce.replace(/-/g, ''));",
+                  "pm.test('explicit fixture credentials are provided - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.variables.get('mcpHandshakeRetryUsername'), 'ENV_FILE must provide the isolated test username').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.variables.get('mcpHandshakeRetryPassword'), 'ENV_FILE must provide the isolated test password').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('login captures a real dashboard session - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.json().message, pm.response.text()).to.equal('Login successful');",
+                  "  var cookie = pm.response.headers.get('Set-Cookie') || '';",
+                  "  var token = cookie.match(/(?:^|;\\s*)token=([^;]+)/);",
+                  "  pm.expect(token, 'login did not issue a token cookie').not.to.equal(null);",
+                  "  pm.collectionVariables.set('mcpHandshakeRetryToken', token[1]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Register a shared sticky client after initialized notification 503 - mcp-shared-handshake-retry",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpHandshakeRetryToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_id\":\"{{mcpHandshakeRetryClientId}}\",\"name\":\"{{mcpHandshakeRetryClientName}}\",\"connection_type\":\"http\",\"connection_string\":\"http://localhost:3018/handshake-retry/{{mcpHandshakeRetryNonce}}/mcp\",\"auth_type\":\"none\",\"needs_session_stickiness\":true,\"is_ping_available\":false,\"tools_to_execute\":[\"*\"]}"
+            },
+            "url": "{{baseUrl}}/api/mcp/client"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('mcpHandshakeRetryRegistrationAttempted', '1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('shared registration returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('shared initialization recovers using a fresh session - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "  pm.expect(pm.response.text()).not.to.include('session already initialized');",
+                  "  pm.expect(pm.response.text()).not.to.include('Failed to connect MCP client');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Inspect the transient failure and fresh handshake wire sequence - mcp-shared-handshake-retry",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "http://localhost:3018/api/handshake-retry/{{mcpHandshakeRetryNonce}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fixture wire witness returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the first notification failed and retry created a fresh session - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryRegistrationAttempted'), 'registration must run first').to.equal('1');",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.sessions, pm.response.text()).to.equal(2);",
+                  "  pm.expect(body.requests.slice(0, 4), pm.response.text()).to.deep.equal([",
+                  "    {method: 'initialize', session_id: '', status: 200},",
+                  "    {method: 'notifications/initialized', session_id: 'session-1', status: 503},",
+                  "    {method: 'initialize', session_id: '', status: 200},",
+                  "    {method: 'notifications/initialized', session_id: 'session-2', status: 202}",
+                  "  ]);",
+                  "  var initializes = body.requests.filter(function (r) { return r.method === 'initialize'; });",
+                  "  pm.expect(initializes.length, pm.response.text()).to.equal(2);",
+                  "  pm.expect(initializes.every(function (r) { return r.session_id === '' && r.status === 200; }), pm.response.text()).to.equal(true);",
+                  "  var tools = body.requests.filter(function (r) { return r.method === 'tools/list'; });",
+                  "  pm.expect(tools.length, pm.response.text()).to.be.above(0);",
+                  "  pm.expect(tools.every(function (r) { return r.session_id === 'session-2' && r.status === 200; }), pm.response.text()).to.equal(true);",
+                  "  pm.expect(body.closed_sessions, pm.response.text()).to.include('session-1');",
+                  "  pm.expect(body.closed_sessions, pm.response.text()).not.to.include('session-2');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] List the recovered healthy client and discovered echo tool - mcp-shared-handshake-retry",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpHandshakeRetryToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/mcp/clients?server={{mcpHandshakeRetryClientId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('recovered client list returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('runtime state and tool discovery belong to the sticky client - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryRegistrationAttempted'), 'registration must run first').to.equal('1');",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.clients, pm.response.text()).to.have.lengthOf(1);",
+                  "  pm.expect(body.total_count, pm.response.text()).to.equal(1);",
+                  "  var row = body.clients[0];",
+                  "  pm.expect(row.config.client_id).to.equal(pm.collectionVariables.get('mcpHandshakeRetryClientId'));",
+                  "  pm.expect(row.config.name).to.equal(pm.collectionVariables.get('mcpHandshakeRetryClientName'));",
+                  "  pm.expect(row.config.needs_session_stickiness).to.equal(true);",
+                  "  pm.expect(row.state, pm.response.text()).to.equal('healthy');",
+                  "  pm.expect(row.last_failure || null, pm.response.text()).to.equal(null);",
+                  "  pm.expect(row.tools.map(function (tool) { return tool.name; }), pm.response.text()).to.deep.equal(['echo']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Delete the recovered gateway client - mcp-shared-handshake-retry",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpHandshakeRetryToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/mcp/client/{{mcpHandshakeRetryClientId}}"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('mcpHandshakeRetryDeleteAttempted', '1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gateway client cleanup returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('client cleanup succeeds - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryRegistrationAttempted'), 'registration must run first').to.equal('1');",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Confirm the deleted gateway client is absent - mcp-shared-handshake-retry",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpHandshakeRetryToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/mcp/clients?server={{mcpHandshakeRetryClientId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted client list returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('gateway cleanup removes the persisted client - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.clients, pm.response.text()).to.deep.equal([]);",
+                  "  pm.expect(body.total_count, pm.response.text()).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Inspect cleanup of both failed and successful MCP sessions - mcp-shared-handshake-retry",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "http://localhost:3018/api/handshake-retry/{{mcpHandshakeRetryNonce}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fixture session cleanup witness returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('both transports close their upstream sessions - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.sessions, pm.response.text()).to.equal(2);",
+                  "  pm.expect(body.closed_sessions.slice().sort(), pm.response.text()).to.deep.equal(['session-1', 'session-2']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Delete the isolated per-run MCP fixture state - mcp-shared-handshake-retry",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "http://localhost:3018/api/handshake-retry/{{mcpHandshakeRetryNonce}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fixture cleanup returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('fixture cleanup follows gateway cleanup - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] Log out the isolated dashboard session - mcp-shared-handshake-retry",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpHandshakeRetryToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/session/logout"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('dashboard session cleanup returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('logout invalidates the test session - mcp-shared-handshake-retry', function () {",
+                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
+                  "  pm.expect(pm.response.json().message, pm.response.text()).to.equal('Logout successful');",
+                  "  pm.collectionVariables.unset('mcpHandshakeRetryToken');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "Provider endpoint URL components (endpoint-url-components)",
       "description": "Reject ambiguous URL components before destination lookup, persistence, or discovery. Uses the default profile with dashboard auth disabled; no provider calls.",
       "item": [
@@ -198168,12 +198510,34 @@
       ]
     },
     {
-      "name": "166. MCP shared initialization retry (mcp-shared-handshake-retry)",
-      "description": "Management API regression using the opt-in MCP_HANDSHAKE_RETRY_FIXTURE=1 routes of examples/mcps/http-no-ping-server on localhost:3018 and an isolated auth-enabled gateway. The fixture assigns session-1, rejects its initialized notification with HTTP 503, and rejects initialize carrying an existing session with HTTP 400. POST /api/mcp/client with needs_session_stickiness=true must close the damaged transport and complete initialize plus initialized on session-2. The fixture wire witness pins the actual 503 and fresh-session handshake; GET /api/mcp/clients pins healthy runtime state and echo discovery. Gateway, upstream sessions, per-run fixture state and dashboard session are cleaned up in order. All rows are PREVIEW because the normal provider profile has no dashboard auth and must refuse local MCP targets. Run INCLUDE_PREVIEW=1 FEATURE=\"mcp-shared-handshake-retry\" with ENV_FILE containing mcpHandshakeRetryUsername/mcpHandshakeRetryPassword and an auth-enabled clone of tests/integrations/python. No LLM request or live provider spend.",
+      "name": "Code mode execution budget",
+      "description": "Requires the default Starlark code-mode implementation. Exercises local computations only, with no upstream provider requests.",
       "item": [
         {
-          "name": "[PREVIEW] [EXPECT-200] Login to the isolated authenticated gateway - mcp-shared-handshake-retry",
+          "name": "[EXPECT-200] openai code-mode-budget step-limit",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget step-limit', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"step\");",
+                  "  pm.expect(pm.response.json().is_error === true).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
           "request": {
+            "auth": {
+              "type": "noauth"
+            },
             "method": "POST",
             "header": [
               {
@@ -198181,29 +198545,392 @@
                 "value": "application/json"
               }
             ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
             "body": {
               "mode": "raw",
-              "raw": "{\"username\":\"{{mcpHandshakeRetryUsername}}\",\"password\":\"{{mcpHandshakeRetryPassword}}\"}"
-            },
-            "url": "{{baseUrl}}/api/session/login"
+              "raw": "{\n  \"id\": \"code-mode-budget-step-limit\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 0\\\\nfor i in range(2000000):\\\\n    result += i\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget allocation-limit",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
           },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget allocation-limit', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"resource limit\");",
+                  "  pm.expect(pm.response.json().is_error === true).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-allocation-limit\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = len([0] * 200000000)\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget recovery",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget recovery', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"42\");",
+                  "  pm.expect(pm.response.json().is_error === true).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-recovery\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 6 * 7\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget try-except-hint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Canonical's parser reports try as an illegal token; the hint must still explain that Starlark has no exception handling.",
+                  "pm.test('code-mode-budget try-except-hint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, pm.response.text()).to.equal(true);",
+                  "  pm.expect(pm.response.text()).to.include('does NOT support try/except');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-try-except-hint\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"try:\\\\n    x = 1\\\\nexcept:\\\\n    x = 0\\\"}\"\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Code mode value boundaries",
+      "description": "Bounds conversion of cyclic, repeated, and oversized values in the in-process interpreter. Local computations only; no provider requests.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-budget cyclic-result",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget cyclic-result', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"nesting limit\");",
+                  "  pm.expect(pm.response.json().is_error).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-cyclic-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = []\\\\nresult.append(result)\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget expanded-result",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget expanded-result', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"size limit\");",
+                  "  pm.expect(pm.response.json().is_error).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-expanded-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = [0]\\\\nfor i in range(30):\\\\n    result = [result, result]\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget integer-result",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget integer-result', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"integer exceeds size limit\");",
+                  "  pm.expect(pm.response.json().is_error).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-integer-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 1 << 10000\\\"}\"\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Code mode configurable limits (code-mode-limits)",
+      "description": "Code mode limits set through PUT /api/config (client_config.mcp_code_mode_limits) persist and hot-reload: lowering max_steps makes a small loop fail, raising it lets a loop that exceeds the default pass, and an out-of-range limit is refused with 400 without changing state. The folder reads the stored limits first and restores them last; an interrupted run can leave the lowered limits in place. Local computations only; the openai keyword is a harness filter label and no provider calls are made.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-limits read current config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits read current config', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  pm.collectionVariables.set('codeModeLimitsClientConfig', JSON.stringify(cc));",
+                  "  pm.collectionVariables.set('codeModeLimitsOriginal', JSON.stringify(cc.mcp_code_mode_limits || {}));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits lower max_steps",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.collectionVariables.unset('mcpHandshakeRetryToken');",
-                  "pm.collectionVariables.unset('mcpHandshakeRetryRegistrationAttempted');",
-                  "pm.collectionVariables.unset('mcpHandshakeRetryDeleteAttempted');",
-                  "var nonce = pm.variables.replaceIn('{{$guid}}');",
-                  "pm.collectionVariables.set('mcpHandshakeRetryNonce', nonce);",
-                  "pm.collectionVariables.set('mcpHandshakeRetryClientId', 'harness-handshake-' + nonce);",
-                  "pm.collectionVariables.set('mcpHandshakeRetryClientName', 'retry_' + nonce.replace(/-/g, ''));",
-                  "pm.test('explicit fixture credentials are provided - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.variables.get('mcpHandshakeRetryUsername'), 'ENV_FILE must provide the isolated test username').to.be.a('string').and.not.empty;",
-                  "  pm.expect(pm.variables.get('mcpHandshakeRetryPassword'), 'ENV_FILE must provide the isolated test password').to.be.a('string').and.not.empty;",
-                  "});"
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = { max_steps: 1000 };",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
                 ]
               }
             },
@@ -198212,300 +198939,616 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('login returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "});",
-                  "pm.test('login captures a real dashboard session - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.response.json().message, pm.response.text()).to.equal('Login successful');",
-                  "  var cookie = pm.response.headers.get('Set-Cookie') || '';",
-                  "  var token = cookie.match(/(?:^|;\\s*)token=([^;]+)/);",
-                  "  pm.expect(token, 'login did not issue a token cookie').not.to.equal(null);",
-                  "  pm.collectionVariables.set('mcpHandshakeRetryToken', token[1]);",
+                  "pm.test('code-mode-limits lower max_steps', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
                   "});"
                 ]
               }
             }
-          ]
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
         },
         {
-          "name": "[PREVIEW] [EXPECT-200] Register a shared sticky client after initialized notification 503 - mcp-shared-handshake-retry",
+          "name": "[EXPECT-200] openai code-mode-limits lowered max_steps persists",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits lowered max_steps persists', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var limits = pm.response.json().client_config.mcp_code_mode_limits || {};",
+                  "  pm.expect(limits.max_steps, pm.response.text()).to.equal(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits lowered max_steps applies",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 5000 iterations fit the default budget of 1000000 steps but not a budget of 1000.",
+                  "pm.test('code-mode-limits lowered max_steps applies', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include('step');",
+                  "  pm.expect(pm.response.json().is_error, pm.response.text()).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-limits-lowered-steps\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"for i in range(5000):\\\\n    pass\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits raise max_steps",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = { max_steps: 50000000 };",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits raise max_steps', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits raised max_steps applies",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 2000000 iterations exceed the default budget of 1000000 steps; the loop body allocates nothing.",
+                  "pm.test('code-mode-limits raised max_steps applies', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, pm.response.text()).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-limits-raised-steps\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"for i in range(2000000):\\\\n    pass\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai code-mode-limits rejects nesting depth above the bound",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = { max_nesting_depth: 5000 };",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits rejects nesting depth above the bound', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('max_nesting_depth');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits restore original limits",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = JSON.parse(pm.collectionVariables.get('codeModeLimitsOriginal'));",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits restore original limits', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits original limits restored",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits original limits restored', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var limits = pm.response.json().client_config.mcp_code_mode_limits || {};",
+                  "  pm.expect(limits, pm.response.text()).to.eql(JSON.parse(pm.collectionVariables.get('codeModeLimitsOriginal')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "170. Anthropic egress preserves stop_reason stop_sequence and the matched sequence (#7920 / PR #7921) (anthropic-stop-sequence)",
+      "description": "Pins that when Claude (Anthropic provider or Vertex) stops on a requested stop sequence, /anthropic/v1/messages reports stop_reason \"stop_sequence\" and the matched string in stop_sequence, in the non-streaming body and in the streaming terminal message_delta.\n\nBug (#7920): the response is converted Anthropic -> Bifrost Responses -> Anthropic. Anthropic's stop_sequence reason is folded into Bifrost \"stop\" and the matched string had no field on BifrostResponsesResponse, so the egress reported stop_reason end_turn with stop_sequence null. Clients that branch on stop_reason == \"stop_sequence\" could not tell a delimiter stop from a natural end of turn.\n\nFix: BifrostResponsesResponse gains an optional stop_sequence carrier, the Anthropic ingress (ToBifrostResponsesResponse and the streaming message_delta handling in core/providers/anthropic/responses.go) records it when the upstream reason is stop_sequence, and the egress restores stop_reason stop_sequence via anthropicStopReasonWithSequence (core/providers/anthropic/utils.go). An OpenAI-style \"stop\" with no matched sequence still maps to end_turn.\n\nCases use the issue repro (stop_sequences [\"5\"]) with the output pinned as far as a live model allows: temperature 0, a system prompt demanding the exact characters, the user turn \"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\", and max_tokens 30, so the upstream stops right after \"4\". The text-ends-on-4 check runs first and reports a model that ignored the prompt as a precondition failure, separate from the stop_reason/stop_sequence assertions under test; the conversion itself is pinned with fixed upstream payloads by the unit tests in core/providers/anthropic. Anthropic non-streaming and streaming, Vertex Claude non-streaming and streaming. Red before the fix (end_turn / null), green after.",
+      "item": [
+        {
+          "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages non-streaming stop_sequences hit reports stop_reason stop_sequence with the matched sequence - #7920",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic claude: non-streaming stop on a requested stop sequence reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  var text = (j.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + j.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(j.stop_reason, 'a turn that stopped on the requested stop sequence must report stop_reason stop_sequence, not end_turn: ' + raw.slice(0, 400)).to.equal('stop_sequence');",
+                  "  pm.expect(j.stop_sequence, 'stop_sequence must carry the matched sequence, not null: ' + raw.slice(0, 400)).to.equal('5');",
+                  "});"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
               {
-                "key": "Authorization",
-                "value": "Bearer {{mcpHandshakeRetryToken}}"
+                "key": "Content-Type",
+                "value": "application/json"
               },
               {
-                "key": "Content-Type",
-                "value": "application/json"
+                "key": "anthropic-version",
+                "value": "2023-06-01"
               }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"client_id\":\"{{mcpHandshakeRetryClientId}}\",\"name\":\"{{mcpHandshakeRetryClientName}}\",\"connection_type\":\"http\",\"connection_string\":\"http://localhost:3018/handshake-retry/{{mcpHandshakeRetryNonce}}/mcp\",\"auth_type\":\"none\",\"needs_session_stickiness\":true,\"is_ping_available\":false,\"tools_to_execute\":[\"*\"]}"
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
             },
-            "url": "{{baseUrl}}/api/mcp/client"
-          },
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.collectionVariables.set('mcpHandshakeRetryRegistrationAttempted', '1');"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('shared registration returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "});",
-                  "pm.test('shared initialization recovers using a fresh session - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
-                  "  pm.expect(pm.response.text()).not.to.include('session already initialized');",
-                  "  pm.expect(pm.response.text()).not.to.include('Failed to connect MCP client');",
-                  "});"
-                ]
-              }
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
             }
-          ]
+          }
         },
         {
-          "name": "[PREVIEW] [EXPECT-200] Inspect the transient failure and fresh handshake wire sequence - mcp-shared-handshake-retry",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": "http://localhost:3018/api/handshake-retry/{{mcpHandshakeRetryNonce}}"
-          },
+          "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages streaming stop_sequences hit message_delta reports stop_reason stop_sequence with the matched sequence - #7920",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('fixture wire witness returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "});",
-                  "pm.test('the first notification failed and retry created a fresh session - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryRegistrationAttempted'), 'registration must run first').to.equal('1');",
-                  "  var body = pm.response.json();",
-                  "  pm.expect(body.sessions, pm.response.text()).to.equal(2);",
-                  "  pm.expect(body.requests.slice(0, 4), pm.response.text()).to.deep.equal([",
-                  "    {method: 'initialize', session_id: '', status: 200},",
-                  "    {method: 'notifications/initialized', session_id: 'session-1', status: 503},",
-                  "    {method: 'initialize', session_id: '', status: 200},",
-                  "    {method: 'notifications/initialized', session_id: 'session-2', status: 202}",
-                  "  ]);",
-                  "  var initializes = body.requests.filter(function (r) { return r.method === 'initialize'; });",
-                  "  pm.expect(initializes.length, pm.response.text()).to.equal(2);",
-                  "  pm.expect(initializes.every(function (r) { return r.session_id === '' && r.status === 200; }), pm.response.text()).to.equal(true);",
-                  "  var tools = body.requests.filter(function (r) { return r.method === 'tools/list'; });",
-                  "  pm.expect(tools.length, pm.response.text()).to.be.above(0);",
-                  "  pm.expect(tools.every(function (r) { return r.session_id === 'session-2' && r.status === 200; }), pm.response.text()).to.equal(true);",
-                  "  pm.expect(body.closed_sessions, pm.response.text()).to.include('session-1');",
-                  "  pm.expect(body.closed_sessions, pm.response.text()).not.to.include('session-2');",
+                  "pm.test('anthropic claude: streaming message_delta reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var frames = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    try { frames.push(JSON.parse(t.slice(5).trim())); } catch (e) { /* non-JSON keepalive */ }",
+                  "  });",
+                  "  pm.expect(frames.length, 'expected SSE data frames: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "  var deltas = frames.filter(function (f) { return f.type === 'message_delta'; });",
+                  "  pm.expect(deltas.length, 'stream must emit a terminal message_delta: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var d = deltas[deltas.length - 1].delta || {};",
+                  "  var text = frames.filter(function (f) { return f.type === 'content_block_delta' && f.delta && f.delta.type === 'text_delta'; }).map(function (f) { return f.delta.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the streamed text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + d.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(d.stop_reason, 'message_delta must report stop_reason stop_sequence, not end_turn: ' + JSON.stringify(d)).to.equal('stop_sequence');",
+                  "  pm.expect(d.stop_sequence, 'message_delta must carry the matched stop_sequence, not null: ' + JSON.stringify(d)).to.equal('5');",
+                  "  pm.expect(frames[frames.length - 1].type, 'stream must end on message_stop').to.equal('message_stop');",
                   "});"
                 ]
               }
             }
-          ]
-        },
-        {
-          "name": "[PREVIEW] [EXPECT-200] List the recovered healthy client and discovered echo tool - mcp-shared-handshake-retry",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{mcpHandshakeRetryToken}}"
-              }
-            ],
-            "url": "{{baseUrl}}/api/mcp/clients?server={{mcpHandshakeRetryClientId}}"
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('recovered client list returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "});",
-                  "pm.test('runtime state and tool discovery belong to the sticky client - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryRegistrationAttempted'), 'registration must run first').to.equal('1');",
-                  "  var body = pm.response.json();",
-                  "  pm.expect(body.clients, pm.response.text()).to.have.lengthOf(1);",
-                  "  pm.expect(body.total_count, pm.response.text()).to.equal(1);",
-                  "  var row = body.clients[0];",
-                  "  pm.expect(row.config.client_id).to.equal(pm.collectionVariables.get('mcpHandshakeRetryClientId'));",
-                  "  pm.expect(row.config.name).to.equal(pm.collectionVariables.get('mcpHandshakeRetryClientName'));",
-                  "  pm.expect(row.config.needs_session_stickiness).to.equal(true);",
-                  "  pm.expect(row.state, pm.response.text()).to.equal('healthy');",
-                  "  pm.expect(row.last_failure || null, pm.response.text()).to.equal(null);",
-                  "  pm.expect(row.tools.map(function (tool) { return tool.name; }), pm.response.text()).to.deep.equal(['echo']);",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "[PREVIEW] [EXPECT-200] Delete the recovered gateway client - mcp-shared-handshake-retry",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{mcpHandshakeRetryToken}}"
-              }
-            ],
-            "url": "{{baseUrl}}/api/mcp/client/{{mcpHandshakeRetryClientId}}"
-          },
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.collectionVariables.set('mcpHandshakeRetryDeleteAttempted', '1');"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('gateway client cleanup returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "});",
-                  "pm.test('client cleanup succeeds - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryRegistrationAttempted'), 'registration must run first').to.equal('1');",
-                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "[PREVIEW] [EXPECT-200] Confirm the deleted gateway client is absent - mcp-shared-handshake-retry",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{mcpHandshakeRetryToken}}"
-              }
-            ],
-            "url": "{{baseUrl}}/api/mcp/clients?server={{mcpHandshakeRetryClientId}}"
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('deleted client list returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "});",
-                  "pm.test('gateway cleanup removes the persisted client - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
-                  "  var body = pm.response.json();",
-                  "  pm.expect(body.clients, pm.response.text()).to.deep.equal([]);",
-                  "  pm.expect(body.total_count, pm.response.text()).to.equal(0);",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "[PREVIEW] [EXPECT-200] Inspect cleanup of both failed and successful MCP sessions - mcp-shared-handshake-retry",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": "http://localhost:3018/api/handshake-retry/{{mcpHandshakeRetryNonce}}"
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('fixture session cleanup witness returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "});",
-                  "pm.test('both transports close their upstream sessions - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
-                  "  var body = pm.response.json();",
-                  "  pm.expect(body.sessions, pm.response.text()).to.equal(2);",
-                  "  pm.expect(body.closed_sessions.slice().sort(), pm.response.text()).to.deep.equal(['session-1', 'session-2']);",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "[PREVIEW] [EXPECT-200] Delete the isolated per-run MCP fixture state - mcp-shared-handshake-retry",
-          "request": {
-            "method": "DELETE",
-            "header": [],
-            "url": "http://localhost:3018/api/handshake-retry/{{mcpHandshakeRetryNonce}}"
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('fixture cleanup returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "});",
-                  "pm.test('fixture cleanup follows gateway cleanup - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "[PREVIEW] [EXPECT-200] Log out the isolated dashboard session - mcp-shared-handshake-retry",
+          ],
           "request": {
             "method": "POST",
             "header": [
               {
-                "key": "Authorization",
-                "value": "Bearer {{mcpHandshakeRetryToken}}"
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
               }
             ],
-            "url": "{{baseUrl}}/api/session/logout"
-          },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stream\":true,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 /anthropic/v1/messages non-streaming stop_sequences hit reports stop_reason stop_sequence with the matched sequence - #7920",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('dashboard session cleanup returns exact HTTP 200 - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                  "});",
-                  "pm.test('logout invalidates the test session - mcp-shared-handshake-retry', function () {",
-                  "  pm.expect(pm.collectionVariables.get('mcpHandshakeRetryDeleteAttempted'), 'gateway delete must run first').to.equal('1');",
-                  "  pm.expect(pm.response.json().message, pm.response.text()).to.equal('Logout successful');",
-                  "  pm.collectionVariables.unset('mcpHandshakeRetryToken');",
+                  "pm.test('vertex claude: non-streaming stop on a requested stop sequence reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  var text = (j.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + j.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(j.stop_reason, 'a turn that stopped on the requested stop sequence must report stop_reason stop_sequence, not end_turn: ' + raw.slice(0, 400)).to.equal('stop_sequence');",
+                  "  pm.expect(j.stop_sequence, 'stop_sequence must carry the matched sequence, not null: ' + raw.slice(0, 400)).to.equal('5');",
                   "});"
                 ]
               }
             }
-          ]
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 /anthropic/v1/messages streaming stop_sequences hit message_delta reports stop_reason stop_sequence with the matched sequence - #7920",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex claude: streaming message_delta reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var frames = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    try { frames.push(JSON.parse(t.slice(5).trim())); } catch (e) { /* non-JSON keepalive */ }",
+                  "  });",
+                  "  pm.expect(frames.length, 'expected SSE data frames: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "  var deltas = frames.filter(function (f) { return f.type === 'message_delta'; });",
+                  "  pm.expect(deltas.length, 'stream must emit a terminal message_delta: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var d = deltas[deltas.length - 1].delta || {};",
+                  "  var text = frames.filter(function (f) { return f.type === 'content_block_delta' && f.delta && f.delta.type === 'text_delta'; }).map(function (f) { return f.delta.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the streamed text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + d.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(d.stop_reason, 'message_delta must report stop_reason stop_sequence, not end_turn: ' + JSON.stringify(d)).to.equal('stop_sequence');",
+                  "  pm.expect(d.stop_sequence, 'message_delta must carry the matched stop_sequence, not null: ' + JSON.stringify(d)).to.equal('5');",
+                  "  pm.expect(frames[frames.length - 1].type, 'stream must end on message_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stream\":true,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
         }
       ]
     }
