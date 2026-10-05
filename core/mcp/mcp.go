@@ -337,6 +337,11 @@ func (m *MCPManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.Ch
 	return m.toolsManager.GetAvailableTools(ctx)
 }
 
+// UpdateCodeModeLimits replaces the per-execution code mode limits at runtime.
+func (m *MCPManager) UpdateCodeModeLimits(limits *schemas.MCPCodeModeLimits) {
+	m.toolsManager.UpdateCodeModeLimits(limits)
+}
+
 // UpdateToolManagerConfig updates the configuration for the tool manager.
 // This allows runtime updates to settings like execution timeout and max agent depth.
 //

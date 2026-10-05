@@ -974,6 +974,21 @@ export const coreConfigSchema = z.object({
 	mcp_tool_execution_timeout: z.number().min(1).default(30),
 	mcp_code_mode_binding_level: z.enum(["server", "tool"]).default("server"),
 	mcp_disable_auto_tool_inject: z.boolean().default(false),
+	mcp_code_mode_limits: z
+		.object({
+			max_source_bytes: z.number().int().min(0).optional(),
+			max_steps: z.number().int().min(0).optional(),
+			max_memory_bytes: z.number().int().min(0).optional(),
+			max_log_bytes: z.number().int().min(0).optional(),
+			max_tool_calls: z.number().int().min(0).optional(),
+			max_value_bytes: z
+				.number()
+				.int()
+				.refine((v) => v === 0 || v >= 1024, { message: "max_value_bytes must be 0 or at least 1024" })
+				.optional(),
+			max_nesting_depth: z.number().int().min(0).max(1000).optional(),
+		})
+		.optional(),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
 });
 

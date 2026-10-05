@@ -379,6 +379,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 				codeModeConfig = &mcp.CodeModeConfig{
 					BindingLevel:         mcpConfig.ToolManagerConfig.CodeModeBindingLevel,
 					ToolExecutionTimeout: time.Duration(mcpConfig.ToolManagerConfig.ToolExecutionTimeout),
+					Limits:               mcpConfig.ToolManagerConfig.CodeModeLimits,
 				}
 			}
 			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig, bifrost.logger)
@@ -4537,6 +4538,30 @@ func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecution
 		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(codeModeBindingLevel),
 		DisableAutoToolInject: disableAutoToolInject,
 	})
+	return nil
+}
+
+// UpdateCodeModeLimits hot-reloads the per-execution code mode limits. Zero fields
+// use their defaults and nil restores all defaults; invalid limits are rejected by
+// the code mode, which keeps its current limits.
+func (bifrost *Bifrost) UpdateCodeModeLimits(limits *schemas.MCPCodeModeLimits) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	if limits == nil {
+		limits = &schemas.MCPCodeModeLimits{}
+	}
+	if err := limits.Validate(); err != nil {
+		return err
+	}
+	// An optional interface keeps MCPManagerInterface implementations source compatible.
+	updater, ok := bifrost.MCPManager.(interface {
+		UpdateCodeModeLimits(*schemas.MCPCodeModeLimits)
+	})
+	if !ok {
+		return fmt.Errorf("mcp manager does not support code mode limits")
+	}
+	updater.UpdateCodeModeLimits(limits)
 	return nil
 }
 

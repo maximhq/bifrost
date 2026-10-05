@@ -2293,6 +2293,27 @@ func TestMigrationAddCompatAzureDeepseekColumn(t *testing.T) {
 	assert.True(t, rows[0].CompatAzureDeepseek, "existing rows must keep the conversion enabled")
 }
 
+func TestMigrationAddMCPCodeModeLimitsClientColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+
+	// Simulate the pre-migration schema
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "mcp_code_mode_limits_json"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "mcp_code_mode_limits_json"))
+
+	require.NoError(t, migrationAddMCPCodeModeLimitsClientColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "mcp_code_mode_limits_json"))
+
+	// Idempotent: a second run on an already-migrated schema is a no-op.
+	require.NoError(t, migrationAddMCPCodeModeLimitsClientColumn(ctx, db, testMigrationLogger))
+}
+
 // setupCalendarAlignedPreMigrationDB creates a SQLite DB with governance_virtual_keys,
 // governance_budgets, and governance_rate_limits tables, then drops the calendar_aligned
 // column from budgets and rate_limits to simulate the pre-migration schema state.

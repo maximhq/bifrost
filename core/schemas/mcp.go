@@ -312,6 +312,66 @@ type MCPToolManagerConfig struct {
 	MaxAgentDepth         int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
+	CodeModeLimits        *MCPCodeModeLimits   `json:"code_mode_limits,omitempty"`         // Per-execution code mode budgets; nil keeps the defaults
+}
+
+// MCPCodeModeLimits bounds a single code mode execution. A zero field uses its default.
+type MCPCodeModeLimits struct {
+	MaxSourceBytes  int `json:"max_source_bytes,omitempty"`
+	MaxSteps        int `json:"max_steps,omitempty"`
+	MaxMemoryBytes  int `json:"max_memory_bytes,omitempty"`
+	MaxLogBytes     int `json:"max_log_bytes,omitempty"`
+	MaxToolCalls    int `json:"max_tool_calls,omitempty"`
+	MaxValueBytes   int `json:"max_value_bytes,omitempty"`
+	MaxNestingDepth int `json:"max_nesting_depth,omitempty"`
+}
+
+// WithDefaults returns a copy with every zero field set to its default.
+func (l MCPCodeModeLimits) WithDefaults() MCPCodeModeLimits {
+	orDefault := func(value, fallback int) int {
+		if value == 0 {
+			return fallback
+		}
+		return value
+	}
+	return MCPCodeModeLimits{
+		MaxSourceBytes:  orDefault(l.MaxSourceBytes, DefaultCodeModeMaxSourceBytes),
+		MaxSteps:        orDefault(l.MaxSteps, DefaultCodeModeMaxSteps),
+		MaxMemoryBytes:  orDefault(l.MaxMemoryBytes, DefaultCodeModeMaxMemoryBytes),
+		MaxLogBytes:     orDefault(l.MaxLogBytes, DefaultCodeModeMaxLogBytes),
+		MaxToolCalls:    orDefault(l.MaxToolCalls, DefaultCodeModeMaxToolCalls),
+		MaxValueBytes:   orDefault(l.MaxValueBytes, DefaultCodeModeMaxValueBytes),
+		MaxNestingDepth: orDefault(l.MaxNestingDepth, DefaultCodeModeMaxNestingDepth),
+	}
+}
+
+// Validate rejects limits that cannot be applied safely. Zero fields are valid
+// and use their defaults; there is no upper bound except on nesting depth, which
+// value conversion recurses through on the goroutine stack.
+func (l MCPCodeModeLimits) Validate() error {
+	for _, field := range []struct {
+		name  string
+		value int
+	}{
+		{"max_source_bytes", l.MaxSourceBytes},
+		{"max_steps", l.MaxSteps},
+		{"max_memory_bytes", l.MaxMemoryBytes},
+		{"max_log_bytes", l.MaxLogBytes},
+		{"max_tool_calls", l.MaxToolCalls},
+		{"max_value_bytes", l.MaxValueBytes},
+		{"max_nesting_depth", l.MaxNestingDepth},
+	} {
+		if field.value < 0 {
+			return fmt.Errorf("code mode limit %s must not be negative", field.name)
+		}
+	}
+	if l.MaxValueBytes != 0 && l.MaxValueBytes < MinCodeModeValueBytes {
+		return fmt.Errorf("code mode limit max_value_bytes must be at least %d", MinCodeModeValueBytes)
+	}
+	if l.MaxNestingDepth > MaxCodeModeNestingDepth {
+		return fmt.Errorf("code mode limit max_nesting_depth must be at most %d", MaxCodeModeNestingDepth)
+	}
+	return nil
 }
 
 // UnmarshalJSON implements json.Unmarshaler so that tool_execution_timeout treats
@@ -351,6 +411,17 @@ func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
 const (
 	DefaultMaxAgentDepth        = 10
 	DefaultToolExecutionTimeout = 30 * time.Second
+
+	DefaultCodeModeMaxSourceBytes  = 64 << 10
+	DefaultCodeModeMaxSteps        = 1_000_000
+	DefaultCodeModeMaxMemoryBytes  = 64 << 20
+	DefaultCodeModeMaxLogBytes     = 64 << 10
+	DefaultCodeModeMaxToolCalls    = 64
+	DefaultCodeModeMaxValueBytes   = 1 << 20
+	DefaultCodeModeMaxNestingDepth = 64
+
+	MinCodeModeValueBytes   = 1 << 10 // Tool results need room for framing overhead
+	MaxCodeModeNestingDepth = 1000    // Value conversion recurses once per level on the goroutine stack
 )
 
 // CodeModeBindingLevel defines how tools are exposed in the VFS for code execution

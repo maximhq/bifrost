@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- Added `bifrost.mcp.toolManagerConfig.codeModeLimits` (`maxSourceBytes`, `maxSteps`, `maxMemoryBytes`, `maxLogBytes`, `maxToolCalls`, `maxValueBytes`, `maxNestingDepth`) to tune the limits on each code mode execution; an omitted or 0 field keeps the built-in default. Renders into `mcp.tool_manager_config.code_mode_limits`. Code mode no longer limits concurrent executions.
+
 ### 2.1.43
 - Added `bifrost.plugins.telemetry.config.user_labels_enabled` (default `false`) — adds `user_id` and `user_name` labels to every `bifrost_*` metric. Off by default because these are unbounded: they multiply metric series by end-user count, on top of a `virtual_key_id` label that already reaches tens of thousands of values in large deployments, and Prometheus cannot drop a label after the fact. Datadog and Splunk emit these dimensions unconditionally, since a costly tag can be dropped server-side there.
 

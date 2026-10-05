@@ -3642,3 +3642,34 @@ func TestValidateConfigSchema_IssuerURLRequiredForDiscovery(t *testing.T) {
 		})
 	}
 }
+
+// TestSchemaCodeModeLimitsValueBytes keeps config.schema.json aligned with the server:
+// max_value_bytes is 0 (the default) or at least 1024, in both places the limits live.
+func TestSchemaCodeModeLimitsValueBytes(t *testing.T) {
+	wrap := map[string]func(string) string{
+		"client.mcp_code_mode_limits": func(limits string) string {
+			return `{"client": {"mcp_code_mode_limits": ` + limits + `}}`
+		},
+		"mcp.tool_manager_config.code_mode_limits": func(limits string) string {
+			return `{"mcp": {"tool_manager_config": {"code_mode_limits": ` + limits + `}}}`
+		},
+	}
+	for where, config := range wrap {
+		for _, tc := range []struct {
+			limits  string
+			wantErr bool
+		}{
+			{`{}`, false},
+			{`{"max_value_bytes": 0}`, false},
+			{`{"max_value_bytes": 1024}`, false},
+			{`{"max_value_bytes": 1048576}`, false},
+			{`{"max_value_bytes": 10}`, true},
+			{`{"max_value_bytes": 1023}`, true},
+		} {
+			err := ValidateConfigSchema([]byte(config(tc.limits)), loadLocalSchema(t))
+			if (err != nil) != tc.wantErr {
+				t.Errorf("%s %s: err=%v, wantErr=%v", where, tc.limits, err, tc.wantErr)
+			}
+		}
+	}
+}

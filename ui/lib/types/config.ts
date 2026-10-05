@@ -674,6 +674,17 @@ export interface CompatConfig {
 	azure_deepseek: boolean;
 }
 
+// Per-execution code mode limits; an omitted or 0 field uses the server default.
+export interface MCPCodeModeLimits {
+	max_source_bytes?: number;
+	max_steps?: number;
+	max_memory_bytes?: number;
+	max_log_bytes?: number;
+	max_tool_calls?: number;
+	max_value_bytes?: number;
+	max_nesting_depth?: number;
+}
+
 // Core Bifrost configuration types
 export interface CoreConfig {
 	drop_excess_requests: boolean;
@@ -703,6 +714,7 @@ export interface CoreConfig {
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
 	mcp_disable_auto_tool_inject: boolean;
+	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
 	async_job_result_ttl: number;
 	required_headers: string[];

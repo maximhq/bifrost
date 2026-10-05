@@ -1470,6 +1470,11 @@ func applyToolManagerToClientConfig(cc *configstore.ClientConfig, tm *schemas.MC
 		cc.MCPCodeModeBindingLevel = DefaultClientConfig.MCPCodeModeBindingLevel
 	}
 	cc.MCPDisableAutoToolInject = tm.DisableAutoToolInject
+	// client_config.mcp_code_mode_limits is a first-class setting, so an omitted
+	// tool_manager_config.code_mode_limits keeps it instead of resetting it.
+	if tm.CodeModeLimits != nil {
+		cc.MCPCodeModeLimits = tm.CodeModeLimits
+	}
 }
 
 // loadProviders loads and merges providers from file with store using hash reconciliation
@@ -2396,6 +2401,7 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 		config.ClientConfig.MCPCodeModeBindingLevel,
 	)
 	mcpCfg.ToolManagerConfig.DisableAutoToolInject = config.ClientConfig.MCPDisableAutoToolInject
+	mcpCfg.ToolManagerConfig.CodeModeLimits = config.ClientConfig.MCPCodeModeLimits
 
 	// ToolSyncInterval is declared under the file's mcp section rather than
 	// client_config, so it sits outside the hash-driven client config load and
