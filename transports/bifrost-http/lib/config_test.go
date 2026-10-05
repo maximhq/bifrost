@@ -453,14 +453,45 @@ func TestLoadClientConfig_InferenceAuthExistingAndAbsentClient(t *testing.T) {
 	}
 }
 
-// File-only deployments (no config store) with dashboard auth must still boot, and
-// must not get the first-admin inference default since there is no stored auth to compare.
+// A fresh install defaults inference auth on even without dashboard auth, keeps it on across
+// restarts while the file omits the setting, and an existing deployment keeps its stored value.
+func TestLoadClientConfig_InferenceAuthFreshInstallDefault(t *testing.T) {
+	SetLogger(&testLogger{})
+	for _, raw := range []string{`{}`, `{"client":{"log_retention_days":7}}`} {
+		t.Run(raw, func(t *testing.T) {
+			store := NewMockConfigStore()
+			cfg := &Config{ConfigStore: store}
+			for i := 0; i < 2; i++ {
+				var data ConfigData
+				require.NoError(t, json.Unmarshal([]byte(raw), &data))
+				require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+				assert.True(t, cfg.ClientConfig.EnforceAuthOnInference, "startup %d", i)
+			}
+		})
+	}
+	t.Run("existing deployment keeps stored opt-out", func(t *testing.T) {
+		store := NewMockConfigStore()
+		store.clientConfig = &configstore.ClientConfig{EnforceAuthOnInference: false}
+		var data ConfigData
+		require.NoError(t, json.Unmarshal([]byte(`{"client":{"log_retention_days":7}}`), &data))
+		cfg := &Config{ConfigStore: store}
+		require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+		assert.False(t, cfg.ClientConfig.EnforceAuthOnInference)
+	})
+}
+
+// File-only deployments (no config store) with dashboard auth must still boot. Nothing is
+// stored, so like any fresh install they get inference auth on unless the file opts out.
 func TestLoadClientConfig_InferenceAuthWithoutConfigStore(t *testing.T) {
 	SetLogger(&testLogger{})
 	var data ConfigData
 	require.NoError(t, json.Unmarshal([]byte(`{"client":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"StrongPassword1!"}}`), &data))
 	cfg := &Config{}
 	require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+	assert.True(t, cfg.ClientConfig.EnforceAuthOnInference)
+	var optOut ConfigData
+	require.NoError(t, json.Unmarshal([]byte(`{"client":{"log_retention_days":7,"enforce_auth_on_inference":false}}`), &optOut))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &optOut))
 	assert.False(t, cfg.ClientConfig.EnforceAuthOnInference)
 	require.NoError(t, loadAuthConfig(context.Background(), cfg, &data))
 	require.NotNil(t, cfg.GovernanceConfig.AuthConfig)
@@ -19522,7 +19553,7 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.NotNil(t, cc.EnableLogging, "EnableLogging should not be nil")
 	require.Equal(t, true, *cc.EnableLogging, "EnableLogging should default to true")
 	require.Equal(t, false, cc.DisableContentLogging, "DisableContentLogging should default to false")
-	require.Equal(t, false, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to false")
+	require.Equal(t, true, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to true")
 	require.Equal(t, []string{"*"}, cc.AllowedOrigins, "AllowedOrigins should default to [*]")
 	require.Equal(t, 100, cc.MaxRequestBodySizeMB, "MaxRequestBodySizeMB should default to 100")
 	require.Equal(t, 10, cc.MCPAgentDepth, "MCPAgentDepth should default to 10")

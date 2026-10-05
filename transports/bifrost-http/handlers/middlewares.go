@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1063,18 +1064,17 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 			am.bootstrapToken.Store(&configuredSetupToken)
 			logger.Warn("================================================================")
 			logger.Warn("No admin account is configured for this Bifrost instance yet.")
-			logger.Warn("Until one is created, the dashboard/API is reachable without a")
-			logger.Warn("password from anyone who can route to this port. To finish setup,")
-			logger.Warn("pass the configured setup token as auth_config.setup_token in the")
-			logger.Warn("PUT /api/config call that creates the admin account.")
+			logger.Warn("Until one is created, the management API is disabled. To finish")
+			logger.Warn("setup, pass the configured setup token as auth_config.setup_token")
+			logger.Warn("in the PUT /api/config call that creates the admin account.")
 			logger.Warn("================================================================")
 		} else {
 			logger.Warn("================================================================")
 			logger.Warn("No admin account is configured for this Bifrost instance yet, and")
 			logger.Warn("no setup token is configured. Set setup_token in config.json (or")
 			logger.Warn("the BIFROST_SETUP_TOKEN environment variable) before creating the")
-			logger.Warn("first admin account — requests to create it will be rejected until")
-			logger.Warn("a setup token is configured.")
+			logger.Warn("first admin account (or set auth_config in config.json). The")
+			logger.Warn("management API is disabled until an admin account exists.")
 			logger.Warn("================================================================")
 		}
 	}
@@ -1119,6 +1119,31 @@ func (m *AuthMiddleware) ClearBootstrapToken() {
 	m.bootstrapToken.Store(nil)
 }
 
+// CheckConfiguredSetupToken reports whether token matches the operator-configured setup
+// token (config.json setup_token or BIFROST_SETUP_TOKEN). Unlike CheckBootstrapToken it does
+// not open up once an admin account exists and is never cleared: it is the operator's proof
+// of control for auth_config changes made while dashboard auth is disabled (see
+// ConfigHandler.verifyStoredAdminCredential). It is false when no token is configured.
+func (m *AuthMiddleware) CheckConfiguredSetupToken(token string) bool {
+	current := m.setupToken.Load()
+	if current == nil || token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(*current), []byte(token)) == 1
+}
+
+// isAdminSetupRequest reports whether a request reaching the closed management API is the
+// PUT /api/config that sets up dashboard auth, carrying the operator-configured setup token
+// in auth_config.setup_token. url is the raw request path the router dispatches on.
+func (m *AuthMiddleware) isAdminSetupRequest(ctx *fasthttp.RequestCtx, url string) bool {
+	if url != "/api/config" || !ctx.IsPut() {
+		return false
+	}
+	token := gjson.GetBytes(ctx.PostBody(), "auth_config.setup_token")
+	return token.Type == gjson.String && m.CheckConfiguredSetupToken(token.String())
+}
+
+>>>>>>> 84dbd849b (feat(warp): prefilter semantic search by caller visibility (#7973))
 // UpdateWhitelistedRoutes updates the configured whitelisted routes that bypass auth middleware.
 func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 	m.whitelistedRoutes.Store(&routes)
@@ -1261,7 +1286,19 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			}
 			authConfig := m.authConfig.Load()
 			if authConfig == nil || !authConfig.IsEnabled {
-				// logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
+				// No admin password protects the dashboard, so the management API is closed:
+				// only whitelisted routes (health, login, assets), inference routes and the
+				// setup-token PUT /api/config that creates the admin account get through.
+				if !allowVirtualKeyAuth && !shouldSkip(authConfig, url) {
+					if !m.isAdminSetupRequest(ctx, url) {
+						SendError(ctx, fasthttp.StatusForbidden, "the management API is disabled until the dashboard is password protected: set auth_config in config.json, or create the admin account with PUT /api/config carrying auth_config.setup_token")
+						return
+					}
+					// A browser page from an unlisted origin still must not drive setup.
+					if m.refuseCrossOriginWhileAuthDisabled(ctx) {
+						return
+					}
+				}
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "")
 				// Mark as local admin so downstream RBAC bypasses cleanly when
 				// auth is fully disabled; otherwise RBAC 401s and the UI enters
