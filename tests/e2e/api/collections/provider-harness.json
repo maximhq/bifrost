@@ -196508,7 +196508,7 @@
           ]
         },
         {
-          "name": "162.5 [EXPECT-400] bedrock passthrough refuses model invocation, which is not an allow-listed operation (bedrock passthrough allow-list)",
+          "name": "162.5 [EXPECT-403] bedrock passthrough refuses model invocation, which is not an allow-listed operation (bedrock passthrough allow-list)",
           "request": {
             "method": "POST",
             "header": [
@@ -196553,7 +196553,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('the refusal is a Bifrost error and names the allowed operations', function () { var j = pm.response.json(); pm.expect(j.is_bifrost_error, pm.response.text()).to.equal(true); pm.expect(JSON.stringify(j)).to.match(/InvokeAgent|Retrieve|ApplyGuardrail/); });",
+                  "pm.test('the refusal comes from the passthrough route policy, before key selection', function () { pm.expect(pm.response.text()).to.include('supported inference endpoint'); });",
                   "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
                   "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
                   "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
@@ -196565,7 +196565,7 @@
           ]
         },
         {
-          "name": "162.6 [EXPECT-400] bedrock passthrough refuses a traversal path, which normalizes outside the allow-list, before any request is built (bedrock passthrough allow-list)",
+          "name": "162.6 [EXPECT-403] bedrock passthrough refuses a traversal path, which normalizes outside the allow-list, before any request is built (bedrock passthrough allow-list)",
           "request": {
             "method": "POST",
             "header": [
@@ -196614,7 +196614,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('the refusal is from the Bedrock operation allow-list', function () { var j = pm.response.json(); pm.expect(j.is_bifrost_error, pm.response.text()).to.equal(true); pm.expect(j.error.message, pm.response.text()).to.include('only forwards POST InvokeAgent, Retrieve and ApplyGuardrail requests'); });",
+                  "pm.test('the refusal comes from the passthrough route policy, before key selection', function () { pm.expect(pm.response.text()).to.include('supported inference endpoint'); });",
                   "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
                   "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
                   "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
@@ -196626,7 +196626,7 @@
           ]
         },
         {
-          "name": "162.7 [EXPECT-400] bedrock passthrough refuses a GET on an allowed path, because only POST is forwarded (bedrock passthrough allow-list)",
+          "name": "162.7 [EXPECT-403] bedrock passthrough refuses a GET on an allowed path, because only POST is forwarded (bedrock passthrough allow-list)",
           "request": {
             "method": "GET",
             "header": [
@@ -196739,7 +196739,7 @@
           ]
         },
         {
-          "name": "162.9 [EXPECT-400] bedrock passthrough refuses a session id made only of dots, which the dotted-id rule must never let through (bedrock agents session id)",
+          "name": "162.9 [EXPECT-403] bedrock passthrough refuses a session id made only of dots, which the dotted-id rule must never let through (bedrock agents session id)",
           "request": {
             "method": "POST",
             "header": [
@@ -197633,6 +197633,535 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"typesafe_custom_gated/jev-1.13.0\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    }\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Provider endpoint URL components (endpoint-url-components)",
+      "description": "Reject ambiguous URL components before destination lookup, persistence, or discovery. Uses the default profile with dashboard auth disabled; no provider calls.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai endpoint-url-components query is rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint-url-components query is rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"base URL must not contain\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"endpoint-component-check\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"network_config\": {\n    \"base_url\": \"http://127.0.0.1/base?x=\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai endpoint-url-components fragment is rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint-url-components fragment is rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"base URL must not contain\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"endpoint-component-check\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"network_config\": {\n    \"base_url\": \"http://127.0.0.1/base#tail\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai endpoint-url-components credentials is rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint-url-components credentials is rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"base URL must not contain\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"endpoint-component-check\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": true\n  },\n  \"network_config\": {\n    \"base_url\": \"http://name:pass@127.0.0.1/base\"\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Passthrough inference route policy (inference-route-policy)",
+      "description": "Only explicit inference methods and paths may select provider credentials. All checks fail before provider calls.",
+      "item": [
+        {
+          "name": "[EXPECT-403] openai inference-route-policy openai account endpoint refused",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('inference-route-policy openai account endpoint refused', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text()).to.include(\"inference endpoint\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai inference-route-policy anthropic account endpoint refused",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('inference-route-policy anthropic account endpoint refused', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text()).to.include(\"inference endpoint\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai inference-route-policy azure account endpoint refused",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('inference-route-policy azure account endpoint refused', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text()).to.include(\"inference endpoint\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/azure_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai inference-route-policy genai account endpoint refused",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('inference-route-policy genai account endpoint refused', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text()).to.include(\"inference endpoint\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai inference-route-policy provider switch refused",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('inference-route-policy provider switch refused', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"provider does not match\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "anthropic"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": []\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "OAuth callback registration policy (oauth-redirect-policy)",
+      "description": "Default profile rejects unapproved remote destinations and malformed callbacks before registration. No provider spend.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai oauth-redirect-policy remote callback rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oauth-redirect-policy remote callback rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"invalid_redirect_uri\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_name\": \"Redirect check\",\n  \"redirect_uris\": [\n    \"https://unlisted.example/callback\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai oauth-redirect-policy fragment callback rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oauth-redirect-policy fragment callback rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"invalid_redirect_uri\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_name\": \"Redirect check\",\n  \"redirect_uris\": [\n    \"http://127.0.0.1/callback#tail\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai oauth-redirect-policy hostless callback rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oauth-redirect-policy hostless callback rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"invalid_redirect_uri\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_name\": \"Redirect check\",\n  \"redirect_uris\": [\n    \"https:///callback\"\n  ]\n}"
             }
           }
         }
