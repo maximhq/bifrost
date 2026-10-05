@@ -761,6 +761,15 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
 				}
 			} else if reasoningParams.MaxTokens != nil {
+				// An explicit budget must not cost the caller their effort: a surface
+				// that takes output_config.effort still wants it, and responses.go
+				// already preserves a co-present effort on its adaptive path. Set
+				// ahead of the budget handling so neither sub-branch here can return
+				// without it.
+				if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" &&
+					caps.SupportsNativeEffort(defaultSupportsNativeEffort(caps)) {
+					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
+				}
 				if caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
 					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}

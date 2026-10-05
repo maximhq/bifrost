@@ -4423,6 +4423,14 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
 					}
 				} else {
+					// An explicit budget must not cost the caller their effort. The
+					// adaptive sub-branch above already preserves a co-present effort;
+					// this is the same courtesy on the budget path, for a surface that
+					// takes output_config.effort.
+					if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" &&
+						caps.SupportsNativeEffort(defaultSupportsNativeEffort(caps)) {
+						setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+					}
 					budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
 					if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
 						// anthropic does not support dynamic reasoning budget like gemini
