@@ -270,24 +270,8 @@ const (
 
 	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                 // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"               // string (to store the selected key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceVirtualKeyID              BifrostContextKey = "bifrost-governance-virtual-key-id"       // string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceVirtualKeyName            BifrostContextKey = "bifrost-governance-virtual-key-name"     // string (to store the virtual key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceTeamID                    BifrostContextKey = "bifrost-governance-team-id"              // string (to store the team ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceTeamName                  BifrostContextKey = "bifrost-governance-team-name"            // string (to store the team name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceCustomerID                BifrostContextKey = "bifrost-governance-customer-id"          // string (to store the customer ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceCustomerName              BifrostContextKey = "bifrost-governance-customer-name"        // string (to store the customer name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRequestProvider           BifrostContextKey = "bifrost-governance-request-provider"     // string (the request's model provider, stamped in PreRequestHook so access resolution can apply provider-scoped grants - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceBusinessUnitID            BifrostContextKey = "bifrost-governance-business-unit-id"     // string (to store the business unit ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceBusinessUnitName          BifrostContextKey = "bifrost-governance-business-unit-name"   // string (to store the business unit name (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceTeamIDs                   BifrostContextKey = "bifrost-governance-team-ids"             // []string (all teams a user/AP request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceTeamNames                 BifrostContextKey = "bifrost-governance-team-names"           // []string (display names, aligned with team-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceBusinessUnitIDs           BifrostContextKey = "bifrost-governance-business-unit-ids"    // []string (distinct BUs across the user's teams; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceBusinessUnitNames         BifrostContextKey = "bifrost-governance-business-unit-names"  // []string (display names, aligned with business-unit-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceCustomerIDs               BifrostContextKey = "bifrost-governance-customer-ids"         // []string (distinct customers a user/team request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceCustomerNames             BifrostContextKey = "bifrost-governance-customer-names"       // []string (display names, aligned with customer-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceScopedCustomerID          BifrostContextKey = "bifrost-governance-scoped-customer-id"   // string (resolved customer the request is scoped to via the x-bf-customer-id / x-bf-customer-name header on a team-VK path; set by the enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceProjectID                 BifrostContextKey = "bifrost-governance-project-id"           // string (the project a request is scoped to, once resolved and checked; every consumer reads the resolved value rather than the caller's header - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceProjectName               BifrostContextKey = "bifrost-governance-project-name"         // string (display name, aligned with project-id - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"      // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"    // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceComplexityTier            BifrostContextKey = "bifrost-governance-complexity-tier"      // string (complexity tier computed for routing, e.g. "SIMPLE"/"MEDIUM"/"COMPLEX"; only present when a routing rule referenced complexity_tier and classification produced a tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
@@ -360,8 +344,6 @@ const (
 	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernancePluginName                BifrostContextKey = "governance-plugin-name"                           // string (name of the governance plugin that processed the request - set by bifrost)
 	BifrostContextKeyClusterNodeID                       BifrostContextKey = "bifrost-cluster-node-id"                          // string (cluster node ID for log attribution - set by enterprise server)
-	BifrostContextKeyGovernanceBudgetIDs                 BifrostContextKey = "bifrost-governance-budget-ids"                    // []string (budget IDs applicable to this request - set by governance plugin)
-	BifrostContextKeyGovernanceRateLimitIDs              BifrostContextKey = "bifrost-governance-rate-limit-ids"                // []string (rate limit IDs applicable to this request - set by governance plugin)
 	BifrostContextKeyPromptsPluginName                   BifrostContextKey = "prompts-plugin-name"                              // string (name of the prompts plugin to use - set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyAvailableProviders                  BifrostContextKey = "available-providers"                              // []ModelProvider (set by internal bifrost components - DO NOT SET THIS MANUALLY))
@@ -408,9 +390,6 @@ const (
 	BifrostContextKeyDisableContentLogging               BifrostContextKey = "x-bf-disable-content-logging"                     // bool (per-request override for content logging; only honored when BifrostContextKeyAllowPerRequestStorageOverride is true. When retain_content_in_object_storage is on, disabled content is still offloaded to object storage as hidden instead of dropped)
 	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
-	BifrostContextKeyUserID                              BifrostContextKey = "bifrost-user-id"                    // string (to store the user ID (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyUserName                            BifrostContextKey = "bifrost-user-name"                  // string (to store the user name (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyUserEmail                           BifrostContextKey = "bifrost-user-email"                 // string (to store the user email (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyAuthCredential                      BifrostContextKey = "bifrost-auth-credential"            // schemas.Credential (what the request authenticated by, other than a virtual key presented in a header: set by the middleware that verified it, with the kind it names and the id it verified; read once when the request context settles who the request is)
 	BifrostContextKeyMCPInboundBearer                    BifrostContextKey = "bifrost-mcp-inbound-bearer"         // string (the caller's validated identity-provider token, used as the subject of delegated token exchange; set by the upstream auth layer - DO NOT SET THIS MANUALLY. SECURITY: live credential - never log its value)
 	BifrostContextKeyMCPInboundBearerOmitted             BifrostContextKey = "bifrost-mcp-inbound-bearer-omitted" // MCPInboundBearerOmittedReason (why a request that presented an identity-provider token carries no delegated-exchange subject; set by the upstream auth layer - DO NOT SET THIS MANUALLY)
@@ -477,6 +456,115 @@ const (
 	BifrostContextKeyAsyncWebhookEndpoint                BifrostContextKey = "bifrost-async-webhook-endpoint" // string (webhook endpoint name to notify when an async job finishes - carried as-is from the x-bf-async-webhook header; the submit path resolves and validates it before the job is created)
 	BifrostContextKeyUpstreamLatency                     BifrostContextKey = "bifrost-upstream-latency"       // *atomic.Int64 nanoseconds (set by bifrost - DO NOT SET THIS MANUALLY) - cumulative time blocked on provider sockets across every attempt; subtract from total to get Bifrost overhead
 	BifrostContextKeyStreamOverhead                      BifrostContextKey = "bifrost-stream-overhead"        // *streamOverhead (set by bifrost - DO NOT SET THIS MANUALLY) - per-chunk stream conversion CPU and downstream backpressure, carved out of the overhead breakdown's "core" bucket
+)
+
+// Request attribution keys the Grant now carries. Each holds a copy of what ctx.Grant() answers,
+// kept only for readers that have not moved to the Grant yet; new code reads the Grant.
+const (
+	// string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().VirtualKey().ID instead.
+	BifrostContextKeyGovernanceVirtualKeyID BifrostContextKey = "bifrost-governance-virtual-key-id"
+
+	// string (to store the virtual key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().VirtualKey().Name instead.
+	BifrostContextKeyGovernanceVirtualKeyName BifrostContextKey = "bifrost-governance-virtual-key-name"
+
+	// string (to store the team ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().Teams()[0].ID instead.
+	BifrostContextKeyGovernanceTeamID BifrostContextKey = "bifrost-governance-team-id"
+
+	// string (to store the team name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().Teams()[0].Name instead.
+	BifrostContextKeyGovernanceTeamName BifrostContextKey = "bifrost-governance-team-name"
+
+	// string (to store the customer ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().Customers()[0].ID instead.
+	BifrostContextKeyGovernanceCustomerID BifrostContextKey = "bifrost-governance-customer-id"
+
+	// string (to store the customer name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().Customers()[0].Name instead.
+	BifrostContextKeyGovernanceCustomerName BifrostContextKey = "bifrost-governance-customer-name"
+
+	// string (to store the business unit ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().BusinessUnits()[0].ID instead.
+	BifrostContextKeyGovernanceBusinessUnitID BifrostContextKey = "bifrost-governance-business-unit-id"
+
+	// string (to store the business unit name (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().BusinessUnits()[0].Name instead.
+	BifrostContextKeyGovernanceBusinessUnitName BifrostContextKey = "bifrost-governance-business-unit-name"
+
+	// []string (all teams a user/AP request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the IDs of ctx.Grant().Identity().Teams() instead.
+	BifrostContextKeyGovernanceTeamIDs BifrostContextKey = "bifrost-governance-team-ids"
+
+	// []string (display names, aligned with team-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the Names of ctx.Grant().Identity().Teams() instead.
+	BifrostContextKeyGovernanceTeamNames BifrostContextKey = "bifrost-governance-team-names"
+
+	// []string (distinct BUs across the user's teams; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the IDs of ctx.Grant().Identity().BusinessUnits() instead.
+	BifrostContextKeyGovernanceBusinessUnitIDs BifrostContextKey = "bifrost-governance-business-unit-ids"
+
+	// []string (display names, aligned with business-unit-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the Names of ctx.Grant().Identity().BusinessUnits() instead.
+	BifrostContextKeyGovernanceBusinessUnitNames BifrostContextKey = "bifrost-governance-business-unit-names"
+
+	// []string (distinct customers a user/team request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the IDs of ctx.Grant().Identity().Customers() instead.
+	BifrostContextKeyGovernanceCustomerIDs BifrostContextKey = "bifrost-governance-customer-ids"
+
+	// []string (display names, aligned with customer-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the Names of ctx.Grant().Identity().Customers() instead.
+	BifrostContextKeyGovernanceCustomerNames BifrostContextKey = "bifrost-governance-customer-names"
+
+	// string (the project a request is scoped to, once resolved and checked; every consumer reads the resolved value rather than the caller's header - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use ctx.Grant().Identity().Project().ID instead.
+	BifrostContextKeyGovernanceProjectID BifrostContextKey = "bifrost-governance-project-id"
+
+	// string (display name, aligned with project-id - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use ctx.Grant().Identity().Project().Name instead.
+	BifrostContextKeyGovernanceProjectName BifrostContextKey = "bifrost-governance-project-name"
+
+	// []string (budget IDs applicable to this request - set by governance plugin)
+	//
+	// Deprecated: use the IDs of ctx.Grant().Limits().Budgets() instead.
+	BifrostContextKeyGovernanceBudgetIDs BifrostContextKey = "bifrost-governance-budget-ids"
+
+	// []string (rate limit IDs applicable to this request - set by governance plugin)
+	//
+	// Deprecated: use the IDs of ctx.Grant().Limits().RateLimits() instead.
+	BifrostContextKeyGovernanceRateLimitIDs BifrostContextKey = "bifrost-governance-rate-limit-ids"
+
+	// string (to store the user ID (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().User().ID instead.
+	BifrostContextKeyUserID BifrostContextKey = "bifrost-user-id"
+
+	// string (to store the user name (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().User().Name instead.
+	BifrostContextKeyUserName BifrostContextKey = "bifrost-user-name"
+
+	// string (to store the user email (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().User().Email instead.
+	BifrostContextKeyUserEmail BifrostContextKey = "bifrost-user-email"
 )
 
 // Headers a request uses to name the project it asks to be scoped by. The id takes precedence over
