@@ -183,3 +183,84 @@ func assertEffortWithoutBudget(t *testing.T, captured map[string]any, effort str
 		t.Fatalf("thinking.budget_tokens = %#v on an effort-only request; DeepSeek ignores it, so it must not be synthesized; wire body = %#v", budget, captured)
 	}
 }
+
+// TestAnthropicEndpointKeepsEffortAlongsideExplicitBudget: a caller may send
+// both reasoning.effort and reasoning.max_tokens. The explicit-budget branch
+// honours the budget, and before this change it returned without ever emitting
+// output_config.effort - so the effort was dropped for exactly the combination
+// where the caller was most explicit about wanting it. Reported by
+// @coderabbitai on #6740.
+//
+// responses.go already preserved a co-present effort in its adaptive-thinking
+// sub-branch; this extends the same treatment to the branches that were missing
+// it. The budget itself is untouched.
+func TestAnthropicEndpointKeepsEffortAlongsideExplicitBudget(t *testing.T) {
+	t.Parallel()
+	const budget = 3000
+
+	t.Run("chat", func(t *testing.T) {
+		t.Parallel()
+		var captured map[string]any
+		server := captureAnthropicWire(t, &captured)
+		defer server.Close()
+
+		provider, err := newTestDeepSeekProvider(server.URL)
+		if err != nil {
+			t.Fatalf("NewDeepSeekProvider: %v", err)
+		}
+		effort := "medium"
+		msg := "hello"
+		_, bifrostErr := provider.ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), anthropicEndpointKey(), &schemas.BifrostChatRequest{
+			Provider: schemas.DeepSeek,
+			Model:    "deepseek-v4-flash",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &msg}}},
+			Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: &effort, MaxTokens: schemas.Ptr(budget)}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+		}
+		assertEffortAndBudget(t, captured, effort, budget)
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		t.Parallel()
+		var captured map[string]any
+		server := captureAnthropicWire(t, &captured)
+		defer server.Close()
+
+		provider, err := newTestDeepSeekProvider(server.URL)
+		if err != nil {
+			t.Fatalf("NewDeepSeekProvider: %v", err)
+		}
+		effort := "high"
+		msg := "hello"
+		_, bifrostErr := provider.Responses(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), anthropicEndpointKey(), &schemas.BifrostResponsesRequest{
+			Provider: schemas.DeepSeek,
+			Model:    "deepseek-v4-pro",
+			Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: &msg}}},
+			Params:   &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{Effort: &effort, MaxTokens: schemas.Ptr(budget)}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("Responses: %v", bifrostErr.Error.Message)
+		}
+		assertEffortAndBudget(t, captured, effort, budget)
+	})
+}
+
+// assertEffortAndBudget pins that an explicit budget does not cost the caller
+// their effort: both reach the wire.
+func assertEffortAndBudget(t *testing.T, captured map[string]any, effort string, budget int) {
+	t.Helper()
+	outputConfig, ok := captured["output_config"].(map[string]any)
+	if !ok || outputConfig["effort"] != effort {
+		t.Fatalf("output_config.effort = %#v, want %q alongside the explicit budget; wire body = %#v", captured["output_config"], effort, captured)
+	}
+	thinking, ok := captured["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking = %#v, want an object carrying the caller's budget; wire body = %#v", captured["thinking"], captured)
+	}
+	got, has := thinking["budget_tokens"].(float64)
+	if !has || int(got) != budget {
+		t.Fatalf("thinking.budget_tokens = %#v, want %d; the explicit budget must survive; wire body = %#v", thinking["budget_tokens"], budget, captured)
+	}
+}
