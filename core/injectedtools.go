@@ -505,11 +505,6 @@ func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, con
 	if bifrost.MCPManager == nil {
 		return nil
 	}
-	// A raw-body request goes to the provider byte for byte, so a rewrite of the parsed
-	// request would never reach the wire. Send it as the caller wrote it.
-	if useRaw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); useRaw {
-		return nil
-	}
 	return resolveInjectedTools(bifrost.MCPManager, config, requestType, bifrost.logger)
 }
 
@@ -573,4 +568,95 @@ func (bifrost *Bifrost) executeInjectedCall(ctx *schemas.BifrostContext, call sc
 		Content:         &schemas.ChatMessageContent{ContentStr: &message},
 		ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: call.ID, IsError: new(true)},
 	}
+}
+
+// clearAnthropicPassthroughForInjectedTools moves an attempt with injected tools off
+// Anthropic raw-body passthrough, the path Claude Code takes to Anthropic models, and
+// returns the tool set the attempt should use.
+//
+// Passthrough forwards the caller's bytes, so the request rewrite (native web search
+// out, MCP tool in) and the appended turns would never reach the wire, and the raw
+// upstream events streamed back would show the client the injected tool_use blocks.
+// The typed path is the one every non-Anthropic provider already serves Claude Code
+// through. It runs before applyRawCaptureSignals for the same reason as
+// clearAnthropicPassthroughForNonNativeProvider.
+//
+// A request whose conversation exists only in the raw body (a direct SDK call with an
+// empty typed input) has nothing for the typed path to send. It keeps passthrough and
+// goes out without the injected tool: injection fails open, as it does when the tool
+// cannot be resolved.
+//
+// The passthrough settings are saved first, so a later attempt without injected tools
+// (a fallback) gets them back from restoreAnthropicPassthroughAfterInjectedTools.
+func clearAnthropicPassthroughForInjectedTools(ctx *schemas.BifrostContext, set *injectedToolSet, req *schemas.BifrostRequest) *injectedToolSet {
+	if set == nil {
+		return nil
+	}
+	if useRaw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); !useRaw {
+		return set
+	}
+	if !hasTypedInput(req) {
+		return nil
+	}
+	if _, saved := ctx.Value(injectedToolsPassthroughKey).(*passthroughSnapshot); !saved {
+		snapshot := &passthroughSnapshot{values: make(map[schemas.BifrostContextKey]any, len(passthroughKeys))}
+		for _, key := range passthroughKeys {
+			snapshot.values[key] = ctx.Value(key)
+		}
+		ctx.SetValue(injectedToolsPassthroughKey, snapshot)
+	}
+	disableAnthropicPassthrough(ctx)
+	return set
+}
+
+// restoreAnthropicPassthroughAfterInjectedTools puts back the passthrough settings an
+// earlier attempt with injected tools switched off. Each attempt calls it before
+// deciding passthrough afresh, so an attempt's own checks (a non-Anthropic provider,
+// unsupported structured output, its own injected tools) still switch it off again.
+func restoreAnthropicPassthroughAfterInjectedTools(ctx *schemas.BifrostContext) {
+	snapshot, ok := ctx.Value(injectedToolsPassthroughKey).(*passthroughSnapshot)
+	if !ok {
+		return
+	}
+	for key, value := range snapshot.values {
+		if value == nil {
+			ctx.ClearValue(key)
+		} else {
+			ctx.SetValue(key, value)
+		}
+	}
+	ctx.ClearValue(injectedToolsPassthroughKey)
+}
+
+// injectedToolsContextKey keys core-internal state for injected tools on the context.
+type injectedToolsContextKey string
+
+const injectedToolsPassthroughKey injectedToolsContextKey = "injected-tools-passthrough-snapshot"
+
+// passthroughKeys are the settings disableAnthropicPassthrough changes.
+var passthroughKeys = []schemas.BifrostContextKey{
+	schemas.BifrostContextKeyUseRawRequestBody,
+	schemas.BifrostContextKeyRawRequestBodyTextRewriter,
+	schemas.BifrostContextKeyRawStreamTextCodec,
+	schemas.BifrostContextKeySendBackRawResponse,
+	schemas.BifrostContextKeyPassthroughOverridesPresent,
+	schemas.BifrostContextKeyURLPath,
+}
+
+// passthroughSnapshot holds the passthrough settings as ingress set them. Small handles
+// only: flags, a path and codec pointers.
+type passthroughSnapshot struct {
+	values map[schemas.BifrostContextKey]any
+}
+
+func hasTypedInput(req *schemas.BifrostRequest) bool {
+	switch {
+	case req == nil:
+		return false
+	case req.ResponsesRequest != nil:
+		return len(req.ResponsesRequest.Input) > 0
+	case req.ChatRequest != nil:
+		return len(req.ChatRequest.Input) > 0
+	}
+	return false
 }
