@@ -367,6 +367,10 @@ func (vk *TableVirtualKey) IsActiveValue() bool {
 // vault base path for this model automatically.
 func (vk *TableVirtualKey) VaultPathKey() string { return vk.ID }
 
+// VaultPathKeyColumn names the column holding VaultPathKey, so the vault callbacks can
+// load the stored row and remove the secrets a save replaces.
+func (vk *TableVirtualKey) VaultPathKeyColumn() string { return "id" }
+
 // VaultStoreSelfManaged marks TableVirtualKey as storing its own vault secrets from
 // within BeforeSave, so the global vault callback skips it.
 func (vk *TableVirtualKey) VaultStoreSelfManaged() {}

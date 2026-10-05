@@ -92,6 +92,10 @@ func (c *TableOauthConfig) AfterFind(tx *gorm.DB) error {
 // callback can compute the vault base path for this model automatically.
 func (c *TableOauthConfig) VaultPathKey() string { return c.ID }
 
+// VaultPathKeyColumn names the column holding VaultPathKey, so the vault callbacks can
+// load the stored row and remove the secrets a save replaces.
+func (c *TableOauthConfig) VaultPathKeyColumn() string { return "id" }
+
 // GetResolvedClientID returns the resolved ClientID value, expanding env var references at runtime.
 func (c *TableOauthConfig) GetResolvedClientID() string {
 	return c.ClientID.GetValue()

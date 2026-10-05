@@ -417,3 +417,7 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 // VaultPathKey implements schemas.VaultPathKeyer so the global GORM vault
 // callback can compute the vault base path for this model automatically.
 func (c *TableMCPClient) VaultPathKey() string { return c.ClientID }
+
+// VaultPathKeyColumn names the column holding VaultPathKey, so the vault callbacks can
+// load the stored row and remove the secrets a save replaces.
+func (c *TableMCPClient) VaultPathKeyColumn() string { return "client_id" }

@@ -78,6 +78,10 @@ func (TableProvider) TableName() string { return "config_providers" }
 // and remove this provider's extra header secrets under config_providers/<name>.
 func (p *TableProvider) VaultPathKey() string { return p.Name }
 
+// VaultPathKeyColumn names the column holding VaultPathKey, so the vault callbacks can
+// load the stored row and remove the secrets a save replaces.
+func (p *TableProvider) VaultPathKeyColumn() string { return "name" }
+
 // SetNetworkConfig sets NetworkConfig and copies its extra headers into ExtraHeaders.
 // The vault store callback runs before BeforeSave, so ExtraHeaders must be set before
 // the row reaches GORM. The copy keeps the callback from writing vault refs into the
