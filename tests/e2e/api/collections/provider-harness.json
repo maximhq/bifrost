@@ -200734,6 +200734,352 @@
           ]
         }
       ]
+    },
+    {
+      "name": "173. Warp chat resolves calendar days in the asker's time zone (warp-calendar)",
+      "description": "Warp's tools took a window as a relative offset (-7d) or an RFC3339 timestamp. A rolling window was resolved on the server, but a calendar day was not: for \"yesterday\" or a named date the prompt told the model to work out the day's UTC boundaries itself from the asker's zone name, daylight saving included, and the server only validated what it was sent. A wrong offset moved the day by hours and the answer still read as \"yesterday\". start_time and end_time now accept the day itself (today, yesterday, 2026-09-03) or a local time with no offset, and the server resolves it at midnight in the zone the chat request named in timezone. The case has an Asia/Kolkata caller ask for one count_logs call with \"yesterday\" as both bounds, then reads the tool_calls the turn reports and the window the answer quotes. The arguments are dictated because which form a model picks unprompted varies from run to run, and the thing under test is what the server does with the day once it is named. Red before the change: a bare \"yesterday\" was refused by the tool. Requires the warp flag to be unlocked; the flag and the previous Warp config are restored at the end.",
+      "item": [
+        {
+          "name": "openai warp-calendar setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned the flag (see the test script).",
+                  "pm.collectionVariables.unset('warpCalendarFlagWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag;",
+                  "try { flag = (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0]; } catch (e) { flag = undefined; }",
+                  "pm.test('warp-calendar: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(flag.enabled, 'warp flag has no enabled state: ' + pm.response.text()).to.be.a('boolean');",
+                  "});",
+                  "// A failed read or a missing entry is not a disabled flag: record nothing, so the",
+                  "// enable and restore requests skip instead of switching off a flag that was on.",
+                  "if (pm.response.code === 200 && flag && typeof flag.enabled === 'boolean') {",
+                  "  pm.collectionVariables.set('warpCalendarFlagWas', flag.enabled ? 'true' : 'false');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai warp-calendar setup: enable warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the flag to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpCalendarFlagWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        },
+        {
+          "name": "openai warp-calendar setup: read current warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned a config (see the test script).",
+                  "pm.collectionVariables.unset('warpCalendarConfigWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var config;",
+                  "try { config = pm.response.json(); } catch (e) { config = undefined; }",
+                  "var isConfig = pm.response.code === 200 && config !== null && typeof config === 'object' && !Array.isArray(config);",
+                  "pm.test('warp-calendar: warp config is a config object', function () {",
+                  "  pm.expect(isConfig, 'not a config: ' + pm.response.text()).to.equal(true);",
+                  "});",
+                  "// Saved unchanged, and only when it is a config: an error body must never be written",
+                  "// back by the restore. Without it the configure and restore requests skip.",
+                  "if (isConfig) { pm.collectionVariables.set('warpCalendarConfigWas', pm.response.text()); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-calendar: configure Warp on gpt-4o-mini",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the previous config to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpCalendarConfigWas')) { pm.execution.skipRequest(); return; }",
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpCalendarConfigWas') || '{}');",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || ''",
+                  "};",
+                  "pm.collectionVariables.set('warpCalendarConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpCalendarConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-calendar: a tool call naming yesterday is resolved in the asker's time zone",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('warp-calendar: turn succeeded', function () {",
+                  "  pm.expect(body.error, 'turn failed: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.answer, 'no answer: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "// The calls that named the day the way the request asked, with whether the tool took them.",
+                  "var named = [];",
+                  "(body.tool_calls || []).forEach(function (call) {",
+                  "  var args = {};",
+                  "  try { args = JSON.parse(call.arguments || '{}'); } catch (e) { args = {}; }",
+                  "  var filters = args.filters || {};",
+                  "  if (call.name === 'count_logs' && String(filters.start_time).toLowerCase() === 'yesterday' && String(filters.end_time).toLowerCase() === 'yesterday') {",
+                  "    named.push({ name: call.name, failed: !!call.failed });",
+                  "  }",
+                  "});",
+                  "var seen = JSON.stringify(body.tool_calls || []);",
+                  "pm.test('warp-calendar: the tool was called with yesterday as both bounds', function () {",
+                  "  pm.expect(named.length, 'no call passed yesterday twice: ' + seen).to.be.at.least(1);",
+                  "});",
+                  "pm.test('warp-calendar: the tool accepted the day instead of refusing it', function () {",
+                  "  var accepted = named.filter(function (call) { return !call.failed; });",
+                  "  pm.expect(accepted.length, 'yesterday was refused: ' + seen).to.be.at.least(1);",
+                  "});",
+                  "pm.test('warp-calendar: the window starts at midnight in Kolkata, 18:30 UTC', function () {",
+                  "  pm.expect(body.answer, 'window not resolved in the asker zone: ' + pm.response.text()).to.include('T18:30:00Z');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"Call count_logs exactly once with filters {\\\"start_time\\\":\\\"yesterday\\\",\\\"end_time\\\":\\\"yesterday\\\",\\\"scope\\\":\\\"all\\\"}, passing those three values exactly as written. Then reply with the count and the provenance block.\"}],\"timezone\":\"Asia/Kolkata\",\"utc_offset_minutes\":330,\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai warp-calendar cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The config was never snapshotted, so setup did not change it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpCalendarConfigWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('warpCalendarConfigBody');",
+                  "pm.collectionVariables.unset('warpCalendarConversation');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpCalendarConfigWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-calendar cleanup: restore warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The flag was never snapshotted, so setup did not touch it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpCalendarFlagWas')) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('warpCalendarFlagBody', JSON.stringify({ enabled: pm.collectionVariables.get('warpCalendarFlagWas') === 'true' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: flag restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpCalendarFlagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
     }
   ]
 }
