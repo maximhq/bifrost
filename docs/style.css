@@ -87,56 +87,80 @@ nav[aria-label="Main"] .navbar-link a[href*="#free-license"]:hover {
     line-height: normal;
 }
 
-/* Pull footer columns toward the logo and show full link labels. */
-footer.advanced-footer > div > div:first-child {
-    justify-content: flex-start;
-    column-gap: 3rem;
-}
-
-footer.advanced-footer > div > div:first-child > div:first-child {
-    min-width: 0;
-    justify-content: flex-start;
-    align-items: flex-start;
-    row-gap: 1.25rem;
-}
-
-footer.advanced-footer > div > div:first-child > div:first-child > div:last-child {
-    margin-top: auto;
-}
-
 .footer-compliance {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.5rem;
+    max-width: 100%;
 }
 
 .footer-compliance img {
     width: 2.5rem;
     height: 2.5rem;
+    flex: none;
     object-fit: contain;
 }
 
-footer.advanced-footer > div > div:first-child > div:last-child {
-    flex: 0 1 auto;
-    justify-content: start;
-    grid-template-columns: repeat(4, max-content) !important;
-    column-gap: 4rem !important;
-}
+/* Phone: stack the logo, badges, and social icons so they don't share one row. */
+@media (max-width: 767px) {
+    footer.advanced-footer > div > div:first-child > div:first-child {
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: flex-start;
+        row-gap: 1rem;
+        width: 100%;
+        height: auto;
+    }
 
-footer.advanced-footer > div > div:first-child > div:last-child > div {
-    align-items: flex-start;
-    width: auto;
-    flex: none;
-}
+    footer.advanced-footer > div > div:first-child > div:first-child > div:last-child {
+        justify-content: flex-start;
+        min-width: 0;
+        max-width: 100%;
+    }
 
-footer.advanced-footer a[class*="truncate"] {
-    max-width: none !important;
-    overflow: visible !important;
-    text-overflow: unset !important;
-}
-
-@media (min-width: 768px) {
+    footer.advanced-footer > div > div:first-child > div:last-child,
+    footer.advanced-footer > div > div:first-child > div:last-child > div,
     footer.advanced-footer a[class*="truncate"] {
+        white-space: normal !important;
+    }
+}
+
+/* Desktop: pull the columns toward the logo and show full link labels. */
+@media (min-width: 768px) {
+    footer.advanced-footer > div > div:first-child {
+        justify-content: flex-start;
+        column-gap: 3rem;
+    }
+
+    footer.advanced-footer > div > div:first-child > div:first-child {
+        min-width: 0;
+        justify-content: flex-start;
+        align-items: flex-start;
+        row-gap: 1.25rem;
+    }
+
+    footer.advanced-footer > div > div:first-child > div:first-child > div:last-child {
+        margin-top: auto;
+    }
+
+    footer.advanced-footer > div > div:first-child > div:last-child {
+        flex: 0 1 auto;
+        justify-content: start;
+        grid-template-columns: repeat(4, max-content) !important;
+        column-gap: 4rem !important;
+    }
+
+    footer.advanced-footer > div > div:first-child > div:last-child > div {
+        align-items: flex-start;
+        width: auto;
+        flex: none;
+    }
+
+    footer.advanced-footer a[class*="truncate"] {
+        max-width: none !important;
+        overflow: visible !important;
+        text-overflow: unset !important;
         white-space: nowrap !important;
     }
 }
