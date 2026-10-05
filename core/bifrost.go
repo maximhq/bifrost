@@ -4946,7 +4946,9 @@ func (bifrost *Bifrost) GetProviderByKey(providerKey schemas.ModelProvider) sche
 // SelectKeyForProviderRequestType selects an API key for the given provider, request type, and model.
 // Used by WebSocket handlers that need a key for upstream connections while honoring request-specific
 // AllowedRequests gates such as realtime-only support.
-func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
+// additionalModels narrows the pool to keys that also serve those models, for sessions where the
+// provider calls several models on one key (GPT Live's voice model and its Responses backend).
+func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, additionalModels ...string) (schemas.Key, error) {
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
@@ -4958,6 +4960,20 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 	supportedKeys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider)
 	if err != nil {
 		return schemas.Key{}, err
+	}
+	// A caller-supplied direct key has no model lists to check.
+	if _, isDirectKey := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); !isDirectKey && len(supportedKeys) > 0 {
+		for _, additionalModel := range additionalModels {
+			if additionalModel == "" {
+				continue
+			}
+			supportedKeys = slices.DeleteFunc(supportedKeys, func(key schemas.Key) bool {
+				return !keySupportsModel(baseProvider, &key, additionalModel)
+			})
+			if len(supportedKeys) == 0 {
+				return schemas.Key{}, fmt.Errorf("no keys found for provider %s that support both model %s and model %s", providerKey, model, additionalModel)
+			}
+		}
 	}
 	if len(supportedKeys) == 0 {
 		return schemas.Key{}, nil
@@ -9908,14 +9924,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 			// NOTE: Model filtering uses the original requested model (which may be an alias).
 			// key.Models and key.BlacklistedModels must therefore be expressed in alias keys.
 			// The provider-specific identifier is resolved later in the handler closure via key.Aliases.Resolve(model).
-			// vLLM also resolves a per-key copy below because ModelName contains the identifier served by that key.
-			modelSupported := hasValue && key.Models.IsAllowed(model) && !key.BlacklistedModels.IsBlocked(model)
-			if baseProviderType == schemas.VLLM && key.VLLMKeyConfig != nil {
-				if key.VLLMKeyConfig.ModelName != "" {
-					modelSupported = modelSupported && (key.VLLMKeyConfig.ModelName == key.Aliases.Resolve(model))
-				}
-			}
-			if modelSupported {
+			// keySupportsModel also resolves a per-key copy for vLLM because ModelName contains the identifier served by that key.
+			if hasValue && keySupportsModel(baseProviderType, &key, model) {
 				supportedKeys = append(supportedKeys, key)
 			}
 		}
@@ -9970,6 +9980,17 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 
 	// Normal case: return the full filtered pool with rotation enabled.
 	return supportedKeys, true, nil
+}
+
+// keySupportsModel reports whether a key's allow list, deny list and vLLM served model admit model.
+func keySupportsModel(baseProviderType schemas.ModelProvider, key *schemas.Key, model string) bool {
+	if !key.Models.IsAllowed(model) || key.BlacklistedModels.IsBlocked(model) {
+		return false
+	}
+	if baseProviderType == schemas.VLLM && key.VLLMKeyConfig != nil && key.VLLMKeyConfig.ModelName != "" {
+		return key.VLLMKeyConfig.ModelName == key.Aliases.Resolve(model)
+	}
+	return true
 }
 
 // Shutdown gracefully stops all workers when triggered.

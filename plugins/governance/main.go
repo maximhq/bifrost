@@ -1700,18 +1700,19 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
-			Success:       success,
-			TokensUsed:    int64(tokensUsed),
-			Cost:          cost,
-			RequestID:     requestID,
-			BillingNonce:  billingNonce,
-			IsStreaming:   isStreaming,
-			IsFinalChunk:  isFinalChunk,
-			HasUsageData:  tokensUsed > 0 || cost > 0,
-			AttemptNumber: attemptNumber,
-			BilledReason:  billedReason,
-			Budgets:       budgets,
-			RateLimits:    rateLimits,
+			Success:          success,
+			TokensUsed:       int64(tokensUsed),
+			Cost:             cost,
+			RequestID:        requestID,
+			BillingNonce:     billingNonce,
+			SkipRequestCount: requestType == schemas.LiveRequest, // a voice billing window is not a request
+			IsStreaming:      isStreaming,
+			IsFinalChunk:     isFinalChunk,
+			HasUsageData:     tokensUsed > 0 || cost > 0,
+			AttemptNumber:    attemptNumber,
+			BilledReason:     billedReason,
+			Budgets:          budgets,
+			RateLimits:       rateLimits,
 		}
 
 		// Queue usage update asynchronously using tracker

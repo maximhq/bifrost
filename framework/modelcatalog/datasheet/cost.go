@@ -649,6 +649,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
 		cost = computeContainerCreationCost(pricing)
+	case schemas.LiveRequest:
+		cost = computeLiveCost(pricing, input.audioSeconds)
 	default:
 		return nil
 	}
@@ -666,8 +668,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	// the resolved pricing row carries one. It maps to no token category, so it
 	// folds into the input side (InputCostDetails.RequestCost) and the total.
 	// Deliberately added after the off-peak scaling: a flat per-request fee is
-	// not a usage charge and is not discounted.
-	if pricing.CostPerRequest != nil {
+	// not a usage charge and is not discounted. A live billing window is not a request.
+	if pricing.CostPerRequest != nil && requestType != schemas.LiveRequest {
 		if cost == nil {
 			cost = &schemas.BifrostCost{}
 		}
@@ -1707,6 +1709,16 @@ func videoResolutionBand(size string) int {
 		return 0
 	}
 	return min(width, height)
+}
+
+// computeLiveCost bills GPT Live voice duration: session seconds × input_cost_per_second.
+// Backend model tokens are priced separately as Responses usage.
+func computeLiveCost(pricing *configstoreTables.TableModelPricing, seconds *float64) *schemas.BifrostCost {
+	if seconds == nil || *seconds <= 0 || pricing.InputCostPerSecond == nil {
+		return nil
+	}
+	cost := *seconds * *pricing.InputCostPerSecond
+	return newInputOutputCostWithDetails(cost, 0, &schemas.InputCostDetails{AudioCost: cost}, nil)
 }
 
 // computeOCRCost handles OCR requests, billing per page processed.
