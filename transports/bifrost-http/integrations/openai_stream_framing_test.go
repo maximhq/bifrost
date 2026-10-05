@@ -81,7 +81,7 @@ func TestOpenAIChatStreamUsageSSEFraming(t *testing.T) {
 				defer upstream.Close()
 				logger := bifrost.NewNoOpLogger()
 				provider := openai.NewOpenAIProvider(&schemas.ProviderConfig{
-					NetworkConfig:       schemas.NetworkConfig{BaseURL: upstream.URL},
+					NetworkConfig:       schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(upstream.URL)},
 					SendBackRawResponse: true,
 				}, logger)
 				parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)

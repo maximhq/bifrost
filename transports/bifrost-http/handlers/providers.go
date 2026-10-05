@@ -28,15 +28,29 @@ import (
 // validateProviderBaseURLShape keeps appended operation paths in the URL path.
 // Destination validation follows authentication so anonymous callers cannot
 // trigger DNS lookups while submitting endpoint changes.
-func validateProviderBaseURLShape(raw string) error {
+func validateProviderBaseURLShape(baseURL *schemas.SecretVar) error {
+	if baseURL == nil {
+		return nil
+	}
+	// A reference is checked by the value it resolves to, so an env./vault.
+	// base_url cannot carry credentials, a query, or a fragment past the
+	// indirection. The resolved value never reaches the response: a parse
+	// failure on a reference reports the reference instead.
+	raw := baseURL.GetValue()
 	if raw == "" {
 		return nil
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
+		if baseURL.IsFromSecret() {
+			return fmt.Errorf("base URL resolved from %s is not a valid URL", baseURL.GetRawRef())
+		}
 		return fmt.Errorf("invalid base URL: %w", err)
 	}
 	if u.User != nil || strings.ContainsAny(raw, "?#") {
+		if baseURL.IsFromSecret() {
+			return fmt.Errorf("base URL resolved from %s must not contain credentials, a query, or a fragment", baseURL.GetRawRef())
+		}
 		return errors.New("base URL must not contain credentials, a query, or a fragment")
 	}
 	return nil
@@ -387,7 +401,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		// fail-open bypass could otherwise set both fields together and self-authorize its
 		// own SSRF target. The flag alone also widens what ConfigureDialer lets key-level
 		// URLs (Ollama/SGL/VLLM) reach.
-		if err := validateProviderBaseURLShape(payload.NetworkConfig.BaseURL.GetValue()); err != nil {
+		if err := validateProviderBaseURLShape(payload.NetworkConfig.BaseURL); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
@@ -634,7 +648,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
 		return
 	}
-	if err := validateProviderBaseURLShape(nc.BaseURL.GetValue()); err != nil {
+	if err := validateProviderBaseURLShape(nc.BaseURL); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}

@@ -1138,7 +1138,7 @@ func (a passthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*
 		return nil, fmt.Errorf("unsupported provider %s", p)
 	}
 	nc := schemas.DefaultNetworkConfig
-	nc.BaseURL = a.baseURL
+	nc.BaseURL = schemas.NewSecretVar(a.baseURL)
 	return &schemas.ProviderConfig{
 		NetworkConfig:            nc,
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,

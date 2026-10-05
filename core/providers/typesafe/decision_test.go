@@ -1379,7 +1379,7 @@ func newCustomTypesafeFixture(t *testing.T, custom schemas.CustomProviderConfig,
 	custom.CustomProviderKey = string(customTypesafeProviderName)
 	custom.BaseProviderType = schemas.Typesafe
 	provider, err := NewTypesafeProvider(&schemas.ProviderConfig{
-		NetworkConfig:        schemas.NetworkConfig{BaseURL: f.URL, DefaultRequestTimeoutInSeconds: 10},
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(f.URL), DefaultRequestTimeoutInSeconds: 10},
 		CustomProviderConfig: &custom,
 	}, noopLogger{})
 	if err != nil {

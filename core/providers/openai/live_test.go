@@ -22,7 +22,7 @@ var _ schemas.LiveProvider = (*OpenAIProvider)(nil)
 func TestLiveWebSocketURL(t *testing.T) {
 	t.Parallel()
 
-	provider := &OpenAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: "https://api.openai.com"}}
+	provider := &OpenAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")}}
 	cases := []struct {
 		kind      schemas.LiveConnectionKind
 		sessionID string
@@ -39,7 +39,7 @@ func TestLiveWebSocketURL(t *testing.T) {
 		}
 	}
 
-	local := &OpenAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: "http://localhost:9000"}}
+	local := &OpenAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("http://localhost:9000")}}
 	if got, err := local.LiveWebSocketURL(schemas.Key{}, schemas.LiveConnectionPrimary, ""); err != nil || got != "ws://localhost:9000/v1/live/sessions" {
 		t.Fatalf("LiveWebSocketURL() = %q, %v", got, err)
 	}
@@ -48,7 +48,7 @@ func TestLiveWebSocketURL(t *testing.T) {
 func TestLiveWebSocketURLRejectsUnsafeSessionID(t *testing.T) {
 	t.Parallel()
 
-	provider := &OpenAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: "https://api.openai.com"}}
+	provider := &OpenAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")}}
 	for _, sessionID := range []string{"", "..", "live_1/../../responses", "live_1%2Ffork", "live_1?x=1", "live_1#frag"} {
 		for _, kind := range []schemas.LiveConnectionKind{schemas.LiveConnectionSideband, schemas.LiveConnectionFork} {
 			if got, err := provider.LiveWebSocketURL(schemas.Key{}, kind, sessionID); err == nil {
@@ -65,7 +65,7 @@ func TestLiveWebSocketURLHonorsAllowedRequests(t *testing.T) {
 	t.Parallel()
 
 	blocked := &OpenAIProvider{
-		networkConfig:        schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+		networkConfig:        schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")},
 		customProviderConfig: &schemas.CustomProviderConfig{AllowedRequests: &schemas.AllowedRequests{Realtime: true}},
 	}
 	if got, err := blocked.LiveWebSocketURL(schemas.Key{}, schemas.LiveConnectionPrimary, ""); err == nil {
@@ -73,7 +73,7 @@ func TestLiveWebSocketURLHonorsAllowedRequests(t *testing.T) {
 	}
 
 	allowed := &OpenAIProvider{
-		networkConfig:        schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+		networkConfig:        schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")},
 		customProviderConfig: &schemas.CustomProviderConfig{AllowedRequests: &schemas.AllowedRequests{Live: true}},
 	}
 	if _, err := allowed.LiveWebSocketURL(schemas.Key{}, schemas.LiveConnectionPrimary, ""); err != nil {
@@ -112,7 +112,7 @@ func TestCreateLiveWebRTCSession(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	provider := &OpenAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(srv.URL)}}
 	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
 	newCtx := func() *schemas.BifrostContext {
 		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -139,7 +139,7 @@ func TestCreateLiveWebRTCSession(t *testing.T) {
 		t.Fatal("a create response without an SDP answer must be an error")
 	}
 
-	blocked := &OpenAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL},
+	blocked := &OpenAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(srv.URL)},
 		customProviderConfig: &schemas.CustomProviderConfig{AllowedRequests: &schemas.AllowedRequests{Realtime: true}}}
 	if _, bifrostErr = blocked.CreateLiveWebRTCSession(newCtx(), key, body); bifrostErr == nil {
 		t.Fatal("allowed_requests without live must block session create")
@@ -167,7 +167,7 @@ func TestLiveSessionContent(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(srv.URL)}}
 	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
 	newCtx := func() *schemas.BifrostContext {
 		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -219,7 +219,7 @@ func TestLiveSessionContentStalledUpstreamTimesOut(t *testing.T) {
 		srv.Close()
 	})
 
-	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(srv.URL)}}
 	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 200*time.Millisecond)
@@ -268,7 +268,7 @@ func TestLiveSessionContentStreamsWithoutBuffering(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(srv.URL)}}
 	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
@@ -314,7 +314,7 @@ func TestLiveSessionContentGzipBodyHasNoStatedLength(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(srv.URL)}}
 	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
 	content, bifrostErr := provider.LiveSessionContent(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, "live_123")
 	if bifrostErr != nil {

@@ -82,7 +82,7 @@ func TestOllamaModelRetrieve(t *testing.T) {
 	defer providerServer.Close()
 
 	provider, err := ollama.NewOllamaProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: providerServer.URL, DefaultRequestTimeoutInSeconds: 30},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(providerServer.URL), DefaultRequestTimeoutInSeconds: 30},
 	}, bifrost.NewNoOpLogger())
 	require.NoError(t, err)
 

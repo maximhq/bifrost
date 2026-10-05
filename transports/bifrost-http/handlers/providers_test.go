@@ -240,7 +240,7 @@ func TestAddProvider_RejectsBaseURLComponents(t *testing.T) {
 			body, err := schemas.MarshalSorted(providerCreatePayload{
 				Provider:             "mock-openai",
 				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
-				NetworkConfig:        &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1/base" + suffix},
+				NetworkConfig:        &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("http://127.0.0.1:1/base" + suffix)},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -273,7 +273,7 @@ func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
 					ClientConfig: &configstore.ClientConfig{},
 					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 						"mock-openai": {
-							NetworkConfig:            &schemas.NetworkConfig{BaseURL: storedURL},
+							NetworkConfig:            &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(storedURL)},
 							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 							CustomProviderConfig:     customConfig,
 						},
@@ -284,7 +284,7 @@ func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
 			attachBifrostClient(t, h.inMemoryStore)
 
 			body, err := schemas.MarshalSorted(providerUpdatePayload{
-				NetworkConfig:            schemas.NetworkConfig{BaseURL: storedURL + suffix},
+				NetworkConfig:            schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(storedURL + suffix)},
 				ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 4},
 				CustomProviderConfig:     customConfig,
 			})
@@ -303,8 +303,8 @@ func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
 				t.Fatalf("expected base URL rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 			}
 			stored := h.inMemoryStore.Providers["mock-openai"]
-			if stored.NetworkConfig.BaseURL != storedURL || stored.ConcurrencyAndBufferSize.Concurrency != 1 {
-				t.Fatalf("rejected update changed the stored provider: base_url=%q concurrency=%d", stored.NetworkConfig.BaseURL, stored.ConcurrencyAndBufferSize.Concurrency)
+			if stored.NetworkConfig.BaseURL.GetValue() != storedURL || stored.ConcurrencyAndBufferSize.Concurrency != 1 {
+				t.Fatalf("rejected update changed the stored provider: base_url=%q concurrency=%d", stored.NetworkConfig.BaseURL.GetValue(), stored.ConcurrencyAndBufferSize.Concurrency)
 			}
 			if len(modelsManager.reloadCalls) != 0 {
 				t.Fatalf("rejected update reloaded the provider: %v", modelsManager.reloadCalls)
@@ -397,7 +397,7 @@ func TestAddProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 			IsKeyLess:        true,
 		},
 		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL:             "http://169.254.169.254/",
+			BaseURL:             schemas.NewSecretVar("http://169.254.169.254/"),
 			AllowPrivateNetwork: true,
 		},
 	})
@@ -620,7 +620,7 @@ func TestUpdateProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 	}{
 		providerUpdatePayload: providerUpdatePayload{
 			NetworkConfig: schemas.NetworkConfig{
-				BaseURL:             "http://169.254.169.254/",
+				BaseURL:             schemas.NewSecretVar("http://169.254.169.254/"),
 				AllowPrivateNetwork: true,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
@@ -643,7 +643,7 @@ func TestUpdateProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
 		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	if got := h.inMemoryStore.Providers["mock-openai"].NetworkConfig; got != nil && got.BaseURL == "http://169.254.169.254/" {
+	if got := h.inMemoryStore.Providers["mock-openai"].NetworkConfig; got != nil && got.BaseURL.GetValue() == "http://169.254.169.254/" {
 		t.Fatalf("expected base URL not to be persisted")
 	}
 }
@@ -705,7 +705,7 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 					ClientConfig: &configstore.ClientConfig{},
 					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 						"mock-openai": {
-							NetworkConfig:            &schemas.NetworkConfig{BaseURL: tc.storedBaseURL, AllowPrivateNetwork: tc.storedAllowPrivate},
+							NetworkConfig:            &schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(tc.storedBaseURL), AllowPrivateNetwork: tc.storedAllowPrivate},
 							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 							CustomProviderConfig:     customConfig,
 						},
@@ -716,7 +716,7 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 			attachBifrostClient(t, h.inMemoryStore)
 
 			body, err := sonic.Marshal(providerUpdatePayload{
-				NetworkConfig:            schemas.NetworkConfig{BaseURL: tc.baseURL, AllowPrivateNetwork: tc.allowPrivateNetwork},
+				NetworkConfig:            schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(tc.baseURL), AllowPrivateNetwork: tc.allowPrivateNetwork},
 				ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 4},
 				CustomProviderConfig:     customConfig,
 			})
@@ -745,7 +745,7 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 			if stored.NetworkConfig.AllowPrivateNetwork && tc.wantStatus == fasthttp.StatusForbidden {
 				t.Fatalf("expected allow_private_network not to be persisted")
 			}
-			if tc.wantStatus == fasthttp.StatusOK && (stored.NetworkConfig.BaseURL != tc.baseURL || stored.NetworkConfig.AllowPrivateNetwork != tc.allowPrivateNetwork) {
+			if tc.wantStatus == fasthttp.StatusOK && (stored.NetworkConfig.BaseURL.GetValue() != tc.baseURL || stored.NetworkConfig.AllowPrivateNetwork != tc.allowPrivateNetwork) {
 				t.Fatalf("stored network config got base_url=%q allow_private_network=%v, want %q/%v", stored.NetworkConfig.BaseURL, stored.NetworkConfig.AllowPrivateNetwork, tc.baseURL, tc.allowPrivateNetwork)
 			}
 		})
@@ -2928,13 +2928,58 @@ func listModelsForTest(t *testing.T, h *ProviderHandler, uri string) ListModelsR
 
 func TestProviderBaseURLShape(t *testing.T) {
 	for _, raw := range []string{"https://user:pass@127.0.0.1/base", "https://127.0.0.1/base?", "https://127.0.0.1/base#", "https://127.0.0.1/base?q=1"} {
-		if validateProviderBaseURLShape(raw) == nil {
+		if validateProviderBaseURLShape(schemas.NewSecretVar(raw)) == nil {
 			t.Errorf("accepted %q", raw)
 		}
 	}
 	for _, raw := range []string{"", "http://127.0.0.1:1234/v1", "https://example.com/nested/path", "https://example.com/a%3Fb%23c"} {
-		if err := validateProviderBaseURLShape(raw); err != nil {
+		if err := validateProviderBaseURLShape(schemas.NewSecretVar(raw)); err != nil {
 			t.Errorf("rejected %q: %v", raw, err)
 		}
+	}
+	if err := validateProviderBaseURLShape(nil); err != nil {
+		t.Errorf("rejected an absent base URL: %v", err)
+	}
+}
+
+// TestProviderBaseURLShapeFollowsSecretReferences covers the indirection: the
+// shape contract holds on the value a reference resolves to, so credentials, a
+// query, or a fragment cannot be smuggled past env./vault. indirection. The
+// resolved value is a secret, so a rejection names the reference instead.
+func TestProviderBaseURLShapeFollowsSecretReferences(t *testing.T) {
+	const ref = "env.BIFROST_TEST_PROVIDER_BASE_URL"
+
+	t.Run("a conformant resolved URL is accepted", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_PROVIDER_BASE_URL", "https://api.example.com/v1")
+		if err := validateProviderBaseURLShape(schemas.NewSecretVar(ref)); err != nil {
+			t.Fatalf("rejected a conformant resolved base URL: %v", err)
+		}
+	})
+
+	t.Run("an unset reference resolves to nothing and is accepted", func(t *testing.T) {
+		if err := validateProviderBaseURLShape(schemas.NewSecretVar(ref)); err != nil {
+			t.Fatalf("rejected an unresolved reference: %v", err)
+		}
+	})
+
+	for _, resolved := range []string{
+		"https://user:pass@api.example.com/v1",
+		"https://api.example.com/v1?q=1",
+		"https://api.example.com/v1#frag",
+	} {
+		t.Run("rejects resolved "+resolved, func(t *testing.T) {
+			t.Setenv("BIFROST_TEST_PROVIDER_BASE_URL", resolved)
+			err := validateProviderBaseURLShape(schemas.NewSecretVar(ref))
+			if err == nil {
+				t.Fatalf("accepted %q through a secret reference", resolved)
+			}
+			if !strings.Contains(err.Error(), ref) {
+				t.Errorf("rejection does not name the reference: %v", err)
+			}
+			// The resolved value is a secret; it must not reach the caller.
+			if strings.Contains(err.Error(), "api.example.com") {
+				t.Errorf("rejection exposed the resolved base URL: %v", err)
+			}
+		})
 	}
 }
