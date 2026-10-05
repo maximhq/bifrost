@@ -54,6 +54,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
+	"github.com/tidwall/gjson"
 	"gorm.io/gorm"
 )
 
@@ -1152,6 +1153,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 6. MCP config
 	loadMCPConfig(ctx, config, &configData)
+	for _, problem := range unresolvedInjectedTools(config.Providers, config.GetMCPClientNames()) {
+		logger.Warn("%s; requests to this provider are sent without it until the client exists", problem)
+	}
 	// 7. Webhook endpoints
 	loadWebhooksConfig(ctx, config, &configData)
 	// 8. Governance config
@@ -8696,6 +8700,71 @@ func ValidatePromptCache(cfg *schemas.PromptCacheConfig) error {
 	// and a point carrying neither role nor index, which matchMessageIndices documents
 	// as matching nothing on purpose rather than as a misconfiguration to reject.
 	return nil
+}
+
+// ValidateInjectedTools validates the injected_tools block arriving over the management
+// API. mcpClientNames is the configured MCP clients keyed by ID (GetMCPClientNames).
+//
+// The referenced client must exist now. At request time a missing client fails open,
+// so a typo here would otherwise leave the provider serving requests without the tool
+// the operator configured and with no error anywhere. The tool itself is not checked:
+// a client's tool list is only known once it connects, and that is a runtime concern.
+func ValidateInjectedTools(cfg *schemas.InjectedToolsConfig, mcpClientNames map[string]string) error {
+	if cfg == nil || cfg.WebSearch == nil {
+		return nil
+	}
+	ref := cfg.WebSearch
+	if strings.TrimSpace(ref.MCPClientName) == "" {
+		return fmt.Errorf("injected tools validation failed: web_search.mcp_client_name is required")
+	}
+	if strings.TrimSpace(ref.ToolName) == "" {
+		return fmt.Errorf("injected tools validation failed: web_search.tool_name is required")
+	}
+	for _, name := range mcpClientNames {
+		if name == ref.MCPClientName {
+			return nil
+		}
+	}
+	return fmt.Errorf("injected tools validation failed: web_search references unknown MCP client %q", ref.MCPClientName)
+}
+
+// ValidateInjectedToolsBody checks the raw injected_tools block of a provider write body
+// against config.schema.json. It runs on the raw bytes because typed decoding keeps only
+// web_search: a misspelled slot or a null web_search would decode to an empty config,
+// and the write would succeed with no tool configured. A null or absent block is fine.
+func ValidateInjectedToolsBody(body []byte) error {
+	block := gjson.GetBytes(body, "injected_tools")
+	if !block.IsObject() {
+		return nil
+	}
+	var err error
+	block.ForEach(func(key, value gjson.Result) bool {
+		switch {
+		case key.String() != "web_search":
+			err = fmt.Errorf("injected tools validation failed: unknown slot %q", key.String())
+		case !value.IsObject():
+			err = fmt.Errorf("injected tools validation failed: web_search must be an object")
+		}
+		return err == nil
+	})
+	return err
+}
+
+// unresolvedInjectedTools lists providers whose injected_tools name an MCP client that
+// is not configured. config.json is checked only against the schema, which cannot know
+// the client list, so LoadConfig reports these as boot warnings. They are warnings, not
+// errors: a client can be added later through the API, and at request time an
+// unresolved tool fails open.
+func unresolvedInjectedTools(providers map[schemas.ModelProvider]configstore.ProviderConfig, mcpClientNames map[string]string) []string {
+	var problems []string
+	for provider, config := range providers {
+		if err := ValidateInjectedTools(config.InjectedTools, mcpClientNames); err != nil {
+			ref := config.InjectedTools.WebSearch
+			problems = append(problems, fmt.Sprintf("provider %s: injected_tools.web_search references unknown MCP client %q", provider, ref.MCPClientName))
+		}
+	}
+	sort.Strings(problems)
+	return problems
 }
 
 // ValidateCustomProviderUpdate validates that immutable fields in CustomProviderConfig are not changed during updates
