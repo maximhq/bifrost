@@ -1201,24 +1201,30 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 			wantBodyHas: "x-model-provider",
 		},
 		{
+			name: "account operation is refused", uri: "/anthropic_passthrough/v1/files", wantStatus: fasthttp.StatusForbidden, wantBodyHas: "inference endpoint",
+		},
+		{
+			name: "batch operation is refused", uri: "/anthropic_passthrough/v1/messages/batches", wantStatus: fasthttp.StatusForbidden, wantBodyHas: "inference endpoint",
+		},
+		{
 			name:         "well-formed anthropic path is forwarded",
 			uri:          "/anthropic_passthrough/v1/messages?beta=true",
 			wantStatus:   fasthttp.StatusOK,
 			wantUpstream: "/v1/messages?beta=true",
 		},
 		{
-			name:         "versioned genai prefix is stripped at the boundary",
-			uri:          "/genai_passthrough/v1beta/models/claude:generateContent",
-			provider:     "anthropic",
-			wantStatus:   fasthttp.StatusOK,
-			wantUpstream: "/models/claude:generateContent",
+			name:        "versioned genai prefix is stripped at the boundary",
+			uri:         "/genai_passthrough/v1beta/models/claude:generateContent",
+			provider:    "anthropic",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "provider does not match",
 		},
 		{
-			name:         "longer first segment falls back to the shorter prefix",
-			uri:          "/genai_passthrough/v1beta1foo/x",
-			provider:     "anthropic",
-			wantStatus:   fasthttp.StatusOK,
-			wantUpstream: "/v1beta1foo/x",
+			name:        "longer first segment falls back to the shorter prefix",
+			uri:         "/genai_passthrough/v1beta1foo/x",
+			provider:    "anthropic",
+			wantStatus:  fasthttp.StatusForbidden,
+			wantBodyHas: "inference endpoint",
 		},
 	}
 
@@ -1249,5 +1255,57 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 			require.Equal(t, tc.wantUpstream, got[0].path)
 			require.Equal(t, "sk-ant-test-operator-key", got[0].apiKey)
 		})
+	}
+}
+
+func TestPassthroughInferenceRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		path     string
+	}{
+		{schemas.OpenAI, "/v1/chat/completions"}, {schemas.OpenAI, "/v1/responses"},
+		{schemas.OpenAI, "/v1/audio/transcriptions"}, {schemas.Anthropic, "/v1/messages"},
+		{schemas.Anthropic, "/v1/messages/count_tokens"}, {schemas.Azure, "/openai/deployments/gpt-4o/chat/completions"},
+		{schemas.Azure, "/openai/v1/responses"}, {schemas.Gemini, "/models/gemini-2.5-flash:streamGenerateContent"},
+		{schemas.Gemini, "/projects/p/locations/us/publishers/google/models/gemini-2.5-flash:generateContent"},
+		{schemas.Runware, "/v1"},
+	} {
+		cfg := &PassthroughConfig{Provider: tc.provider}
+		require.True(t, passthroughInferenceRoute(cfg, "POST", tc.path), "%s %s", tc.provider, tc.path)
+		for _, method := range []string{"GET", "DELETE", "PATCH", "PUT", "HEAD"} {
+			require.False(t, passthroughInferenceRoute(cfg, method, tc.path), "%s %s", method, tc.path)
+		}
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Azure, schemas.Gemini, schemas.Runware} {
+		for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/organization/users", "/v1/chat/completions/id/messages", "/v1/messages/batches", "/v1/responses/id", "/models/m:delete", "/v1/./responses", "/v1/%72esponses", "/models/x:generateContent/extra"} {
+			require.False(t, passthroughInferenceRoute(&PassthroughConfig{Provider: provider}, "POST", path), "%s %s", provider, path)
+		}
+	}
+}
+
+// The ChatGPT upstream exception holds only for the OpenAI provider, which is the one that
+// forwards to UpstreamURL; any other provider would send the request to its own BaseURL.
+func TestPassthroughInferenceRoutesChatGPTUpstreamRequiresOpenAI(t *testing.T) {
+	const path = "/backend-api/codex/responses"
+	require.True(t, passthroughInferenceRoute(&PassthroughConfig{Provider: schemas.OpenAI, UpstreamURL: "https://chatgpt.com"}, "POST", path))
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.Gemini, schemas.Runware} {
+		require.False(t, passthroughInferenceRoute(&PassthroughConfig{Provider: provider, UpstreamURL: "https://chatgpt.com"}, "POST", path), "%s", provider)
+	}
+}
+
+func TestPassthroughManagementRoutesNeverForward(t *testing.T) {
+	r := router.New()
+	NewOpenAIPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	NewAnthropicPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	NewAzurePassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	NewGenAIPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	for _, prefix := range []string{"openai", "anthropic", "azure", "genai"} {
+		for _, method := range []string{"GET", "POST", "DELETE", "PUT", "PATCH", "HEAD"} {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(method)
+			ctx.Request.SetRequestURI("/" + prefix + "_passthrough/v1/files")
+			r.Handler(&ctx)
+			require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), "%s %s: %s", prefix, method, ctx.Response.Body())
+		}
 	}
 }
