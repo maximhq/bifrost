@@ -1272,3 +1272,168 @@ func TestSDKFidelityListModelsUpstreamCatalog(t *testing.T) {
 		t.Errorf("native listing lost upstream metadata: %+v", native.Models)
 	}
 }
+
+const customTypesafeProviderName = schemas.ModelProvider("my-typesafe")
+
+// newCustomTypesafeFixture builds a provider that backs the custom provider
+// my-typesafe (base_provider_type typesafe) against a loopback endpoint.
+func newCustomTypesafeFixture(t *testing.T, custom schemas.CustomProviderConfig, handler func(w http.ResponseWriter, r *http.Request, body []byte)) (*typesafeFixture, *TypesafeProvider) {
+	t.Helper()
+	f := &typesafeFixture{}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r, f.record(r))
+	}))
+	t.Cleanup(f.Close)
+	custom.CustomProviderKey = string(customTypesafeProviderName)
+	custom.BaseProviderType = schemas.Typesafe
+	provider, err := NewTypesafeProvider(&schemas.ProviderConfig{
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: f.URL, DefaultRequestTimeoutInSeconds: 10},
+		CustomProviderConfig: &custom,
+	}, noopLogger{})
+	if err != nil {
+		t.Fatalf("NewTypesafeProvider: %v", err)
+	}
+	return f, provider
+}
+
+func writeFixtureSuccess(w http.ResponseWriter, r *http.Request, _ []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodGet {
+		_, _ = w.Write([]byte(`{"models":[{"name":"jev-latest","description":"custom endpoint jev"}]}`))
+		return
+	}
+	_, _ = w.Write([]byte(fixtureSuccessBody))
+}
+
+// TestCustomProviderKeyIsCustomName pins that a Typesafe-backed custom provider
+// reports its own name, which Bifrost uses for provider lookup and key selection.
+func TestCustomProviderKeyIsCustomName(t *testing.T) {
+	_, provider := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{}, writeFixtureSuccess)
+	if got := provider.GetProviderKey(); got != customTypesafeProviderName {
+		t.Fatalf("GetProviderKey() = %q, want %q", got, customTypesafeProviderName)
+	}
+	_, standard := newTypesafeFixture(t, writeFixtureSuccess)
+	if got := standard.GetProviderKey(); got != schemas.Typesafe {
+		t.Fatalf("standard GetProviderKey() = %q, want %q", got, schemas.Typesafe)
+	}
+}
+
+// TestCustomProviderAllowedRequestsGate pins that allowed_requests gates the
+// decision and list-models operations without reaching the upstream.
+func TestCustomProviderAllowedRequestsGate(t *testing.T) {
+	fixture, provider := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{
+		AllowedRequests: &schemas.AllowedRequests{},
+	}, writeFixtureSuccess)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	}))
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
+		t.Fatalf("decision must be refused as unsupported_operation, got %+v", bifrostErr)
+	}
+	if !strings.Contains(bifrostErr.Error.Message, string(customTypesafeProviderName)) {
+		t.Errorf("error must name the custom provider: %q", bifrostErr.Error.Message)
+	}
+
+	_, bifrostErr = provider.ListModels(ctx, []schemas.Key{fixtureKey()}, &schemas.BifrostListModelsRequest{})
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
+		t.Fatalf("list models must be refused as unsupported_operation, got %+v", bifrostErr)
+	}
+
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if len(fixture.paths) != 0 {
+		t.Errorf("gated operations must not reach the upstream, got %v", fixture.paths)
+	}
+
+	_, allowed := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{
+		AllowedRequests: &schemas.AllowedRequests{Decision: true},
+	}, writeFixtureSuccess)
+	if _, bifrostErr := allowed.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	})); bifrostErr != nil {
+		t.Fatalf("decision allowed by allowed_requests must succeed: %v", bifrostErr)
+	}
+}
+
+// TestCustomProviderRequestPathOverride pins that request_path_overrides
+// redirect the decision call, as a path on base_url or as an absolute URL.
+func TestCustomProviderRequestPathOverride(t *testing.T) {
+	fixture, provider := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{
+		RequestPathOverrides: map[schemas.RequestType]string{schemas.DecisionRequest: "gateway/systemone"},
+	}, writeFixtureSuccess)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	})); bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	fixture.mu.Lock()
+	gotPaths := append([]string(nil), fixture.paths...)
+	fixture.mu.Unlock()
+	if len(gotPaths) != 1 || gotPaths[0] != "/gateway/systemone" {
+		t.Fatalf("path override not applied, upstream saw %v", gotPaths)
+	}
+
+	absolute, _ := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{}, writeFixtureSuccess)
+	_, redirected := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{
+		RequestPathOverrides: map[schemas.RequestType]string{schemas.DecisionRequest: absolute.URL + "/elsewhere/systemone"},
+	}, writeFixtureSuccess)
+	if _, bifrostErr := redirected.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	})); bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	absolute.mu.Lock()
+	defer absolute.mu.Unlock()
+	if len(absolute.paths) != 1 || absolute.paths[0] != "/elsewhere/systemone" {
+		t.Fatalf("absolute URL override not applied, target saw %v", absolute.paths)
+	}
+}
+
+// TestCustomProviderListModelsPrefixAndNativeShape pins that a custom
+// provider's models are listed under its own name and that the native
+// listing restores the bare upstream name.
+func TestCustomProviderListModelsPrefixAndNativeShape(t *testing.T) {
+	_, provider := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{}, writeFixtureSuccess)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.ListModels(ctx, []schemas.Key{fixtureKey()}, &schemas.BifrostListModelsRequest{})
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "my-typesafe/jev-latest" {
+		ids := make([]string, 0, len(resp.Data))
+		for _, model := range resp.Data {
+			ids = append(ids, model.ID)
+		}
+		t.Fatalf("expected [my-typesafe/jev-latest], got %v", ids)
+	}
+	native := ToTypesafeNativeListModelsResponse(resp)
+	if len(native.Models) != 1 || native.Models[0].Name != "jev-latest" || native.Models[0].Description != "custom endpoint jev" {
+		t.Errorf("native listing must carry the bare name and upstream metadata: %+v", native.Models)
+	}
+}
+
+// TestCustomProviderKeylessListModels pins that a keyless custom provider
+// lists models without any configured key and sends no Authorization header.
+func TestCustomProviderKeylessListModels(t *testing.T) {
+	var sawAuth bool
+	_, provider := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{IsKeyLess: true}, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		if r.Header.Get("Authorization") != "" {
+			sawAuth = true
+		}
+		writeFixtureSuccess(w, r, body)
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.ListModels(ctx, nil, &schemas.BifrostListModelsRequest{})
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "my-typesafe/jev-latest" {
+		t.Fatalf("keyless listing must serve the endpoint catalog, got %+v", resp.Data)
+	}
+	if sawAuth {
+		t.Errorf("keyless provider must not send an Authorization header")
+	}
+}
