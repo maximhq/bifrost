@@ -271,7 +271,7 @@ func HandleOpenAIModelRetrieveRequest(
 	client *fasthttp.Client,
 	url string,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,

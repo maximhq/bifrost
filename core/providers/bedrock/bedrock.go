@@ -4627,13 +4627,14 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 // invokeGuardrailHeaders adds the X-Amzn-Bedrock-Guardrail* headers InvokeModel takes in place
 // of the guardrailConfig body field that invokeBuildConfig strips. Without them the request
 // runs unguarded. The Converse-shaped lowercase trace is uppercased, as the header requires.
-func invokeGuardrailHeaders(base map[string]string, extraParams map[string]any) map[string]string {
+func invokeGuardrailHeaders(base map[string]schemas.SecretVar, extraParams map[string]any) map[string]schemas.SecretVar {
 	out := withGuardrailHeaders(base, extraParams)
 	config, _ := extraParams["guardrailConfig"].(map[string]any)
-	if trace, _ := config["trace"].(string); trace != "" && out[guardrailTraceHeader] == trace {
+	current := out[guardrailTraceHeader]
+	if trace, _ := config["trace"].(string); trace != "" && current.GetValue() == trace {
 		// out may still be the shared provider headers, so write to a copy.
 		out = maps.Clone(out)
-		out[guardrailTraceHeader] = strings.ToUpper(trace)
+		out[guardrailTraceHeader] = schemas.SecretVar{Val: strings.ToUpper(trace)}
 	}
 	return out
 }

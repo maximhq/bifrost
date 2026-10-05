@@ -98,9 +98,9 @@ func TestStripsForwardedAuthorizationWhenAPIKeySet(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			extra := map[string]string{"Authorization": "Bearer leaked-token"}
+			extra := map[string]schemas.SecretVar{"Authorization": {Val: "Bearer leaked-token"}}
 			if tc.configKey != "" {
-				extra["X-Goog-Api-Key"] = tc.configKey
+				extra["X-Goog-Api-Key"] = schemas.SecretVar{Val: tc.configKey}
 			}
 			provider := NewGeminiProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
@@ -142,12 +142,12 @@ func TestHandleGeminiStreams_StripsForwardedAuthorization(t *testing.T) {
 	}
 	handlers := []struct {
 		name  string
-		start func(ctx *schemas.BifrostContext, url string, headers, extra map[string]string) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError)
+		start func(ctx *schemas.BifrostContext, url string, headers map[string]string, extra map[string]schemas.SecretVar) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError)
 	}{
-		{name: "chat", start: func(ctx *schemas.BifrostContext, url string, headers, extra map[string]string) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		{name: "chat", start: func(ctx *schemas.BifrostContext, url string, headers map[string]string, extra map[string]schemas.SecretVar) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			return HandleGeminiChatCompletionStream(ctx, &fasthttp.Client{}, url, []byte(`{}`), headers, extra, 30, false, false, schemas.Gemini, "gemini-2.5-pro", noopPostHook, nil, testNoopLogger{}, func(context.Context) {})
 		}},
-		{name: "responses", start: func(ctx *schemas.BifrostContext, url string, headers, extra map[string]string) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		{name: "responses", start: func(ctx *schemas.BifrostContext, url string, headers map[string]string, extra map[string]schemas.SecretVar) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			return HandleGeminiResponsesStream(ctx, &fasthttp.Client{}, url, []byte(`{}`), headers, extra, 30, false, false, schemas.Gemini, "gemini-2.5-pro", noopPostHook, nil, testNoopLogger{}, func(context.Context) {})
 		}},
 	}
@@ -191,9 +191,9 @@ func TestHandleGeminiStreams_StripsForwardedAuthorization(t *testing.T) {
 				if !tc.omitKey {
 					reqHeaders["x-goog-api-key"] = tc.apiKey
 				}
-				extra := map[string]string{"Authorization": "Bearer leaked-token"} // injected via SetExtraHeaders
+				extra := map[string]schemas.SecretVar{"Authorization": {Val: "Bearer leaked-token"}} // injected via SetExtraHeaders
 				if tc.configKey != "" {
-					extra["X-Goog-Api-Key"] = tc.configKey
+					extra["X-Goog-Api-Key"] = schemas.SecretVar{Val: tc.configKey}
 				}
 				stream, bifrostErr := hd.start(
 					schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
