@@ -8748,33 +8748,8 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 		}
 
 		switch *tool.Type {
-		case AnthropicToolTypeComputerToolset20260801:
-			// The toolset carries no display geometry; the generation is re-derived
-			// from the target model on the way out, so nothing else needs keeping.
-			return &schemas.ResponsesTool{
-				Type:                            schemas.ResponsesToolTypeComputerUsePreview,
-				ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{Environment: "browser"},
-			}
-
-		case AnthropicToolTypeComputer20250124, AnthropicToolTypeComputer20251124:
-			bifrostTool := &schemas.ResponsesTool{
-				Type: schemas.ResponsesToolTypeComputerUsePreview,
-			}
-			if tool.AnthropicToolComputerUse != nil {
-				bifrostTool.ResponsesToolComputerUsePreview = &schemas.ResponsesToolComputerUsePreview{
-					Environment: "browser", // Default environment
-				}
-				if tool.AnthropicToolComputerUse.DisplayWidthPx != nil {
-					bifrostTool.ResponsesToolComputerUsePreview.DisplayWidth = *tool.AnthropicToolComputerUse.DisplayWidthPx
-				}
-				if tool.AnthropicToolComputerUse.DisplayHeightPx != nil {
-					bifrostTool.ResponsesToolComputerUsePreview.DisplayHeight = *tool.AnthropicToolComputerUse.DisplayHeightPx
-				}
-				if tool.AnthropicToolComputerUse.EnableZoom != nil {
-					bifrostTool.ResponsesToolComputerUsePreview.EnableZoom = tool.AnthropicToolComputerUse.EnableZoom
-				}
-			}
-			return bifrostTool
+		case AnthropicToolTypeComputerToolset20260801, AnthropicToolTypeComputer20250124, AnthropicToolTypeComputer20251124:
+			return convertAnthropicToResponsesComputerTool(tool)
 
 		case AnthropicToolTypeCodeExecution20250522, AnthropicToolTypeCodeExecution,
 			AnthropicToolTypeCodeExecution20260120, AnthropicToolTypeCodeExecution20260521:
@@ -9098,7 +9073,7 @@ func applyResponsesToolAnthropicFlags(at *AnthropicTool, rt *schemas.ResponsesTo
 	if len(rt.AllowedCallers) > 0 {
 		at.AllowedCallers = anthropicAllowedCallers(rt.AllowedCallers, programmaticCaller)
 	}
-	if len(rt.InputExamples) > 0 {
+	if len(rt.InputExamples) > 0 && (at.Type == nil || *at.Type != AnthropicToolTypeComputerToolset20260801) {
 		at.InputExamples = make([]AnthropicToolInputExample, len(rt.InputExamples))
 		for i, ex := range rt.InputExamples {
 			at.InputExamples[i] = AnthropicToolInputExample{
@@ -9177,46 +9152,8 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 			Type: schemas.Ptr(codeExecVersion),
 			Name: string(AnthropicToolNameCodeExecution),
 		}
-	case schemas.ResponsesToolTypeComputerUsePreview:
-		if tool.ResponsesToolComputerUsePreview != nil {
-			computerToolType := AnthropicToolTypeComputer20250124
-			switch ComputerUseGeneration(caps) {
-			case ComputerUseGenToolset20260801:
-				// Bare entry: name and display_* are rejected on a toolset.
-				return &AnthropicTool{
-					Type:         schemas.Ptr(AnthropicToolTypeComputerToolset20260801),
-					CacheControl: tool.CacheControl,
-				}
-			case ComputerUseGen20251124:
-				computerToolType = AnthropicToolTypeComputer20251124
-			}
-			// No geometry means this cannot become a dated tool: those validate
-			// display_*_px as >= 1. A toolset carries none by design, so when the
-			// target takes a toolset, send that — converting it into a dated tool
-			// the caller never asked for, or dropping a tool the model supports,
-			// both lose capability. Only when neither form is reachable is the tool
-			// dropped, the way any unsupported tool is.
-			if tool.ResponsesToolComputerUsePreview.DisplayWidth <= 0 ||
-				tool.ResponsesToolComputerUsePreview.DisplayHeight <= 0 {
-				if AcceptsComputerToolset(caps) {
-					return &AnthropicTool{
-						Type:         schemas.Ptr(AnthropicToolTypeComputerToolset20260801),
-						CacheControl: tool.CacheControl,
-					}
-				}
-				return nil
-			}
-			return &AnthropicTool{
-				Type: schemas.Ptr(computerToolType),
-				Name: string(AnthropicToolNameComputer),
-				AnthropicToolComputerUse: &AnthropicToolComputerUse{
-					DisplayWidthPx:  schemas.Ptr(tool.ResponsesToolComputerUsePreview.DisplayWidth),
-					DisplayHeightPx: schemas.Ptr(tool.ResponsesToolComputerUsePreview.DisplayHeight),
-					DisplayNumber:   schemas.Ptr(1),
-					EnableZoom:      tool.ResponsesToolComputerUsePreview.EnableZoom,
-				},
-			}
-		}
+	case schemas.ResponsesToolTypeComputerUsePreview, schemas.ResponsesToolTypeComputer:
+		return convertResponsesToAnthropicComputerTool(caps, tool)
 	case schemas.ResponsesToolTypeWebSearch:
 		webSearchType := AnthropicToolTypeWebSearch20250305
 		// Prefer the datasheet's pinned version; otherwise dynamic filtering
@@ -9964,6 +9901,63 @@ func convertAnnotationToAnthropicCitation(annotation schemas.ResponsesOutputMess
 	}
 
 	return citation
+}
+
+// convertResponsesToAnthropicComputerTool converts a computer_use_preview or computer tool to the computer tool form the model accepts.
+func convertResponsesToAnthropicComputerTool(caps schemas.ModelCaps, tool *schemas.ResponsesTool) *AnthropicTool {
+	// Bare entry: name and display_* are rejected on a toolset.
+	toolset := &AnthropicTool{Type: schemas.Ptr(AnthropicToolTypeComputerToolset20260801)}
+	generation := ComputerUseGeneration(caps)
+	if generation == ComputerUseGenToolset20260801 {
+		return toolset
+	}
+	// Dated tools validate display_*_px as >= 1, and the computer tool carries no geometry.
+	preview := tool.ResponsesToolComputerUsePreview
+	if tool.Type == schemas.ResponsesToolTypeComputer || preview == nil || preview.DisplayWidth <= 0 || preview.DisplayHeight <= 0 {
+		if AcceptsComputerToolset(caps) {
+			return toolset
+		}
+		return nil
+	}
+	computerToolType := AnthropicToolTypeComputer20250124
+	if generation == ComputerUseGen20251124 {
+		computerToolType = AnthropicToolTypeComputer20251124
+	}
+	return &AnthropicTool{
+		Type: schemas.Ptr(computerToolType),
+		Name: string(AnthropicToolNameComputer),
+		AnthropicToolComputerUse: &AnthropicToolComputerUse{
+			DisplayWidthPx:  schemas.Ptr(preview.DisplayWidth),
+			DisplayHeightPx: schemas.Ptr(preview.DisplayHeight),
+			DisplayNumber:   schemas.Ptr(1),
+			EnableZoom:      preview.EnableZoom,
+		},
+	}
+}
+
+// convertAnthropicToResponsesComputerTool converts an Anthropic computer tool to computer (toolset) or computer_use_preview (dated).
+func convertAnthropicToResponsesComputerTool(tool *AnthropicTool) *schemas.ResponsesTool {
+	if tool.Type != nil && *tool.Type == AnthropicToolTypeComputerToolset20260801 {
+		return &schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputer}
+	}
+	bifrostTool := &schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeComputerUsePreview,
+	}
+	if tool.AnthropicToolComputerUse != nil {
+		bifrostTool.ResponsesToolComputerUsePreview = &schemas.ResponsesToolComputerUsePreview{
+			Environment: "browser", // Default environment
+		}
+		if tool.AnthropicToolComputerUse.DisplayWidthPx != nil {
+			bifrostTool.ResponsesToolComputerUsePreview.DisplayWidth = *tool.AnthropicToolComputerUse.DisplayWidthPx
+		}
+		if tool.AnthropicToolComputerUse.DisplayHeightPx != nil {
+			bifrostTool.ResponsesToolComputerUsePreview.DisplayHeight = *tool.AnthropicToolComputerUse.DisplayHeightPx
+		}
+		if tool.AnthropicToolComputerUse.EnableZoom != nil {
+			bifrostTool.ResponsesToolComputerUsePreview.EnableZoom = tool.AnthropicToolComputerUse.EnableZoom
+		}
+	}
+	return bifrostTool
 }
 
 // convertResponsesToAnthropicComputerAction converts ResponsesComputerToolCallAction to Anthropic input map
