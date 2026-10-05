@@ -202,6 +202,30 @@ func TestGoToStarlark(t *testing.T) {
 	})
 }
 
+func TestToolResultIntegersStayInts(t *testing.T) {
+	content := `{"engagement":{"id":30451149516,"big":123456789012345678901,"score":4.5,"exp":1e3}}`
+	msg := &schemas.ChatMessage{Content: &schemas.ChatMessageContent{ContentStr: &content}}
+	dict := goToStarlark(extractResultFromChatMessage(msg)).(*starlark.Dict)
+	engVal, _, _ := dict.Get(starlark.String("engagement"))
+	eng := engVal.(*starlark.Dict)
+
+	cases := map[string]string{
+		"id":    "30451149516",
+		"big":   "123456789012345678901",
+		"score": "4.5",
+		"exp":   "1000.0",
+	}
+	for key, want := range cases {
+		v, _, _ := eng.Get(starlark.String(key))
+		if got := v.String(); got != want {
+			t.Errorf("%s: str() = %q, want %q", key, got, want)
+		}
+	}
+	if v, _, _ := eng.Get(starlark.String("id")); v.Type() != "int" {
+		t.Errorf("id: type %s, want int", v.Type())
+	}
+}
+
 func TestGetCanonicalToolName(t *testing.T) {
 	if got := getCanonicalToolName("github", "github-SEARCH_REPOS"); got != "search_repos" {
 		t.Fatalf("expected canonical tool name search_repos, got %q", got)

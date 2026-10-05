@@ -5,6 +5,7 @@ package starlark
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"regexp"
 	"strings"
 	"unicode"
@@ -88,6 +89,8 @@ func goToStarlark(v interface{}) starlark.Value {
 		return starlark.MakeUint64(val)
 	case float64:
 		return starlark.Float(val)
+	case json.Number:
+		return jsonNumberToStarlark(val)
 	case string:
 		return starlark.String(val)
 	case []interface{}:
@@ -114,6 +117,27 @@ func goToStarlark(v interface{}) starlark.Value {
 	}
 }
 
+// jsonNumberToStarlark keeps JSON integers as Starlark ints. Decoding them as
+// float64 turned ids like 30451149516 into 3.0451149516e+10 under str(), which
+// silently broke any id passed on to a follow-up tool call.
+func jsonNumberToStarlark(n json.Number) starlark.Value {
+	s := n.String()
+	if !strings.ContainsAny(s, ".eE") {
+		if i, ok := new(big.Int).SetString(s, 10); ok {
+			return starlark.MakeBigInt(i)
+		}
+	}
+	f, err := n.Float64()
+	if err != nil {
+		return starlark.String(s)
+	}
+	return starlark.Float(f)
+}
+
+// toolResultDecoder decodes tool results with UseNumber so integers survive
+// as json.Number instead of float64.
+var toolResultDecoder = sonic.Config{UseNumber: true}.Froze()
+
 // extractResultFromChatMessage extracts the result from a chat message and parses it as JSON if possible.
 func extractResultFromChatMessage(msg *schemas.ChatMessage) interface{} {
 	if msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
@@ -123,7 +147,7 @@ func extractResultFromChatMessage(msg *schemas.ChatMessage) interface{} {
 	rawResult := *msg.Content.ContentStr
 
 	var finalResult interface{}
-	if err := sonic.Unmarshal([]byte(rawResult), &finalResult); err != nil {
+	if err := toolResultDecoder.Unmarshal([]byte(rawResult), &finalResult); err != nil {
 		return rawResult
 	}
 
@@ -150,7 +174,7 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 				rawResult := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
 
 				var finalResult interface{}
-				if err := sonic.Unmarshal([]byte(rawResult), &finalResult); err != nil {
+				if err := toolResultDecoder.Unmarshal([]byte(rawResult), &finalResult); err != nil {
 					return rawResult, nil
 				}
 				return finalResult, nil
@@ -166,7 +190,7 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 				if len(textParts) > 0 {
 					result := strings.Join(textParts, "\n")
 					var finalResult interface{}
-					if err := sonic.Unmarshal([]byte(result), &finalResult); err != nil {
+					if err := toolResultDecoder.Unmarshal([]byte(result), &finalResult); err != nil {
 						return result, nil
 					}
 					return finalResult, nil
