@@ -7,7 +7,7 @@
     "build:debug": "asc assembly/index.ts --outFile build/hello-world.wasm --debug --runtime stub --use abort="
   },
   "dependencies": {
-    "json-as": "1.0.0"
+    "json-as": "1.6.1"
   },
   "devDependencies": {
     "assemblyscript": "0.27.29"
