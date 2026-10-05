@@ -14973,6 +14973,177 @@ func TestSQLite_SourceOfTruthConfigJSON_ModelConfigOwnedBudgetPruned(t *testing.
 	require.False(t, modelIDs["api-model"], "API model config should be pruned")
 }
 
+// TestSQLite_SourceOfTruthConfigJSON_KeepsModelConfigsOfScopesTheFileCannotDeclare: config.json
+// declares model configs only under "global" and "virtual_key", so a row under any other scope - the
+// enterprise build's per-model limits for an access profile - is not the file's to prune, and neither
+// are the budgets and rate limit that row owns. A global row the file dropped is still pruned.
+func TestSQLite_SourceOfTruthConfigJSON_KeepsModelConfigsOfScopesTheFileCannotDeclare(t *testing.T) {
+	initTestLogger()
+	tables.RegisterModelConfigScope(tables.ModelConfigScopeEntityAccessProfile)
+	tempDir := createTempDir(t)
+	tokenMax := int64(1000)
+	tokenDur := "1h"
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Budgets:      []tables.TableBudget{{ID: "file-budget", MaxLimit: 100.0, ResetDuration: "1d"}},
+		RateLimits:   []tables.TableRateLimit{{ID: "file-rl", TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur}},
+		ModelConfigs: []tables.TableModelConfig{{ID: "file-model", ModelName: "gpt-file", Scope: "global"}},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	// The rows the enterprise build materializes for an access profile's per-model budget.
+	require.NoError(t, config1.ConfigStore.CreateRateLimit(ctx, &tables.TableRateLimit{ID: "profile-rl", TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur}))
+	require.NoError(t, config1.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+		ID: "profile-model", ModelName: "gpt-4o", Scope: tables.ModelConfigScopeEntityAccessProfile,
+		ScopeID: stringPtr("7"), RateLimitID: stringPtr("profile-rl"),
+	}))
+	require.NoError(t, config1.ConfigStore.CreateBudget(ctx, &tables.TableBudget{
+		ID: "profile-budget", MaxLimit: 10.0, ResetDuration: "1d", ModelConfigID: stringPtr("profile-model"),
+	}))
+	require.NoError(t, config1.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{ID: "api-model", ModelName: "gpt-api", Scope: "global"}))
+	config1.Close(ctx)
+
+	configData.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData)
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	gov, err := config2.ConfigStore.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	ids := map[string]bool{}
+	for _, mc := range gov.ModelConfigs {
+		ids["model:"+mc.ID] = true
+	}
+	for _, b := range gov.Budgets {
+		ids["budget:"+b.ID] = true
+	}
+	for _, rl := range gov.RateLimits {
+		ids["rate_limit:"+rl.ID] = true
+	}
+	assert.True(t, ids["model:profile-model"], "a profile's per-model limit is not the file's to prune")
+	assert.True(t, ids["budget:profile-budget"], "nor the budget it owns")
+	assert.True(t, ids["rate_limit:profile-rl"], "nor its rate limit")
+	assert.False(t, ids["model:api-model"], "a global row the file does not declare is still pruned")
+	assert.True(t, ids["model:file-model"])
+
+	inMemory := map[string]bool{}
+	for _, mc := range config2.GovernanceConfig.ModelConfigs {
+		inMemory[mc.ID] = true
+	}
+	assert.True(t, inMemory["profile-model"], "what survives in the store survives in memory")
+}
+
+// TestSQLite_SourceOfTruthConfigJSON_LimitPruneGuardKeepsWhatItProtects: the budgets and rate limits
+// the registered guard claims - rows the enterprise build owns, such as an access profile's - survive
+// the prune, while every other row the file dropped goes. The guard is asked only about the rows the
+// prune would delete.
+func TestSQLite_SourceOfTruthConfigJSON_LimitPruneGuardKeepsWhatItProtects(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	tokenMax := int64(1000)
+	tokenDur := "1h"
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Budgets:    []tables.TableBudget{{ID: "file-budget", MaxLimit: 100.0, ResetDuration: "1d"}},
+		RateLimits: []tables.TableRateLimit{{ID: "file-rl", TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur}},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	for _, id := range []string{"guarded-budget", "stale-budget"} {
+		require.NoError(t, config1.ConfigStore.CreateBudget(ctx, &tables.TableBudget{ID: id, MaxLimit: 5, ResetDuration: "1M"}))
+	}
+	for _, id := range []string{"guarded-rl", "stale-rl"} {
+		require.NoError(t, config1.ConfigStore.CreateRateLimit(ctx, &tables.TableRateLimit{ID: id, TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur}))
+	}
+	config1.Close(ctx)
+
+	var askedBudgets, askedRateLimits []string
+	RegisterGovernanceLimitPruneGuard(func(_ context.Context, _ configstore.ConfigStore, budgetIDs, rateLimitIDs []string) (map[string]bool, map[string]bool, error) {
+		askedBudgets, askedRateLimits = budgetIDs, rateLimitIDs
+		return map[string]bool{"guarded-budget": true}, map[string]bool{"guarded-rl": true}, nil
+	})
+	defer RegisterGovernanceLimitPruneGuard(nil)
+
+	configData.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData)
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	assert.ElementsMatch(t, []string{"guarded-budget", "stale-budget"}, askedBudgets)
+	assert.ElementsMatch(t, []string{"guarded-rl", "stale-rl"}, askedRateLimits)
+	gov, err := config2.ConfigStore.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	var budgets, rateLimits []string
+	for _, b := range gov.Budgets {
+		budgets = append(budgets, b.ID)
+	}
+	for _, rl := range gov.RateLimits {
+		rateLimits = append(rateLimits, rl.ID)
+	}
+	assert.ElementsMatch(t, []string{"file-budget", "guarded-budget"}, budgets)
+	assert.ElementsMatch(t, []string{"file-rl", "guarded-rl"}, rateLimits)
+}
+
+// TestSQLite_SourceOfTruthConfigJSON_LimitPruneGuardFailureKeepsEveryCandidate: when the guard cannot
+// say which rows it owns, no budget or rate limit is pruned this boot rather than deleting one the
+// enterprise build still uses; the next boot prunes them once the guard answers.
+func TestSQLite_SourceOfTruthConfigJSON_LimitPruneGuardFailureKeepsEveryCandidate(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	tokenMax := int64(1000)
+	tokenDur := "1h"
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Budgets:    []tables.TableBudget{{ID: "file-budget", MaxLimit: 100.0, ResetDuration: "1d"}},
+		RateLimits: []tables.TableRateLimit{{ID: "file-rl", TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur}},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NoError(t, config1.ConfigStore.CreateBudget(ctx, &tables.TableBudget{ID: "stale-budget", MaxLimit: 5, ResetDuration: "1M"}))
+	require.NoError(t, config1.ConfigStore.CreateRateLimit(ctx, &tables.TableRateLimit{ID: "stale-rl", TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur}))
+	config1.Close(ctx)
+
+	RegisterGovernanceLimitPruneGuard(func(context.Context, configstore.ConfigStore, []string, []string) (map[string]bool, map[string]bool, error) {
+		return nil, nil, errors.New("connection reset")
+	})
+	defer RegisterGovernanceLimitPruneGuard(nil)
+
+	configData.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData)
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	countRows := func(config *Config) (int, int) {
+		gov, err := config.ConfigStore.GetGovernanceConfig(ctx)
+		require.NoError(t, err)
+		return len(gov.Budgets), len(gov.RateLimits)
+	}
+	budgets, rateLimits := countRows(config2)
+	assert.Equal(t, 2, budgets, "nothing is pruned while the guard cannot answer")
+	assert.Equal(t, 2, rateLimits)
+	config2.Close(ctx)
+
+	RegisterGovernanceLimitPruneGuard(func(context.Context, configstore.ConfigStore, []string, []string) (map[string]bool, map[string]bool, error) {
+		return nil, nil, nil
+	})
+	config3, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config3.Close(ctx)
+	budgets, rateLimits = countRows(config3)
+	assert.Equal(t, 1, budgets, "the next boot prunes them once the guard answers")
+	assert.Equal(t, 1, rateLimits)
+}
+
 // TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning verifies config.json SOT prunes DB-only rows across sections.
 func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 	initTestLogger()

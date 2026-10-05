@@ -313,12 +313,6 @@ The global outbound proxy is the one on the dashboard's **Config → Proxy** pag
 | `enable_for_inference` | `false` | Route inference requests through the proxy |
 | `enable_for_api` | `false` | Route API requests through the proxy |
 
-The proxy is reconciled like the other `config.json` sections (see [Source of Truth](/deployment-guides/config-json/source-of-truth)):
-
-- **Split mode (default).** The declaration is applied on startup when it is new or has changed since the last sync. While it stays unchanged, edits made on the Proxy page are kept.
-- **`source_of_truth: "config.json"`.** The declaration is applied on every startup, so edits made on the Proxy page are reverted on restart.
-- **Omitted.** The proxy stays as the dashboard set it.
-- **Invalid.** A declaration the Proxy page would refuse (enabled without a `url`, or a type other than `http`) is skipped with a warning in the startup logs, and the stored proxy is left as it is.
 
 ---
 

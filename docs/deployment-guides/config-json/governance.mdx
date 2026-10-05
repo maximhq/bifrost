@@ -351,18 +351,6 @@ A team, customer, or business unit can hold one [access profile](/enterprise/acc
 }
 ```
 
-Attaching works as it does from the dashboard: the entity gets its own copy of the profile, budgets start from zero, and every virtual key the entity owns is adopted into it.
-
-| | Split (default) | `source_of_truth: "config.json"` |
-|---|---|---|
-| When `access_profile` applies | When the entry is new or changed. A dashboard attach or detach on an unchanged entry is kept. | On every startup, while the entity's section (`teams`, `customers`, or `business_units`) is present. |
-| Entry without `access_profile` | The profile is left to the dashboard. | The entity's profile is removed. |
-
-- An entity that already holds the declared profile keeps it, and its spend.
-- The profile is not attached while the entity still has budgets or a rate limit of its own. Remove them from the file, or migrate the entity onto the profile from the dashboard to carry its spend across.
-- Removing a profile keeps the entity's virtual keys, but not the providers and limits the profile replaced. Keys declared in config.json get them back from their entries; keys created in the dashboard need configuring again.
-- An `access_profile` naming no profile, or an entity that does not exist, is logged and skipped.
-
 ---
 
 ## Projects
