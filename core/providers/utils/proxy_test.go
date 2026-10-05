@@ -544,21 +544,25 @@ func readSOCKS5Connect(conn net.Conn) (string, bool) {
 
 // proxyMatrixProxies are the recording proxies one matrix run routes through.
 type proxyMatrixProxies struct {
-	config   *recordingProxy // named by proxy_config (http, IP or hostname URL)
-	socks    *recordingProxy // named by proxy_config (socks5)
-	envHTTPS *recordingProxy // HTTPS_PROXY / https_proxy
-	envHTTP  *recordingProxy // HTTP_PROXY / http_proxy
-	all      []*recordingProxy
+	config    *recordingProxy // named by proxy_config (http, IP or hostname URL)
+	config6   *recordingProxy // named by proxy_config (http, IPv6 literal URL)
+	socks     *recordingProxy // named by proxy_config (socks5)
+	envHTTPS  *recordingProxy // HTTPS_PROXY / https_proxy
+	envHTTPS6 *recordingProxy // HTTPS_PROXY as an IPv6 literal
+	envHTTP   *recordingProxy // HTTP_PROXY / http_proxy
+	all       []*recordingProxy
 }
 
 func newProxyMatrixProxies(t *testing.T) *proxyMatrixProxies {
 	p := &proxyMatrixProxies{
-		config:   newRecordingHTTPProxy(t, "config", "tcp4"),
-		socks:    newRecordingSOCKS5Proxy(t, "socks"),
-		envHTTPS: newRecordingHTTPProxy(t, "env-https", "tcp4"),
-		envHTTP:  newRecordingHTTPProxy(t, "env-http", "tcp4"),
+		config:    newRecordingHTTPProxy(t, "config", "tcp4"),
+		config6:   newRecordingHTTPProxy(t, "config6", "tcp6"),
+		socks:     newRecordingSOCKS5Proxy(t, "socks"),
+		envHTTPS:  newRecordingHTTPProxy(t, "env-https", "tcp4"),
+		envHTTPS6: newRecordingHTTPProxy(t, "env-https6", "tcp6"),
+		envHTTP:   newRecordingHTTPProxy(t, "env-http", "tcp4"),
 	}
-	p.all = []*recordingProxy{p.config, p.socks, p.envHTTPS, p.envHTTP}
+	p.all = []*recordingProxy{p.config, p.config6, p.socks, p.envHTTPS, p.envHTTPS6, p.envHTTP}
 	return p
 }
 
@@ -588,6 +592,9 @@ var proxyMatrixSources = []proxyMatrixSource{
 	{name: "http-hostname", config: func(p *proxyMatrixProxies, _ proxyMatrixTarget) *schemas.ProxyConfig {
 		return &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://localhost:" + p.config.port())}
 	}},
+	{name: "http-ipv6", config: func(p *proxyMatrixProxies, _ proxyMatrixTarget) *schemas.ProxyConfig {
+		return &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://[::1]:" + p.config6.port())}
+	}},
 	{name: "socks5", config: func(p *proxyMatrixProxies, _ proxyMatrixTarget) *schemas.ProxyConfig {
 		return &schemas.ProxyConfig{Type: schemas.Socks5Proxy, URL: schemas.NewSecretVar("socks5://127.0.0.1:" + p.socks.port())}
 	}},
@@ -616,6 +623,7 @@ var proxyMatrixEnvs = []proxyMatrixEnv{
 	{name: "no-env", vars: map[string]string{}},
 	{name: "HTTPS_PROXY", vars: map[string]string{"HTTPS_PROXY": "env-https"}},
 	{name: "HTTP_PROXY", vars: map[string]string{"HTTP_PROXY": "env-http"}},
+	{name: "HTTPS_PROXY-ipv6", vars: map[string]string{"HTTPS_PROXY": "env-https6"}},
 	{name: "both", vars: map[string]string{"HTTPS_PROXY": "env-https", "HTTP_PROXY": "env-http"}},
 	{name: "both+NO_PROXY", vars: map[string]string{"HTTPS_PROXY": "env-https", "HTTP_PROXY": "env-http", "NO_PROXY": "target"}},
 	{name: "https_proxy-lowercase", vars: map[string]string{"https_proxy": "env-https"}},
@@ -661,6 +669,8 @@ func proxyMatrixExpect(stack string, source proxyMatrixSource, env proxyMatrixEn
 		return ""
 	case "http-ip", "http-hostname":
 		return "config"
+	case "http-ipv6":
+		return "config6"
 	case "http-ip+no_proxy":
 		return ""
 	case "socks5":
@@ -712,7 +722,12 @@ func setProxyMatrixEnv(t *testing.T, p *proxyMatrixProxies, env proxyMatrixEnv, 
 			t.Setenv(name, targetHost)
 			continue
 		}
-		t.Setenv(name, "http://127.0.0.1:"+p.byName(value).port())
+		proxy := p.byName(value)
+		host := "127.0.0.1"
+		if proxy == p.config6 || proxy == p.envHTTPS6 {
+			host = "[::1]"
+		}
+		t.Setenv(name, "http://"+host+":"+proxy.port())
 	}
 }
 
