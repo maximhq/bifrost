@@ -3931,3 +3931,61 @@ func TestSchemaCodeModeLimitsValueBytes(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateConfigSchema_InjectedTools pins injected_tools on every provider shape.
+// The provider_with_*_config variants set additionalProperties:false, so a field listed
+// only on the generic provider def is rejected for Bedrock, Azure, Vertex and the rest.
+func TestValidateConfigSchema_InjectedTools(t *testing.T) {
+	schema := loadLocalSchema(t)
+	const injected = `"injected_tools": {"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}`
+	// The minimal key shape below does not satisfy every provider's own key schema, so a
+	// provider may report unrelated errors. Comparing against the same config without
+	// injected_tools proves the field itself adds none, whatever the error text says.
+	errText := func(config string) string {
+		if err := ValidateConfigSchema([]byte(config), schema); err != nil {
+			return err.Error()
+		}
+		return ""
+	}
+	for _, provider := range []string{"openai", "anthropic", "bedrock", "bedrock_mantle", "azure", "vertex", "ollama", "sgl", "vllm", "replicate", "databricks", "deepseek", "fireworks", "github_copilot"} {
+		base := fmt.Sprintf(`{"providers": {%q: {"keys": [{"name": "k", "value": "v", "weight": 1.0}]}}}`, provider)
+		with := fmt.Sprintf(`{"providers": {%q: {"keys": [{"name": "k", "value": "v", "weight": 1.0}], %s}}}`, provider, injected)
+		if got, want := errText(with), errText(base); got != want {
+			t.Errorf("%s: injected_tools changed schema validation\nwith:    %s\nwithout: %s", provider, got, want)
+		}
+	}
+
+	// governance.providers is loaded for governance settings only (budget, rate limit), so
+	// an injected_tools block there would be silently ignored. The schema must not
+	// advertise it there.
+	var doc struct {
+		Properties struct {
+			Governance struct {
+				Properties struct {
+					Providers struct {
+						Items struct {
+							Properties map[string]json.RawMessage `json:"properties"`
+						} `json:"items"`
+					} `json:"providers"`
+				} `json:"properties"`
+			} `json:"governance"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &doc); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	if _, ok := doc.Properties.Governance.Properties.Providers.Items.Properties["injected_tools"]; ok {
+		t.Error("governance.providers must not declare injected_tools: its loader never reads it")
+	}
+
+	for name, block := range map[string]string{
+		"missing tool_name": `{"web_search": {"mcp_client_name": "tavily"}}`,
+		"empty client name": `{"web_search": {"mcp_client_name": "", "tool_name": "search"}}`,
+		"unknown slot":      `{"code_exec": {"mcp_client_name": "tavily", "tool_name": "run"}}`,
+	} {
+		config := fmt.Sprintf(`{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "injected_tools": %s}}}`, block)
+		if err := ValidateConfigSchema([]byte(config), schema); err == nil {
+			t.Errorf("%s: expected injected_tools to fail validation", name)
+		}
+	}
+}

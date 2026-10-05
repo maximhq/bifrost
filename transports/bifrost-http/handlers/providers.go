@@ -125,6 +125,7 @@ type ProviderResponse struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
+	InjectedTools            *schemas.InjectedToolsConfig     `json:"injected_tools,omitempty"`         // MCP tools injected and auto-executed server side
 	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
 	Description              string                           `json:"description,omitempty"`            // Error/status description
@@ -153,8 +154,9 @@ type providerCreatePayload struct {
 	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
 	IgnoreProviderCost       *bool                             `json:"ignore_provider_cost,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
-	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`  // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
+	InjectedTools            *schemas.InjectedToolsConfig      `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
 }
 
 type providerUpdatePayload struct {
@@ -166,8 +168,9 @@ type providerUpdatePayload struct {
 	StoreRawRequestResponse  *bool                            `json:"store_raw_request_response,omitempty"`
 	IgnoreProviderCost       *bool                            `json:"ignore_provider_cost,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
-	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`  // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
+	InjectedTools            *schemas.InjectedToolsConfig     `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
 }
 
 // applyProviderConfigUpdates copies onto config only the nested config blocks the
@@ -204,6 +207,9 @@ func applyProviderConfigUpdates(config *configstore.ProviderConfig, payload *pro
 	}
 	if carried("prompt_cache") {
 		config.PromptCache = payload.PromptCache
+	}
+	if carried("injected_tools") {
+		config.InjectedTools = payload.InjectedTools
 	}
 }
 
@@ -419,6 +425,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
 		PromptCache:              payload.PromptCache,
+		InjectedTools:            payload.InjectedTools,
 	}
 	if requireGenuineAuthForInterception(ctx, configstore.ProviderConfig{}, config) {
 		return
@@ -433,6 +440,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	// and then rejected by the provider at request time instead.
 	if err := lib.ValidatePromptCache(config.PromptCache); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
+		return
+	}
+	if err := lib.ValidateInjectedTools(config.InjectedTools, h.inMemoryStore.GetMCPClientNames()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
 	// Add provider to store (env vars will be processed by store)
@@ -474,6 +485,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
+			InjectedTools:            config.InjectedTools,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -570,6 +582,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
 		PromptCache:              oldConfigRaw.PromptCache,
+		InjectedTools:            oldConfigRaw.InjectedTools,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		IgnoreProviderCost:       oldConfigRaw.IgnoreProviderCost,
 		Status:                   oldConfigRaw.Status,
@@ -599,6 +612,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 	if err := lib.ValidatePromptCache(payload.PromptCache); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
+		return
+	}
+	if err := lib.ValidateInjectedTools(payload.InjectedTools, h.inMemoryStore.GetMCPClientNames()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
 
@@ -728,6 +745,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
+			InjectedTools:            config.InjectedTools,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -1566,6 +1584,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
 		PromptCache:              config.PromptCache,
+		InjectedTools:            config.InjectedTools,
 		ProviderStatus:           status,
 		Status:                   config.Status,
 		Description:              config.Description,

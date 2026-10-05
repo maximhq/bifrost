@@ -781,6 +781,93 @@ def test_vertex_aws_workload_identity_contract():
     for vertex in found:
         check_block("openapi.json", vertex)
 
+def test_injected_tools_contract_matches_config_schema():
+    """config.schema.json is the contract for injected_tools; every OpenAPI copy (the YAML
+    source and each node inlined into openapi.json) must enforce the same constraints, or a
+    client built from the spec sends values the gateway rejects."""
+    import json
+
+    defs = json.loads((REPO_ROOT / "transports" / "config.schema.json").read_text(encoding="utf-8"))["$defs"]
+    ref_def = defs["injected_tool_ref"]
+    expected_fields = sorted(ref_def["required"])
+    problems = []
+
+    def check_ref(where, ref):
+        if not isinstance(ref, dict):
+            problems.append(f"{where}: web_search is not an object schema")
+            return
+        if sorted(ref.get("required") or []) != expected_fields:
+            problems.append(f"{where}: required {ref.get('required')} != {expected_fields}")
+        if ref.get("additionalProperties") is not ref_def["additionalProperties"]:
+            problems.append(f"{where}: web_search additionalProperties is {ref.get('additionalProperties')!r}")
+        for field in expected_fields:
+            got = (ref.get("properties") or {}).get(field, {}).get("minLength")
+            want = ref_def["properties"][field]["minLength"]
+            if got != want:
+                problems.append(f"{where}: {field}.minLength is {got!r}, config.schema.json says {want}")
+
+    def check_tools(where, tools, resolve):
+        # An update request wraps the block as oneOf [block, null]; check the block.
+        for alt in tools.get("oneOf") or []:
+            if isinstance(alt, dict) and alt.get("type") != "null":
+                tools = resolve(alt)
+        if tools.get("additionalProperties") is not defs["injected_tools"]["additionalProperties"]:
+            problems.append(f"{where}: injected_tools additionalProperties is {tools.get('additionalProperties')!r}")
+        check_ref(where, resolve((tools.get("properties") or {}).get("web_search")))
+
+    source = load(HERE / "schemas" / "management" / "providers.yaml")
+    resolve_yaml = lambda node: source[node["$ref"].split("/")[-1]] if isinstance(node, dict) and "$ref" in node else node
+    check_tools("providers.yaml InjectedToolsConfig", source["InjectedToolsConfig"], resolve_yaml)
+
+    found = []
+
+    def collect(node):
+        if isinstance(node, dict):
+            injected = (node.get("properties") or {}).get("injected_tools") if isinstance(node.get("properties"), dict) else None
+            if isinstance(injected, dict):
+                found.append(injected)
+            for value in node.values():
+                collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    collect(json.loads((HERE / "openapi.json").read_text(encoding="utf-8")))
+    assert found, "openapi.json has no injected_tools property"
+    for i, tools in enumerate(found):
+        check_tools(f"openapi.json injected_tools copy {i + 1}", tools, lambda node: node)
+    # PUT clears a saved block with an explicit null, so the update request must allow it.
+    def allows_null(prop):
+        return isinstance(prop, dict) and any(
+            isinstance(alt, dict) and alt.get("type") == "null" for alt in (prop.get("oneOf") or prop.get("anyOf") or [])
+        )
+
+    if not allows_null((source["UpdateProviderRequest"].get("properties") or {}).get("injected_tools")):
+        problems.append("providers.yaml UpdateProviderRequest.injected_tools does not allow null (how PUT clears it)")
+    bundled = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    update_schemas = [
+        schema for name, schema in bundled.get("components", {}).get("schemas", {}).items() if name == "UpdateProviderRequest"
+    ]
+
+    def collect_update(node):
+        if isinstance(node, dict):
+            description = node.get("description")
+            if isinstance(description, str) and description.startswith("Update provider request") and "properties" in node:
+                update_schemas.append(node)
+            for value in node.values():
+                collect_update(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect_update(value)
+
+    collect_update(bundled)
+    assert update_schemas, "openapi.json has no UpdateProviderRequest schema"
+    for i, schema in enumerate(update_schemas):
+        if not allows_null((schema.get("properties") or {}).get("injected_tools")):
+            problems.append(f"openapi.json UpdateProviderRequest copy {i + 1}: injected_tools does not allow null")
+    assert not problems, "injected_tools drifts from config.schema.json:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
@@ -793,6 +880,7 @@ check("warp chat response contract matches the agent", test_warp_chat_response_c
 check("warp unconfigured response satisfies its own schema", test_warp_unconfigured_response_validates)
 check("warp config input models its enabled-state contract", test_warp_config_input_models_the_enabled_contract)
 check("every operation declares its own security", test_every_operation_declares_security)
+check("injected_tools schemas match config.schema.json", test_injected_tools_contract_matches_config_schema)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)
