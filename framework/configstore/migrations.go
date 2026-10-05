@@ -8202,18 +8202,32 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 				if p.NetworkConfigJSON == "" {
 					continue
 				}
-				var nc schemas.NetworkConfig
-				if err := json.Unmarshal([]byte(p.NetworkConfigJSON), &nc); err != nil {
+				// Decode base_url on its own rather than through NetworkConfig.
+				// NetworkConfig.UnmarshalJSON deliberately fails loud when a reference
+				// resolves to an empty value - the right stance at serve time, where the
+				// alternative is dialing an empty host - but here that error becomes a
+				// skip, and the provider is silently left unmigrated: no key created, the
+				// old JSON still in place, and only a log line to say so. An operator
+				// whose base_url is env.OLLAMA_URL, with the variable absent from the
+				// migration's own environment, would hit exactly that. Moving a
+				// declaration is not the place to validate it.
+				var stored struct {
+					BaseURL *schemas.SecretVar `json:"base_url,omitempty"`
+				}
+				if err := json.Unmarshal([]byte(p.NetworkConfigJSON), &stored); err != nil {
 					logger.Info("[Migration] Failed to parse network_config for provider %s (id=%d), skipping: %v", p.Name, p.ID, err)
 					continue
 				}
-				if !nc.BaseURL.IsSet() {
+				// A secret reference migrates on the strength of the reference alone,
+				// resolved or not. A plain URL still has to be non-empty to be worth
+				// carrying.
+				if stored.BaseURL == nil || (!stored.BaseURL.IsFromSecret() && strings.TrimSpace(stored.BaseURL.GetValue()) == "") {
 					continue
 				}
 
 				// Create a new key with the provider's base_url (a SecretVar, so an env./vault.
 				// reference is carried over as the reference rather than its resolved value)
-				urlSecretVar := *nc.BaseURL.Clone()
+				urlSecretVar := *stored.BaseURL.Clone()
 				enabled := true
 				weight := 1.0
 				newKey := tables.TableKey{
