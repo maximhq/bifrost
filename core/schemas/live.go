@@ -291,10 +291,19 @@ type LiveProvider interface {
 	LiveSessionContent(ctx *BifrostContext, key Key, sessionID string) (*LiveContentResponse, *BifrostError)
 }
 
+// BifrostLiveContentRequest downloads a stored session's recording.
+type BifrostLiveContentRequest struct {
+	Provider  ModelProvider `json:"provider"`
+	SessionID string        `json:"session_id"`
+}
+
 // LiveContentResponse is a session recording: stereo WAV, caller left and assistant right.
 type LiveContentResponse struct {
+	SessionID   string `json:"session_id"`
 	Content     []byte `json:"-"`
 	ContentType string `json:"content_type,omitempty"`
+
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 // LiveCreateResponse is the answer to POST /v1/live/sessions.

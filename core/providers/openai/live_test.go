@@ -172,8 +172,8 @@ func TestLiveSessionContent(t *testing.T) {
 	if bifrostErr != nil {
 		t.Fatalf("LiveSessionContent() error = %v", bifrostErr.Error)
 	}
-	if content.ContentType != "audio/wav" || string(content.Content) != string(wav) {
-		t.Fatalf("LiveSessionContent() = %q %q", content.ContentType, content.Content)
+	if content.SessionID != "live_123" || content.ContentType != "audio/wav" || string(content.Content) != string(wav) {
+		t.Fatalf("LiveSessionContent() = %q %q %q", content.SessionID, content.ContentType, content.Content)
 	}
 
 	status = http.StatusNotFound

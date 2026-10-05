@@ -21,12 +21,13 @@ describe("logs constants", () => {
 	});
 	
 	it("registers live sessions as known request types", () => {
-		for (const type of ["live", "live.session"] as const) {
+		for (const type of ["live", "live.session", "live_content"] as const) {
 			expect(RequestTypes).toContain(type);
 			expect(RequestTypeLabels[type]).toBeTruthy();
 			expect(RequestTypeColors[type]).toBeTruthy();
 		}
 		expect(RequestTypeLabels["live.session"]).toBe("Live Session");
+		expect(RequestTypeLabels["live_content"]).toBe("Live Recording");
 	});
 
 	it("maps backend app names to display metadata", () => {

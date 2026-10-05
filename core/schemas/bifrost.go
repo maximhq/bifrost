@@ -206,6 +206,7 @@ const (
 	WebSocketResponsesRequest      RequestType = "websocket_responses"
 	RealtimeRequest                RequestType = "realtime"
 	LiveRequest                    RequestType = "live"
+	LiveContentRequest             RequestType = "live_content"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.
@@ -663,6 +664,7 @@ type BifrostRequest struct {
 	FileRetrieveRequest          *BifrostFileRetrieveRequest
 	FileDeleteRequest            *BifrostFileDeleteRequest
 	FileContentRequest           *BifrostFileContentRequest
+	LiveContentRequest           *BifrostLiveContentRequest
 	CachedContentCreateRequest   *BifrostCachedContentCreateRequest
 	CachedContentListRequest     *BifrostCachedContentListRequest
 	CachedContentRetrieveRequest *BifrostCachedContentRetrieveRequest
@@ -768,6 +770,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 			return br.FileContentRequest.Provider, *br.FileContentRequest.Model, nil
 		}
 		return br.FileContentRequest.Provider, "", nil
+	case br.LiveContentRequest != nil:
+		return br.LiveContentRequest.Provider, "", nil
 	case br.CachedContentCreateRequest != nil:
 		return br.CachedContentCreateRequest.Provider, br.CachedContentCreateRequest.Model, nil
 	case br.CachedContentListRequest != nil:
@@ -1237,6 +1241,7 @@ type BifrostResponse struct {
 	FileRetrieveResponse          *BifrostFileRetrieveResponse
 	FileDeleteResponse            *BifrostFileDeleteResponse
 	FileContentResponse           *BifrostFileContentResponse
+	LiveContentResponse           *LiveContentResponse
 	CachedContentCreateResponse   *BifrostCachedContentCreateResponse
 	CachedContentListResponse     *BifrostCachedContentListResponse
 	CachedContentRetrieveResponse *BifrostCachedContentRetrieveResponse
@@ -1313,6 +1318,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.FileDeleteResponse.ExtraFields
 	case r.FileContentResponse != nil:
 		return &r.FileContentResponse.ExtraFields
+	case r.LiveContentResponse != nil:
+		return &r.LiveContentResponse.ExtraFields
 	case r.VideoGenerationResponse != nil:
 		return &r.VideoGenerationResponse.ExtraFields
 	case r.VideoDownloadResponse != nil:
@@ -1642,6 +1649,11 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.FileContentResponse.ExtraFields.Provider = provider
 		r.FileContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.FileContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.LiveContentResponse != nil:
+		r.LiveContentResponse.ExtraFields.RequestType = requestType
+		r.LiveContentResponse.ExtraFields.Provider = provider
+		r.LiveContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.LiveContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	case r.BatchCreateResponse != nil:
 		r.BatchCreateResponse.ExtraFields.RequestType = requestType
 		r.BatchCreateResponse.ExtraFields.Provider = provider

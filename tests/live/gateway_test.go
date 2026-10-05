@@ -232,6 +232,44 @@ func liveLogRows(t *testing.T, providerSessionID string) []gjson.Result {
 	return matches
 }
 
+// contentRowSessionOf caches which provider session each download row belongs to.
+var contentRowSessionOf sync.Map
+
+// findContentLog waits for the row a recording download leaves, found by the provider's session
+// id in its metadata. A download is a request of its own, so it never shares the session's row.
+func findContentLog(t *testing.T, providerSessionID string) gjson.Result {
+	t.Helper()
+	deadline := time.Now().Add(rowWaitTimeout)
+	for {
+		status, raw, err := apiCall(http.MethodGet, "/api/logs?objects=live_content&limit=500&start_time="+suiteStart.Format(time.RFC3339Nano), nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "list logs: %s", raw)
+		var matches []gjson.Result
+		for _, summary := range gjson.GetBytes(raw, "logs").Array() {
+			id := summary.Get("id").Str
+			owner, known := contentRowSessionOf.Load(id)
+			if !known {
+				row := fetchLog(t, id)
+				owner = row.Get("metadata.provider_session_id").Str
+				if owner != "" {
+					contentRowSessionOf.Store(id, owner)
+				}
+			}
+			if owner == providerSessionID {
+				matches = append(matches, fetchLog(t, id))
+			}
+		}
+		require.LessOrEqual(t, len(matches), 1, "one download logs one row, found %d for %s", len(matches), providerSessionID)
+		if len(matches) == 1 {
+			return matches[0]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no live_content row for provider session %s within %s", providerSessionID, rowWaitTimeout)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
 // findSessionRow waits for a row of an object type grouped under a session id by the client.
 func findSessionRow(t *testing.T, sessionID, object string) gjson.Result {
 	t.Helper()
