@@ -70,7 +70,8 @@ type ChannelMessage struct {
 	// firstTokenTimeout is this stream attempt's TTFT deadline, or 0 for none.
 	// handleStreamRequest decides it per attempt (never on the last one), so it
 	// travels on the message rather than on the context the attempts share.
-	firstTokenTimeout time.Duration
+	firstTokenTimeout  time.Duration
+	streamPostHooksRan bool // the worker already ran this stream's error post-hooks
 	// handoff arbitrates who owns the terminal value of a NON-streaming request.
 	// Response/Err are cap-1 channels drained on acquire, so the worker's send is
 	// always ready; once the caller's context ends, ctx.Done() is ready too and a
@@ -6673,6 +6674,11 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		} else {
 			bifrost.logger.Debug("error while executing stream request: %+v", bifrostErrVal)
 		}
+		if msg.streamPostHooksRan {
+			bifrostErrVal.PopulateExtraFields(req.RequestType, provider, model, model)
+			bifrost.releaseChannelMessage(msg)
+			return nil, &bifrostErrVal
+		}
 		// Marking final chunk
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		// On error we will complete post-hooks
@@ -6867,6 +6873,20 @@ func stampEndedStreamAttempt(ctx *schemas.BifrostContext, bifrostError *schemas.
 	stampEndedAttempt(ctx, bifrostError)
 }
 
+// streamHoldsStartupEvents reports whether a stream attempt's startup events are
+// held until real output arrives. Azure and OpenAI upstreams (including custom
+// providers built on them, whatever their model ids) and OpenAI models on any
+// other host (Bedrock, Bedrock Mantle, Vertex) may emit startup events
+// (response.created, in_progress, an empty role delta) before an overload or
+// throttle error. An attempt with a TTFT deadline holds them on every provider:
+// only real output (text, reasoning, tool calls, audio, images, a finish reason
+// or usage) counts as the first token.
+func streamHoldsStartupEvents(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, model string) bool {
+	baseProvider := schemas.ResolveBaseProvider(ctx, providerKey)
+	return baseProvider == schemas.Azure || baseProvider == schemas.OpenAI ||
+		schemas.IsOpenAIModelFamily(ctx, model) || providerUtils.AttemptAbortFromContext(ctx) != nil
+}
+
 func executeRequestWithRetries[T any](
 	ctx *schemas.BifrostContext,
 	config *schemas.ProviderConfig,
@@ -6880,9 +6900,6 @@ func executeRequestWithRetries[T any](
 ) (result T, bifrostError *schemas.BifrostError) {
 	var attempts int
 	isStreamRequest := IsStreamRequestType(requestType)
-	// Whether the previous attempt buffered startup events; its stream-end
-	// markers must be cleared before the next attempt reads a fresh stream.
-	prevCheckedPreamble := false
 
 	// Emit the terminal routing-engine entry on every return path — including
 	// early returns from key-selection failures and tracer-missing — so the
@@ -7274,32 +7291,25 @@ func executeRequestWithRetries[T any](
 			ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, streamStartTime)
 		}
 
-		// The previous failed stream has drained before reaching this retry.
-		if prevCheckedPreamble && attempts > 0 {
+		// The previous failed stream has drained before reaching this retry; its
+		// stream-end markers and accumulated chunks must not leak into this one.
+		if isStreamRequest && attempts > 0 {
 			ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
 			ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
 			ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+				tracer.ResetStreamAccumulator(traceID)
+			}
 		}
 
 		// Attempt the request
 		result, bifrostError = requestHandler(currentKey)
 
 		// Detect errors carried inside HTTP 200 streams before returning success.
-		// Azure and OpenAI upstreams (including custom providers built on them,
-		// whatever their model ids) and OpenAI models on any other host (Bedrock,
-		// Bedrock Mantle, Vertex) may emit startup events (response.created,
-		// in_progress, an empty role delta) before an overload or throttle error.
 		// Checked after requestHandler so the key's resolved alias decides the
 		// model family.
-		baseProvider := schemas.ResolveBaseProvider(ctx, providerKey)
-		// An attempt with a TTFT deadline holds startup events on every
-		// provider: only real output (text, reasoning, tool calls, audio,
-		// images, a finish reason or usage) counts as the first token.
 		attemptAbort := providerUtils.AttemptAbortFromContext(ctx)
-		checkPreamble := isStreamRequest &&
-			(baseProvider == schemas.Azure || baseProvider == schemas.OpenAI ||
-				schemas.IsOpenAIModelFamily(ctx, model) || attemptAbort != nil)
-		prevCheckedPreamble = checkPreamble
+		checkPreamble := isStreamRequest && streamHoldsStartupEvents(ctx, providerKey, model)
 		emptyStream := false
 		if bifrostError == nil {
 			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
@@ -8026,6 +8036,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// goroutines' defers — passed via the postHookSpanFinalizer parameter directly to
 		// handleProviderStreamRequest, never via the shared req.Context.
 		var lastAttemptFinalizer func(context.Context)
+		// Set while a failed stream attempt's error is withheld from plugins and no post-hook has ended the request.
+		var heldBackError atomic.Bool
 
 		// Execute request with retries. For streaming, the plugin pipeline,
 		// postHookRunner, and finalizer are allocated per-attempt inside the
@@ -8088,6 +8100,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// Reading req.RequestType inside the closure would observe the new request's type.
 				attemptRequestType := req.RequestType
 				pipeline := bifrost.getPluginPipeline()
+				// Mirrors the retry loop's startup check for this attempt.
+				var isPreamble func(*schemas.BifrostStreamChunk) bool
+				if streamHoldsStartupEvents(req.Context, provider.GetProviderKey(), model) {
+					isPreamble = azure.IsStreamPreamble
+				}
+				startup := providerUtils.NewStreamStartupState(isPreamble, providerUtils.AttemptAbortFromContext(req.Context) != nil)
 				postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 					// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
 					// can read requestType/provider/model from the chunk or error.
@@ -8105,19 +8123,27 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 							stampEndedStreamAttempt(ctx, err)
 						}
 					}
+					// An error that fails the attempt before the client sees it is the retry
+					// loop's; billed usage and cancellations still reach plugins here.
+					if result == nil && startup.IsStartupError(err) && err.ExtraFields.BilledUsage == nil && ctx.Err() == nil {
+						heldBackError.Store(true)
+						return nil, err
+					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 					if IsFinalChunk(ctx) {
 						drainAndAttachPluginLogs(ctx)
+						heldBackError.Store(false)
 					}
 					if bifrostErr != nil {
 						bifrostErr.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						bifrostErr.PopulateRoutingInfo(perAttemptRoutingInfo)
-						return nil, bifrostErr
+						resp = nil // Errors take precedence in the emitted chunk.
 					} else if resp != nil {
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
-					return resp, nil
+					startup.ObserveResult(ctx, resp, bifrostErr)
+					return resp, bifrostErr
 				}
 				// Store a finalizer callback to create aggregated post-hook spans at stream end.
 				// Wrapped in sync.Once so the normal end-of-stream invocation and a deferred
@@ -8196,6 +8222,19 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		if IsStreamRequestType(req.RequestType) && bifrostError != nil {
 			if lastAttemptFinalizer != nil {
 				lastAttemptFinalizer(req.Context)
+			}
+		}
+
+		// No plugin has seen this stream end: end it here, so it ends even if the caller has left.
+		if IsStreamRequestType(req.RequestType) && bifrostError != nil && heldBackError.Load() {
+			bifrostError.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
+			bifrostError.PopulateRoutingInfo(attemptRoutingInfo)
+			if recovered, recoveredErr := bifrost.runStreamErrorPostHooks(req.Context, bifrostError); recoveredErr != nil {
+				bifrostError = recoveredErr
+				req.streamPostHooksRan = true
+			} else {
+				recovered.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
+				stream, bifrostError = newBifrostMessageChan(recovered), nil
 			}
 		}
 
@@ -8286,6 +8325,22 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 	}
 
 	// bifrost.logger.Debug("worker for provider %s exiting...", provider.GetProviderKey())
+}
+
+// runStreamErrorPostHooks ends a streamed request for plugins with its final
+// error, as tryStreamRequest does on receiving it. A plugin may recover the
+// error into a response.
+func (bifrost *Bifrost) runStreamErrorPostHooks(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	pipeline := bifrost.getPluginPipeline()
+	defer bifrost.releasePluginPipeline(pipeline)
+	resp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, len(*bifrost.llmPlugins.Load()))
+	pipeline.FinalizeStreamingPostHookSpans(ctx)
+	drainAndAttachPluginLogs(ctx)
+	if recoveredErr == nil && resp == nil {
+		return nil, bifrostErr
+	}
+	return resp, recoveredErr
 }
 
 // sendWorkerError hands an error the worker produced without a provider call
@@ -10209,6 +10264,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	msg.Err = nil
 	msg.queueSpan = nil
 	msg.firstTokenTimeout = 0
+	msg.streamPostHooksRan = false
 	bifrost.channelMessagePool.Put(msg)
 }
 
