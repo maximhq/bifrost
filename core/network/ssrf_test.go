@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -738,6 +739,38 @@ func TestGuardedRedirectViaProxyToleratesProxyOnlyDNS(t *testing.T) {
 	}
 }
 
+// TestNewSSRFSafeHTTPClientReachesConfiguredPrivateProxy pins that the SSRF-safe client
+// can use a global API proxy that sits on a private or loopback address, the normal
+// self-hosted setup. The proxy is dialed with the private-network policy; direct
+// destinations keep the public-only dialer, and the destination is still vetted before
+// it is handed to the proxy.
+func TestNewSSRFSafeHTTPClientReachesConfiguredPrivateProxy(t *testing.T) {
+	var seen atomic.Value
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Store(r.URL.Host)
+		_, _ = w.Write([]byte("via-proxy"))
+	}))
+	defer proxy.Close()
+	SetDefaultHTTPClientFactory(NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled: true, Type: GlobalProxyTypeHTTP, URL: proxy.URL, EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(nil) })
+
+	client := NewSSRFSafeHTTPClient(5 * time.Second)
+	resp, err := client.Get("http://203.0.113.10/catalog.json")
+	if err != nil {
+		t.Fatalf("a loopback API proxy must be reachable, got %v", err)
+	}
+	resp.Body.Close()
+	if got, _ := seen.Load().(string); got != "203.0.113.10" {
+		t.Fatalf("proxy saw target %q, want 203.0.113.10", got)
+	}
+
+	if _, err := client.Get("http://10.0.0.5/catalog.json"); err == nil || !strings.Contains(err.Error(), "non-public") {
+		t.Fatalf("a private destination must still be refused before the proxy, got %v", err)
+	}
+}
+
 // TestGuardedRedirectViaProxyStillAppliesPolicyWhenResolvable: a proxied hop
 // is not a policy bypass. When the local resolver does answer, a hostname that
 // maps to a blocked address is refused before the proxy is asked for it.
@@ -861,5 +894,55 @@ func TestCheckProxiedDestination(t *testing.T) {
 				t.Fatalf("expected refusal containing %q, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+// hostResolver answers per hostname, so a test can make the target public and
+// everything else unreachable. IP literals resolve to themselves, like net.Resolver.
+type hostResolver map[string][]net.IP
+
+func (h hostResolver) LookupIP(_ context.Context, _, host string) ([]net.IP, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IP{ip}, nil
+	}
+	if ips, ok := h[host]; ok {
+		return ips, nil
+	}
+	return nil, errors.New("no such host")
+}
+
+func TestPublicTargetCheck_PublicTargetReturnsItsAddresses(t *testing.T) {
+	ips, err := publicTargetCheck(hostResolver{"files.example": {net.ParseIP("203.0.113.10")}}, nil)(context.Background(), "files.example")
+	if err != nil {
+		t.Fatalf("public target refused: %v", err)
+	}
+	if len(ips) != 1 || !ips[0].Equal(net.ParseIP("203.0.113.10")) {
+		t.Fatalf("checked addresses = %v, want [203.0.113.10]: the caller tunnels to these", ips)
+	}
+}
+
+func TestPublicTargetCheck_RefusesNonPublicTargets(t *testing.T) {
+	tests := map[string]hostResolver{
+		// One public and one private record: the private one blocks, as on the direct path.
+		"internal.example": {"internal.example": {net.ParseIP("203.0.113.10"), net.ParseIP("10.0.0.5")}},
+		"127.0.0.1":        {},
+		"169.254.169.254":  {},
+		"fd00:ec2::254":    {},
+	}
+	for host, resolver := range tests {
+		ips, err := publicTargetCheck(resolver, nil)(context.Background(), host)
+		if err == nil || !strings.Contains(err.Error(), "blocked connection to non-public address") {
+			t.Errorf("%s: expected a non-public address error, got %v", host, err)
+		}
+		if ips != nil {
+			t.Errorf("%s: a refused target must return no addresses to dial, got %v", host, ips)
+		}
+	}
+}
+
+func TestPublicTargetCheck_UnresolvableTargetIsRefused(t *testing.T) {
+	_, err := publicTargetCheck(hostResolver{}, nil)(context.Background(), "only-the-proxy-knows.example")
+	if err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Fatalf("expected a DNS failure, got %v", err)
 	}
 }

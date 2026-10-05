@@ -340,6 +340,10 @@
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
+        "mcp_code_mode_limits": {
+          "$ref": "#/$defs/mcp_code_mode_limits",
+          "description": "Per-execution code mode limits, as stored and served by the config API. In config.json prefer mcp.tool_manager_config.code_mode_limits, which takes precedence when both are set."
+        },
         "mcp_enable_temp_token_auth": {
           "type": "boolean",
           "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth and per-user-headers auth pages so anonymous browser visitors can complete the flow without a dashboard session. User-mode flows are never minted regardless of this setting \u2014 they always require SSO login.",
@@ -397,6 +401,12 @@
         "oauth2_server_config": {
           "type": "object",
           "properties": {
+            "allowed_redirect_uris": {
+              "type": "array",
+              "items": { "type": "string", "format": "uri" },
+              "default": [],
+              "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries. Remote callbacks are denied by default; changing this list through the API requires dashboard authentication."
+            },
             "issuer_url": {
               "anyOf": [
                 {
@@ -5886,7 +5896,7 @@
         "base_url": {
           "type": "string",
           "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama)"
+          "description": "Base URL for the provider (optional, required for Ollama). Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
         },
         "extra_headers": {
           "type": "object",
@@ -7912,6 +7922,66 @@
           "minimum": 0,
           "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.",
           "default": 0
+        },
+        "code_mode_limits": {
+          "$ref": "#/$defs/mcp_code_mode_limits"
+        }
+      }
+    },
+    "mcp_code_mode_limits": {
+      "type": "object",
+      "description": "Limits applied to each code mode (executeToolCode) execution. Every field is optional; omit it or set 0 to use the built-in default. There is no limit on how many executions run concurrently.",
+      "additionalProperties": false,
+      "properties": {
+        "max_source_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum size of the submitted code in bytes. 0 uses the default of 65536 (64 KiB).",
+          "default": 0
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum interpreter computation steps per execution, including work inside builtins. 0 uses the default of 1000000.",
+          "default": 0
+        },
+        "max_memory_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Estimated allocation budget per execution in bytes, enforced by the interpreter and value converters before allocating. 0 uses the default of 67108864 (64 MiB).",
+          "default": 0
+        },
+        "max_log_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum print and tool log output per execution in bytes, including newlines. 0 uses the default of 65536 (64 KiB).",
+          "default": 0
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum nested MCP tool calls per execution. 0 uses the default of 64.",
+          "default": 0
+        },
+        "max_value_bytes": {
+          "type": "integer",
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "minimum": 1024
+            }
+          ],
+          "description": "Size budget in bytes for each tool payload and converted result, counted conservatively for JSON escaping. Must be 0 (default of 1048576, 1 MiB) or at least 1024.",
+          "default": 0
+        },
+        "max_nesting_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "Maximum nesting depth of values crossing the tool boundary. 0 uses the default of 64; at most 1000.",
+          "default": 0
         }
       }
     },
@@ -8378,7 +8448,7 @@
         },
         "ca_cert_pem": {
           "type": "string",
-          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, supports env.VAR_NAME)"
+          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, and for the proxy itself when the URL is https://, supports env.VAR_NAME)"
         }
       },
       "required": [
@@ -8838,7 +8908,7 @@
         },
         "apiToken": {
           "type": "string",
-          "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
+          "description": "Okta API token for Admin API access (optional; enables background user/group reconciliation on the bulkSyncInterval schedule, 24h by default)"
         },
         "audience": {
           "type": "string",
@@ -8883,6 +8953,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -8974,6 +9050,12 @@
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         },
@@ -9047,6 +9129,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9130,6 +9218,12 @@
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         },
@@ -9202,6 +9296,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9292,6 +9392,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9421,6 +9527,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -11830,6 +11942,39 @@
         ],
         "additionalProperties": false
       }
+    },
+    "scim_attribute_project_mappings": {
+      "type": "array",
+      "description": "Attribute -> project mappings. Every matching rule applies: the user is added to each project it matches. Projects are never auto-created; a rule naming a missing project is dropped. Memberships added this way are removed when the rule stops matching; members added from the dashboard are kept.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "project": {
+            "type": "string",
+            "description": "Name of the project to add the user to on match"
+          }
+        },
+        "required": [
+          "attribute",
+          "value",
+          "project"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "scim_bulk_sync_interval": {
+      "type": "string",
+      "pattern": "^([0-9]+d|([0-9]+(\\.[0-9]+)?(h|m|s))+)$",
+      "default": "24h",
+      "description": "How often the directory reconcile lists the IdP's users through its admin API and deprovisions the ones it no longer returns, as whole days or h/m/s pairs (e.g. '12h', '1h30m', '7d'). Must be between 1h and 30d. Defaults to 24h. Inert when SCIM provisioning is enabled or the provider has no directory API access (e.g. Okta without apiToken)."
     },
     "scim_attribute_business_unit_mappings": {
       "type": "array",
