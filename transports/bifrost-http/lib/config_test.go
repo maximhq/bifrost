@@ -13314,6 +13314,280 @@ func TestSQLite_Customer_GovernedByProfileKeepsItsStoredRateLimit(t *testing.T) 
 		"config.json's rate limit was written onto the row a governed customer links")
 }
 
+// migratedTeamGuard answers the way the enterprise build does once team-1 has been migrated onto an
+// access profile, and nothing else is governed.
+func migratedTeamGuard(_ context.Context, holderKind, holderID string) (string, error) {
+	if holderKind == governance.LegacyLimitHolderTeam && holderID == "team-1" {
+		return "Engineering Baseline", nil
+	}
+	return "", nil
+}
+
+// teamBudgetConfig declares team-1 funded by a budget in governance.budgets, the shape a migration
+// leaves behind in a file nobody edited.
+func teamBudgetConfig(tempDir string, maxLimit float64) *ConfigData {
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Teams: []tables.TableTeam{{ID: "team-1", Name: "Team One"}},
+		Budgets: []tables.TableBudget{
+			{ID: "team-1-budget", MaxLimit: maxLimit, ResetDuration: "1M", TeamID: stringPtr("team-1")},
+		},
+	}
+	return configData
+}
+
+// countBudget reports whether a budget row exists, and its limit when it does.
+func countBudget(t *testing.T, config *Config, id string) (bool, float64) {
+	t.Helper()
+	var budget tables.TableBudget
+	err := config.ConfigStore.DB().Where("id = ?", id).Limit(1).Find(&budget).Error
+	require.NoError(t, err)
+	return budget.ID != "", budget.MaxLimit
+}
+
+// TestConfigStoreReadyHook_RunsBeforeGovernanceIsWritten: the hook gets the store LoadConfig opened,
+// before any governance row from the file exists, which is what lets a guard it installs govern the
+// reconcile that follows.
+func TestConfigStoreReadyHook_RunsBeforeGovernanceIsWritten(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	createConfigFile(t, tempDir, teamBudgetConfig(tempDir, 100))
+
+	calls := 0
+	teamsAtHook := int64(-1)
+	RegisterConfigStoreReadyHook(func(ctx context.Context, store configstore.ConfigStore) {
+		calls++
+		require.NoError(t, store.DB().Model(&tables.TableTeam{}).Count(&teamsAtHook).Error)
+	})
+	defer RegisterConfigStoreReadyHook(nil)
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+
+	assert.Equal(t, 1, calls)
+	assert.Zero(t, teamsAtHook, "the hook ran after the file's teams were written")
+}
+
+// TestSQLite_Team_MigratedToProfile_SplitDoesNotRecreateItsBudget: a migration deletes the team's
+// budget; a split-mode restart on the unchanged file must not bring it back on top of the profile.
+func TestSQLite_Team_MigratedToProfile_SplitDoesNotRecreateItsBudget(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	createConfigFile(t, tempDir, teamBudgetConfig(tempDir, 100))
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	exists, _ := countBudget(t, config1, "team-1-budget")
+	require.True(t, exists)
+	// What the enterprise migration does to the legacy budget.
+	require.NoError(t, config1.ConfigStore.DB().Where("id = ?", "team-1-budget").Delete(&tables.TableBudget{}).Error)
+	config1.Close(ctx)
+
+	RegisterConfigStoreReadyHook(func(context.Context, configstore.ConfigStore) {
+		governance.RegisterLegacyLimitGuard(migratedTeamGuard)
+	})
+	defer RegisterConfigStoreReadyHook(nil)
+	defer governance.RegisterLegacyLimitGuard(nil)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+	exists, _ = countBudget(t, config2, "team-1-budget")
+	assert.False(t, exists, "the budget the migration replaced came back alongside the profile")
+}
+
+// TestSQLite_Team_MigratedToProfile_SplitSkipsAnEditedBudget: editing the old budget in the file does
+// not apply it to a team a profile governs.
+func TestSQLite_Team_MigratedToProfile_SplitSkipsAnEditedBudget(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	createConfigFile(t, tempDir, teamBudgetConfig(tempDir, 100))
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	governance.RegisterLegacyLimitGuard(migratedTeamGuard)
+	defer governance.RegisterLegacyLimitGuard(nil)
+	createConfigFile(t, tempDir, teamBudgetConfig(tempDir, 999))
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+	_, limit := countBudget(t, config2, "team-1-budget")
+	assert.EqualValues(t, 100, limit, "the edited budget was applied to a team an access profile governs")
+}
+
+// TestSQLite_Team_GuardLookupFails_SkipsItsLimitsAndBoots: a lookup that fails does not stop the
+// load. The team's limits are skipped this boot, as if a profile governed it, and the rest applies.
+func TestSQLite_Team_GuardLookupFails_SkipsItsLimitsAndBoots(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	createConfigFile(t, tempDir, teamBudgetConfig(tempDir, 100))
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	governance.RegisterLegacyLimitGuard(func(context.Context, string, string) (string, error) {
+		return "", errors.New("connection reset")
+	})
+	defer governance.RegisterLegacyLimitGuard(nil)
+	configData := teamBudgetConfig(tempDir, 999)
+	configData.Governance.Teams[0].Name = "Team One Renamed"
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err, "a failed lookup does not stop the load")
+	_, limit := countBudget(t, config2, "team-1-budget")
+	assert.EqualValues(t, 100, limit, "the budget is skipped while the answer is unknown")
+	var team tables.TableTeam
+	require.NoError(t, config2.ConfigStore.DB().Where("id = ?", "team-1").First(&team).Error)
+	assert.Equal(t, "Team One Renamed", team.Name, "the rest of the entry still applies")
+	assert.Empty(t, team.ConfigHash, "and no hash is stamped, so the next boot retries its limits")
+	config2.Close(ctx)
+
+	// The next boot, on the same file, can tell again: nothing governs the team, so its limits apply.
+	governance.RegisterLegacyLimitGuard(func(context.Context, string, string) (string, error) { return "", nil })
+	config3, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config3.Close(ctx)
+	_, limit = countBudget(t, config3, "team-1-budget")
+	assert.EqualValues(t, 999, limit, "the skipped budget is applied once the lookup answers")
+	require.NoError(t, config3.ConfigStore.DB().Where("id = ?", "team-1").First(&team).Error)
+	assert.NotEmpty(t, team.ConfigHash)
+}
+
+// flakyGuard answers the first lookup for each entity with first, and every later one with later. It
+// is how an entity looked up twice in one load could get two different answers.
+func flakyGuard(first, later func() (string, error)) governance.LegacyLimitGuard {
+	calls := map[string]int{}
+	return func(_ context.Context, holderKind, holderID string) (string, error) {
+		calls[holderKind+":"+holderID]++
+		if calls[holderKind+":"+holderID] == 1 {
+			return first()
+		}
+		return later()
+	}
+}
+
+// TestSQLite_Customer_InlineBudgetFollowsTheCustomersOwnLookup: a customer is looked up once, and its
+// inline budget follows that answer. A second lookup that failed would skip the budget after the
+// customer was saved with a hash covering it, and an unchanged file would never write it.
+func TestSQLite_Customer_InlineBudgetFollowsTheCustomersOwnLookup(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Customers: []tables.TableCustomer{{ID: "customer-1", Name: "Acme", Budgets: []tables.TableBudget{
+			{ID: "customer-1-budget", MaxLimit: 100, ResetDuration: "1M"},
+		}}},
+	}
+	createConfigFile(t, tempDir, configData)
+	defer governance.RegisterLegacyLimitGuard(nil)
+	ctx := context.Background()
+
+	governance.RegisterLegacyLimitGuard(flakyGuard(
+		func() (string, error) { return "", nil },
+		func() (string, error) { return "", errors.New("connection reset") },
+	))
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	governance.RegisterLegacyLimitGuard(func(context.Context, string, string) (string, error) { return "", nil })
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+	exists, _ := countBudget(t, config2, "customer-1-budget")
+	assert.True(t, exists, "the budget of a customer nothing governs is written")
+}
+
+// TestSQLite_Team_BudgetStaysSkippedWhileTheTeamsLookupFailed: when the lookup for a team fails, its
+// budgets are skipped for the boot even if a later lookup would have answered, the same as the team's
+// own limits; the next boot applies them.
+func TestSQLite_Team_BudgetStaysSkippedWhileTheTeamsLookupFailed(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	createConfigFile(t, tempDir, teamBudgetConfig(tempDir, 100))
+	defer governance.RegisterLegacyLimitGuard(nil)
+	ctx := context.Background()
+
+	governance.RegisterLegacyLimitGuard(flakyGuard(
+		func() (string, error) { return "", errors.New("connection reset") },
+		func() (string, error) { return "", nil },
+	))
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	exists, _ := countBudget(t, config1, "team-1-budget")
+	assert.False(t, exists, "the team's lookup failed, so its budget waits for one that answers")
+	config1.Close(ctx)
+
+	governance.RegisterLegacyLimitGuard(func(context.Context, string, string) (string, error) { return "", nil })
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+	exists, _ = countBudget(t, config2, "team-1-budget")
+	assert.True(t, exists, "and the next boot applies it")
+}
+
+// TestSQLite_Team_NotMigrated_SplitAppliesAnEditedBudget: a team without a profile keeps using its own
+// budgets, so editing one in the file applies as it always has.
+func TestSQLite_Team_NotMigrated_SplitAppliesAnEditedBudget(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	createConfigFile(t, tempDir, teamBudgetConfig(tempDir, 100))
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	governance.RegisterLegacyLimitGuard(func(context.Context, string, string) (string, error) { return "", nil })
+	defer governance.RegisterLegacyLimitGuard(nil)
+	createConfigFile(t, tempDir, teamBudgetConfig(tempDir, 999))
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+	_, limit := countBudget(t, config2, "team-1-budget")
+	assert.EqualValues(t, 999, limit)
+}
+
+// TestSQLite_Team_MigratedToProfile_SourceOfTruthAppliesTheFile: under source_of_truth config.json the
+// file's limits are applied even to a governed team; the enterprise reconcile then removes the profile.
+func TestSQLite_Team_MigratedToProfile_SourceOfTruthAppliesTheFile(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	configData := teamBudgetConfig(tempDir, 100)
+	configData.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NoError(t, config1.ConfigStore.DB().Where("id = ?", "team-1-budget").Delete(&tables.TableBudget{}).Error)
+	config1.Close(ctx)
+
+	governance.RegisterLegacyLimitGuard(migratedTeamGuard)
+	defer governance.RegisterLegacyLimitGuard(nil)
+	configData = teamBudgetConfig(tempDir, 999)
+	configData.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+	exists, limit := countBudget(t, config2, "team-1-budget")
+	assert.True(t, exists, "config.json is the source of truth, so its budget is applied")
+	assert.EqualValues(t, 999, limit)
+}
+
 // TestSQLite_Customer_HashMismatch_FileSync tests file sync when hash differs
 func TestSQLite_Customer_HashMismatch_FileSync(t *testing.T) {
 	initTestLogger()
@@ -14736,6 +15010,7 @@ func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) 
 			modelAdds, modelUpdates,
 			providerAdds, providerUpdates,
 			nil,
+			false,
 		)
 	}
 
