@@ -1,11 +1,14 @@
 package vertex
 
 import (
+	"bufio"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -71,15 +74,27 @@ func testServiceAccountJSON(t *testing.T, tokenURI string) string {
 // token acquisition while the inference client itself was correctly proxied.
 func TestVertexAuthHeaders_OAuthTokenGoesThroughProxyConfig(t *testing.T) {
 	var tokenHits atomic.Int32
+	// The auth client runs on fasthttp, whose proxy dialer tunnels every target with
+	// CONNECT (http:// included), so the proxy answers CONNECT and then serves the
+	// plain HTTP token request inside the tunnel.
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// A forward proxy receives the absolute target URI in the request line.
-		if r.URL.Host != "oauth2.test.invalid" || r.URL.Path != "/token" {
-			http.Error(w, "unexpected target "+r.URL.String(), http.StatusBadGateway)
+		if r.Method != http.MethodConnect || r.Host != "oauth2.test.invalid:80" {
+			http.Error(w, "unexpected request "+r.Method+" "+r.Host, http.StatusBadGateway)
+			return
+		}
+		conn, buffered, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+		inner, err := http.ReadRequest(bufio.NewReader(io.MultiReader(buffered.Reader, conn)))
+		if err != nil || inner.URL.Path != "/token" {
 			return
 		}
 		tokenHits.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"proxied-token","token_type":"Bearer","expires_in":3600}`))
+		body := `{"access_token":"proxied-token","token_type":"Bearer","expires_in":3600}`
+		_, _ = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
 	}))
 	defer proxy.Close()
 
