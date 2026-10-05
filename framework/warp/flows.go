@@ -216,7 +216,7 @@ func getLogDetailTool() Tool {
 				return nil, fmt.Errorf("could not load log %s: %w", id, err)
 			}
 			if entry == nil {
-				return nil, fmt.Errorf("no log found with id %s", id)
+				return nil, logNotFound(id, deps.scope)
 			}
 			return projectLog(entry, true, DetailContentChars), nil
 		},
@@ -1157,6 +1157,12 @@ func describeFilterSpaceTool() Tool {
 			}
 			if deps.scope.HasIdentity {
 				out["caller_user_id"] = deps.scope.UserID
+			}
+			// What "all" covers for this caller. Without it the model can only
+			// say "everything you may see", which is true and tells the reader
+			// nothing about whether a total is their own, their team's or wider.
+			if deps.scope.Visibility != "" {
+				out["caller_can_see"] = deps.scope.Visibility
 			}
 
 			models, err := deps.logManager.GetAvailableModels(ctx, limit, query)
