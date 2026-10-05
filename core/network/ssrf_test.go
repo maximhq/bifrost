@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -735,6 +736,38 @@ func TestGuardedRedirectViaProxyToleratesProxyOnlyDNS(t *testing.T) {
 	direct := newGuardedHTTPClientWith(5*time.Second, (&net.Dialer{}).DialContext, checkPrivateNetworkPolicy, nil, noDNS)
 	if err := direct.CheckRedirect(req, redirectVia()); err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
 		t.Fatalf("direct redirect with a failing resolver must be refused, got %v", err)
+	}
+}
+
+// TestNewSSRFSafeHTTPClientReachesConfiguredPrivateProxy pins that the SSRF-safe client
+// can use a global API proxy that sits on a private or loopback address, the normal
+// self-hosted setup. The proxy is dialed with the private-network policy; direct
+// destinations keep the public-only dialer, and the destination is still vetted before
+// it is handed to the proxy.
+func TestNewSSRFSafeHTTPClientReachesConfiguredPrivateProxy(t *testing.T) {
+	var seen atomic.Value
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Store(r.URL.Host)
+		_, _ = w.Write([]byte("via-proxy"))
+	}))
+	defer proxy.Close()
+	SetDefaultHTTPClientFactory(NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled: true, Type: GlobalProxyTypeHTTP, URL: proxy.URL, EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(nil) })
+
+	client := NewSSRFSafeHTTPClient(5 * time.Second)
+	resp, err := client.Get("http://203.0.113.10/catalog.json")
+	if err != nil {
+		t.Fatalf("a loopback API proxy must be reachable, got %v", err)
+	}
+	resp.Body.Close()
+	if got, _ := seen.Load().(string); got != "203.0.113.10" {
+		t.Fatalf("proxy saw target %q, want 203.0.113.10", got)
+	}
+
+	if _, err := client.Get("http://10.0.0.5/catalog.json"); err == nil || !strings.Contains(err.Error(), "non-public") {
+		t.Fatalf("a private destination must still be refused before the proxy, got %v", err)
 	}
 }
 
