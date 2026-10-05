@@ -1,6 +1,7 @@
 package semanticcache
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -435,4 +436,48 @@ func TestSpeechSynthesisStreaming(t *testing.T) {
 	}
 
 	t.Log("✅ Speech synthesis streaming test completed successfully!")
+}
+
+// A stream marked failed (a chunk carried tool calls the operator did not opt
+// in to caching) must never reach the store: later chunks are dropped, the
+// final flush is skipped, and the accumulator is removed. The marker reports
+// the first failure only, so the caller logs once per stream.
+func TestFailStreamAccumulatorDropsStream(t *testing.T) {
+	plugin := &Plugin{logger: bifrost.NewDefaultLogger(schemas.LogLevelError), config: &Config{}}
+	const requestID = "req-failed-stream"
+
+	plugin.getOrCreateStreamAccumulator(requestID, "storage-1", nil, map[string]any{}, 0)
+	if !plugin.failStreamAccumulator(requestID, "storage-1", false) {
+		t.Fatal("first failure must report true")
+	}
+	if plugin.failStreamAccumulator(requestID, "storage-1", false) {
+		t.Fatal("second failure must report false")
+	}
+
+	chunk := &StreamChunk{Timestamp: time.Now(), Response: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}}
+	if err := plugin.addStreamChunk(requestID, chunk); err != nil {
+		t.Fatalf("adding a chunk to a failed stream must not error: %v", err)
+	}
+	acc, ok := plugin.streamAccumulators.Load(requestID)
+	if !ok {
+		t.Fatal("accumulator must survive until the final chunk")
+	}
+	if n := len(acc.(*StreamAccumulator).Chunks); n != 0 {
+		t.Fatalf("failed stream must drop chunks, kept %d", n)
+	}
+
+	// With a nil store, a flush that reached the store would panic.
+	if err := plugin.processAccumulatedStream(context.Background(), requestID); err != nil {
+		t.Fatalf("final flush of a failed stream must be a no-op: %v", err)
+	}
+	if _, ok := plugin.streamAccumulators.Load(requestID); ok {
+		t.Fatal("accumulator must be dropped after the final chunk")
+	}
+
+	// A failure on the final chunk drops the accumulator immediately.
+	plugin.getOrCreateStreamAccumulator("req-final", "storage-2", nil, map[string]any{}, 0)
+	plugin.failStreamAccumulator("req-final", "storage-2", true)
+	if _, ok := plugin.streamAccumulators.Load("req-final"); ok {
+		t.Fatal("a failure on the final chunk must drop the accumulator")
+	}
 }

@@ -798,3 +798,99 @@ func TestPostLLMHook_WritesWhenVectorRequiredAndEmbeddingPresent(t *testing.T) {
 		t.Fatalf("expected one cache write when embedding is present, got %d", len(base.addIDs))
 	}
 }
+
+// -----------------------------------------------------------------------------
+// Tool-call entries on the hit path
+// -----------------------------------------------------------------------------
+
+// toolCallChatResponseJSON is a cached chat response whose assistant message carries a
+// tool call, as an entry written before cache_tool_call_responses existed would look.
+func toolCallChatResponseJSON(t *testing.T, stream bool) string {
+	t.Helper()
+	call := schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("delete_everything"), Arguments: "{}"}}
+	var choice schemas.BifrostResponseChoice
+	if stream {
+		choice.ChatStreamResponseChoice = &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{ToolCalls: []schemas.ChatAssistantMessageToolCall{call}}}
+	} else {
+		choice.ChatNonStreamResponseChoice = &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{call}}}}
+	}
+	raw, err := json.Marshal(&schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{choice}}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(raw)
+}
+
+// A stored response that carries tool calls is replayed into a later caller's agent loop
+// and executed under that caller's authority, so while cache_tool_call_responses is off
+// such an entry (written before the option existed, or while it was on) must read as a
+// miss. With the option on it is served like any other hit.
+func TestToolCallEntriesAreMissesWhenOptionDisabled(t *testing.T) {
+	cases := []struct {
+		name   string
+		stream bool
+	}{{name: "non-streaming", stream: false}, {name: "streaming", stream: true}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, allow := range []bool{false, true} {
+				store := newObservableStore()
+				plugin := newTestPlugin(t, store)
+				plugin.config.CacheToolCallResponses = allow
+				props := map[string]interface{}{"expires_at": time.Now().Add(time.Hour).Unix()}
+				req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest("hi", 0.7, 50)}
+				if tc.stream {
+					props["stream_chunks"] = []string{`{"chat_response":{"choices":[]}}`, toolCallChatResponseJSON(t, true)}
+					req.RequestType = schemas.ChatCompletionStreamRequest
+				} else {
+					props["response"] = toolCallChatResponseJSON(t, false)
+				}
+				sc, err := plugin.buildResponseFromResult(newBaseTestContext(), &cacheState{}, req, vectorstore.SearchResult{ID: "tool-entry", Properties: props}, CacheTypeDirect, nil, nil)
+				if err != nil {
+					t.Fatalf("allow=%v: buildResponseFromResult failed: %v", allow, err)
+				}
+				if allow && sc == nil {
+					t.Fatalf("allow=%v: a tool-call entry must be served when the option is on", allow)
+				}
+				if !allow && sc != nil {
+					t.Fatalf("allow=%v: a tool-call entry must read as a miss when the option is off", allow)
+				}
+			}
+		})
+	}
+}
+
+// A Responses `tool_search_call` is executed by the client unless the provider says it ran
+// it itself (`execution: "server"`), so a client-executed or mode-less one is a tool call
+// for caching purposes: it must neither be written nor replayed while the option is off.
+func TestResponseHasToolCalls_ToolSearchCallExecutionMode(t *testing.T) {
+	item := func(typ schemas.ResponsesMessageType, execution *string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Type: &typ, ResponsesToolMessage: &schemas.ResponsesToolMessage{Execution: execution}}
+	}
+	cases := []struct {
+		name string
+		item schemas.ResponsesMessage
+		want bool
+	}{
+		{name: "client-executed tool search", item: item(schemas.ResponsesMessageTypeToolSearchCall, schemas.Ptr("client")), want: true},
+		{name: "mode-less tool search", item: item(schemas.ResponsesMessageTypeToolSearchCall, nil), want: true},
+		{name: "server-executed tool search", item: item(schemas.ResponsesMessageTypeToolSearchCall, schemas.Ptr("server")), want: false},
+		{name: "function call", item: item(schemas.ResponsesMessageTypeFunctionCall, nil), want: true},
+		// OpenAI's client-executed shell and patch items have no schema constant yet; they
+		// are still calls the client runs.
+		{name: "client shell call", item: item(schemas.ResponsesMessageType("shell_call"), nil), want: true},
+		{name: "client apply_patch call", item: item(schemas.ResponsesMessageType("apply_patch_call"), nil), want: true},
+		{name: "web search is provider-executed", item: item(schemas.ResponsesMessageTypeWebSearchCall, nil), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{tc.item}}}
+			if got := responseHasToolCalls(res); got != tc.want {
+				t.Fatalf("responseHasToolCalls = %v, want %v", got, tc.want)
+			}
+			stream := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Item: &tc.item}}
+			if got := responseHasToolCalls(stream); got != tc.want {
+				t.Fatalf("responseHasToolCalls(stream item) = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

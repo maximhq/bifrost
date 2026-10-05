@@ -620,7 +620,7 @@ func (h *WebRTCRealtimeHandler) establishRelay(
 		return "", newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to create upstream realtime data channel", err)
 	}
 
-	if err := downstreamPC.SetRemoteDescription(webrtc.SessionDescription{
+	if err := setRemoteDescription(downstreamPC, webrtc.SessionDescription{
 		Type: webrtc.SDPTypeOffer,
 		SDP:  browserOffer,
 	}); err != nil {
@@ -641,7 +641,7 @@ func (h *WebRTCRealtimeHandler) establishRelay(
 		return "", exchangeErr
 	}
 
-	if err := upstreamPC.SetRemoteDescription(webrtc.SessionDescription{
+	if err := setRemoteDescription(upstreamPC, webrtc.SessionDescription{
 		Type: webrtc.SDPTypeAnswer,
 		SDP:  upstreamAnswer,
 	}); err != nil {
@@ -1226,6 +1226,19 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 
 func newRealtimePeerConnection() (*webrtc.PeerConnection, error) {
 	return webrtc.NewPeerConnection(webrtc.Configuration{})
+}
+
+// setRemoteDescription applies desc to pc and converts a panic raised inside the
+// SDP parser into an error. The description is caller-supplied bytes, and the
+// handler runs on the request goroutine, so a parser panic that escaped here
+// would end the whole process instead of failing the one request.
+func setRemoteDescription(pc *webrtc.PeerConnection, desc webrtc.SessionDescription) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("sdp rejected: %v", r)
+		}
+	}()
+	return pc.SetRemoteDescription(desc)
 }
 
 func isDataChannelOpen(dc *webrtc.DataChannel) bool {

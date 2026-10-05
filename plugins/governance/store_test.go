@@ -2113,3 +2113,196 @@ func TestModelConfigScopesForIgnoresExtraScopedIDsResolvers(t *testing.T) {
 		assert.NotEqual(t, "with_kind", s.name, "a resolver-supplied scope must not reach request-time enforcement here")
 	}
 }
+
+// modelKeyStore builds a store over the given model configs with the offline pricing catalog, so
+// base-model aliasing ("gpt-4o-2024-08-06" is a "gpt-4o") is live the way it is in a deployment.
+func modelKeyStore(t *testing.T, mcs ...*configstoreTables.TableModelConfig) *LocalGovernanceStore {
+	t.Helper()
+	cfg := &configstore.GovernanceConfig{}
+	for _, mc := range mcs {
+		cfg.ModelConfigs = append(cfg.ModelConfigs, *mc)
+		cfg.Budgets = append(cfg.Budgets, mc.Budgets...)
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, cfg, newOfflinePricingCatalog(t), nil)
+	require.NoError(t, err)
+	return store
+}
+
+// Every spelling of a model the gateway accepts lands on the same provider-scoped (model, provider)
+// limit: a budget on (gpt-4o, openai) governs the dated alias, the prefixed form, the re-cased form
+// and the padded form alike. A sibling model and another provider stay out of it.
+func TestGovernanceStore_ProviderScopedModelLimitMatchesEverySpelling(t *testing.T) {
+	ctx := context.Background()
+	providerName := "openai"
+	exhausted := buildBudgetWithUsage("b-gpt4o-openai", 100.0, 100.0, "1d")
+	store := modelKeyStore(t, buildModelConfig("mc-gpt4o-openai", "gpt-4o", &providerName, exhausted, nil))
+
+	for _, model := range []string{
+		"gpt-4o",
+		"openai/gpt-4o",
+		"GPT-4O",
+		" gpt-4o ",
+		"gpt-4o-2024-08-06",
+		"openai/GPT-4o-2024-08-06 ",
+	} {
+		t.Run(model, func(t *testing.T) {
+			_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, model, nil)
+			require.Error(t, err, "request for %q must be governed by the (gpt-4o, openai) budget", model)
+			assert.Contains(t, err.Error(), "budget exceeded")
+		})
+	}
+
+	for _, model := range []string{"gpt-4o-mini", "gpt-4o-mini-2024-07-18", "gpt-4"} {
+		_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, model, nil)
+		assert.NoError(t, err, "sibling %q must not be charged to the gpt-4o budget", model)
+	}
+	_, err := checkDeploymentBudgets(store, ctx, schemas.Anthropic, "gpt-4o-2024-08-06", nil)
+	assert.NoError(t, err, "another provider must not be governed by the openai-scoped budget")
+}
+
+// The spelling an operator stores a provider-scoped config under is canonicalised the same way a
+// request is, on both the load path and the in-memory create/update path, so existing rows keep
+// matching without a migration.
+func TestGovernanceStore_ProviderScopedModelConfigStoredUnderCanonicalKey(t *testing.T) {
+	ctx := context.Background()
+	providerName := "openai"
+	for _, stored := range []string{"gpt-4o", "openai/gpt-4o", "GPT-4O", " gpt-4o "} {
+		t.Run("loaded:"+stored, func(t *testing.T) {
+			exhausted := buildBudgetWithUsage("b-"+stored, 100.0, 100.0, "1d")
+			store := modelKeyStore(t, buildModelConfig("mc-"+stored, stored, &providerName, exhausted, nil))
+			_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o-2024-08-06", nil)
+			require.Error(t, err, "config stored as %q must govern gpt-4o-2024-08-06", stored)
+		})
+		t.Run("created:"+stored, func(t *testing.T) {
+			store := modelKeyStore(t)
+			exhausted := buildBudgetWithUsage("b-"+stored, 100.0, 100.0, "1d")
+			store.UpdateModelConfigInMemory(ctx, buildModelConfig("mc-"+stored, stored, &providerName, exhausted, nil))
+			_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o-2024-08-06", nil)
+			require.Error(t, err, "config created as %q must govern gpt-4o-2024-08-06", stored)
+		})
+	}
+}
+
+// Renaming or re-scoping a config in memory must leave no entry behind under its previous key:
+// a request for the old model would otherwise keep consuming the moved config's budget.
+func TestGovernanceStore_UpdateModelConfigInMemoryEvictsPreviousKey(t *testing.T) {
+	ctx := context.Background()
+	openai := "openai"
+	exhausted := buildBudgetWithUsage("b-moved", 100.0, 100.0, "1d")
+	store := modelKeyStore(t, buildModelConfig("mc-moved", "gpt-4o", &openai, exhausted, nil))
+	_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o", nil)
+	require.Error(t, err, "precondition: the config governs gpt-4o before the rename")
+
+	moved := buildModelConfig("mc-moved", "gpt-4o-mini", &openai, exhausted, nil)
+	store.UpdateModelConfigInMemory(ctx, moved)
+
+	_, err = checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o-mini", nil)
+	require.Error(t, err, "the renamed config must govern gpt-4o-mini")
+	_, err = checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o", nil)
+	require.NoError(t, err, "the previous key must no longer resolve to the moved config")
+
+	azure := "azure"
+	store.UpdateModelConfigInMemory(ctx, buildModelConfig("mc-moved", "gpt-4o-mini", &azure, exhausted, nil))
+	_, err = checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o-mini", nil)
+	require.NoError(t, err, "re-scoping to another provider must evict the openai entry")
+	_, err = checkDeploymentBudgets(store, ctx, schemas.Azure, "gpt-4o-mini", nil)
+	require.Error(t, err, "the re-scoped config must govern azure")
+}
+
+// A provider-less config keeps matching the same set of spellings it did before, now with the
+// prefixed and re-cased forms included.
+func TestGovernanceStore_ProviderlessModelLimitMatchesEverySpelling(t *testing.T) {
+	ctx := context.Background()
+	exhausted := buildBudgetWithUsage("b-gpt4o-any", 100.0, 100.0, "1d")
+	store := modelKeyStore(t, buildModelConfig("mc-gpt4o-any", "gpt-4o", nil, exhausted, nil))
+
+	for _, model := range []string{"gpt-4o", "openai/gpt-4o", "GPT-4O", "gpt-4o-2024-08-06"} {
+		for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure} {
+			_, err := checkDeploymentBudgets(store, ctx, provider, model, nil)
+			require.Error(t, err, "%q on %s must be governed by the provider-less gpt-4o budget", model, provider)
+		}
+	}
+	_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o-mini", nil)
+	assert.NoError(t, err)
+}
+
+// collectModelConfigsFor returns every applicable config most specific first: the exact pair, the
+// base-model pair, the exact model on any provider, the base model on any provider, then the two
+// wildcards. A request never satisfies a looser bucket while a tighter one exists for it.
+func TestGovernanceStore_CollectModelConfigsForPrecedence(t *testing.T) {
+	ctx := context.Background()
+	providerName := "openai"
+	mk := func(id, model string, provider *string) *configstoreTables.TableModelConfig {
+		return buildModelConfig(id, model, provider, buildBudget("b-"+id, 100.0, "1d"), nil)
+	}
+	store := modelKeyStore(t,
+		mk("exact-pair", "gpt-4o-2024-08-06", &providerName),
+		mk("base-pair", "gpt-4o", &providerName),
+		mk("exact-any", "gpt-4o-2024-08-06", nil),
+		mk("base-any", "gpt-4o", nil),
+		mk("all-openai", configstoreTables.ModelConfigAllModels, &providerName),
+		mk("all-any", configstoreTables.ModelConfigAllModels, nil),
+	)
+	ids := func(mcs []*configstoreTables.TableModelConfig) []string {
+		out := make([]string, 0, len(mcs))
+		for _, mc := range mcs {
+			out = append(out, mc.ID)
+		}
+		return out
+	}
+	global := configstoreTables.ModelConfigScopeGlobal
+
+	// The dated alias on openai reaches every tier. "exact-any" shares its key with "base-any"
+	// (provider-less configs collapse to the base model), so whichever was indexed last answers.
+	got := ids(store.collectModelConfigsFor(ctx, global, "", "openai/GPT-4o-2024-08-06", &providerName))
+	require.Len(t, got, 5)
+	assert.Equal(t, []string{"exact-pair", "base-pair"}, got[:2])
+	assert.Contains(t, []string{"exact-any", "base-any"}, got[2])
+	assert.Equal(t, []string{"all-openai", "all-any"}, got[3:])
+
+	// The base name skips the dated pair but still finds its own.
+	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o", &providerName))
+	require.Len(t, got, 4)
+	assert.Equal(t, "base-pair", got[0])
+	assert.Equal(t, []string{"all-openai", "all-any"}, got[2:])
+
+	// A sibling model only reaches the wildcards.
+	assert.Equal(t, []string{"all-openai", "all-any"}, ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-mini", &providerName)))
+
+	// Another provider skips the openai-scoped tiers entirely.
+	anthropic := "anthropic"
+	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-2024-08-06", &anthropic))
+	assert.NotContains(t, got, "exact-pair")
+	assert.NotContains(t, got, "base-pair")
+	assert.NotContains(t, got, "all-openai")
+	assert.Contains(t, got, "all-any")
+}
+
+// Two updates of one config racing to different keys must never leave both keys indexed:
+// a request for the old model would otherwise keep drawing on the moved config's budget.
+func TestGovernanceStore_ConcurrentUpdatesLeaveOneKeyPerConfig(t *testing.T) {
+	ctx := context.Background()
+	openai := "openai"
+	store := modelKeyStore(t, buildModelConfig("mc-race", "gpt-4o", &openai, buildBudgetWithUsage("b-race", 100.0, 0, "1d"), nil))
+	names := []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o3"}
+	for i := 0; i < 300; i++ {
+		var wg sync.WaitGroup
+		for _, n := range names {
+			wg.Add(1)
+			go func(n string) {
+				defer wg.Done()
+				// Each update carries its own budget object, as a real update does.
+				store.UpdateModelConfigInMemory(ctx, buildModelConfig("mc-race", n, &openai, buildBudgetWithUsage("b-race", 100.0, 0, "1d"), nil))
+			}(n)
+		}
+		wg.Wait()
+		keys := 0
+		store.modelConfigs.Range(func(_, v any) bool {
+			if mc, ok := v.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.ID == "mc-race" {
+				keys++
+			}
+			return true
+		})
+		require.LessOrEqual(t, keys, 1, "iteration %d: config indexed under %d keys", i, keys)
+	}
+}

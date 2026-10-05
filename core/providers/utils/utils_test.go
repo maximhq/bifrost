@@ -3741,3 +3741,53 @@ func TestIsAbsoluteRequestURL(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildPassthroughURL pins that the resolved passthrough URL always keeps the provider's
+// authority: a remainder that would turn the base host into userinfo or a scheme-relative
+// authority is refused, while ordinary rooted paths and queries are forwarded byte-for-byte.
+func TestBuildPassthroughURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseURL  string
+		path     string
+		rawQuery string
+		want     string
+		wantErr  bool
+	}{
+		{name: "rooted path on bare origin", baseURL: "https://api.anthropic.com", path: "/v1/messages", want: "https://api.anthropic.com/v1/messages"},
+		{name: "query appended", baseURL: "https://api.anthropic.com", path: "/v1/messages", rawQuery: "beta=true", want: "https://api.anthropic.com/v1/messages?beta=true"},
+		{name: "trailing slash on base trimmed", baseURL: "https://api.anthropic.com/", path: "/v1/messages", want: "https://api.anthropic.com/v1/messages"},
+		{name: "base with path", baseURL: "https://generativelanguage.googleapis.com/v1beta", path: "/models/gemini:generateContent", rawQuery: "alt=sse", want: "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?alt=sse"},
+		{name: "empty path hits base", baseURL: "https://api.runware.ai/v1", path: "", want: "https://api.runware.ai/v1"},
+		{name: "at sign past first segment is path", baseURL: "https://aiplatform.googleapis.com/v1", path: "/projects/p/locations/l/publishers/anthropic/models/claude@20250929:rawPredict", want: "https://aiplatform.googleapis.com/v1/projects/p/locations/l/publishers/anthropic/models/claude@20250929:rawPredict"},
+		{name: "decoded percent stays an encoded percent", baseURL: "https://api.anthropic.com", path: "/v1/files/a%2Fb", want: "https://api.anthropic.com/v1/files/a%252Fb"},
+		{name: "decoded percent before question mark", baseURL: "https://api.anthropic.com", path: "/v1/files/a%3F?b", want: "https://api.anthropic.com/v1/files/a%253F%3Fb"},
+		{name: "decoded question mark stays in the path", baseURL: "https://api.anthropic.com", path: "/v1/files/a?b", rawQuery: "beta=true", want: "https://api.anthropic.com/v1/files/a%3Fb?beta=true"},
+		{name: "decoded hash stays in the path", baseURL: "https://api.anthropic.com", path: "/v1/files/a#b", want: "https://api.anthropic.com/v1/files/a%23b"},
+		{name: "at sign in query is query", baseURL: "https://api.anthropic.com", path: "/v1/messages", rawQuery: "user=a@b", want: "https://api.anthropic.com/v1/messages?user=a@b"},
+		{name: "base with userinfo kept", baseURL: "https://user:pw@proxy.internal", path: "/v1/messages", want: "https://user:pw@proxy.internal/v1/messages"},
+		{name: "userinfo remainder rejected", baseURL: "https://api.anthropic.com", path: "@127.0.0.1/x", wantErr: true},
+		{name: "port smuggling remainder rejected", baseURL: "https://api.anthropic.com", path: ":8443@evil.example/x", wantErr: true},
+		{name: "unanchored remainder rejected", baseURL: "https://api.anthropic.com", path: "foo/x", wantErr: true},
+		{name: "scheme-relative remainder rejected", baseURL: "https://api.anthropic.com", path: "//evil.example/x", wantErr: true},
+		{name: "base without scheme rejected", baseURL: "api.anthropic.com", path: "/v1/messages", wantErr: true},
+		{name: "empty base rejected", baseURL: "", path: "/v1/messages", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := BuildPassthroughURL(tc.baseURL, tc.path, tc.rawQuery)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("BuildPassthroughURL(%q, %q, %q) = %q, want error", tc.baseURL, tc.path, tc.rawQuery, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("BuildPassthroughURL(%q, %q, %q) unexpected error: %v", tc.baseURL, tc.path, tc.rawQuery, err)
+			}
+			if got != tc.want {
+				t.Fatalf("BuildPassthroughURL(%q, %q, %q) = %q, want %q", tc.baseURL, tc.path, tc.rawQuery, got, tc.want)
+			}
+		})
+	}
+}

@@ -225,7 +225,7 @@ Declare endpoints under the top-level `webhooks` array. They are synced into the
 | `secret` | string | No | Signing secret in `whsec_` format. Best supplied as an env reference (`env.MY_VAR`); generated when omitted. |
 | `headers` | object | No | Custom headers sent with every delivery. Values support `env.VAR` syntax and are encrypted at rest when `encryption_key` is configured. Reserved delivery headers cannot be overridden. |
 | `include_response` | boolean | No | Inline the job response into payloads (default `false`). |
-| `allow_private_network` | boolean | No | Permit private-network receivers and plain `http` (default `false`). |
+| `allow_private_network` | boolean | No | Permit private-network receivers and plain `http` (default `false`). Test deliveries to such an endpoint require an authenticated caller: with dashboard auth unconfigured, `POST /api/webhooks/{id}/test` answers `403`. |
 | `disabled` | boolean | No | Register the endpoint without delivering to it (default `false`). |
 
 <Note>

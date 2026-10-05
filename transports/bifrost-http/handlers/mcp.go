@@ -1442,6 +1442,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			AllowedExtraHeaders:    dbClient.AllowedExtraHeaders,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
+			RequirePublicTarget:    dbClient.RequirePublicTarget,
 			ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 			ToolPricing:            dbClient.ToolPricing,
@@ -1697,8 +1698,12 @@ func rejectPrivateMCPTargetIfAuthBypassed(ctx *fasthttp.RequestCtx, connType str
 	lookupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	ips, err := net.DefaultResolver.LookupIP(lookupCtx, "ip", parsed.Hostname())
-	if err != nil {
-		return false
+	if err != nil || len(ips) == 0 {
+		// Fail closed: with no addresses to classify there is nothing this
+		// gate can vouch for, and an unresolvable name is also how a caller
+		// would make the check inconclusive on purpose.
+		SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("could not resolve MCP target host %q; unauthenticated callers can only register MCP clients whose target resolves to a public address; set an admin password to allow this", parsed.Hostname()))
+		return true
 	}
 	for _, ip := range ips {
 		if !network.IsPublicIP(ip) {
@@ -1756,6 +1761,16 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// connection_type is validated first: both gates below key on it, and an
+	// unknown value would otherwise match neither and reach the connect path
+	// unchecked (every later branch treats non-stdio as HTTP/SSE).
+	switch schemas.MCPConnectionType(req.ConnectionType) {
+	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE, schemas.MCPConnectionTypeSTDIO:
+	default:
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid connection_type %q: must be one of http, sse, stdio", req.ConnectionType))
+		return
+	}
+
 	// Both gates run before anything else: registering a client is what makes
 	// Bifrost spawn the subprocess / dial the target, so a refusal has to land
 	// before any of that work is scheduled.
@@ -1765,6 +1780,12 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	if rejectPrivateMCPTargetIfAuthBypassed(ctx, req.ConnectionType, req.ConnectionString) {
 		return
 	}
+	// The gate above only sees one DNS answer. Recording that this client was
+	// registered with no credential check makes the MCP manager apply the
+	// public-address rule on every dial for the client's lifetime. Server-set
+	// only: whatever the request body carried for this field is overwritten.
+	authBypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	req.RequirePublicTarget = authBypassed
 
 	// Generate a unique client ID if not provided
 	if req.ClientID == "" {
@@ -1887,6 +1908,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:       req.ConnectionString,
+			RequirePublicTarget:    req.RequirePublicTarget,
 			StdioConfig:            req.StdioConfig,
 			AuthType:               schemas.MCPAuthTypePerUserHeaders,
 			PerUserHeaderKeys:      canonHeaderKeys,
@@ -2005,6 +2027,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:       req.ConnectionString,
+			RequirePublicTarget:    req.RequirePublicTarget,
 			StdioConfig:            req.StdioConfig,
 			TLSConfig:              req.TLSConfig,
 			AuthType:               schemas.MCPAuthTypeTokenExchange,
@@ -2144,6 +2167,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:       req.ConnectionString,
+			RequirePublicTarget:    req.RequirePublicTarget,
 			StdioConfig:            req.StdioConfig,
 			TLSConfig:              req.TLSConfig,
 			AuthType:               schemas.MCPAuthTypePerUserOauth,
@@ -2230,6 +2254,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:       req.ConnectionString,
+			RequirePublicTarget:    req.RequirePublicTarget,
 			StdioConfig:            req.StdioConfig,
 			TLSConfig:              req.TLSConfig,
 			AuthType:               schemas.MCPAuthType(req.AuthType),
@@ -2284,6 +2309,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		IsCodeModeClient:       req.IsCodeModeClient,
 		ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
 		ConnectionString:       req.ConnectionString,
+		RequirePublicTarget:    req.RequirePublicTarget,
 		StdioConfig:            req.StdioConfig,
 		TLSConfig:              req.TLSConfig,
 		ToolsToExecute:         req.ToolsToExecute,
@@ -2775,6 +2801,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		IsCodeModeClient:       isCodeMode,
 		ConnectionType:         string(existingConfig.ConnectionType),
 		ConnectionString:       existingConfig.ConnectionString,
+		RequirePublicTarget:    existingConfig.RequirePublicTarget,
 		StdioConfig:            existingConfig.StdioConfig,
 		ToolsToExecute:         resolvedToolsToExecute,
 		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
@@ -2831,6 +2858,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		IsCodeModeClient:       isCodeMode,
 		ConnectionType:         existingConfig.ConnectionType,
 		ConnectionString:       existingConfig.ConnectionString,
+		RequirePublicTarget:    existingConfig.RequirePublicTarget,
 		StdioConfig:            existingConfig.StdioConfig,
 		TLSConfig:              tlsConfig,
 		ToolsToExecute:         resolvedToolsToExecute,

@@ -39,13 +39,14 @@ type LocalGovernanceStore struct {
 	// giving O(1) by-ID lookups (e.g. the /mcp JWT auth path) without an O(n)
 	// scan or a database read. Maintained in lock-step with virtualKeys via
 	// storeVirtualKey / deleteVirtualKeyByValue — never write it directly.
-	virtualKeysByID sync.Map // string -> *VirtualKey (VK row ID -> VirtualKey)
-	teams           sync.Map // string -> *Team (Team ID -> Team)
-	customers       sync.Map // string -> *Customer (Customer ID -> Customer)
-	budgets         sync.Map // string -> *Budget (Budget ID -> Budget)
-	rateLimits      sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
-	modelConfigs    sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
-	providers       sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
+	virtualKeysByID    sync.Map   // string -> *VirtualKey (VK row ID -> VirtualKey)
+	teams              sync.Map   // string -> *Team (Team ID -> Team)
+	customers          sync.Map   // string -> *Customer (Customer ID -> Customer)
+	budgets            sync.Map   // string -> *Budget (Budget ID -> Budget)
+	rateLimits         sync.Map   // string -> *RateLimit (RateLimit ID -> RateLimit)
+	modelConfigs       sync.Map   // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
+	modelConfigIndexMu sync.Mutex // serializes every modelConfigs index mutation (store, delete, rebuild)
+	providers          sync.Map   // string -> *Provider (Provider name -> Provider with preloaded relationships)
 	// Keying definitions by ID (not by VK) makes an edit one Store that every assigned VK reads at once.
 	virtualMCPs        sync.Map   // uint (vMCP ID) -> *configstoreTables.TableVirtualMCP
 	virtualMCPIDsByVK  sync.Map   // string (VK row ID) -> []uint (assigned vMCP IDs)
@@ -128,6 +129,9 @@ type BudgetAndRateLimitStatus struct {
 //   - This contract ensures consistent behavior across implementations (e.g., in-memory,
 //     DB-backed) and prevents retry loops on policy violations.
 type GovernanceStore interface {
+	// ModelConfigIndexKey is the model spelling a config for (model, provider) is indexed under:
+	// the catalog base name for a provider-less config, the canonical spelling otherwise.
+	ModelConfigIndexKey(model string, provider *string) string
 	GetGovernanceData(ctx context.Context) *GovernanceData
 	GetGovernanceUsageData(ctx context.Context) *GovernanceData
 	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
@@ -2168,30 +2172,111 @@ func modelConfigStoreKey(scope, scopeID, modelKey string, provider *string) stri
 	return fmt.Sprintf("%s:%s:%s", scope, scopeID, base)
 }
 
-// findScopedModelOnlyConfig looks up a model-only config (no provider) within a specific
-// scope, preserving cross-provider model-name normalization. scope=="global" reproduces the
-// historical global lookup exactly. Returns the matching config and the display name.
-func (gs *LocalGovernanceStore) findScopedModelOnlyConfig(ctx context.Context, scope, scopeID, model string) (*configstoreTables.TableModelConfig, string) {
-	tryKey := func(modelKey string) (*configstoreTables.TableModelConfig, string) {
-		key := modelConfigStoreKey(scope, scopeID, modelKey, nil)
-		if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
-			if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil {
-				return mc, modelKey
-			}
-		}
-		return nil, ""
+// modelConfigKeys returns the two in-memory lookup keys a model name resolves to: its canonical
+// spelling and its base-model alias. Storing a model config and looking one up both go through
+// this function, so the two sides can never disagree on what a model is called and a limit set
+// on a model cannot be side-stepped by respelling it.
+//
+// The canonical spelling is derived in this order:
+//  1. surrounding whitespace is trimmed;
+//  2. the "*" all-models sentinel is returned unchanged as both keys;
+//  3. a leading provider prefix is removed when it names the given provider ("openai/gpt-4o" on
+//     openai is "gpt-4o"). With no provider, any known-provider prefix is removed, which is how
+//     the catalog already resolves cross-provider names. A prefix naming a different provider is
+//     kept: nested slugs such as groq's "openai/gpt-oss-120b" are the model's real name;
+//  4. the result is lower-cased.
+//
+// The base key is the lower-cased catalog base model of the prefix-stripped name
+// ("gpt-4o-2024-08-06" is a "gpt-4o"). Without a catalog, or when the name has no recognised
+// alias, it equals the canonical key.
+func (gs *LocalGovernanceStore) modelConfigKeys(model string, provider *string) (canonical, base string) {
+	canonical = CanonicalModelConfigName(model, provider)
+	if canonical == "" || canonical == modelConfigWildcard {
+		return canonical, canonical
 	}
-	// If modelCatalog is available, try normalized base model name first (cross-provider matching)
+	base = canonical
 	if gs.modelCatalog != nil {
-		baseName := gs.modelCatalog.GetBaseModelName(model)
-		if baseName != model {
-			if mc, name := tryKey(baseName); mc != nil {
-				return mc, name
-			}
+		if baseName := gs.modelCatalog.GetBaseModelName(canonical); baseName != "" {
+			base = strings.ToLower(baseName)
 		}
 	}
-	// Always try direct lookup by original model name as fallback
-	return tryKey(model)
+	return canonical, base
+}
+
+// CanonicalModelConfigName is the catalog-independent spelling a model config is keyed by:
+// trimmed, lower-cased, with a provider prefix stripped when it names the config's own provider
+// (any prefix when the config is provider-less). Two configs whose names canonicalise to the same
+// value in the same scope and provider would index to one key and shadow each other, so the
+// management API refuses that at create and update time.
+func CanonicalModelConfigName(model string, provider *string) string {
+	// Lower-case before parsing so a prefix spelled "OpenAI/" is recognised as the openai
+	// provider; the result is lower-cased anyway.
+	name := strings.ToLower(strings.TrimSpace(model))
+	if name == "" || name == modelConfigWildcard {
+		return name
+	}
+	if provider != nil {
+		if prefix, rest := schemas.ParseModelString(name, ""); prefix != "" && strings.EqualFold(string(prefix), strings.TrimSpace(*provider)) {
+			name = rest
+		}
+	} else {
+		_, name = schemas.ParseModelString(name, "")
+	}
+	return name
+}
+
+// ModelConfigIndexKey returns the model spelling storeModelConfig indexes a config for
+// (model, provider) under, so the management API can refuse a config that would share a key
+// with an existing one: the catalog base name for a provider-less config (every alias of a
+// base model collapses onto it), the canonical spelling for a provider-scoped one.
+func (gs *LocalGovernanceStore) ModelConfigIndexKey(model string, provider *string) string {
+	canonical, base := gs.modelConfigKeys(model, provider)
+	if provider != nil {
+		return canonical
+	}
+	return base
+}
+
+// storeModelConfig indexes a model config under the key lookups will ask for. A provider-scoped
+// config keeps its canonical spelling, so a dated alias can carry its own limit alongside the base
+// model's; a provider-less config collapses to the base model, so one cross-provider limit covers
+// every alias of it. Two configs that only differ in spelling resolve to one key, and the one
+// indexed later shadows the other; that is logged so the operator can merge them.
+func (gs *LocalGovernanceStore) storeModelConfig(mc *configstoreTables.TableModelConfig) {
+	gs.modelConfigIndexMu.Lock()
+	defer gs.modelConfigIndexMu.Unlock()
+	gs.storeModelConfigLocked(mc)
+}
+
+// storeModelConfigLocked is storeModelConfig for a caller that already holds
+// modelConfigIndexMu. The evict-old-keys Range and the Store of the new key must happen
+// under one critical section: two updates of the same config racing to different keys
+// could otherwise both pass the Range before either Store and leave both keys indexed.
+func (gs *LocalGovernanceStore) storeModelConfigLocked(mc *configstoreTables.TableModelConfig) {
+	scopeID := ""
+	if mc.ScopeID != nil {
+		scopeID = *mc.ScopeID
+	}
+	canonical, base := gs.modelConfigKeys(mc.ModelName, mc.Provider)
+	modelKey := base
+	if mc.Provider != nil {
+		modelKey = canonical
+	}
+	key := modelConfigStoreKey(mc.Scope, scopeID, modelKey, mc.Provider)
+	// A rename or provider change moves the config to a new key; nothing may stay behind
+	// under the old one, or requests for the old model would keep drawing on its limits.
+	gs.modelConfigs.Range(func(k, v interface{}) bool {
+		if existing, ok := v.(*configstoreTables.TableModelConfig); ok && existing != nil && existing.ID == mc.ID && k != key {
+			gs.modelConfigs.Delete(k)
+		}
+		return true
+	})
+	if previous, exists := gs.modelConfigs.Load(key); exists && previous != nil {
+		if existing, ok := previous.(*configstoreTables.TableModelConfig); ok && existing != nil && existing.ID != mc.ID {
+			gs.logger.Warn("model config %s (%s) shadows model config %s (%s) under the same key %q", mc.ID, mc.ModelName, existing.ID, existing.ModelName, key)
+		}
+	}
+	gs.modelConfigs.Store(key, mc)
 }
 
 // extractModelAndProvider extracts the model name and optional provider from a request.
@@ -2208,12 +2293,15 @@ func extractModelAndProvider(request *EvaluationRequest) (string, *string) {
 }
 
 // collectModelConfigsFor returns every model config that applies to a request for
-// (model, provider) within a single scope, across four tiers (most → least specific),
-// deduped by config ID:
-//  1. (model, provider)  exact model on this provider
-//  2. (model, nil)       exact model on all providers (base-name normalized)
-//  3. ("*", provider)    all models on this provider  (provider-level governance)
-//  4. ("*", nil)         all models on all providers
+// (model, provider) within a single scope, across six tiers (most → least specific),
+// deduped by config ID. The model is canonicalised by modelConfigKeys, the same way it
+// was when the configs were indexed, so every spelling of a model reaches its limits:
+//  1. (canonical model, provider)  exact model on this provider
+//  2. (base model, provider)       the model's base alias on this provider
+//  3. (canonical model, nil)       exact model on all providers
+//  4. (base model, nil)            the model's base alias on all providers
+//  5. ("*", provider)              all models on this provider  (provider-level governance)
+//  6. ("*", nil)                   all models on all providers
 //
 // This is the single source of truth for "which model configs apply"; every budget /
 // rate-limit check and usage-tracking site iterates it so the wildcard tiers are matched
@@ -2237,15 +2325,17 @@ func (gs *LocalGovernanceStore) collectModelConfigsFor(ctx context.Context, scop
 		return nil
 	}
 	if provider != nil {
-		add(loadKey(model, provider)) // tier 1: exact model + provider
+		canonical, base := gs.modelConfigKeys(model, provider)
+		add(loadKey(canonical, provider)) // tier 1: exact model + provider
+		add(loadKey(base, provider))      // tier 2: base model + provider
 	}
-	if mc, _ := gs.findScopedModelOnlyConfig(ctx, scope, scopeID, model); mc != nil {
-		add(mc) // tier 2: exact model, all providers (normalized)
-	}
+	canonical, base := gs.modelConfigKeys(model, nil)
+	add(loadKey(canonical, nil)) // tier 3: exact model, all providers
+	add(loadKey(base, nil))      // tier 4: base model, all providers
 	if provider != nil {
-		add(loadKey(modelConfigWildcard, provider)) // tier 3: all models on this provider
+		add(loadKey(modelConfigWildcard, provider)) // tier 5: all models on this provider
 	}
-	add(loadKey(modelConfigWildcard, nil)) // tier 4: all models, all providers
+	add(loadKey(modelConfigWildcard, nil)) // tier 6: all models, all providers
 	return out
 }
 
@@ -3344,7 +3434,6 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	gs.customers = sync.Map{}
 	gs.budgets = sync.Map{}
 	gs.rateLimits = sync.Map{}
-	gs.modelConfigs = sync.Map{}
 	gs.providers = sync.Map{}
 
 	// Build customers map
@@ -3396,8 +3485,12 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	// Key format (global scope): "modelName" for all-provider configs, "modelName:provider"
 	// for provider-specific configs. Non-global scopes (e.g. virtual_key) prefix the key with
 	// "<scope>:<scopeID>:" via modelConfigStoreKey so they never collide with global configs.
-	// Model names are normalized using GetBaseModelName to prevent duplicate config leakage
-	// (e.g., "openai/gpt-4o" and "gpt-4o" both store under base "gpt-4o").
+	// Model names are canonicalised by storeModelConfig, so rows persisted under any spelling
+	// are indexed the way lookups ask for them and need no migration.
+	// The index is replaced and repopulated under modelConfigIndexMu so an update racing
+	// a reload cannot land between the empty map and its population.
+	gs.modelConfigIndexMu.Lock()
+	gs.modelConfigs = sync.Map{}
 	for i := range modelConfigs {
 		mc := &modelConfigs[i]
 		// Stamp calendar alignment onto owned budgets and rate limit so the reset path
@@ -3411,25 +3504,9 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 			mc.RateLimit.IsCalendarAligned = mc.CalendarAligned
 			gs.rateLimits.Store(mc.RateLimit.ID, mc.RateLimit)
 		}
-		scopeID := ""
-		if mc.ScopeID != nil {
-			scopeID = *mc.ScopeID
-		}
-		if mc.Provider != nil {
-			// Provider-specific: store under (scope-prefixed) "modelName:provider" key
-			key := modelConfigStoreKey(mc.Scope, scopeID, mc.ModelName, mc.Provider)
-			gs.modelConfigs.Store(key, mc)
-		} else {
-			// All-provider config - store under normalized (scope-prefixed) model name.
-			// The "*" (all-models) sentinel is never normalized.
-			modelKey := mc.ModelName
-			if gs.modelCatalog != nil && mc.ModelName != modelConfigWildcard {
-				modelKey = gs.modelCatalog.GetBaseModelName(mc.ModelName)
-			}
-			key := modelConfigStoreKey(mc.Scope, scopeID, modelKey, nil)
-			gs.modelConfigs.Store(key, mc)
-		}
+		gs.storeModelConfigLocked(mc)
 	}
+	gs.modelConfigIndexMu.Unlock()
 
 	// Stamp customer-owned budget and rate-limit entries in the flat caches so
 	// calendar-aligned resets survive restarts and reloads. Mirrors the model-config
@@ -3921,6 +3998,8 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 // paths (e.g. the enterprise user-deletion flow) reuse it. Owned budgets are released
 // from both the active Budgets slice and the legacy single BudgetID column.
 func (gs *LocalGovernanceStore) DeleteModelConfigsForScopeInMemory(ctx context.Context, scope, scopeID string) {
+	gs.modelConfigIndexMu.Lock()
+	defer gs.modelConfigIndexMu.Unlock()
 	gs.modelConfigs.Range(func(key, value any) bool {
 		mc, ok := value.(*configstoreTables.TableModelConfig)
 		if !ok || mc == nil {
@@ -4274,30 +4353,17 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, m
 		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
 
-	// Determine the (scope-aware) key. Global scope keeps the historical key format;
-	// non-global scopes are namespaced by modelConfigStoreKey. Scope/scope_id are part of
-	// a config's identity and do not change on update, so this matches the stored key.
-	scopeID := ""
-	if clone.ScopeID != nil {
-		scopeID = *clone.ScopeID
-	}
-	if clone.Provider != nil {
-		key := modelConfigStoreKey(clone.Scope, scopeID, clone.ModelName, clone.Provider)
-		gs.modelConfigs.Store(key, &clone)
-	} else {
-		modelKey := clone.ModelName
-		if gs.modelCatalog != nil && clone.ModelName != modelConfigWildcard {
-			modelKey = gs.modelCatalog.GetBaseModelName(clone.ModelName)
-		}
-		key := modelConfigStoreKey(clone.Scope, scopeID, modelKey, nil)
-		gs.modelConfigs.Store(key, &clone)
-	}
+	// Index under the (scope-aware) canonical key. Scope/scope_id are part of a config's
+	// identity and do not change on update, so this matches the stored key.
+	gs.storeModelConfig(&clone)
 
 	return &clone
 }
 
 // DeleteModelConfigInMemory removes a model config from the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, mcID string) {
+	gs.modelConfigIndexMu.Lock()
+	defer gs.modelConfigIndexMu.Unlock()
 	if mcID == "" {
 		return // Nothing to delete
 	}

@@ -1634,6 +1634,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 					IsPingAvailable:           dbClient.IsPingAvailable,
 					NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
+					RequirePublicTarget:       dbClient.RequirePublicTarget,
 					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 					ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 					ToolPricing:               dbClient.ToolPricing,
@@ -1686,6 +1687,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 			IsPingAvailable:           dbClient.IsPingAvailable,
 			NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
+			RequirePublicTarget:       dbClient.RequirePublicTarget,
 			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 			AllowByDefault:            dbClient.AllowByDefault,
@@ -2124,6 +2126,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 		IsPingAvailable:           dbClient.IsPingAvailable,
 		NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
+		RequirePublicTarget:       dbClient.RequirePublicTarget,
 		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 		ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 		AllowByDefault:            dbClient.AllowByDefault,
@@ -2290,6 +2293,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			AllowedExtraHeaders:    clientConfigCopy.AllowedExtraHeaders,
 			IsPingAvailable:        clientConfigCopy.IsPingAvailable,
 			NeedsSessionStickiness: clientConfigCopy.NeedsSessionStickiness,
+			RequirePublicTarget:    clientConfigCopy.RequirePublicTarget,
 			ToolSyncInterval:       toolSyncIntervalSec,
 			ToolExecutionTimeout:   toolExecutionTimeoutSec,
 			AllowByDefault:         clientConfigCopy.AllowByDefault,
@@ -2572,6 +2576,14 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		// omits the field.
 		if clientConfigCopy.NeedsSessionStickiness != nil {
 			updates["needs_session_stickiness"] = *clientConfigCopy.NeedsSessionStickiness
+		}
+
+		// require_public_target only ever moves to true: it records that the
+		// client was registered with no credential check, and no later update
+		// (API, config.json reconciliation, or a sparse struct from a tool
+		// refresh) may lift the dial-time restriction that follows from it.
+		if clientConfigCopy.RequirePublicTarget {
+			updates["require_public_target"] = true
 		}
 
 		if err := tx.WithContext(ctx).Model(&existingClient).Updates(updates).Error; err != nil {

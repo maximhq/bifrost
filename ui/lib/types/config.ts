@@ -578,10 +578,15 @@ export interface AuthConfig {
 	admin_username: SecretVar;
 	admin_password: SecretVar;
 	is_enabled: boolean;
-	/** Write-only: required only when this PUT request creates the very first admin account
-	 *  (no admin account exists yet). Provided by the operator via setup_token in config.json
-	 *  or the BIFROST_SETUP_TOKEN env var. Never persisted or returned by GET /api/config. */
+	/** Write-only: the operator-configured setup token (setup_token in config.json or the
+	 *  BIFROST_SETUP_TOKEN env var). Required when this PUT request creates the very first
+	 *  admin account, and also accepted instead of current_password to confirm a change made
+	 *  while dashboard auth is disabled. Never persisted or returned by GET /api/config. */
 	setup_token?: string;
+	/** Write-only: the stored admin password. Required (unless setup_token is sent) to re-enable
+	 *  dashboard auth or change the admin credentials while auth is disabled, because that request
+	 *  reaches the server without any credential check. Never persisted or returned. */
+	current_password?: string;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)

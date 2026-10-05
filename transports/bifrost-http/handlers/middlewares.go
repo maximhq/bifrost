@@ -329,8 +329,21 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				return
 			}
 
+			// The decompressed-output cap applies on both paths: the LimitedReader
+			// bounds what any codec may expand to, and the zstd decoder itself refuses
+			// frames whose declared window or content size exceeds its bounds before
+			// allocating them (providerUtils.ZstdDecoderMaxWindow).
+			maxRequestBodyBytes := 100 * 1024 * 1024 // default 100 MB (matches decodeRequestBodyWithLimit fallback)
+			if config != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
+				maxRequestBodyBytes = config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+			}
+
 			if shouldStreamDecompress(config, ctx) {
-				cleanup, applied, err := streamingDecompress(ctx)
+				cleanup, applied, err := streamingDecompress(ctx, maxRequestBodyBytes)
+				if providerUtils.IsDecompressionSizeLimitError(err) {
+					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body declares a size beyond the max allowed %d bytes: %v", maxRequestBodyBytes, err))
+					return
+				}
 				if err != nil {
 					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid compressed request body: %v", err))
 					return
@@ -347,14 +360,13 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 
 			// Buffered path: small compressed request — materialize fully.
-			maxRequestBodyBytes := 100 * 1024 * 1024 // default 100 MB (matches decodeRequestBodyWithLimit fallback)
-			if config != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
-				maxRequestBodyBytes = config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
-			}
-
 			body, err := decodeRequestBodyWithLimit(&ctx.Request, maxRequestBodyBytes)
 			if errors.Is(err, errRequestBodyTooLarge) {
 				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+				return
+			}
+			if providerUtils.IsDecompressionSizeLimitError(err) {
+				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body declares a size beyond the max allowed %d bytes: %v", maxRequestBodyBytes, err))
 				return
 			}
 			if err != nil {
@@ -390,12 +402,15 @@ func shouldStreamDecompress(config *lib.Config, ctx *fasthttp.RequestCtx) bool {
 
 // streamingDecompress wraps the request body stream with a streaming decompression
 // reader, avoiding full body materialization for large compressed requests.
+// The decompressed stream is capped at maxRequestBodyBytes: once a handler has
+// read past the cap the stream fails with errRequestBodyTooLarge, so a
+// decompression bomb cannot expand beyond the configured request limit.
 // Returns (cleanup, applied, err):
 //   - applied=true: body stream was wrapped; caller must invoke cleanup after the
 //     handler chain completes and the body is fully consumed.
 //   - applied=false: no body stream available (StreamRequestBody not enabled on the
 //     server). Caller should fall back to the buffered decompression path.
-func streamingDecompress(ctx *fasthttp.RequestCtx) (cleanup func(), applied bool, err error) {
+func streamingDecompress(ctx *fasthttp.RequestCtx, maxRequestBodyBytes int) (cleanup func(), applied bool, err error) {
 	bodyStream := ctx.RequestBodyStream()
 	if bodyStream == nil {
 		return func() {}, false, nil
@@ -410,7 +425,7 @@ func streamingDecompress(ctx *fasthttp.RequestCtx) (cleanup func(), applied bool
 		return nil, false, err
 	}
 
-	ctx.Request.SetBodyStream(decompReader, -1)
+	ctx.Request.SetBodyStream(newLimitedBodyReader(decompReader, maxRequestBodyBytes), -1)
 	ctx.Request.Header.Del(fasthttp.HeaderContentEncoding)
 	ctx.Request.Header.Del(fasthttp.HeaderContentLength)
 
@@ -418,6 +433,36 @@ func streamingDecompress(ctx *fasthttp.RequestCtx) (cleanup func(), applied bool
 }
 
 var errRequestBodyTooLarge = errors.New("decompressed request body exceeds max allowed size")
+
+// limitedBodyReader fails with errRequestBodyTooLarge once more than max bytes
+// have been read, unlike io.LimitedReader which silently reports EOF at the cap.
+type limitedBodyReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+// newLimitedBodyReader wraps r so that reading past maxRequestBodyBytes is an
+// error rather than a truncation. A non-positive limit falls back to 100 MB.
+func newLimitedBodyReader(r io.Reader, maxRequestBodyBytes int) *limitedBodyReader {
+	if maxRequestBodyBytes <= 0 {
+		maxRequestBodyBytes = 100 * 1024 * 1024 // 100 MB hard cap
+	}
+	// One byte of headroom: reading exactly max bytes is fine, the (max+1)th
+	// byte is what proves the body exceeds the limit.
+	return &limitedBodyReader{r: r, remaining: int64(maxRequestBodyBytes) + 1}
+}
+
+func (l *limitedBodyReader) Read(p []byte) (int, error) {
+	if l.remaining <= 0 {
+		return 0, errRequestBodyTooLarge
+	}
+	if int64(len(p)) > l.remaining {
+		p = p[:l.remaining]
+	}
+	n, err := l.r.Read(p)
+	l.remaining -= int64(n)
+	return n, err
+}
 
 // decodeRequestBodyWithLimit decodes the request body with a limit on the size of the body.
 func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int) ([]byte, error) {
@@ -435,17 +480,9 @@ func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int) 
 	}
 	defer cleanup()
 
-	if maxRequestBodyBytes <= 0 {
-		maxRequestBodyBytes = 100 * 1024 * 1024 // 100 MB hard cap
-	}
-
-	limitedReader := &io.LimitedReader{R: reader, N: int64(maxRequestBodyBytes + 1)}
-	body, err := io.ReadAll(limitedReader)
+	body, err := io.ReadAll(newLimitedBodyReader(reader, maxRequestBodyBytes))
 	if err != nil {
 		return nil, err
-	}
-	if len(body) > maxRequestBodyBytes {
-		return nil, errRequestBodyTooLarge
 	}
 	return body, nil
 }
@@ -1034,6 +1071,7 @@ type AuthMiddleware struct {
 	// /api/config-plants-admin-credentials path while a fresh, not-yet-configured
 	// instance is reachable over the network.
 	bootstrapToken atomic.Pointer[string]
+	setupToken     atomic.Pointer[string] // the configured setup token, kept for the life of the process
 }
 
 // InitAuthMiddleware initializes the auth middleware. The tempTokens service
@@ -1057,6 +1095,9 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	}
 
 	am.authConfig.Store(authConfig)
+	if configuredSetupToken != "" {
+		am.setupToken.Store(&configuredSetupToken)
+	}
 
 	if authConfig == nil {
 		if configuredSetupToken != "" {
@@ -1117,6 +1158,19 @@ func (m *AuthMiddleware) CheckBootstrapToken(token string) bool {
 // account has been created successfully.
 func (m *AuthMiddleware) ClearBootstrapToken() {
 	m.bootstrapToken.Store(nil)
+}
+
+// CheckConfiguredSetupToken reports whether token matches the operator-configured setup
+// token (config.json setup_token or BIFROST_SETUP_TOKEN). Unlike CheckBootstrapToken it does
+// not open up once an admin account exists and is never cleared: it is the operator's proof
+// of control for auth_config changes made while dashboard auth is disabled (see
+// ConfigHandler.verifyStoredAdminCredential). It is false when no token is configured.
+func (m *AuthMiddleware) CheckConfiguredSetupToken(token string) bool {
+	current := m.setupToken.Load()
+	if current == nil || token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(*current), []byte(token)) == 1
 }
 
 // UpdateWhitelistedRoutes updates the configured whitelisted routes that bypass auth middleware.
