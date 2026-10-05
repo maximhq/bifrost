@@ -154,19 +154,8 @@ const (
 // installFakePricing pins the prices the fake-mode gateway bills with, replacing any left by an
 // earlier run. Overrides win over the datasheet, so the feed's rows do not matter.
 func installFakePricing() error {
-	status, raw, err := apiCall(http.MethodGet, "/api/governance/pricing-overrides?limit=200", nil, nil)
-	if err != nil {
+	if err := removeFakePricing(); err != nil {
 		return err
-	}
-	if status >= 300 {
-		return fmt.Errorf("list pricing overrides: %d %s", status, raw)
-	}
-	for _, existing := range gjson.GetBytes(raw, "pricing_overrides").Array() {
-		if strings.HasPrefix(existing.Get("name").Str, "live-e2e ") {
-			if status, raw, err := apiCall(http.MethodDelete, "/api/governance/pricing-overrides/"+existing.Get("id").Str, nil, nil); err != nil || status >= 300 {
-				return fmt.Errorf("delete pricing override: %d %s %v", status, raw, err)
-			}
-		}
 	}
 	overrides := []map[string]any{
 		{"name": "live-e2e voice", "scope_kind": "global", "match_type": "exact", "pattern": voiceModel,
@@ -179,6 +168,26 @@ func installFakePricing() error {
 	for _, override := range overrides {
 		if status, raw, err := apiCall(http.MethodPost, "/api/governance/pricing-overrides", override, nil); err != nil || status >= 300 {
 			return fmt.Errorf("create pricing override %s: %d %s %v", override["name"], status, raw, err)
+		}
+	}
+	return nil
+}
+
+// removeFakePricing deletes the suite's pricing overrides, so a gateway reused after the run
+// does not keep charging the test models at test prices.
+func removeFakePricing() error {
+	status, raw, err := apiCall(http.MethodGet, "/api/governance/pricing-overrides?limit=200", nil, nil)
+	if err != nil {
+		return err
+	}
+	if status >= 300 {
+		return fmt.Errorf("list pricing overrides: %d %s", status, raw)
+	}
+	for _, existing := range gjson.GetBytes(raw, "pricing_overrides").Array() {
+		if strings.HasPrefix(existing.Get("name").Str, "live-e2e ") {
+			if status, raw, err := apiCall(http.MethodDelete, "/api/governance/pricing-overrides/"+existing.Get("id").Str, nil, nil); err != nil || status >= 300 {
+				return fmt.Errorf("delete pricing override: %d %s %v", status, raw, err)
+			}
 		}
 	}
 	return nil
@@ -268,6 +277,20 @@ func findContentLog(t *testing.T, providerSessionID string) gjson.Result {
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
+}
+
+// liveLogRowsForVirtualKey lists the session rows a virtual key has logged since the suite began.
+// It finds rows of sessions that never reached the provider, which carry no provider session id.
+func liveLogRowsForVirtualKey(t *testing.T, vkID string) []gjson.Result {
+	t.Helper()
+	status, raw, err := apiCall(http.MethodGet, "/api/logs?objects=live.session&virtual_key_ids="+vkID+"&limit=50&start_time="+suiteStart.Format(time.RFC3339Nano), nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status, "list logs: %s", raw)
+	var rows []gjson.Result
+	for _, summary := range gjson.GetBytes(raw, "logs").Array() {
+		rows = append(rows, fetchLog(t, summary.Get("id").Str))
+	}
+	return rows
 }
 
 // findSessionRow waits for a row of an object type grouped under a session id by the client.

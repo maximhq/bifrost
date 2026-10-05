@@ -111,7 +111,9 @@ func (provider *OpenAIProvider) LiveSessionContent(ctx *schemas.BifrostContext, 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// The body is streamed to the caller; resp is released by the reader's Close, or here on an error.
+	resp.StreamBody = true
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/live/sessions/"+escapedID+"/content", schemas.LiveRequest))
 	req.Header.SetMethod(http.MethodGet)
@@ -122,9 +124,12 @@ func (provider *OpenAIProvider) LiveSessionContent(ctx *schemas.BifrostContext, 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.streamingClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
+		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		upstreamErr := ParseOpenAIError(resp)
 		upstreamErr.ExtraFields.RequestType = schemas.LiveRequest
 		upstreamErr.ExtraFields.RoutingInfo.Provider = provider.GetProviderKey()
@@ -135,18 +140,20 @@ func (provider *OpenAIProvider) LiveSessionContent(ctx *schemas.BifrostContext, 
 		return nil, providerUtils.SetErrorLatency(upstreamErr, latency)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-	}
 	contentType := string(resp.Header.ContentType())
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	return &schemas.LiveContentResponse{
+
+	identity := len(resp.Header.Peek("Content-Encoding")) == 0
+	content := &schemas.LiveContentResponse{
 		SessionID:   sessionID,
-		Content:     append([]byte(nil), body...),
+		Body:        providerUtils.WrapStreamingResponseBody(ctx, resp),
 		ContentType: contentType,
 		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
-	}, nil
+	}
+	if length := resp.Header.ContentLength(); identity && length > 0 {
+		content.ContentLength = int64(length)
+	}
+	return content, nil
 }

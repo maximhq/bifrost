@@ -2948,7 +2948,7 @@ export function LogDetailView({
 							requestType={log.object}
 						/>
 					)}
-					{log.live_session && <LiveSessionView session={log.live_session} />}
+					{log.live_session && <LiveSessionView session={log.live_session} mapping={activeOutputRevealMapping} />}
 
 					{isPassthrough && passthroughRequestBody && (
 						<CollapsibleBox

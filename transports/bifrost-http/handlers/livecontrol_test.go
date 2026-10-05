@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -33,6 +35,17 @@ func TestLiveContentRefusesBeforeFetching(t *testing.T) {
 	assert.Contains(t, string(ctx.Response.Body()), "session id is required")
 }
 
+// closeTrackingReader is a recording body that remembers being closed.
+type closeTrackingReader struct {
+	io.Reader
+	closed bool
+}
+
+func (r *closeTrackingReader) Close() error {
+	r.closed = true
+	return nil
+}
+
 // fakeLiveContentClient answers the recording download with a fixed body or error.
 type fakeLiveContentClient struct {
 	ctx     *schemas.BifrostContext
@@ -50,9 +63,11 @@ func TestServeLiveContentWritesTheRecording(t *testing.T) {
 	t.Parallel()
 
 	wav := []byte("RIFF....WAVEfmt ")
-	client := &fakeLiveContentClient{content: &schemas.LiveContentResponse{SessionID: "live_1", Content: wav, ContentType: "audio/wav"}}
+	recording := &closeTrackingReader{Reader: bytes.NewReader(wav)}
+	client := &fakeLiveContentClient{content: &schemas.LiveContentResponse{SessionID: "live_1", Body: recording, ContentType: "audio/wav", ContentLength: int64(len(wav))}}
 	ctx := &fasthttp.RequestCtx{}
-	serveLiveContent(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), client, schemas.OpenAI, "live_1")
+	released := false
+	serveLiveContent(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), client, schemas.OpenAI, "live_1", func() { released = true })
 
 	// The download goes through the client, so the plugin pipeline counts, logs and traces it.
 	require.NotNil(t, client.req)
@@ -60,15 +75,22 @@ func TestServeLiveContentWritesTheRecording(t *testing.T) {
 	assert.Equal(t, schemas.LiveContentRequest, client.ctx.Value(schemas.BifrostContextKeyHTTPRequestType))
 	assert.Equal(t, "live_1", client.ctx.Value(schemas.BifrostContextKeyRealtimeProviderSessionID), "the log row names the session the recording belongs to")
 
+	// The recording is streamed, not copied: the body is the reader, closed once it has been sent.
 	assert.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
 	assert.Equal(t, "audio/wav", string(ctx.Response.Header.ContentType()))
 	assert.Equal(t, len(wav), ctx.Response.Header.ContentLength())
+	assert.False(t, released, "the request context outlives the handler while the body is still to be sent")
+	assert.Equal(t, true, ctx.UserValue(lib.FastHTTPUserValueLargeResponseMode), "the post-hook middleware must not drain the stream")
 	assert.Equal(t, wav, ctx.Response.Body())
+	assert.True(t, recording.closed, "the upstream response is released once the body has been sent")
+	assert.True(t, released, "the request context ends once the body has been sent")
 
 	// A refusal from the provider is relayed with its status.
 	refused := &fakeLiveContentClient{err: &schemas.BifrostError{StatusCode: new(fasthttp.StatusNotFound), Error: &schemas.ErrorField{Message: "Session not found."}}}
 	ctx = &fasthttp.RequestCtx{}
-	serveLiveContent(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), refused, schemas.OpenAI, "live_2")
+	released = false
+	serveLiveContent(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), refused, schemas.OpenAI, "live_2", func() { released = true })
+	assert.True(t, released, "a refusal ends the request context at once")
 	assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
 	assert.Contains(t, string(ctx.Response.Body()), "Session not found.")
 }

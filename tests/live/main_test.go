@@ -66,6 +66,9 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	if fake != nil {
 		fake.Stop()
+		if err := removeFakePricing(); err != nil {
+			fmt.Printf("live e2e: cannot remove pricing overrides: %v\n", err)
+		}
 	}
 	os.Exit(code)
 }

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"io"
 	"strconv"
 
 	"github.com/fasthttp/router"
@@ -44,21 +45,47 @@ func (h *LiveControlHandler) handleContent(ctx *fasthttp.RequestCtx) {
 	}
 	defer req.cancel()
 	bifrostCtx, cancel := h.gateway.sessionContext(req.auth, req.preReqCtx, req.middlewareValues, req.path)
-	defer cancel()
-	serveLiveContent(ctx, bifrostCtx, h.gateway.client, req.providerKey, req.sessionID)
+	serveLiveContent(ctx, bifrostCtx, h.gateway.client, req.providerKey, req.sessionID, cancel)
 }
 
-// serveLiveContent fetches the recording through the client and writes it as the provider served it.
-// The provider's session id rides on the context so the log row names the session it belongs to.
-func serveLiveContent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, client liveContentClient, providerKey schemas.ModelProvider, sessionID string) {
+// serveLiveContent fetches the recording through the client and streams it as the provider served
+// it. The provider's session id rides on the context so the log row names the session it belongs
+// to. release ends the request context: on a refusal now, otherwise once the body has been sent,
+// since cancelling earlier would close the upstream stream under the transport.
+func serveLiveContent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, client liveContentClient, providerKey schemas.ModelProvider, sessionID string, release func()) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveContentRequest)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, sessionID)
 	content, bifrostErr := client.LiveSessionContentRequest(bifrostCtx, &schemas.BifrostLiveContentRequest{Provider: providerKey, SessionID: sessionID})
 	if bifrostErr != nil {
+		release()
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
 	ctx.Response.Header.Set("Content-Type", content.ContentType)
-	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(content.Content)))
-	ctx.SetBody(content.Content)
+	// fasthttp reads the body until EOF when the size is unknown and closes it once sent.
+	bodySize := -1
+	if content.ContentLength > 0 {
+		bodySize = int(content.ContentLength)
+		ctx.Response.Header.Set("Content-Length", strconv.FormatInt(content.ContentLength, 10))
+	}
+	ctx.Response.SetBodyStream(&liveContentBody{ReadCloser: content.Body, release: release}, bodySize)
+	// The post-hook middleware copies response bodies for plugins; that would drain the stream
+	// before fasthttp sends it, so mark the request as streamed, as the large-response path does.
+	ctx.SetUserValue(lib.FastHTTPUserValueLargeResponseMode, true)
+}
+
+// liveContentBody is a recording being sent: closing it releases the upstream response, then the
+// request context.
+type liveContentBody struct {
+	io.ReadCloser
+	release func()
+}
+
+func (b *liveContentBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.release != nil {
+		b.release()
+		b.release = nil
+	}
+	return err
 }

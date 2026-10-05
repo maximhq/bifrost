@@ -287,10 +287,10 @@ func TestLiveContentDownloadLogsItsOwnRow(t *testing.T) {
 	_, _, err = plugin.PreLLMHook(ctx, req)
 	require.NoError(t, err)
 	resp := &schemas.BifrostResponse{LiveContentResponse: &schemas.LiveContentResponse{
-		SessionID:   "live_abc",
-		Content:     []byte("RIFF....WAVEfmt "),
-		ContentType: "audio/wav",
-		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.LiveContentRequest, Provider: schemas.OpenAI},
+		SessionID:     "live_abc",
+		ContentType:   "audio/wav",
+		ContentLength: 16,
+		ExtraFields:   schemas.BifrostResponseExtraFields{RequestType: schemas.LiveContentRequest, Provider: schemas.OpenAI},
 	}}
 	_, _, err = plugin.PostLLMHook(ctx, resp, nil)
 	require.NoError(t, err)
@@ -307,4 +307,61 @@ func TestLiveContentDownloadLogsItsOwnRow(t *testing.T) {
 	assert.Equal(t, "live_abc", row.MetadataParsed["provider_session_id"])
 	assert.Nil(t, row.LiveSessionParsed, "a download is not a session")
 	assert.Zero(t, row.Cost, "nothing is billed for a download")
+}
+
+// TestLiveSessionRowFollowsTheContentPolicy: a session under a key with content logging disabled
+// is written through the same policy path as every other row, so it is marked hidden rather than
+// looking like a call where nothing was said.
+func TestLiveSessionRowFollowsTheContentPolicy(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	hidden := func(sessionID, requestID string, start, end bool) *schemas.BifrostContext {
+		ctx := liveUnitCtx(sessionID, requestID, "voice", start, end)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+		return ctx
+	}
+	_, _, err = plugin.PreLLMHook(hidden("bfsess-hidden", "unit-1", true, false), liveStartRequest("gpt-live-1"))
+	require.NoError(t, err)
+	transcript := []schemas.LiveTranscriptLine{{Role: "user", Text: "my card number is 4111", StartMs: 0, EndMs: 900}}
+	session := &schemas.LiveSessionLog{Transport: "websocket", ProviderSessionID: "live_hidden", Transcript: transcript}
+	_, _, err = plugin.PostLLMHook(hidden("bfsess-hidden", "unit-1", false, true), liveVoiceResponse(12, session), nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindByID(context.Background(), "bfsess-hidden")
+	require.NoError(t, err)
+	assert.True(t, row.ContentHidden, "the row says its content is hidden, as every other row under this policy does")
+	require.NotNil(t, row.LiveSessionParsed)
+	assert.Empty(t, row.LiveSessionParsed.Transcript, "no transcript is stored")
+	assert.Equal(t, 12.0, row.LiveSessionParsed.VoiceSeconds, "the billing facts are kept")
+}
+
+// TestLiveSessionAbortedRowKeepsItsSessionFacts: a session aborted during setup closes with an
+// error and no response, so its row takes the transport and provider session id from the unit
+// context the meter stamps, instead of writing neither.
+func TestLiveSessionAbortedRowKeepsItsSessionFacts(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-aborted", "unit-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+	require.NoError(t, err)
+	closing := liveUnitCtx("bfsess-aborted", "unit-1", "voice", false, true)
+	closing.SetValue(schemas.BifrostContextKeyRealtimeTransport, "webrtc")
+	closing.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, "live_aborted")
+	status := 502
+	refusal := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "upstream WebRTC connection failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{RequestType: schemas.LiveRequest, Provider: schemas.OpenAI}}
+	_, _, err = plugin.PostLLMHook(closing, nil, refusal)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindByID(context.Background(), "bfsess-aborted")
+	require.NoError(t, err)
+	assert.Equal(t, logStatusError, row.Status)
+	require.NotNil(t, row.LiveSessionParsed)
+	assert.Equal(t, "webrtc", row.LiveSessionParsed.Transport, "the transport the meter recorded")
+	assert.Equal(t, "live_aborted", row.LiveSessionParsed.ProviderSessionID, "the provider session id the meter recorded")
 }

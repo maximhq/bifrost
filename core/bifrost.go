@@ -4994,23 +4994,9 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 		ctx = bifrost.ctx
 	}
 	baseProvider := bifrost.baseProviderType(providerKey)
-	supportedKeys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider)
+	supportedKeys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider, additionalModels...)
 	if err != nil {
 		return schemas.Key{}, err
-	}
-	// A caller-supplied direct key has no model lists to check.
-	if _, isDirectKey := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); !isDirectKey && len(supportedKeys) > 0 {
-		for _, additionalModel := range additionalModels {
-			if additionalModel == "" {
-				continue
-			}
-			supportedKeys = slices.DeleteFunc(supportedKeys, func(key schemas.Key) bool {
-				return !keySupportsModel(baseProvider, &key, additionalModel)
-			})
-			if len(supportedKeys) == 0 {
-				return schemas.Key{}, fmt.Errorf("no keys found for provider %s that support both model %s and model %s", providerKey, model, additionalModel)
-			}
-		}
 	}
 	if len(supportedKeys) == 0 {
 		return schemas.Key{}, nil
@@ -9915,7 +9901,9 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 //
 // canRotate=true is returned when there are two or more eligible keys and no pinning
 // or stickiness constraint is in effect.
-func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider) ([]schemas.Key, bool, error) {
+// additionalModels narrows the pool to keys that also serve those models before a key is pinned
+// or a session's affinity is honored, so both choose among keys that serve every model.
+func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider, additionalModels ...string) ([]schemas.Key, bool, error) {
 	// Direct key bypass: caller supplied a raw API key via x-bf-direct-key header.
 	if ctx != nil {
 		if key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
@@ -9997,6 +9985,17 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	}
 	if len(supportedKeys) == 0 {
 		return nil, false, fmt.Errorf("no keys found that support model: %s", model)
+	}
+	for _, additionalModel := range additionalModels {
+		if additionalModel == "" {
+			continue
+		}
+		supportedKeys = slices.DeleteFunc(supportedKeys, func(key schemas.Key) bool {
+			return !keySupportsModel(baseProviderType, &key, additionalModel)
+		})
+		if len(supportedKeys) == 0 {
+			return nil, false, fmt.Errorf("no keys found for provider %s that support both model %s and model %s", providerKey, model, additionalModel)
+		}
 	}
 
 	// Explicit key ID takes priority over key name — pin to that key, no rotation.

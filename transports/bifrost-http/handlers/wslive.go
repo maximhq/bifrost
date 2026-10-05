@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	liveBootstrapTimeout  = 15 * time.Second
-	liveBootstrapMaxBytes = 1 << 20
+	liveBootstrapTimeout = 15 * time.Second
+	liveMaxFrameBytes    = 16 << 20
 )
 
 // WSLiveHandler relays GPT Live primary WebSocket sessions and bills them as they run.
@@ -188,20 +188,27 @@ func (h *WSLiveHandler) serveSession(clientConn *realtimeClientConn, preReqCtx *
 	// Every exit from here on bills what OpenAI reported; a session.closed finish runs first.
 	defer func() { admission.meter.finish(admission.meter.lastReportedSeconds()) }()
 
+	// A failure before the session runs is the session's outcome: abort posts it to the plugins
+	// and makes the deferred finish a no-op, so no transport minimum is billed as a success.
 	startFrame, err = rewriteLiveModels(startFrame, start, admission.key, target.voiceModel, target.backendModel)
 	if err != nil {
-		clientConn.writeRealtimeError(newRealtimeWireBifrostError(500, "server_error", "failed to prepare session.start: "+err.Error()))
+		bifrostErr := newRealtimeWireBifrostError(500, "server_error", "failed to prepare session.start: "+err.Error())
+		admission.meter.abort(bifrostErr)
+		clientConn.writeRealtimeError(bifrostErr)
 		return
 	}
 	upstream, bifrostErr := h.dial(admission.ctx, admission.provider, admission.providerKey, admission.key, schemas.LiveConnectionPrimary, "")
 	if bifrostErr != nil {
+		admission.meter.abort(bifrostErr)
 		clientConn.writeRealtimeError(bifrostErr)
 		return
 	}
 	// A live socket is one session; it is never returned to the pool for reuse.
 	defer h.pool.Discard(upstream)
 	if err := upstream.WriteMessage(ws.TextMessage, startFrame); err != nil {
-		clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", "failed to send session.start upstream"))
+		bifrostErr := newRealtimeWireBifrostError(502, "server_error", "failed to send session.start upstream")
+		admission.meter.abort(bifrostErr)
+		clientConn.writeRealtimeError(bifrostErr)
 		return
 	}
 
@@ -239,6 +246,7 @@ func (h *WSLiveHandler) dial(ctx *schemas.BifrostContext, provider schemas.LiveP
 
 // readLiveSessionStart reads the bootstrap frame, which must be session.start.
 func readLiveSessionStart(clientConn *realtimeClientConn) ([]byte, *schemas.LiveSession, error) {
+	clientConn.conn.SetReadLimit(liveMaxFrameBytes)
 	if err := clientConn.conn.SetReadDeadline(time.Now().Add(liveBootstrapTimeout)); err != nil {
 		return nil, nil, err
 	}
@@ -249,9 +257,6 @@ func readLiveSessionStart(clientConn *realtimeClientConn) ([]byte, *schemas.Live
 	}
 	if messageType != ws.TextMessage {
 		return nil, nil, errors.New("live sessions only accept text messages")
-	}
-	if len(message) > liveBootstrapMaxBytes {
-		return nil, nil, errors.New("session.start exceeded 1 MiB")
 	}
 	if schemas.LiveEventTypeOf(message) != schemas.LiveEventSessionStart {
 		return nil, nil, errors.New("the first event of a live session must be session.start")

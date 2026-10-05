@@ -98,6 +98,24 @@ def test_download_recording(client, marker):
     assert not row.get("live_session"), "a download is logged on its own, not in the session's row"
 
 
+def test_download_recording_streams(client, marker):
+    """The SDK's streaming download: chunks arrive through the gateway instead of one body."""
+    with client.live.connect() as connection, microphone(connection):
+        connection.session.start(session=session_config(marker, store=True))
+        provider_session_id = wait_for(connection, "session.started").session.id
+        connection.session.close()
+        wait_for(connection, "session.closed")
+
+    with client.live.sessions.with_streaming_response.download_recording(provider_session_id) as response:
+        assert response.http_response.status_code == 200
+        chunks = list(response.iter_bytes(chunk_size=4096))
+    assert chunks and chunks[0][:4] == b"RIFF", chunks[:1]
+    total = sum(len(chunk) for chunk in chunks)
+    if UPSTREAM == "fake":
+        assert total == 44 + 24000 * 2, "the fake's one second of 24 kHz silence, chunk by chunk"
+    assert len(chunks) > 1, "the recording arrived in more than one chunk"
+
+
 def test_unstored_session_has_no_recording(client, marker):
     with client.live.connect() as connection, microphone(connection):
         connection.session.start(session=session_config(marker))
@@ -135,29 +153,34 @@ def test_voice_model_refused_by_key_arrives_as_an_error_event(marker):
 
 # ---- WebRTC: the SDK creates the session, aiortc carries the media and the events ----
 
-aiortc = pytest.importorskip("aiortc", reason="the WebRTC scenario needs aiortc")
-av = pytest.importorskip("av")
 
+def silence_track():
+    """A microphone that says nothing: 20 ms of silence at 48 kHz, as often as a microphone would.
 
-class Silence(aiortc.MediaStreamTrack):
-    """A microphone that says nothing: 20 ms of silence at 48 kHz, as often as a microphone would."""
+    aiortc is imported here, not at module level, so a machine without it skips only the WebRTC
+    scenario and still runs the WebSocket and auth tests."""
+    aiortc = pytest.importorskip("aiortc", reason="the WebRTC scenario needs aiortc")
+    av = pytest.importorskip("av")
 
-    kind = "audio"
+    class Silence(aiortc.MediaStreamTrack):
+        kind = "audio"
 
-    def __init__(self):
-        super().__init__()
-        self._pts = 0
+        def __init__(self):
+            super().__init__()
+            self._pts = 0
 
-    async def recv(self):
-        await asyncio.sleep(0.02)
-        frame = av.AudioFrame(format="s16", layout="mono", samples=960)
-        for plane in frame.planes:
-            plane.update(bytes(plane.buffer_size))
-        frame.sample_rate = 48000
-        frame.pts = self._pts
-        frame.time_base = fractions.Fraction(1, 48000)
-        self._pts += 960
-        return frame
+        async def recv(self):
+            await asyncio.sleep(0.02)
+            frame = av.AudioFrame(format="s16", layout="mono", samples=960)
+            for plane in frame.planes:
+                plane.update(bytes(plane.buffer_size))
+            frame.sample_rate = 48000
+            frame.pts = self._pts
+            frame.time_base = fractions.Fraction(1, 48000)
+            self._pts += 960
+            return frame
+
+    return aiortc, Silence()
 
 
 async def next_event(events: asyncio.Queue, type_: str, timeout: float = FRAME_TIMEOUT) -> dict:
@@ -177,8 +200,9 @@ async def next_event(events: asyncio.Queue, type_: str, timeout: float = FRAME_T
 
 async def test_sideband_steers_a_webrtc_session(async_client, marker):
     """client.live.create with an SDP offer, then client.live.sideband.connect to steer it."""
+    aiortc, microphone_track = silence_track()
     pc = aiortc.RTCPeerConnection()
-    pc.addTrack(Silence())
+    pc.addTrack(microphone_track)
     channel = pc.createDataChannel("oai-events")
     events: asyncio.Queue = asyncio.Queue()
     channel.on("message", lambda message: events.put_nowait(json.loads(message)))

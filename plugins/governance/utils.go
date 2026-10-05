@@ -2,6 +2,7 @@
 package governance
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -305,4 +306,12 @@ func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []str
 		})
 	}
 	return permits
+}
+
+// isLiveSessionContinuation reports a billing unit of an admitted live session: the continuation
+// flag counts only on a live request, so no other path can skip request limits by setting it.
+func isLiveSessionContinuation(ctx context.Context) bool {
+	continuation, _ := ctx.Value(schemas.BifrostContextKeySessionContinuation).(bool)
+	requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
+	return continuation && requestType == schemas.LiveRequest
 }

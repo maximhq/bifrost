@@ -92,6 +92,7 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "image_variation", label: "Image Variation" },
 	{ key: "count_tokens", label: "Count Tokens" },
 	{ key: "decisions", label: "Decisions" },
+	{ key: "live", label: "Live" },
 ];
 
 // Path overrides replace the default path verbatim; these request paths embed a
