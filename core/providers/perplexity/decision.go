@@ -130,7 +130,7 @@ func perplexityChoiceCriteria(name string, criteria interface{}) (map[string]any
 	return values, nil
 }
 
-func perplexityScoreCriteria(name string, criteria interface{}) (interface{}, error) {
+func perplexityScoreCriteria(name string, criteria interface{}) ([]any, error) {
 	var levels []any
 	switch typed := criteria.(type) {
 	case []any:
@@ -260,6 +260,14 @@ func toBifrostPerplexityDecisionResponse(response *PerplexityDecisionResponse, r
 		case schemas.DecisionKindScore:
 			if native.Score == nil {
 				return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("perplexity score answer for question %q carries no value", name), nil)
+			}
+			levels, err := perplexityScoreCriteria(name, question.Criteria)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("perplexity score criteria for question %q are invalid", name), err)
+			}
+			maxScore := float64(len(levels) - 1)
+			if *native.Score < 0 || *native.Score > maxScore {
+				return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("perplexity score answer for question %q is outside [0,%v]: %v", name, maxScore, *native.Score), nil)
 			}
 			answer.Value = *native.Score
 		}
