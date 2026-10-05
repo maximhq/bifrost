@@ -2,7 +2,141 @@
     height: 1.50rem;
 }
 
+/* Navbar Discord and GitHub links keep their labels for screen readers. */
+nav[aria-label="Main"] .navbar-link a[href*="discord.gg"],
+nav[aria-label="Main"] .navbar-link a[href*="github.com/maximhq/bifrost"] {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.3125rem 0;
+}
+
+nav[aria-label="Main"] .navbar-link a[href*="discord.gg"] svg,
+nav[aria-label="Main"] .navbar-link a[href*="github.com/maximhq/bifrost"] svg {
+    width: 1.625rem;
+    height: 1.625rem;
+}
+
+nav[aria-label="Main"] .navbar-link a[href*="discord.gg"] span,
+nav[aria-label="Main"] .navbar-link a[href*="github.com/maximhq/bifrost"] span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* Same gap between the icons and both CTAs. Book a demo's right side was
+   tighter than its left, which made the space between the buttons look uneven. */
+div:has(> nav[aria-label="Main"]) {
+    gap: 1.5rem;
+}
+
+nav[aria-label="Main"] > ul {
+    gap: 1rem;
+}
+
+nav[aria-label="Main"] a[href*="book-a-demo"] {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+}
+
+nav[aria-label="Main"] a[href*="book-a-demo"] svg {
+    display: none;
+}
+
+div:has(> nav[aria-label="Main"]) > *,
+nav[aria-label="Main"] > ul > * {
+    margin-inline: 0;
+}
+
+nav[aria-label="Main"] .navbar-link a[href*="#free-license"] {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid rgb(var(--primary-dark));
+    border-radius: 0.75rem;
+    box-sizing: border-box;
+    padding: calc(0.5rem - 1px) 0.75rem;
+    color: rgb(var(--primary-dark));
+    background: transparent;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.25rem;
+}
+
+nav[aria-label="Main"] .navbar-link a[href*="#free-license"]:hover {
+    background-color: rgb(var(--primary-dark) / 0.1);
+}
+
+.dark nav[aria-label="Main"] .navbar-link a[href*="#free-license"] {
+    border-color: rgb(var(--primary-light));
+    color: rgb(var(--primary-light));
+}
+
+.dark nav[aria-label="Main"] .navbar-link a[href*="#free-license"]:hover {
+    background-color: rgb(var(--primary-light) / 0.12);
+}
+
 
 #sidebar-group > li > button > div{
     line-height: normal;
+}
+
+/* Pull footer columns toward the logo and show full link labels. */
+footer.advanced-footer > div > div:first-child {
+    justify-content: flex-start;
+    column-gap: 3rem;
+}
+
+footer.advanced-footer > div > div:first-child > div:first-child {
+    min-width: 0;
+    justify-content: flex-start;
+    align-items: flex-start;
+    row-gap: 1.25rem;
+}
+
+footer.advanced-footer > div > div:first-child > div:first-child > div:last-child {
+    margin-top: auto;
+}
+
+.footer-compliance {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.footer-compliance img {
+    width: 2.5rem;
+    height: 2.5rem;
+    object-fit: contain;
+}
+
+footer.advanced-footer > div > div:first-child > div:last-child {
+    flex: 0 1 auto;
+    justify-content: start;
+    grid-template-columns: repeat(4, max-content) !important;
+    column-gap: 4rem !important;
+}
+
+footer.advanced-footer > div > div:first-child > div:last-child > div {
+    align-items: flex-start;
+    width: auto;
+    flex: none;
+}
+
+footer.advanced-footer a[class*="truncate"] {
+    max-width: none !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+}
+
+@media (min-width: 768px) {
+    footer.advanced-footer a[class*="truncate"] {
+        white-space: nowrap !important;
+    }
 }
