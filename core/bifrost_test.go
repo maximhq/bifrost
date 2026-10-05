@@ -629,6 +629,32 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 	}
 }
 
+// TestCreateBaseProvider_CustomTypesafeBase pins that typesafe is accepted as a
+// custom provider base and that the provider answers to the custom name, while
+// a base outside SupportedBaseProviders is still refused.
+func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	provider, err := bifrost.createBaseProvider("my-typesafe", &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", DefaultRequestTimeoutInSeconds: 1},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.Typesafe,
+		},
+	})
+	if err != nil {
+		t.Fatalf("typesafe must be a supported base provider: %v", err)
+	}
+	if provider.GetProviderKey() != schemas.ModelProvider("my-typesafe") {
+		t.Fatalf("expected custom provider key my-typesafe, got %q", provider.GetProviderKey())
+	}
+
+	_, err = bifrost.createBaseProvider("my-vertex", &schemas.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
+		t.Fatalf("vertex is not a supported base provider, got err=%v", err)
+	}
+}
+
 func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	providerConfig := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
