@@ -198,6 +198,7 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 					Type:         ResponsesMessageContentBlockType(block.Type),
 					Text:         block.Text,
 					CacheControl: block.CacheControl,
+					GuardContent: block.GuardContent,
 				}
 
 				// Map image
@@ -406,6 +407,32 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			// Non-nil: the Responses schema requires summary to be an array, and a nil
 			// slice marshals to null, which upstreams reject for the whole input item.
 			summaries := []ResponsesReasoningSummary{}
+			// OpenAI pairs an item id with its encrypted token, so the id must come from the encrypted detail whose
+			// token is emitted below (the last one carrying data). If that detail has no id, mint a fresh one rather
+			// than borrow a neighbour's: an id the token was never issued with is rejected upstream. With no token
+			// to pair, the first recorded id is kept.
+			var emittedToken *ChatReasoningDetails
+			for i := range am.ReasoningDetails {
+				if d := &am.ReasoningDetails[i]; d.Type == BifrostReasoningDetailsTypeEncrypted && d.Data != nil {
+					emittedToken = d
+				}
+			}
+			reasoningID := ""
+			if emittedToken != nil {
+				if emittedToken.ID != nil {
+					reasoningID = *emittedToken.ID
+				}
+			} else {
+				for _, d := range am.ReasoningDetails {
+					if d.ID != nil && *d.ID != "" {
+						reasoningID = *d.ID
+						break
+					}
+				}
+			}
+			if reasoningID == "" {
+				reasoningID = "rs_" + GetRandomString(50)
+			}
 			for _, d := range am.ReasoningDetails {
 				switch d.Type {
 				case BifrostReasoningDetailsTypeText:
@@ -433,7 +460,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				reasoningType := ResponsesMessageTypeReasoning
 				reasoningRole := ResponsesInputMessageRoleAssistant
 				rm := ResponsesMessage{
-					ID:   new("rs_" + GetRandomString(50)),
+					ID:   new(reasoningID),
 					Type: &reasoningType,
 					Role: &reasoningRole,
 				}
@@ -609,8 +636,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				}
 
 				responseBlocks = append(responseBlocks, ResponsesMessageContentBlock{
-					Type: blockType,
-					Text: block.Text,
+					Type:         blockType,
+					Text:         block.Text,
+					GuardContent: block.GuardContent,
 				})
 				rb := &responseBlocks[len(responseBlocks)-1]
 
@@ -679,6 +707,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 						Type:         ResponsesMessageContentBlockType(block.Type),
 						Text:         block.Text,
 						CacheControl: block.CacheControl,
+						GuardContent: block.GuardContent,
 					}
 
 					// Map image
@@ -761,6 +790,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 						}
 						pendingReasoning.WriteString(*block.Text)
 						pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+							ID:        rm.ID,
 							Index:     len(pendingReasoningDetails),
 							Type:      BifrostReasoningDetailsTypeText,
 							Text:      block.Text,
@@ -773,6 +803,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				for _, summary := range rm.ResponsesReasoning.Summary {
 					summaryText := summary.Text
 					pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+						ID:      rm.ID,
 						Index:   len(pendingReasoningDetails),
 						Type:    BifrostReasoningDetailsTypeSummary,
 						Summary: &summaryText,
@@ -780,6 +811,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				}
 				if rm.ResponsesReasoning.EncryptedContent != nil {
 					pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+						ID:    rm.ID,
 						Index: len(pendingReasoningDetails),
 						Type:  BifrostReasoningDetailsTypeEncrypted,
 						Data:  rm.ResponsesReasoning.EncryptedContent,
@@ -936,8 +968,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					}
 
 					chatBlocks[i] = ChatContentBlock{
-						Type: chatBlockType,
-						Text: block.Text,
+						Type:         chatBlockType,
+						Text:         block.Text,
+						GuardContent: block.GuardContent,
 					}
 
 					// Convert specific block types

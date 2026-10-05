@@ -354,6 +354,15 @@ When `allow_all_providers` is `true`:
 `allow_all_providers` defaults to `false`. When it is `false`, provider access stays deny-by-default via `provider_configs`.
 </Note>
 
+#### Batches defined by an uploaded file
+
+A batch created from `input_file_id` or `input_blob` names its models inside the uploaded input, which Bifrost does not read. When a key restricts models on the provider (an `allowed_models` list other than `*`, or any `blacklisted_models`), such batches are checked against what the provider actually runs:
+
+- **OpenAI and Azure** run the models named in each input row and ignore the `model` on the batch request, so creating a file- or blob-based batch requires a key that allows every model of that provider. Otherwise the request is refused with `403` (`model_blocked`), even if an allowed `model` is supplied.
+- **Gemini, Vertex, and Bedrock** run the model named on the batch request, so that `model` must be supplied and allowed by the key.
+
+Inline batches (`requests`) are checked per item and are unaffected, as are keys that allow every model of the provider.
+
 ## User Groups
 
 ### Teams

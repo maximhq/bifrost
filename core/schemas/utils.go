@@ -906,6 +906,16 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 		copy.File = &copyFile
 	}
 
+	// The guard marker is replayed to Bedrock verbatim; copy the qualifiers slice so the
+	// two blocks never share backing storage.
+	if original.GuardContent != nil {
+		copyGuardContent := &GuardContent{}
+		if original.GuardContent.Qualifiers != nil {
+			copyGuardContent.Qualifiers = append([]string(nil), original.GuardContent.Qualifiers...)
+		}
+		copy.GuardContent = copyGuardContent
+	}
+
 	return copy
 }
 
@@ -1861,6 +1871,16 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 			copyMediaResolution.NumTokens = new(*original.MediaResolution.NumTokens)
 		}
 		copy.MediaResolution = copyMediaResolution
+	}
+
+	// The guard marker is replayed to Bedrock verbatim; copy the qualifiers slice so the
+	// two blocks never share backing storage.
+	if original.GuardContent != nil {
+		copyGuardContent := &GuardContent{}
+		if original.GuardContent.Qualifiers != nil {
+			copyGuardContent.Qualifiers = append([]string(nil), original.GuardContent.Qualifiers...)
+		}
+		copy.GuardContent = copyGuardContent
 	}
 
 	// Deep copy ResponsesInputMessageContentBlockImage

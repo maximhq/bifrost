@@ -608,6 +608,8 @@ type CacheControlInjectionPoint struct {
 	// shape does not have to change when they arrive.
 	Location string `json:"location"`
 	// Role matches messages by role ("system", "user", "assistant", "developer").
+	// "user" also matches tool results: Responses function_call_output items and Chat
+	// tool messages are the client-supplied turn that follows a tool call.
 	Role *string `json:"role,omitempty"`
 	// Index matches by position. Negative values count from the end, so -1 is the last
 	// message. Out-of-range indices match nothing rather than erroring - a conversation

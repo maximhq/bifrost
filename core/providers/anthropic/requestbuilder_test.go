@@ -1163,3 +1163,70 @@ func TestRawBodyBuilderKeepsToolsAndSetsBetaHeaders(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildAnthropicResponsesRequestBody_IncludeFields: IncludeFields lands on the final body
+// after ExcludeFields on both the raw and typed paths (Bedrock InvokeModel input tagging).
+func TestBuildAnthropicResponsesRequestBody_IncludeFields(t *testing.T) {
+	config := AnthropicRequestBuildConfig{
+		Provider:      schemas.Bedrock,
+		Model:         "claude-sonnet-4-5",
+		ExcludeFields: []string{"guardrailConfig"},
+		IncludeFields: map[string]any{"amazon-bedrock-guardrailConfig": map[string]any{"tagSuffix": "xyz"}},
+	}
+
+	t.Run("raw_path", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		request := &schemas.BifrostResponsesRequest{
+			Provider:       schemas.Bedrock,
+			Model:          "claude-sonnet-4-5",
+			RawRequestBody: []byte(`{"max_tokens":64,"guardrailConfig":{"guardrailIdentifier":"g"},"messages":[{"role":"user","content":"hello"}]}`),
+		}
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, config)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "amazon-bedrock-guardrailConfig.tagSuffix").String(); got != "xyz" {
+			t.Errorf("expected tagSuffix xyz, got %q in %s", got, result)
+		}
+		if providerUtils.JSONFieldExists(result, "guardrailConfig") {
+			t.Errorf("expected guardrailConfig to be excluded: %s", result)
+		}
+	})
+
+	t.Run("typed_path", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		role := schemas.ResponsesInputMessageRoleUser
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "claude-sonnet-4-5",
+			Input:    []schemas.ResponsesMessage{{Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")}}},
+			Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(64)},
+		}
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, config)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "amazon-bedrock-guardrailConfig.tagSuffix").String(); got != "xyz" {
+			t.Errorf("expected tagSuffix xyz, got %q in %s", got, result)
+		}
+	})
+
+	t.Run("nil_include_fields_is_noop", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		role := schemas.ResponsesInputMessageRoleUser
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "claude-sonnet-4-5",
+			Input:    []schemas.ResponsesMessage{{Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")}}},
+			Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(64)},
+		}
+		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: schemas.Bedrock, Model: "claude-sonnet-4-5"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "amazon-bedrock-guardrailConfig") {
+			t.Errorf("unexpected amazon-bedrock-guardrailConfig: %s", result)
+		}
+	})
+}

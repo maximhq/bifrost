@@ -575,6 +575,7 @@ type MCPClientConfig struct {
 	// time. Ignored for per-user auth types (already always per-call
 	// regardless).
 	NeedsSessionStickiness *bool              `json:"needs_session_stickiness,omitempty"`
+	RequirePublicTarget    bool               `json:"require_public_target,omitempty"`   // Server-set: registered without admin auth, so every dial must resolve to a public address
 	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global; negative values are rejected)
 	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
 	MaxInstructionsLength  int                `json:"max_instructions_length,omitempty"` // Per-client override for the forwarded instruction byte cap (0 = use global from tool_manager_config)

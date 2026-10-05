@@ -24,7 +24,7 @@ dependencies = [
     # AI/ML SDK dependencies
     "openai>=1.30.0",
     "anthropic>=0.25.0",
-    "litellm==1.84.0",
+    "litellm==1.88.6",
     "langchain-openai==1.1.14",
     "langchain-core>=1.3.3",
     "langchain-anthropic==1.5.4",

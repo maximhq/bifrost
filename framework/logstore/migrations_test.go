@@ -516,17 +516,21 @@ func TestMigrationAddMetadataGINIndex_EdgeCases(t *testing.T) {
 	assert.True(t, indexExists(t, db, "idx_logs_metadata_gin"), "GIN index should be created")
 }
 
-// TestPerformanceIndexesCoverProjectIDs pins the project indexes to the ensurePerformanceIndexes
-// list: the project column migrations add only the columns (addColumnIfNotExists never creates a
-// field's index), so an upgraded deployment scans logs by project_id unindexed unless the
-// background builder carries both entries. A fresh database gets them from the model's index tags
-// at table creation.
+// TestPerformanceIndexesCoverProjectIDs pins the project indexes to the background builders: the
+// project column migrations add only the columns (addColumnIfNotExists never creates a field's
+// index), so an upgraded deployment scans logs by project_id unindexed unless a builder carries
+// them. logs gets the (project_id, timestamp) composite from ensureOwnerTimestampIndexes;
+// mcp_tool_logs keeps its single-column entry in ensurePerformanceIndexes. A fresh database gets
+// them from the model's index tags at table creation.
 func TestPerformanceIndexesCoverProjectIDs(t *testing.T) {
 	tables := map[string]string{}
 	for _, idx := range performanceIndexes {
 		tables[idx.name] = idx.table
 	}
-	assert.Equal(t, "logs", tables["idx_logs_project_id"])
+	for _, idx := range rankingNameTimestampIndexes {
+		tables[idx.name] = idx.table
+	}
+	assert.Equal(t, "logs", tables["idx_logs_project_ts"])
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_project_id"])
 }
 

@@ -55,7 +55,7 @@ function ProviderKeyActionsMenu({
 	return (
 		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
 			<DropdownMenuTrigger asChild>
-				<Button onClick={(e) => e.stopPropagation()} variant="ghost" aria-label="Key actions">
+				<Button onClick={(e) => e.stopPropagation()} variant="ghost" aria-label="Key actions" data-testid="key-actions-trigger">
 					<EllipsisIcon className="h-5 w-5" aria-hidden="true" />
 				</Button>
 			</DropdownMenuTrigger>

@@ -259,16 +259,55 @@ func responsesUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schema
 // entirely, which is strictly worse than the implicit default it replaced.
 func responsesHasPromptCacheBreakpoint(messages []schemas.ResponsesMessage) bool {
 	for i := range messages {
-		if messages[i].Content == nil {
-			continue
+		if messages[i].Content != nil {
+			for j := range messages[i].Content.ContentBlocks {
+				if messages[i].Content.ContentBlocks[j].PromptCacheBreakpoint != nil {
+					return true
+				}
+			}
 		}
-		for j := range messages[i].Content.ContentBlocks {
-			if messages[i].Content.ContentBlocks[j].PromptCacheBreakpoint != nil {
-				return true
+		if blocks := responsesToolOutputBlocks(&messages[i]); blocks != nil {
+			for j := range blocks {
+				if blocks[j].PromptCacheBreakpoint != nil {
+					return true
+				}
 			}
 		}
 	}
 	return false
+}
+
+// responsesToolOutputBlocks returns the block-form output of a function_call_output
+// item, or nil when the item is not one or its output is a bare string.
+func responsesToolOutputBlocks(msg *schemas.ResponsesMessage) []schemas.ResponsesMessageContentBlock {
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Output == nil {
+		return nil
+	}
+	return msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
+}
+
+// isMarkableResponsesInputBlock reports whether a message content block has a
+// documented home for prompt_cache_breakpoint. input_text is documented by both
+// OpenAI and OpenRouter; input_image and input_file only by OpenAI.
+func isMarkableResponsesInputBlock(b schemas.ResponsesMessageContentBlock, openAIFamily bool) bool {
+	switch b.Type {
+	case schemas.ResponsesInputMessageContentBlockTypeText:
+		return b.Text != nil
+	case schemas.ResponsesInputMessageContentBlockTypeImage, schemas.ResponsesInputMessageContentBlockTypeFile:
+		return openAIFamily
+	}
+	return false
+}
+
+// isMarkableResponsesToolOutputBlock is the function_call_output counterpart:
+// OpenAI documents text, image and file parts there. The Anthropic converter
+// tags a tool_result text block as output_text on assistant turns, so that
+// spelling counts as text too.
+func isMarkableResponsesToolOutputBlock(b schemas.ResponsesMessageContentBlock) bool {
+	if b.Type == schemas.ResponsesOutputMessageContentTypeText {
+		return b.Text != nil
+	}
+	return isMarkableResponsesInputBlock(b, true)
 }
 
 // responsesUsesPromptCacheOptions reports whether the target also needs request-level
@@ -314,12 +353,21 @@ func responsesUsesPromptCacheOptions(caps schemas.ModelCaps, provider schemas.Mo
 //     breakpoint on a text content block and names input_text as its Responses
 //     spelling. Marking output_text would be an unverified capability claim, and
 //     a rejected field costs more than the miss it would fix.
-//   - Tool definitions and function_call_output blocks are not marked.
-//     schemas.ResponsesTool has no PromptCacheBreakpoint field and OpenRouter
-//     documents no tool-level Responses breakpoint, while a text-only
-//     function_call_output block array is collapsed into a single string by
-//     isFunctionCallOutputBlocksFlattenable before it reaches the wire, which
-//     would discard any breakpoint set on it.
+//   - Tool definitions are not marked. schemas.ResponsesTool has no
+//     PromptCacheBreakpoint field and neither target documents a tool-level
+//     Responses breakpoint.
+//   - input_image and input_file blocks, and function_call_output items, are
+//     marked only when openAIFamily is set, which the caller derives from the
+//     OpenAI half of the gate. OpenAI's Responses reference accepts
+//     prompt_cache_breakpoint on input_text, input_image and input_file parts,
+//     both in a message and inside a function_call_output; OpenRouter documents
+//     only input_text. The tool-output case is the turn Claude Code produces
+//     after every tool call: its marker sits on the tool_result, which the
+//     Anthropic converter carries as message-level CacheControl (string body) or
+//     as a marker on an output block. A bare string body is promoted to a single
+//     input_text block so the marker has somewhere to live, and
+//     isFunctionCallOutputBlocksFlattenable then declines to collapse it back
+//     into a string.
 //
 // A marker's TTL is not carried across, and there is nowhere to carry it to. The
 // only request-level field on this path is prompt_cache_options.ttl, whose "only
@@ -334,32 +382,70 @@ func responsesUsesPromptCacheOptions(caps schemas.ModelCaps, provider schemas.Mo
 // messages is this function's own slice, but each element's Content pointer and
 // the block array beneath it still alias bifrostReq.Input, which plugins and the
 // fallback chain reuse. Both are copied before a marker is written.
-func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage) {
+func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage, openAIFamily bool) {
 	// Locate every markable block in render order, and count the breakpoints the
-	// caller already set, before anything is copied.
-	type blockRef struct{ msg, block int }
+	// caller already set, before anything is copied. A toolOutput ref addresses a
+	// function_call_output item: block is the index into its output blocks, or -1
+	// when the output is a bare string that must be promoted first.
+	type blockRef struct {
+		msg, block int
+		toolOutput bool
+	}
 	var refs []blockRef
 	existing := 0
+	// "ephemeral" is the only cache type Anthropic defines, and nothing upstream
+	// of here validates it. Converting an empty or unknown type would manufacture
+	// a valid breakpoint out of a malformed marker and spend clamp budget on it,
+	// so require the documented value.
+	isEphemeral := func(cc *schemas.CacheControl) bool {
+		return cc != nil && cc.Type == schemas.CacheControlTypeEphemeral
+	}
 	for i := range messages {
-		if messages[i].Content == nil {
+		if messages[i].Content != nil {
+			for j, block := range messages[i].Content.ContentBlocks {
+				if block.PromptCacheBreakpoint != nil {
+					existing++
+					continue
+				}
+				if !isEphemeral(block.CacheControl) || !isMarkableResponsesInputBlock(block, openAIFamily) {
+					continue
+				}
+				refs = append(refs, blockRef{msg: i, block: j})
+			}
+		}
+		if messages[i].Type == nil || *messages[i].Type != schemas.ResponsesMessageTypeFunctionCallOutput ||
+			messages[i].ResponsesToolMessage == nil || messages[i].ResponsesToolMessage.Output == nil {
 			continue
 		}
-		for j, block := range messages[i].Content.ContentBlocks {
-			if block.PromptCacheBreakpoint != nil {
-				existing++
-				continue
+		output := messages[i].ResponsesToolMessage.Output
+		if blocks := output.ResponsesFunctionToolCallOutputBlocks; blocks != nil {
+			// A marker already on a block counts against the budget whether or
+			// not this target may mark tool outputs.
+			marked := -1
+			for j, block := range blocks {
+				if block.PromptCacheBreakpoint != nil {
+					existing++
+					continue
+				}
+				if openAIFamily && isEphemeral(block.CacheControl) && isMarkableResponsesToolOutputBlock(block) {
+					marked = j
+				}
 			}
-			// "ephemeral" is the only cache type Anthropic defines, and nothing
-			// upstream of here validates it. Converting an empty or unknown type
-			// would manufacture a valid breakpoint out of a malformed marker and
-			// spend clamp budget on it, so require the documented value.
-			if block.CacheControl == nil ||
-				block.CacheControl.Type != schemas.CacheControlTypeEphemeral ||
-				block.Text == nil ||
-				block.Type != schemas.ResponsesInputMessageContentBlockTypeText {
-				continue
+			if marked < 0 && openAIFamily && isEphemeral(messages[i].CacheControl) {
+				// Message-level marker with a block body: mark the last markable
+				// block, which is the end of the item and so the end of the cached prefix.
+				for j := len(blocks) - 1; j >= 0; j-- {
+					if isMarkableResponsesToolOutputBlock(blocks[j]) && blocks[j].PromptCacheBreakpoint == nil {
+						marked = j
+						break
+					}
+				}
 			}
-			refs = append(refs, blockRef{msg: i, block: j})
+			if marked >= 0 {
+				refs = append(refs, blockRef{msg: i, block: marked, toolOutput: true})
+			}
+		} else if openAIFamily && output.ResponsesToolCallOutputStr != nil && isEphemeral(messages[i].CacheControl) {
+			refs = append(refs, blockRef{msg: i, block: -1, toolOutput: true})
 		}
 	}
 	if len(refs) == 0 {
@@ -381,8 +467,35 @@ func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage) {
 		refs = refs[len(refs)-budget:]
 	}
 
+	breakpoint := func() *schemas.PromptCacheBreakpoint {
+		return &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit)}
+	}
 	copiedContent := make(map[int]bool, len(refs))
 	for _, ref := range refs {
+		if ref.toolOutput {
+			// Copy the tool message, its output struct and the block slice: all
+			// three still alias bifrostReq.Input. A message with one ref here never
+			// also has a content ref, so no second copy map is needed.
+			toolMsgCopy := *messages[ref.msg].ResponsesToolMessage
+			outputCopy := *toolMsgCopy.Output
+			if ref.block < 0 {
+				text := *outputCopy.ResponsesToolCallOutputStr
+				outputCopy.ResponsesToolCallOutputStr = nil
+				outputCopy.ResponsesFunctionToolCallOutputBlocks = []schemas.ResponsesMessageContentBlock{{
+					Type:                  schemas.ResponsesInputMessageContentBlockTypeText,
+					Text:                  &text,
+					PromptCacheBreakpoint: breakpoint(),
+				}}
+			} else {
+				blocks := outputCopy.ResponsesFunctionToolCallOutputBlocks
+				outputCopy.ResponsesFunctionToolCallOutputBlocks = append(
+					make([]schemas.ResponsesMessageContentBlock, 0, len(blocks)), blocks...)
+				outputCopy.ResponsesFunctionToolCallOutputBlocks[ref.block].PromptCacheBreakpoint = breakpoint()
+			}
+			toolMsgCopy.Output = &outputCopy
+			messages[ref.msg].ResponsesToolMessage = &toolMsgCopy
+			continue
+		}
 		if !copiedContent[ref.msg] {
 			contentCopy := *messages[ref.msg].Content
 			contentCopy.ContentBlocks = append(
@@ -392,13 +505,16 @@ func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage) {
 			messages[ref.msg].Content = &contentCopy
 			copiedContent[ref.msg] = true
 		}
-		messages[ref.msg].Content.ContentBlocks[ref.block].PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{
-			Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
-		}
+		messages[ref.msg].Content.ContentBlocks[ref.block].PromptCacheBreakpoint = breakpoint()
 	}
 }
 
 // ToOpenAIResponsesRequest converts a Bifrost responses request to OpenAI format
+// bareTextContentBlockType is the Anthropic/Gemini spelling of a text content block.
+// OpenAI's Responses input only knows input_text / output_text, so the converter
+// retags it by role.
+const bareTextContentBlockType schemas.ResponsesMessageContentBlockType = "text"
+
 func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
@@ -483,6 +599,32 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
+		// A bare "text" content block (the Anthropic/Gemini spelling) is not an OpenAI
+		// content part: OpenAI rejects it with "Invalid value: 'text'". Retag by role,
+		// output_text on assistant history and input_text elsewhere, before the later
+		// passes that key on those canonical types. Clone the blocks first; the caller's
+		// input (shared with fallback providers) stays untouched.
+		if message.Content != nil && (message.Type == nil || *message.Type == schemas.ResponsesMessageTypeMessage) {
+			for _, b := range message.Content.ContentBlocks {
+				if b.Type != bareTextContentBlockType {
+					continue
+				}
+				target := schemas.ResponsesInputMessageContentBlockTypeText
+				if message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleAssistant {
+					target = schemas.ResponsesOutputMessageContentTypeText
+				}
+				contentCopy := *message.Content
+				contentCopy.ContentBlocks = slices.Clone(message.Content.ContentBlocks)
+				for i := range contentCopy.ContentBlocks {
+					if contentCopy.ContentBlocks[i].Type == bareTextContentBlockType {
+						contentCopy.ContentBlocks[i].Type = target
+					}
+				}
+				message.Content = &contentCopy
+				break
+			}
+		}
+
 		// OpenAI's Responses schema requires "detail" on input_image items, and strict
 		// downstream validators (e.g. vLLM importing the official OpenAI types) reject
 		// requests without it. Blocks converted from non-OpenAI surfaces (Anthropic,
@@ -521,6 +663,93 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		if (message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||
 			(message.Type == nil && message.ResponsesReasoning != nil) {
 			message.Role = nil
+		}
+
+		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
+		// Strip it from all items. message is a value copy, so the caller's input is untouched.
+		message.Status = nil
+
+		// Gemini streaming generates non-standard IDs for reasoning items (msg_<id>_reasoning_N,
+		// reasoning_N) and function_call_output items (func_resp_<id>). OpenAI rejects these.
+		// Drop them; the call_id and output pairing are unaffected. message is a value copy.
+		// But preserve native OpenAI reasoning IDs (rs_ prefix) which are needed for replay.
+		if message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeReasoning ||
+			*message.Type == schemas.ResponsesMessageTypeFunctionCallOutput ||
+			*message.Type == schemas.ResponsesMessageTypeWebSearchCall) &&
+			message.ID != nil && *message.ID != "" &&
+			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) {
+			message.ID = nil
+		}
+
+		// Gemini sets Name on function_call_output items (the tool name), but OpenAI's
+		// function_call_output does not accept this field. Strip it. message is a value copy.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
+			message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Name != nil {
+			// Clone to avoid mutating the caller's input
+			toolMsgCopy := *message.ResponsesToolMessage
+			toolMsgCopy.Name = nil
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+
+		// Strip signatures (e.g., Gemini thoughtSignature) from content blocks.
+		// OpenAI does not accept this field on input. Only mutate if a signature exists;
+		// copy message.Content and clone the ContentBlocks slice before clearing to preserve
+		// the caller's data and avoid data races with fallback providers.
+		if message.Content != nil {
+			for _, b := range message.Content.ContentBlocks {
+				if b.Signature == nil {
+					continue
+				}
+				// Signature found; copy content and blocks before clearing
+				contentCopy := *message.Content
+				contentCopy.ContentBlocks = slices.Clone(message.Content.ContentBlocks)
+				for i := range contentCopy.ContentBlocks {
+					contentCopy.ContentBlocks[i].Signature = nil
+				}
+				message.Content = &contentCopy
+				break
+			}
+		}
+
+		// OpenAI's web_search_call input item carries only id, status and action. The
+		// Gemini-shaped history also sets call_id and name, which OpenAI rejects with
+		// "Unknown parameter: input[N].call_id". Clone before clearing.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeWebSearchCall &&
+			message.ResponsesToolMessage != nil &&
+			(message.ResponsesToolMessage.CallID != nil || message.ResponsesToolMessage.Name != nil) {
+			toolMsgCopy := *message.ResponsesToolMessage
+			toolMsgCopy.CallID = nil
+			toolMsgCopy.Name = nil
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+
+		// arguments is a required string on function_call items. Gemini streaming emits
+		// "" for argument-less calls and foreign histories may omit the field; OpenAI
+		// rejects both with "Missing required parameter: input[N].arguments", so send the
+		// empty object. Clone before setting.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCall &&
+			(message.ResponsesToolMessage == nil || message.ResponsesToolMessage.Arguments == nil ||
+				*message.ResponsesToolMessage.Arguments == "") {
+			var toolMsgCopy schemas.ResponsesToolMessage
+			if message.ResponsesToolMessage != nil {
+				toolMsgCopy = *message.ResponsesToolMessage
+			}
+			toolMsgCopy.Arguments = schemas.Ptr("{}")
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+
+		// summary is a required array on reasoning items. A reasoning item that arrives
+		// without one (a foreign shape the schema could not map) must still carry
+		// "summary": [] - OpenAI accepts that and rejects the item without the field;
+		// a nil slice would marshal as null. Clone before setting.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeReasoning {
+			if message.ResponsesReasoning == nil {
+				message.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}
+			} else if message.ResponsesReasoning.Summary == nil {
+				reasoningCopy := *message.ResponsesReasoning
+				reasoningCopy.Summary = []schemas.ResponsesReasoningSummary{}
+				message.ResponsesReasoning = &reasoningCopy
+			}
 		}
 
 		if message.ResponsesReasoning != nil {
@@ -644,9 +873,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	cachePromptProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
 	needsExplicitPromptCacheMode := false
 	if responsesUsesPromptCacheBreakpoints(caps, cachePromptProvider, capModel) {
-		applyResponsesCacheBreakpoints(messages)
-		needsExplicitPromptCacheMode = responsesUsesPromptCacheOptions(caps, cachePromptProvider, capModel) &&
-			responsesHasPromptCacheBreakpoint(messages)
+		// Only the OpenAI family documents a breakpoint on image/file blocks and on
+		// function_call_output content; that is the same set of targets that takes
+		// prompt_cache_options.
+		usesPromptCacheOptions := responsesUsesPromptCacheOptions(caps, cachePromptProvider, capModel)
+		applyResponsesCacheBreakpoints(messages, usesPromptCacheOptions)
+		needsExplicitPromptCacheMode = usesPromptCacheOptions && responsesHasPromptCacheBreakpoint(messages)
 	}
 
 	// Updating params
