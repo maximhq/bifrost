@@ -357,7 +357,7 @@ func (provider *PerplexityProvider) Decision(ctx *schemas.BifrostContext, key sc
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
@@ -374,7 +374,7 @@ func (provider *PerplexityProvider) Decision(ctx *schemas.BifrostContext, key sc
 	var nativeResponse PerplexityDecisionResponse
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &nativeResponse, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	bifrostResponse, bifrostErr := toBifrostPerplexityDecisionResponse(&nativeResponse, request)

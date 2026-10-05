@@ -170,7 +170,7 @@ func TestPerplexityDecisionUsesNativeEndpoint(t *testing.T) {
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		writer.Header().Set("x-request-id", "perplexity-request-123")
-		fmt.Fprint(writer, `{
+		_, _ = fmt.Fprint(writer, `{
 			"id": "decision-123",
 			"model": "pplx-decider-v1-27b",
 			"answers": {
@@ -261,7 +261,7 @@ func TestPerplexityDecisionErrors(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 				writer.WriteHeader(testCase.statusCode)
-				fmt.Fprint(writer, testCase.body)
+				_, _ = fmt.Fprint(writer, testCase.body)
 			}))
 			defer server.Close()
 
