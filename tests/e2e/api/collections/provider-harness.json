@@ -197639,6 +197639,441 @@
       ]
     },
     {
+      "name": "166. Hugging Face DeepInfra model discovery (#7761)",
+      "description": "Issue #7761: the Hugging Face discovery catalogue omitted DeepInfra and queried three retired Hub providers. GET /v1/models must expose huggingface/deepinfra/ model IDs without doubled provider prefixes. page_size=0 disables Bifrost pagination, and the Hub limit=10 keeps the per-provider payload small while still returning supported models. This case checks model metadata only and makes no inference calls. The deterministic Go regression also checks that retired providers are never queried.",
+      "item": [
+        {
+          "name": "huggingface/deepinfra models - DeepInfra model discovery - #7761",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('DeepInfra models are discoverable through Hugging Face', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'model list missing: ' + text).to.be.an('array');",
+                  "  var deepinfra = body.data.filter(function (model) { return typeof model.id === 'string' && model.id.indexOf('huggingface/deepinfra/') === 0; });",
+                  "  pm.expect(deepinfra, 'no huggingface/deepinfra model found: ' + text).to.not.be.empty;",
+                  "  deepinfra.forEach(function (model) {",
+                  "    pm.expect(model.id.indexOf('huggingface/deepinfra/deepinfra/'), 'provider prefix was duplicated: ' + model.id).to.eql(-1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=huggingface&page_size=0&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "huggingface"
+                },
+                {
+                  "key": "page_size",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "167. Hugging Face configured provider model IDs (#7761 / PR #7908)",
+      "description": "Pins configured model ID compatibility after retired providers were removed from Hugging Face Hub discovery. Each case creates a unique custom Hugging Face provider with an env.HUGGING_FACE_API_KEY reference and deletes it afterward. The first case lists an explicit allowlist containing hyperbolic, nebius, sambanova, auto and active DeepInfra IDs. The second discovers a real DeepInfra model and maps five qualified aliases to it, proving populated Hub results use the same prefix ownership as backfilled entries. All requests are model metadata or temporary local gateway configuration; no inference calls are made. Offline Go regressions additionally pin partial discovery failures, all-failed errors, case-insensitive prefixes, blacklists and bare model IDs.",
+      "item": [
+        {
+          "name": "huggingface/nebius/harness/legacy-model configured allowlist - legacy provider model backfill - #7761",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var fixture = 'huggingface_legacy_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);",
+                  "pm.variables.set('hfConfiguredProvider', fixture); pm.variables.set('hfConfiguredProviderCreated', 'false');",
+                  "pm.variables.unset('hfConfiguredEntries'); pm.variables.unset('hfConfiguredAliasTarget');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "function call(method, path, body, callback) {",
+                  "  var request = {url: base + path, method: method, header: headers};",
+                  "  if (body) { request.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(request, function (err, response) {",
+                  "    pm.test('setup: ' + method + ' ' + path + ' succeeds', function () {",
+                  "      pm.expect(err, 'request failed: ' + String(err)).to.not.exist;",
+                  "      pm.expect(response && response.code, 'request failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "    });",
+                  "    if (err || !response || response.code !== 200) { return; }",
+                  "    callback(response);",
+                  "  });",
+                  "}",
+                  "function createFixture(key, entries) {",
+                  "  call('POST', '/api/providers', {provider: fixture, custom_provider_config: {base_provider_type: 'huggingface'}}, function () {",
+                  "    pm.variables.set('hfConfiguredProviderCreated', 'true');",
+                  "    key.name = fixture + '_key'; key.value = 'env.HUGGING_FACE_API_KEY'; key.weight = 1;",
+                  "    call('POST', '/api/providers/' + fixture + '/keys', key, function () { pm.variables.set('hfConfiguredEntries', JSON.stringify(entries)); });",
+                  "  });",
+                  "}",
+                  "var models = [\"hyperbolic/harness/legacy-model\",\"nebius/harness/legacy-model\",\"sambanova/harness/legacy-model\",\"auto/harness/legacy-model\",\"deepinfra/harness/legacy-model\"];",
+                  "createFixture({models: models}, models);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('configured retired, auto and active model IDs appear exactly once', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'model list missing: ' + text).to.be.an('array');",
+                  "  var entriesJSON = pm.variables.get('hfConfiguredEntries');",
+                  "  pm.expect(entriesJSON, 'setup did not complete: configured model entries are unavailable').to.be.a('string').and.not.empty;",
+                  "  var entries = JSON.parse(entriesJSON);",
+                  "  pm.expect(data.length, 'unexpected or duplicated configured IDs: ' + text).to.eql(entries.length);",
+                  "  entries.forEach(function (entry) {",
+                  "    var id = pm.variables.get('hfConfiguredProvider') + '/' + entry;",
+                  "    pm.expect(data.filter(function (model) { return model.id === id; }).length, 'configured ID missing or duplicated: ' + id + ': ' + text).to.eql(1);",
+                  "  });",
+                  "});",
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var headers = {}; var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "if (pm.variables.get('hfConfiguredProviderCreated') === 'true') {",
+                  "pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'DELETE', header: headers}, function (err, response) {",
+                  "  pm.test('cleanup: deleting the run-scoped Hugging Face provider succeeds', function () {",
+                  "    pm.expect(err, 'cleanup failed: ' + String(err)).to.not.exist;",
+                  "    pm.expect(response && response.code, 'cleanup failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "  });",
+                  "  pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'GET', header: headers}, function (lookupErr, lookupResponse) {",
+                  "    pm.test('cleanup: the run-scoped Hugging Face provider no longer exists', function () {",
+                  "      pm.expect(lookupErr, 'cleanup verification failed: ' + String(lookupErr)).to.not.exist;",
+                  "      pm.expect(lookupResponse && lookupResponse.code, 'provider remains after cleanup: ' + (lookupResponse ? lookupResponse.text() : 'no response')).to.eql(404);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{hfConfiguredProvider}}&page_size=0&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{hfConfiguredProvider}}"
+                },
+                {
+                  "key": "page_size",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "huggingface/nebius/harness/legacy-model qualified aliases to discovered DeepInfra model - legacy provider model backfill - #7761",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var fixture = 'huggingface_legacy_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);",
+                  "pm.variables.set('hfConfiguredProvider', fixture); pm.variables.set('hfConfiguredProviderCreated', 'false');",
+                  "pm.variables.unset('hfConfiguredEntries'); pm.variables.unset('hfConfiguredAliasTarget');",
+                  "pm.variables.unset('hfConfiguredAliasHuggingFaceID'); pm.variables.unset('hfConfiguredAliasSupportedMethods');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "function call(method, path, body, callback) {",
+                  "  var request = {url: base + path, method: method, header: headers};",
+                  "  if (body) { request.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(request, function (err, response) {",
+                  "    pm.test('setup: ' + method + ' ' + path + ' succeeds', function () {",
+                  "      pm.expect(err, 'request failed: ' + String(err)).to.not.exist;",
+                  "      pm.expect(response && response.code, 'request failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "    });",
+                  "    if (err || !response || response.code !== 200) { return; }",
+                  "    callback(response);",
+                  "  });",
+                  "}",
+                  "function createFixture(key, entries, target, source) {",
+                  "  call('POST', '/api/providers', {provider: fixture, custom_provider_config: {base_provider_type: 'huggingface'}}, function () {",
+                  "    pm.variables.set('hfConfiguredProviderCreated', 'true');",
+                  "    key.name = fixture + '_key'; key.value = 'env.HUGGING_FACE_API_KEY'; key.weight = 1;",
+                  "    call('POST', '/api/providers/' + fixture + '/keys', key, function () {",
+                  "      pm.variables.set('hfConfiguredEntries', JSON.stringify(entries)); pm.variables.set('hfConfiguredAliasTarget', target);",
+                  "      pm.variables.set('hfConfiguredAliasHuggingFaceID', source.hugging_face_id);",
+                  "      pm.variables.set('hfConfiguredAliasSupportedMethods', JSON.stringify(source.supported_methods));",
+                  "    });",
+                  "  });",
+                  "}",
+                  "call('GET', '/v1/models?provider=huggingface&page_size=0&limit=10', null, function (response) {",
+                  "  var models;",
+                  "  pm.test('setup: model discovery returns an array', function () {",
+                  "    var body = response.json();",
+                  "    var data = body && body.data;",
+                  "    pm.expect(data, 'invalid model discovery: ' + response.text()).to.be.an('array');",
+                  "    models = data;",
+                  "  });",
+                  "  if (!Array.isArray(models)) { return; }",
+                  "  var source = models.filter(function (model) { return model && !model.alias && typeof model.id === 'string' && model.id.indexOf('huggingface/deepinfra/') === 0; })[0];",
+                  "  pm.test('setup: a discovered DeepInfra model provides the alias target', function () { pm.expect(source, 'no DeepInfra model: ' + response.text()).to.exist; });",
+                  "  if (!source) { return; }",
+                  "  pm.test('setup: the discovered alias target has Hub metadata', function () {",
+                  "    pm.expect(source.hugging_face_id, 'alias target has no Hub ID: ' + response.text()).to.be.a('string').and.not.empty;",
+                  "    pm.expect(source.supported_methods, 'alias target has no supported methods: ' + response.text()).to.be.an('array').and.not.empty;",
+                  "  });",
+                  "  if (typeof source.hugging_face_id !== 'string' || !source.hugging_face_id || !Array.isArray(source.supported_methods) || !source.supported_methods.length) { return; }",
+                  "  var target = source.id.slice('huggingface/deepinfra/'.length);",
+                  "  var entries = [\"hyperbolic/harness/legacy-model\",\"nebius/harness/legacy-model\",\"sambanova/harness/legacy-model\",\"auto/harness/legacy-model\",\"deepinfra/harness/legacy-model\"];",
+                  "  var aliases = {}; entries.forEach(function (entry) { aliases[entry] = {model_id: target}; });",
+                  "  createFixture({models: ['*'], aliases: aliases}, entries, target, source);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('populated Hub models keep qualified aliases exactly once without extra provider segments', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'model list missing: ' + text).to.be.an('array');",
+                  "  var target = pm.variables.get('hfConfiguredAliasTarget');",
+                  "  var aliases = data.filter(function (model) { return model.alias === target; });",
+                  "  var entriesJSON = pm.variables.get('hfConfiguredEntries');",
+                  "  pm.expect(entriesJSON, 'setup did not complete: configured alias entries are unavailable').to.be.a('string').and.not.empty;",
+                  "  var entries = JSON.parse(entriesJSON);",
+                  "  var expectedHubID = pm.variables.get('hfConfiguredAliasHuggingFaceID');",
+                  "  pm.expect(expectedHubID, 'setup did not complete: alias target Hub ID is unavailable').to.be.a('string').and.not.empty;",
+                  "  var methodsJSON = pm.variables.get('hfConfiguredAliasSupportedMethods');",
+                  "  pm.expect(methodsJSON, 'setup did not complete: alias target methods are unavailable').to.be.a('string').and.not.empty;",
+                  "  var expectedMethods = JSON.parse(methodsJSON);",
+                  "  pm.expect(expectedMethods, 'setup did not provide supported methods').to.be.an('array').and.not.empty;",
+                  "  pm.expect(aliases.length, 'qualified aliases missing or incorrectly prefixed: ' + text).to.eql(entries.length);",
+                  "  entries.forEach(function (entry) {",
+                  "    var id = pm.variables.get('hfConfiguredProvider') + '/' + entry;",
+                  "    var matches = aliases.filter(function (model) { return model.id === id; });",
+                  "    pm.expect(matches.length, 'qualified alias missing or duplicated: ' + id + ': ' + text).to.eql(1);",
+                  "    pm.expect(matches[0].hugging_face_id, 'alias lost target Hub ID: ' + id + ': ' + text).to.eql(expectedHubID);",
+                  "    pm.expect(matches[0].supported_methods, 'alias lost target supported methods: ' + id + ': ' + text).to.be.an('array').and.have.members(expectedMethods);",
+                  "  });",
+                  "});",
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var headers = {}; var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "if (pm.variables.get('hfConfiguredProviderCreated') === 'true') {",
+                  "pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'DELETE', header: headers}, function (err, response) {",
+                  "  pm.test('cleanup: deleting the run-scoped Hugging Face provider succeeds', function () {",
+                  "    pm.expect(err, 'cleanup failed: ' + String(err)).to.not.exist;",
+                  "    pm.expect(response && response.code, 'cleanup failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "  });",
+                  "  pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'GET', header: headers}, function (lookupErr, lookupResponse) {",
+                  "    pm.test('cleanup: the run-scoped Hugging Face provider no longer exists', function () {",
+                  "      pm.expect(lookupErr, 'cleanup verification failed: ' + String(lookupErr)).to.not.exist;",
+                  "      pm.expect(lookupResponse && lookupResponse.code, 'provider remains after cleanup: ' + (lookupResponse ? lookupResponse.text() : 'no response')).to.eql(404);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{hfConfiguredProvider}}&page_size=0&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{hfConfiguredProvider}}"
+                },
+                {
+                  "key": "page_size",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "huggingface/deepinfra/harness-model bare allowlist - provider named Hub organizations - #7761",
+          "description": "A Hub organization can share a name with a recognized inference provider or auto policy. This case configures bare deepinfra/model, nebius/model, auto/model and baseten/model IDs using a unique nonexistent harness model. Each must be returned exactly once as custom-provider/organization/model, preserving the configured suffix for key allowlist and automatic routing compatibility. The display name must retain the complete Hub organization/model identity, accepting friendly capitalization and slug formatting. It rejects extra inference-provider segments, missing or duplicate entries, changed organizations, and incorrect display names. Setup creates an owned temporary provider/key using env.HUGGING_FACE_API_KEY; cleanup deletes only that owned provider and verifies GET 404. Metadata/configuration calls only; no inference calls.",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var fixture = 'huggingface_hub_org_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);",
+                  "pm.variables.set('hfHubOrgProvider', fixture); pm.variables.set('hfHubOrgProviderCreated', 'false');",
+                  "pm.variables.unset('hfHubOrgEntries'); pm.variables.unset('hfHubOrgAliasTarget');",
+                  "var headers = {'Content-Type': 'application/json'};",
+                  "var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "function call(method, path, body, callback) {",
+                  "  var request = {url: base + path, method: method, header: headers};",
+                  "  if (body) { request.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(request, function (err, response) {",
+                  "    pm.test('setup: ' + method + ' ' + path + ' succeeds', function () {",
+                  "      pm.expect(err, 'request failed: ' + String(err)).to.not.exist;",
+                  "      pm.expect(response && response.code, 'request failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "    });",
+                  "    if (err || !response || response.code !== 200) { return; }",
+                  "    callback(response);",
+                  "  });",
+                  "}",
+                  "function createFixture(key, entries) {",
+                  "  call('POST', '/api/providers', {provider: fixture, custom_provider_config: {base_provider_type: 'huggingface'}}, function () {",
+                  "    pm.variables.set('hfHubOrgProviderCreated', 'true');",
+                  "    key.name = fixture + '_key'; key.value = 'env.HUGGING_FACE_API_KEY'; key.weight = 1;",
+                  "    call('POST', '/api/providers/' + fixture + '/keys', key, function () { pm.variables.set('hfHubOrgEntries', JSON.stringify(entries)); });",
+                  "  });",
+                  "}",
+                  "var uniqueModel = 'harness-model-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);",
+                  "var models = ['deepinfra', 'nebius', 'auto', 'baseten'].map(function (organization) { return organization + '/' + uniqueModel; });",
+                  "createFixture({models: models}, models);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider named Hub organizations preserve exact bare-model IDs and complete names once', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'model list missing: ' + text).to.be.an('array');",
+                  "  var fixture = pm.variables.get('hfHubOrgProvider');",
+                  "  var entriesJSON = pm.variables.get('hfHubOrgEntries');",
+                  "  pm.expect(entriesJSON, 'setup did not complete: Hub model entries are unavailable').to.be.a('string').and.not.empty;",
+                  "  var entries = JSON.parse(entriesJSON);",
+                  "  pm.expect(data.length, 'each configured bare Hub ID must appear exactly once: ' + text).to.eql(4);",
+                  "  var seenIDs = {};",
+                  "  data.forEach(function (model) {",
+                  "    pm.expect(typeof model.id, 'model ID missing: ' + text).to.eql('string');",
+                  "    var parts = model.id.split('/');",
+                  "    pm.expect(parts.length, 'extra inference-provider segment changes configured Hub identity: ' + model.id + ': ' + text).to.eql(3);",
+                  "    pm.expect(parts[0], 'custom provider prefix changed: ' + model.id).to.eql(fixture);",
+                  "    var rawID = parts.slice(1).join('/');",
+                  "    pm.expect(entries.indexOf(rawID) >= 0, 'raw Hub ID changed: ' + model.id + ': ' + text).to.eql(true);",
+                  "    pm.expect(!!seenIDs[model.id], 'duplicate model ID: ' + model.id + ': ' + text).to.eql(false);",
+                  "    seenIDs[model.id] = true;",
+                  "    pm.expect(typeof model.name, 'model display name missing: ' + model.id + ': ' + text).to.eql('string');",
+                  "    var normalizedName = model.name.toLowerCase().replace(/[-_\\s]+/g, '');",
+                  "    var normalizedHubID = rawID.toLowerCase().replace(/[-_\\s]+/g, '');",
+                  "    pm.expect(normalizedName, 'model display name lost the Hub organization or model: ' + model.id + ': ' + text).to.eql(normalizedHubID);",
+                  "  });",
+                  "  entries.forEach(function (entry) {",
+                  "    pm.expect(!!seenIDs[fixture + '/' + entry], 'configured bare Hub ID missing: ' + entry + ': ' + text).to.eql(true);",
+                  "  });",
+                  "});",
+                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var headers = {}; var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
+                  "if (pm.variables.get('hfHubOrgProviderCreated') === 'true') {",
+                  "pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfHubOrgProvider'), method: 'DELETE', header: headers}, function (err, response) {",
+                  "  pm.test('cleanup: deleting the run-scoped Hugging Face provider succeeds', function () {",
+                  "    pm.expect(err, 'cleanup failed: ' + String(err)).to.not.exist;",
+                  "    pm.expect(response && response.code, 'cleanup failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+                  "  });",
+                  "  pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfHubOrgProvider'), method: 'GET', header: headers}, function (lookupErr, lookupResponse) {",
+                  "    pm.test('cleanup: the run-scoped Hugging Face provider no longer exists', function () {",
+                  "      pm.expect(lookupErr, 'cleanup verification failed: ' + String(lookupErr)).to.not.exist;",
+                  "      pm.expect(lookupResponse && lookupResponse.code, 'provider remains after cleanup: ' + (lookupResponse ? lookupResponse.text() : 'no response')).to.eql(404);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{hfHubOrgProvider}}&page_size=0&limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{hfHubOrgProvider}}"
+                },
+                {
+                  "key": "page_size",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "Provider endpoint URL components (endpoint-url-components)",
       "description": "Reject ambiguous URL components before destination lookup, persistence, or discovery. Uses the default profile with dashboard auth disabled; no provider calls.",
       "item": [
@@ -198168,56 +198603,809 @@
       ]
     },
     {
-      "name": "166. Hugging Face DeepInfra model discovery (#7761)",
-      "description": "Issue #7761: the Hugging Face discovery catalogue omitted DeepInfra and queried three retired Hub providers. GET /v1/models must expose huggingface/deepinfra/ model IDs without doubled provider prefixes. page_size=0 disables Bifrost pagination, and the Hub limit=10 keeps the per-provider payload small while still returning supported models. This case checks model metadata only and makes no inference calls. The deterministic Go regression also checks that retired providers are never queried.",
+      "name": "Code mode execution budget",
+      "description": "Requires the default Starlark code-mode implementation. Exercises local computations only, with no upstream provider requests.",
       "item": [
         {
-          "name": "huggingface/deepinfra models - DeepInfra model discovery - #7761",
+          "name": "[EXPECT-200] openai code-mode-budget step-limit",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('DeepInfra models are discoverable through Hugging Face', function () {",
-                  "  var text = pm.response.text() || '';",
-                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
-                  "  var body = pm.response.json();",
-                  "  pm.expect(body.data, 'model list missing: ' + text).to.be.an('array');",
-                  "  var deepinfra = body.data.filter(function (model) { return typeof model.id === 'string' && model.id.indexOf('huggingface/deepinfra/') === 0; });",
-                  "  pm.expect(deepinfra, 'no huggingface/deepinfra model found: ' + text).to.not.be.empty;",
-                  "  deepinfra.forEach(function (model) {",
-                  "    pm.expect(model.id.indexOf('huggingface/deepinfra/deepinfra/'), 'provider prefix was duplicated: ' + model.id).to.eql(-1);",
-                  "  });",
+                  "pm.test('code-mode-budget step-limit', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"step\");",
+                  "  pm.expect(pm.response.json().is_error === true).to.equal(true);",
                   "});"
                 ]
               }
             }
           ],
           "request": {
-            "method": "GET",
-            "header": [],
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "url": {
-              "raw": "{{baseUrl}}/v1/models?provider=huggingface&page_size=0&limit=10",
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "v1",
-                "models"
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-step-limit\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 0\\\\nfor i in range(2000000):\\\\n    result += i\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget allocation-limit",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget allocation-limit', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"resource limit\");",
+                  "  pm.expect(pm.response.json().is_error === true).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-allocation-limit\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = len([0] * 200000000)\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget recovery",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget recovery', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"42\");",
+                  "  pm.expect(pm.response.json().is_error === true).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-recovery\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 6 * 7\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget try-except-hint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Canonical's parser reports try as an illegal token; the hint must still explain that Starlark has no exception handling.",
+                  "pm.test('code-mode-budget try-except-hint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, pm.response.text()).to.equal(true);",
+                  "  pm.expect(pm.response.text()).to.include('does NOT support try/except');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-try-except-hint\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"try:\\\\n    x = 1\\\\nexcept:\\\\n    x = 0\\\"}\"\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Code mode value boundaries",
+      "description": "Bounds conversion of cyclic, repeated, and oversized values in the in-process interpreter. Local computations only; no provider requests.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-budget cyclic-result",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget cyclic-result', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"nesting limit\");",
+                  "  pm.expect(pm.response.json().is_error).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-cyclic-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = []\\\\nresult.append(result)\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget expanded-result",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget expanded-result', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"size limit\");",
+                  "  pm.expect(pm.response.json().is_error).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-expanded-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = [0]\\\\nfor i in range(30):\\\\n    result = [result, result]\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-budget integer-result",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-budget integer-result', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include(\"integer exceeds size limit\");",
+                  "  pm.expect(pm.response.json().is_error).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-budget-integer-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 1 << 10000\\\"}\"\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Code mode configurable limits (code-mode-limits)",
+      "description": "Code mode limits set through PUT /api/config (client_config.mcp_code_mode_limits) persist and hot-reload: lowering max_steps makes a small loop fail, raising it lets a loop that exceeds the default pass, and an out-of-range limit is refused with 400 without changing state. The folder reads the stored limits first and restores them last; an interrupted run can leave the lowered limits in place. Local computations only; the openai keyword is a harness filter label and no provider calls are made.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-limits read current config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits read current config', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  pm.collectionVariables.set('codeModeLimitsClientConfig', JSON.stringify(cc));",
+                  "  pm.collectionVariables.set('codeModeLimitsOriginal', JSON.stringify(cc.mcp_code_mode_limits || {}));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
               ],
               "query": [
                 {
-                  "key": "provider",
-                  "value": "huggingface"
-                },
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits lower max_steps",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = { max_steps: 1000 };",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits lower max_steps', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits lowered max_steps persists",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits lowered max_steps persists', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var limits = pm.response.json().client_config.mcp_code_mode_limits || {};",
+                  "  pm.expect(limits.max_steps, pm.response.text()).to.equal(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
                 {
-                  "key": "page_size",
-                  "value": "0"
-                },
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits lowered max_steps applies",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 5000 iterations fit the default budget of 1000000 steps but not a budget of 1000.",
+                  "pm.test('code-mode-limits lowered max_steps applies', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.include('step');",
+                  "  pm.expect(pm.response.json().is_error, pm.response.text()).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-limits-lowered-steps\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"for i in range(5000):\\\\n    pass\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits raise max_steps",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = { max_steps: 50000000 };",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits raise max_steps', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits raised max_steps applies",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 2000000 iterations exceed the default budget of 1000000 steps; the loop body allocates nothing.",
+                  "pm.test('code-mode-limits raised max_steps applies', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, pm.response.text()).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-limits-raised-steps\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"for i in range(2000000):\\\\n    pass\\\"}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai code-mode-limits rejects nesting depth above the bound",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = { max_nesting_depth: 5000 };",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits rejects nesting depth above the bound', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('max_nesting_depth');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits restore original limits",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('codeModeLimitsClientConfig'));",
+                  "cc.mcp_code_mode_limits = JSON.parse(pm.collectionVariables.get('codeModeLimitsOriginal'));",
+                  "pm.variables.set('codeModeLimitsBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits restore original limits', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{codeModeLimitsBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-limits original limits restored",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-limits original limits restored', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var limits = pm.response.json().client_config.mcp_code_mode_limits || {};",
+                  "  pm.expect(limits, pm.response.text()).to.eql(JSON.parse(pm.collectionVariables.get('codeModeLimitsOriginal')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
                 {
-                  "key": "limit",
-                  "value": "10"
+                  "key": "from_db",
+                  "value": "true"
                 }
               ]
             }
@@ -198226,376 +199414,231 @@
       ]
     },
     {
-      "name": "167. Hugging Face configured provider model IDs (#7761 / PR #7908)",
-      "description": "Pins configured model ID compatibility after retired providers were removed from Hugging Face Hub discovery. Each case creates a unique custom Hugging Face provider with an env.HUGGING_FACE_API_KEY reference and deletes it afterward. The first case lists an explicit allowlist containing hyperbolic, nebius, sambanova, auto and active DeepInfra IDs. The second discovers a real DeepInfra model and maps five qualified aliases to it, proving populated Hub results use the same prefix ownership as backfilled entries. All requests are model metadata or temporary local gateway configuration; no inference calls are made. Offline Go regressions additionally pin partial discovery failures, all-failed errors, case-insensitive prefixes, blacklists and bare model IDs.",
+      "name": "170. Anthropic egress preserves stop_reason stop_sequence and the matched sequence (#7920 / PR #7921) (anthropic-stop-sequence)",
+      "description": "Pins that when Claude (Anthropic provider or Vertex) stops on a requested stop sequence, /anthropic/v1/messages reports stop_reason \"stop_sequence\" and the matched string in stop_sequence, in the non-streaming body and in the streaming terminal message_delta.\n\nBug (#7920): the response is converted Anthropic -> Bifrost Responses -> Anthropic. Anthropic's stop_sequence reason is folded into Bifrost \"stop\" and the matched string had no field on BifrostResponsesResponse, so the egress reported stop_reason end_turn with stop_sequence null. Clients that branch on stop_reason == \"stop_sequence\" could not tell a delimiter stop from a natural end of turn.\n\nFix: BifrostResponsesResponse gains an optional stop_sequence carrier, the Anthropic ingress (ToBifrostResponsesResponse and the streaming message_delta handling in core/providers/anthropic/responses.go) records it when the upstream reason is stop_sequence, and the egress restores stop_reason stop_sequence via anthropicStopReasonWithSequence (core/providers/anthropic/utils.go). An OpenAI-style \"stop\" with no matched sequence still maps to end_turn.\n\nCases use the issue repro (stop_sequences [\"5\"]) with the output pinned as far as a live model allows: temperature 0, a system prompt demanding the exact characters, the user turn \"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\", and max_tokens 30, so the upstream stops right after \"4\". The text-ends-on-4 check runs first and reports a model that ignored the prompt as a precondition failure, separate from the stop_reason/stop_sequence assertions under test; the conversion itself is pinned with fixed upstream payloads by the unit tests in core/providers/anthropic. Anthropic non-streaming and streaming, Vertex Claude non-streaming and streaming. Red before the fix (end_turn / null), green after.",
       "item": [
         {
-          "name": "huggingface/nebius/harness/legacy-model configured allowlist - legacy provider model backfill - #7761",
+          "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages non-streaming stop_sequences hit reports stop_reason stop_sequence with the matched sequence - #7920",
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
-                  "var fixture = 'huggingface_legacy_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);",
-                  "pm.variables.set('hfConfiguredProvider', fixture); pm.variables.set('hfConfiguredProviderCreated', 'false');",
-                  "pm.variables.unset('hfConfiguredEntries'); pm.variables.unset('hfConfiguredAliasTarget');",
-                  "var headers = {'Content-Type': 'application/json'};",
-                  "var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
-                  "function call(method, path, body, callback) {",
-                  "  var request = {url: base + path, method: method, header: headers};",
-                  "  if (body) { request.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
-                  "  pm.sendRequest(request, function (err, response) {",
-                  "    pm.test('setup: ' + method + ' ' + path + ' succeeds', function () {",
-                  "      pm.expect(err, 'request failed: ' + String(err)).to.not.exist;",
-                  "      pm.expect(response && response.code, 'request failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
-                  "    });",
-                  "    if (err || !response || response.code !== 200) { return; }",
-                  "    callback(response);",
-                  "  });",
-                  "}",
-                  "function createFixture(key, entries) {",
-                  "  call('POST', '/api/providers', {provider: fixture, custom_provider_config: {base_provider_type: 'huggingface'}}, function () {",
-                  "    pm.variables.set('hfConfiguredProviderCreated', 'true');",
-                  "    key.name = fixture + '_key'; key.value = 'env.HUGGING_FACE_API_KEY'; key.weight = 1;",
-                  "    call('POST', '/api/providers/' + fixture + '/keys', key, function () { pm.variables.set('hfConfiguredEntries', JSON.stringify(entries)); });",
-                  "  });",
-                  "}",
-                  "var models = [\"hyperbolic/harness/legacy-model\",\"nebius/harness/legacy-model\",\"sambanova/harness/legacy-model\",\"auto/harness/legacy-model\",\"deepinfra/harness/legacy-model\"];",
-                  "createFixture({models: models}, models);"
-                ]
-              }
-            },
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('configured retired, auto and active model IDs appear exactly once', function () {",
-                  "  var text = pm.response.text() || '';",
-                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
-                  "  var data = pm.response.json().data;",
-                  "  pm.expect(data, 'model list missing: ' + text).to.be.an('array');",
-                  "  var entriesJSON = pm.variables.get('hfConfiguredEntries');",
-                  "  pm.expect(entriesJSON, 'setup did not complete: configured model entries are unavailable').to.be.a('string').and.not.empty;",
-                  "  var entries = JSON.parse(entriesJSON);",
-                  "  pm.expect(data.length, 'unexpected or duplicated configured IDs: ' + text).to.eql(entries.length);",
-                  "  entries.forEach(function (entry) {",
-                  "    var id = pm.variables.get('hfConfiguredProvider') + '/' + entry;",
-                  "    pm.expect(data.filter(function (model) { return model.id === id; }).length, 'configured ID missing or duplicated: ' + id + ': ' + text).to.eql(1);",
-                  "  });",
-                  "});",
-                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
-                  "var headers = {}; var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
-                  "if (pm.variables.get('hfConfiguredProviderCreated') === 'true') {",
-                  "pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'DELETE', header: headers}, function (err, response) {",
-                  "  pm.test('cleanup: deleting the run-scoped Hugging Face provider succeeds', function () {",
-                  "    pm.expect(err, 'cleanup failed: ' + String(err)).to.not.exist;",
-                  "    pm.expect(response && response.code, 'cleanup failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
-                  "  });",
-                  "  pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'GET', header: headers}, function (lookupErr, lookupResponse) {",
-                  "    pm.test('cleanup: the run-scoped Hugging Face provider no longer exists', function () {",
-                  "      pm.expect(lookupErr, 'cleanup verification failed: ' + String(lookupErr)).to.not.exist;",
-                  "      pm.expect(lookupResponse && lookupResponse.code, 'provider remains after cleanup: ' + (lookupResponse ? lookupResponse.text() : 'no response')).to.eql(404);",
-                  "    });",
-                  "  });",
-                  "});",
-                  "}"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/v1/models?provider={{hfConfiguredProvider}}&page_size=0&limit=10",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "models"
-              ],
-              "query": [
-                {
-                  "key": "provider",
-                  "value": "{{hfConfiguredProvider}}"
-                },
-                {
-                  "key": "page_size",
-                  "value": "0"
-                },
-                {
-                  "key": "limit",
-                  "value": "10"
-                }
-              ]
-            }
-          }
-        },
-        {
-          "name": "huggingface/nebius/harness/legacy-model qualified aliases to discovered DeepInfra model - legacy provider model backfill - #7761",
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
-                  "var fixture = 'huggingface_legacy_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);",
-                  "pm.variables.set('hfConfiguredProvider', fixture); pm.variables.set('hfConfiguredProviderCreated', 'false');",
-                  "pm.variables.unset('hfConfiguredEntries'); pm.variables.unset('hfConfiguredAliasTarget');",
-                  "pm.variables.unset('hfConfiguredAliasHuggingFaceID'); pm.variables.unset('hfConfiguredAliasSupportedMethods');",
-                  "var headers = {'Content-Type': 'application/json'};",
-                  "var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
-                  "function call(method, path, body, callback) {",
-                  "  var request = {url: base + path, method: method, header: headers};",
-                  "  if (body) { request.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
-                  "  pm.sendRequest(request, function (err, response) {",
-                  "    pm.test('setup: ' + method + ' ' + path + ' succeeds', function () {",
-                  "      pm.expect(err, 'request failed: ' + String(err)).to.not.exist;",
-                  "      pm.expect(response && response.code, 'request failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
-                  "    });",
-                  "    if (err || !response || response.code !== 200) { return; }",
-                  "    callback(response);",
-                  "  });",
-                  "}",
-                  "function createFixture(key, entries, target, source) {",
-                  "  call('POST', '/api/providers', {provider: fixture, custom_provider_config: {base_provider_type: 'huggingface'}}, function () {",
-                  "    pm.variables.set('hfConfiguredProviderCreated', 'true');",
-                  "    key.name = fixture + '_key'; key.value = 'env.HUGGING_FACE_API_KEY'; key.weight = 1;",
-                  "    call('POST', '/api/providers/' + fixture + '/keys', key, function () {",
-                  "      pm.variables.set('hfConfiguredEntries', JSON.stringify(entries)); pm.variables.set('hfConfiguredAliasTarget', target);",
-                  "      pm.variables.set('hfConfiguredAliasHuggingFaceID', source.hugging_face_id);",
-                  "      pm.variables.set('hfConfiguredAliasSupportedMethods', JSON.stringify(source.supported_methods));",
-                  "    });",
-                  "  });",
-                  "}",
-                  "call('GET', '/v1/models?provider=huggingface&page_size=0&limit=10', null, function (response) {",
-                  "  var models;",
-                  "  pm.test('setup: model discovery returns an array', function () {",
-                  "    var body = response.json();",
-                  "    var data = body && body.data;",
-                  "    pm.expect(data, 'invalid model discovery: ' + response.text()).to.be.an('array');",
-                  "    models = data;",
-                  "  });",
-                  "  if (!Array.isArray(models)) { return; }",
-                  "  var source = models.filter(function (model) { return model && !model.alias && typeof model.id === 'string' && model.id.indexOf('huggingface/deepinfra/') === 0; })[0];",
-                  "  pm.test('setup: a discovered DeepInfra model provides the alias target', function () { pm.expect(source, 'no DeepInfra model: ' + response.text()).to.exist; });",
-                  "  if (!source) { return; }",
-                  "  pm.test('setup: the discovered alias target has Hub metadata', function () {",
-                  "    pm.expect(source.hugging_face_id, 'alias target has no Hub ID: ' + response.text()).to.be.a('string').and.not.empty;",
-                  "    pm.expect(source.supported_methods, 'alias target has no supported methods: ' + response.text()).to.be.an('array').and.not.empty;",
-                  "  });",
-                  "  if (typeof source.hugging_face_id !== 'string' || !source.hugging_face_id || !Array.isArray(source.supported_methods) || !source.supported_methods.length) { return; }",
-                  "  var target = source.id.slice('huggingface/deepinfra/'.length);",
-                  "  var entries = [\"hyperbolic/harness/legacy-model\",\"nebius/harness/legacy-model\",\"sambanova/harness/legacy-model\",\"auto/harness/legacy-model\",\"deepinfra/harness/legacy-model\"];",
-                  "  var aliases = {}; entries.forEach(function (entry) { aliases[entry] = {model_id: target}; });",
-                  "  createFixture({models: ['*'], aliases: aliases}, entries, target, source);",
+                  "pm.test('anthropic claude: non-streaming stop on a requested stop sequence reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  var text = (j.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + j.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(j.stop_reason, 'a turn that stopped on the requested stop sequence must report stop_reason stop_sequence, not end_turn: ' + raw.slice(0, 400)).to.equal('stop_sequence');",
+                  "  pm.expect(j.stop_sequence, 'stop_sequence must carry the matched sequence, not null: ' + raw.slice(0, 400)).to.equal('5');",
                   "});"
                 ]
               }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('populated Hub models keep qualified aliases exactly once without extra provider segments', function () {",
-                  "  var text = pm.response.text() || '';",
-                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
-                  "  var data = pm.response.json().data;",
-                  "  pm.expect(data, 'model list missing: ' + text).to.be.an('array');",
-                  "  var target = pm.variables.get('hfConfiguredAliasTarget');",
-                  "  var aliases = data.filter(function (model) { return model.alias === target; });",
-                  "  var entriesJSON = pm.variables.get('hfConfiguredEntries');",
-                  "  pm.expect(entriesJSON, 'setup did not complete: configured alias entries are unavailable').to.be.a('string').and.not.empty;",
-                  "  var entries = JSON.parse(entriesJSON);",
-                  "  var expectedHubID = pm.variables.get('hfConfiguredAliasHuggingFaceID');",
-                  "  pm.expect(expectedHubID, 'setup did not complete: alias target Hub ID is unavailable').to.be.a('string').and.not.empty;",
-                  "  var methodsJSON = pm.variables.get('hfConfiguredAliasSupportedMethods');",
-                  "  pm.expect(methodsJSON, 'setup did not complete: alias target methods are unavailable').to.be.a('string').and.not.empty;",
-                  "  var expectedMethods = JSON.parse(methodsJSON);",
-                  "  pm.expect(expectedMethods, 'setup did not provide supported methods').to.be.an('array').and.not.empty;",
-                  "  pm.expect(aliases.length, 'qualified aliases missing or incorrectly prefixed: ' + text).to.eql(entries.length);",
-                  "  entries.forEach(function (entry) {",
-                  "    var id = pm.variables.get('hfConfiguredProvider') + '/' + entry;",
-                  "    var matches = aliases.filter(function (model) { return model.id === id; });",
-                  "    pm.expect(matches.length, 'qualified alias missing or duplicated: ' + id + ': ' + text).to.eql(1);",
-                  "    pm.expect(matches[0].hugging_face_id, 'alias lost target Hub ID: ' + id + ': ' + text).to.eql(expectedHubID);",
-                  "    pm.expect(matches[0].supported_methods, 'alias lost target supported methods: ' + id + ': ' + text).to.be.an('array').and.have.members(expectedMethods);",
-                  "  });",
-                  "});",
-                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
-                  "var headers = {}; var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
-                  "if (pm.variables.get('hfConfiguredProviderCreated') === 'true') {",
-                  "pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'DELETE', header: headers}, function (err, response) {",
-                  "  pm.test('cleanup: deleting the run-scoped Hugging Face provider succeeds', function () {",
-                  "    pm.expect(err, 'cleanup failed: ' + String(err)).to.not.exist;",
-                  "    pm.expect(response && response.code, 'cleanup failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
-                  "  });",
-                  "  pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfConfiguredProvider'), method: 'GET', header: headers}, function (lookupErr, lookupResponse) {",
-                  "    pm.test('cleanup: the run-scoped Hugging Face provider no longer exists', function () {",
-                  "      pm.expect(lookupErr, 'cleanup verification failed: ' + String(lookupErr)).to.not.exist;",
-                  "      pm.expect(lookupResponse && lookupResponse.code, 'provider remains after cleanup: ' + (lookupResponse ? lookupResponse.text() : 'no response')).to.eql(404);",
-                  "    });",
-                  "  });",
-                  "});",
-                  "}"
-                ]
-              }
             }
           ],
           "request": {
-            "method": "GET",
-            "header": [],
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
+            },
             "url": {
-              "raw": "{{baseUrl}}/v1/models?provider={{hfConfiguredProvider}}&page_size=0&limit=10",
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
+                "anthropic",
                 "v1",
-                "models"
-              ],
-              "query": [
-                {
-                  "key": "provider",
-                  "value": "{{hfConfiguredProvider}}"
-                },
-                {
-                  "key": "page_size",
-                  "value": "0"
-                },
-                {
-                  "key": "limit",
-                  "value": "10"
-                }
+                "messages"
               ]
             }
           }
         },
         {
-          "name": "huggingface/deepinfra/harness-model bare allowlist - provider named Hub organizations - #7761",
-          "description": "A Hub organization can share a name with a recognized inference provider or auto policy. This case configures bare deepinfra/model, nebius/model, auto/model and baseten/model IDs using a unique nonexistent harness model. Each must be returned exactly once as custom-provider/organization/model, preserving the configured suffix for key allowlist and automatic routing compatibility. The display name must retain the complete Hub organization/model identity, accepting friendly capitalization and slug formatting. It rejects extra inference-provider segments, missing or duplicate entries, changed organizations, and incorrect display names. Setup creates an owned temporary provider/key using env.HUGGING_FACE_API_KEY; cleanup deletes only that owned provider and verifies GET 404. Metadata/configuration calls only; no inference calls.",
+          "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages streaming stop_sequences hit message_delta reports stop_reason stop_sequence with the matched sequence - #7920",
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
-                  "var fixture = 'huggingface_hub_org_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);",
-                  "pm.variables.set('hfHubOrgProvider', fixture); pm.variables.set('hfHubOrgProviderCreated', 'false');",
-                  "pm.variables.unset('hfHubOrgEntries'); pm.variables.unset('hfHubOrgAliasTarget');",
-                  "var headers = {'Content-Type': 'application/json'};",
-                  "var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
-                  "function call(method, path, body, callback) {",
-                  "  var request = {url: base + path, method: method, header: headers};",
-                  "  if (body) { request.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
-                  "  pm.sendRequest(request, function (err, response) {",
-                  "    pm.test('setup: ' + method + ' ' + path + ' succeeds', function () {",
-                  "      pm.expect(err, 'request failed: ' + String(err)).to.not.exist;",
-                  "      pm.expect(response && response.code, 'request failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
-                  "    });",
-                  "    if (err || !response || response.code !== 200) { return; }",
-                  "    callback(response);",
-                  "  });",
-                  "}",
-                  "function createFixture(key, entries) {",
-                  "  call('POST', '/api/providers', {provider: fixture, custom_provider_config: {base_provider_type: 'huggingface'}}, function () {",
-                  "    pm.variables.set('hfHubOrgProviderCreated', 'true');",
-                  "    key.name = fixture + '_key'; key.value = 'env.HUGGING_FACE_API_KEY'; key.weight = 1;",
-                  "    call('POST', '/api/providers/' + fixture + '/keys', key, function () { pm.variables.set('hfHubOrgEntries', JSON.stringify(entries)); });",
-                  "  });",
-                  "}",
-                  "var uniqueModel = 'harness-model-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);",
-                  "var models = ['deepinfra', 'nebius', 'auto', 'baseten'].map(function (organization) { return organization + '/' + uniqueModel; });",
-                  "createFixture({models: models}, models);"
-                ]
-              }
-            },
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('provider named Hub organizations preserve exact bare-model IDs and complete names once', function () {",
-                  "  var text = pm.response.text() || '';",
-                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.eql(200);",
-                  "  var data = pm.response.json().data;",
-                  "  pm.expect(data, 'model list missing: ' + text).to.be.an('array');",
-                  "  var fixture = pm.variables.get('hfHubOrgProvider');",
-                  "  var entriesJSON = pm.variables.get('hfHubOrgEntries');",
-                  "  pm.expect(entriesJSON, 'setup did not complete: Hub model entries are unavailable').to.be.a('string').and.not.empty;",
-                  "  var entries = JSON.parse(entriesJSON);",
-                  "  pm.expect(data.length, 'each configured bare Hub ID must appear exactly once: ' + text).to.eql(4);",
-                  "  var seenIDs = {};",
-                  "  data.forEach(function (model) {",
-                  "    pm.expect(typeof model.id, 'model ID missing: ' + text).to.eql('string');",
-                  "    var parts = model.id.split('/');",
-                  "    pm.expect(parts.length, 'extra inference-provider segment changes configured Hub identity: ' + model.id + ': ' + text).to.eql(3);",
-                  "    pm.expect(parts[0], 'custom provider prefix changed: ' + model.id).to.eql(fixture);",
-                  "    var rawID = parts.slice(1).join('/');",
-                  "    pm.expect(entries.indexOf(rawID) >= 0, 'raw Hub ID changed: ' + model.id + ': ' + text).to.eql(true);",
-                  "    pm.expect(!!seenIDs[model.id], 'duplicate model ID: ' + model.id + ': ' + text).to.eql(false);",
-                  "    seenIDs[model.id] = true;",
-                  "    pm.expect(typeof model.name, 'model display name missing: ' + model.id + ': ' + text).to.eql('string');",
-                  "    var normalizedName = model.name.toLowerCase().replace(/[-_\\s]+/g, '');",
-                  "    var normalizedHubID = rawID.toLowerCase().replace(/[-_\\s]+/g, '');",
-                  "    pm.expect(normalizedName, 'model display name lost the Hub organization or model: ' + model.id + ': ' + text).to.eql(normalizedHubID);",
+                  "pm.test('anthropic claude: streaming message_delta reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var frames = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    try { frames.push(JSON.parse(t.slice(5).trim())); } catch (e) { /* non-JSON keepalive */ }",
                   "  });",
-                  "  entries.forEach(function (entry) {",
-                  "    pm.expect(!!seenIDs[fixture + '/' + entry], 'configured bare Hub ID missing: ' + entry + ': ' + text).to.eql(true);",
-                  "  });",
-                  "});",
-                  "var base = pm.variables.replaceIn('{{baseUrl}}');",
-                  "var headers = {}; var authorization = pm.request.headers.get('Authorization'); if (authorization) { headers.Authorization = authorization; }",
-                  "if (pm.variables.get('hfHubOrgProviderCreated') === 'true') {",
-                  "pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfHubOrgProvider'), method: 'DELETE', header: headers}, function (err, response) {",
-                  "  pm.test('cleanup: deleting the run-scoped Hugging Face provider succeeds', function () {",
-                  "    pm.expect(err, 'cleanup failed: ' + String(err)).to.not.exist;",
-                  "    pm.expect(response && response.code, 'cleanup failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
-                  "  });",
-                  "  pm.sendRequest({url: base + '/api/providers/' + pm.variables.get('hfHubOrgProvider'), method: 'GET', header: headers}, function (lookupErr, lookupResponse) {",
-                  "    pm.test('cleanup: the run-scoped Hugging Face provider no longer exists', function () {",
-                  "      pm.expect(lookupErr, 'cleanup verification failed: ' + String(lookupErr)).to.not.exist;",
-                  "      pm.expect(lookupResponse && lookupResponse.code, 'provider remains after cleanup: ' + (lookupResponse ? lookupResponse.text() : 'no response')).to.eql(404);",
-                  "    });",
-                  "  });",
-                  "});",
-                  "}"
+                  "  pm.expect(frames.length, 'expected SSE data frames: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "  var deltas = frames.filter(function (f) { return f.type === 'message_delta'; });",
+                  "  pm.expect(deltas.length, 'stream must emit a terminal message_delta: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var d = deltas[deltas.length - 1].delta || {};",
+                  "  var text = frames.filter(function (f) { return f.type === 'content_block_delta' && f.delta && f.delta.type === 'text_delta'; }).map(function (f) { return f.delta.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the streamed text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + d.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(d.stop_reason, 'message_delta must report stop_reason stop_sequence, not end_turn: ' + JSON.stringify(d)).to.equal('stop_sequence');",
+                  "  pm.expect(d.stop_sequence, 'message_delta must carry the matched stop_sequence, not null: ' + JSON.stringify(d)).to.equal('5');",
+                  "  pm.expect(frames[frames.length - 1].type, 'stream must end on message_stop').to.equal('message_stop');",
+                  "});"
                 ]
               }
             }
           ],
           "request": {
-            "method": "GET",
-            "header": [],
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stream\":true,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
+            },
             "url": {
-              "raw": "{{baseUrl}}/v1/models?provider={{hfHubOrgProvider}}&page_size=0&limit=10",
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
+                "anthropic",
                 "v1",
-                "models"
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 /anthropic/v1/messages non-streaming stop_sequences hit reports stop_reason stop_sequence with the matched sequence - #7920",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex claude: non-streaming stop on a requested stop sequence reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  var text = (j.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + j.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(j.stop_reason, 'a turn that stopped on the requested stop sequence must report stop_reason stop_sequence, not end_turn: ' + raw.slice(0, 400)).to.equal('stop_sequence');",
+                  "  pm.expect(j.stop_sequence, 'stop_sequence must carry the matched sequence, not null: ' + raw.slice(0, 400)).to.equal('5');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
               ],
-              "query": [
-                {
-                  "key": "provider",
-                  "value": "{{hfHubOrgProvider}}"
-                },
-                {
-                  "key": "page_size",
-                  "value": "0"
-                },
-                {
-                  "key": "limit",
-                  "value": "10"
-                }
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 /anthropic/v1/messages streaming stop_sequences hit message_delta reports stop_reason stop_sequence with the matched sequence - #7920",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex claude: streaming message_delta reports stop_reason stop_sequence and stop_sequence 5 - #7920', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var frames = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    try { frames.push(JSON.parse(t.slice(5).trim())); } catch (e) { /* non-JSON keepalive */ }",
+                  "  });",
+                  "  pm.expect(frames.length, 'expected SSE data frames: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "  var deltas = frames.filter(function (f) { return f.type === 'message_delta'; });",
+                  "  pm.expect(deltas.length, 'stream must emit a terminal message_delta: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var d = deltas[deltas.length - 1].delta || {};",
+                  "  var text = frames.filter(function (f) { return f.type === 'content_block_delta' && f.delta && f.delta.type === 'text_delta'; }).map(function (f) { return f.delta.text || ''; }).join('');",
+                  "  // Model-dependent precondition, reported apart from the #7920 conversion: the request pins the output to '1 2 3 4 5 ...' at temperature 0, so the upstream stops right after '4'. Other text means the model ignored the prompt, not that stop_sequence was dropped.",
+                  "  pm.expect(text, 'precondition (model output, not the #7920 conversion): expected the streamed text to end on the digit 4 just before the stop sequence 5, got ' + JSON.stringify(text) + ' with stop_reason ' + d.stop_reason).to.match(/(^|\\D)4\\D*$/);",
+                  "  pm.expect(d.stop_reason, 'message_delta must report stop_reason stop_sequence, not end_turn: ' + JSON.stringify(d)).to.equal('stop_sequence');",
+                  "  pm.expect(d.stop_sequence, 'message_delta must carry the matched stop_sequence, not null: ' + JSON.stringify(d)).to.equal('5');",
+                  "  pm.expect(frames[frames.length - 1].type, 'stream must end on message_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-6\",\"max_tokens\":30,\"temperature\":0,\"system\":\"Reply with exactly the requested characters and nothing else.\",\"stream\":true,\"stop_sequences\":[\"5\"],\"messages\":[{\"role\":\"user\",\"content\":\"Output exactly this line and nothing else: 1 2 3 4 5 6 7 8 9 10\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
               ]
             }
           }
