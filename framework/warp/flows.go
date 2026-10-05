@@ -93,7 +93,9 @@ func semanticSearchLogsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			result, err := deps.semantic.Search(ctx, query, filters, limit)
+			// The caller's visibility rides along so the index is asked for
+			// their rows, rather than for the deployment's and then filtered.
+			result, err := deps.semantic.SearchVisible(ctx, query, filters, deps.scope.Visible, limit)
 			if err != nil {
 				return nil, err
 			}
