@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **Typesafe Custom Providers** - `typesafe` is accepted as a custom provider `base_provider_type`. A custom Typesafe provider serves `/v1/decisions` and the native `/typesafe/v1/systemone` route under its own name, keeps native response passthrough, and honours `allowed_requests` and `request_path_overrides`
 - **Provider Metadata and Tags API** - Provider create and update accept `metadata` and `tags` (update: omit to keep, `{}`/`[]`/`null` to clear; invalid labels are a 400). Provider responses include them, and `GET /api/providers` filters by `metadata_<key>=<value>` and `tags=a,b` (all tags must match) [@jimseiwert](https://github.com/jimseiwert)
 - **Provider Metadata and Tags in config.json** - `providers.<name>.metadata` (string key/value pairs, same rules as virtual key metadata) and `providers.<name>.tags` (up to 50 labels of 1-64 letters, digits, `.`, `_` or `-`) label providers by owner, region, environment or compliance status. Existing providers keep their config hash [@jimseiwert](https://github.com/jimseiwert)
 - **Virtual Key Metadata in config.json** - `governance.virtual_keys[].metadata` accepts string key/value pairs (for example `cost_center`, `owner`) for cost attribution. Keys use letters, digits, `.`, `_` and `-`; values are up to 512 characters; up to 50 entries per key [@jimseiwert](https://github.com/jimseiwert)

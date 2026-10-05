@@ -25,6 +25,23 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// validateProviderBaseURLShape keeps appended operation paths in the URL path.
+// Destination validation follows authentication so anonymous callers cannot
+// trigger DNS lookups while submitting endpoint changes.
+func validateProviderBaseURLShape(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid base URL: %w", err)
+	}
+	if u.User != nil || strings.ContainsAny(raw, "?#") {
+		return errors.New("base URL must not contain credentials, a query, or a fragment")
+	}
+	return nil
+}
+
 // ModelsManager defines the interface for managing provider models
 type ModelsManager interface {
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
@@ -390,6 +407,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		// fail-open bypass could otherwise set both fields together and self-authorize its
 		// own SSRF target. The flag alone also widens what ConfigureDialer lets key-level
 		// URLs (Ollama/SGL/VLLM) reach.
+		if err := validateProviderBaseURLShape(payload.NetworkConfig.BaseURL); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		if isAuthBypassed(ctx) && providerDialTargetChanged(nil, *payload.NetworkConfig) {
 			SendError(ctx, fasthttp.StatusForbidden, providerDialTargetForbiddenMsg)
 			return
@@ -619,6 +640,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	// Validate retry backoff values
 	if err := validateRetryBackoff(&nc); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
+		return
+	}
+	if err := validateProviderBaseURLShape(nc.BaseURL); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 	if isAuthBypassed(ctx) && providerDialTargetChanged(oldConfigRaw.NetworkConfig, nc) {
