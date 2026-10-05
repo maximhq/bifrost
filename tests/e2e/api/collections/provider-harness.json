@@ -197435,6 +197435,208 @@
           }
         }
       ]
+    },
+    {
+      "name": "165. Typesafe as a custom provider base (typesafe-custom-base)",
+      "description": "A custom provider may use base_provider_type \"typesafe\". The profile declares typesafe_custom (base typesafe, its own key) and typesafe_custom_gated (base typesafe, allowed_requests without decisions). Before this change typesafe was not in SupportedBaseProviders, so both providers were refused at config load and every case here failed; the Typesafe provider also hard-coded its name, so a custom instance would have reported, looked up and selected keys as the standard typesafe provider, ignored allowed_requests, and the native /typesafe/v1/models listing kept the custom prefix. The cases pin: decisions are served by the custom provider and reported under its own name; the native systemone route reaches it through the model prefix; the native model listing returns bare names for it; and allowed_requests denies decisions with unsupported_operation instead of reaching the upstream or emulating.",
+      "item": [
+        {
+          "name": "/v1/decisions - custom provider answers under its own name - typesafe_custom/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('every question produced a typed answer', function () {",
+                  "    pm.expect(body.answers, 'missing answers: ' + pm.response.text()).to.be.an('object');",
+                  "    pm.expect(body.answers.is_frustrated.kind).to.eql('noul');",
+                  "    pm.expect(body.answers.is_frustrated.value).to.be.a('number');",
+                  "    pm.expect(body.answers.category.kind).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.value);",
+                  "});",
+                  "pm.test('served and reported by the custom provider', function () {",
+                  "    var extra = body.extra_fields || {};",
+                  "    var provider = (extra.routing_info && extra.routing_info.provider) || extra.provider;",
+                  "    pm.expect(provider, 'extra_fields: ' + JSON.stringify(extra)).to.eql('typesafe_custom');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe_custom/jev-1.13.0\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    }\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "/typesafe/v1/systemone - native route reaches the custom provider - typesafe_custom/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native systemone succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('native answer types come back', function () {",
+                  "    pm.expect(body.answers, 'body: ' + pm.response.text()).to.be.an('object');",
+                  "    pm.expect(body.answers.is_frustrated.type).to.eql('noul');",
+                  "    pm.expect(body.answers.is_frustrated.noul).to.be.a('number');",
+                  "    pm.expect(body.answers.category.type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.choice);",
+                  "});",
+                  "pm.test('native model carries no provider prefix', function () {",
+                  "    pm.expect(body.model, 'model: ' + body.model).to.be.a('string');",
+                  "    pm.expect(body.model, 'model: ' + body.model).to.eql('jev-1.13.0');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe_custom/jev-1.13.0\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"type\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    }\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "/typesafe/v1/models - custom provider listing uses bare names - typesafe_custom jev models",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('models list succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('native shape lists bare jev model names', function () {",
+                  "    pm.expect(body.models, 'body: ' + pm.response.text()).to.be.an('array');",
+                  "    var names = body.models.map(function (m) { return m.name; });",
+                  "    pm.expect(names, 'names: ' + JSON.stringify(names)).to.include('jev-1.13.0');",
+                  "    names.forEach(function (n) { pm.expect(n).to.not.include('/'); });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-model-provider",
+                "value": "typesafe_custom"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - allowed_requests without decisions is refused [EXPECT-400] - typesafe_custom_gated/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('gated decision is refused with 400', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('refusal is the unsupported-operation error for the custom provider', function () {",
+                  "    var text = pm.response.text();",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+                  "    pm.expect(body.error.message, text).to.include('typesafe_custom_gated');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe_custom_gated/jev-1.13.0\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    }\n  }\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }
