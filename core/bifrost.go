@@ -7538,6 +7538,12 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 		schemas.IsAnthropicModelFamily(ctx, model) {
 		return
 	}
+	disableAnthropicPassthrough(ctx)
+}
+
+// disableAnthropicPassthrough switches an attempt from forwarding the caller's raw
+// Anthropic body to the typed conversion path.
+func disableAnthropicPassthrough(ctx *schemas.BifrostContext) {
 	// Native redaction codecs are valid only while the matching Anthropic body
 	// and response stream are forwarded; converted fallbacks must not inherit them.
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
@@ -7950,10 +7956,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
 				}
 				req.SetModel(resolvedModel)
+				// An earlier attempt with injected tools may have switched passthrough off;
+				// this attempt decides afresh from the caller's settings.
+				restoreAnthropicPassthroughAfterInjectedTools(req.Context)
 				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
 				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
+				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
+				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
 				applyProviderProxySignal(req.Context, config)
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
@@ -8023,12 +8034,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				lastAttemptFinalizer = postHookSpanFinalizer
 				var streamCh chan *schemas.BifrostStreamChunk
 				var streamErr *schemas.BifrostError
-				set := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
 				switch {
-				case set != nil && req.RequestType == schemas.ChatCompletionStreamRequest:
-					streamCh, streamErr = bifrost.startInjectedChatStream(req.Context, provider, config, k, req.BifrostRequest.ChatRequest, set, postHookRunner, postHookSpanFinalizer)
-				case set != nil && req.RequestType == schemas.ResponsesStreamRequest:
-					streamCh, streamErr = bifrost.startInjectedResponsesStream(req.Context, provider, config, k, req.BifrostRequest.ResponsesRequest, set, postHookRunner, postHookSpanFinalizer)
+				case injectedTools != nil && req.RequestType == schemas.ChatCompletionStreamRequest:
+					streamCh, streamErr = bifrost.startInjectedChatStream(req.Context, provider, config, k, req.BifrostRequest.ChatRequest, injectedTools, postHookRunner, postHookSpanFinalizer)
+				case injectedTools != nil && req.RequestType == schemas.ResponsesStreamRequest:
+					streamCh, streamErr = bifrost.startInjectedResponsesStream(req.Context, provider, config, k, req.BifrostRequest.ResponsesRequest, injectedTools, postHookRunner, postHookSpanFinalizer)
 				default:
 					streamCh, streamErr = bifrost.handleProviderStreamRequest(provider, config, req, k, postHookRunner, postHookSpanFinalizer)
 				}
@@ -8052,16 +8062,21 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
 				}
 				req.SetModel(resolvedModel)
+				// An earlier attempt with injected tools may have switched passthrough off;
+				// this attempt decides afresh from the caller's settings.
+				restoreAnthropicPassthroughAfterInjectedTools(req.Context)
+				req.Context.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, false)
 				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
 				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
+				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
+				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
 				applyProviderProxySignal(req.Context, config)
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
-				req.Context.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, false)
-				if set := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType); set != nil {
-					return bifrost.runInjectedTools(provider, config, req, k, set)
+				if injectedTools != nil {
+					return bifrost.runInjectedTools(provider, config, req, k, injectedTools)
 				}
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
