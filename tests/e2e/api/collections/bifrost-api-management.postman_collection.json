@@ -9883,7 +9883,7 @@
               "var auth = pm.variables.get('admin_auth_header');",
               "if (auth) { headers.Authorization = auth; }",
               "// pm.sendRequest skips the collection-level prerequest that adds the setup token.",
-              "var setupToken = pm.variables.get('setup_token') || pm.environment.get('setup_token');",
+              "var setupToken = pm.variables.get('setup_token');",
               "if (setupToken) { headers['X-Bifrost-Setup-Token'] = setupToken; }",
               "var providerCreated = false;",
               "var keyAttempted = false;",
