@@ -1051,6 +1051,39 @@ test.describe("Debugging Tab", () => {
   });
 });
 
+test.describe("Web Search Tab", () => {
+  test.beforeEach(async ({ providersPage }) => {
+    await providersPage.goto();
+    await providersPage.selectProvider("openai");
+  });
+
+  test("should navigate to the web search tab", async ({ providersPage }) => {
+    await providersPage.selectConfigTab("web-search");
+
+    const tab = providersPage.page.getByTestId("provider-tab-web-search");
+    await expect(tab).toHaveAttribute("data-state", "active");
+    await expect(
+      providersPage.page.getByTestId("provider-config-web-search-content"),
+    ).toBeVisible();
+    await expect(
+      providersPage.page.getByTestId("provider-web-search-client-select"),
+    ).toBeVisible();
+  });
+
+  test("should require an MCP server before a tool can be picked", async ({
+    providersPage,
+  }) => {
+    await providersPage.selectConfigTab("web-search");
+
+    await expect(
+      providersPage.page.getByTestId("provider-web-search-tool-select"),
+    ).toBeDisabled();
+    await expect(
+      providersPage.page.getByTestId("provider-web-search-save-btn"),
+    ).toBeDisabled();
+  });
+});
+
 test.describe("Provider specific configuration", () => {
   test.beforeEach(async ({ providersPage }) => {
     await providersPage.goto();
