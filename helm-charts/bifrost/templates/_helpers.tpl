@@ -271,6 +271,20 @@ false
 {{- if .Values.bifrost.setupToken }}
 {{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
 {{- end }}
+{{- with .Values.bifrost.proxyConfig }}
+{{- $proxy := dict "enabled" (.enabled | default false) }}
+{{- if .type }}{{- $_ := set $proxy "type" .type }}{{- end }}
+{{- if .url }}{{- $_ := set $proxy "url" .url }}{{- end }}
+{{- if .username }}{{- $_ := set $proxy "username" .username }}{{- end }}
+{{- if .password }}{{- $_ := set $proxy "password" .password }}{{- end }}
+{{- if .noProxy }}{{- $_ := set $proxy "no_proxy" .noProxy }}{{- end }}
+{{- if hasKey . "timeout" }}{{- $_ := set $proxy "timeout" (.timeout | int) }}{{- end }}
+{{- if hasKey . "skipTlsVerify" }}{{- $_ := set $proxy "skip_tls_verify" .skipTlsVerify }}{{- end }}
+{{- if hasKey . "enableForScim" }}{{- $_ := set $proxy "enable_for_scim" .enableForScim }}{{- end }}
+{{- if hasKey . "enableForInference" }}{{- $_ := set $proxy "enable_for_inference" .enableForInference }}{{- end }}
+{{- if hasKey . "enableForApi" }}{{- $_ := set $proxy "enable_for_api" .enableForApi }}{{- end }}
+{{- $_ := set $config "proxy_config" $proxy }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}
@@ -584,6 +598,7 @@ false
 {{- if .profile }}{{- $_ := set $bu "profile" .profile }}{{- end }}
 {{- if .config }}{{- $_ := set $bu "config" .config }}{{- end }}
 {{- if .claims }}{{- $_ := set $bu "claims" .claims }}{{- end }}
+{{- if .access_profile }}{{- $_ := set $bu "access_profile" .access_profile }}{{- end }}
 {{- if .teamIds }}{{- $_ := set $bu "team_ids" .teamIds }}{{- end }}
 {{- $businessUnits = append $businessUnits $bu }}
 {{- end }}
