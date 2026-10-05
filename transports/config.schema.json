@@ -340,6 +340,10 @@
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
+        "mcp_code_mode_limits": {
+          "$ref": "#/$defs/mcp_code_mode_limits",
+          "description": "Per-execution code mode limits, as stored and served by the config API. In config.json prefer mcp.tool_manager_config.code_mode_limits, which takes precedence when both are set."
+        },
         "mcp_enable_temp_token_auth": {
           "type": "boolean",
           "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth and per-user-headers auth pages so anonymous browser visitors can complete the flow without a dashboard session. User-mode flows are never minted regardless of this setting \u2014 they always require SSO login.",
@@ -7917,6 +7921,66 @@
           "type": "integer",
           "minimum": 0,
           "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.",
+          "default": 0
+        },
+        "code_mode_limits": {
+          "$ref": "#/$defs/mcp_code_mode_limits"
+        }
+      }
+    },
+    "mcp_code_mode_limits": {
+      "type": "object",
+      "description": "Limits applied to each code mode (executeToolCode) execution. Every field is optional; omit it or set 0 to use the built-in default. There is no limit on how many executions run concurrently.",
+      "additionalProperties": false,
+      "properties": {
+        "max_source_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum size of the submitted code in bytes. 0 uses the default of 65536 (64 KiB).",
+          "default": 0
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum interpreter computation steps per execution, including work inside builtins. 0 uses the default of 1000000.",
+          "default": 0
+        },
+        "max_memory_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Estimated allocation budget per execution in bytes, enforced by the interpreter and value converters before allocating. 0 uses the default of 67108864 (64 MiB).",
+          "default": 0
+        },
+        "max_log_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum print and tool log output per execution in bytes, including newlines. 0 uses the default of 65536 (64 KiB).",
+          "default": 0
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum nested MCP tool calls per execution. 0 uses the default of 64.",
+          "default": 0
+        },
+        "max_value_bytes": {
+          "type": "integer",
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "minimum": 1024
+            }
+          ],
+          "description": "Size budget in bytes for each tool payload and converted result, counted conservatively for JSON escaping. Must be 0 (default of 1048576, 1 MiB) or at least 1024.",
+          "default": 0
+        },
+        "max_nesting_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "Maximum nesting depth of values crossing the tool boundary. 0 uses the default of 64; at most 1000.",
           "default": 0
         }
       }
