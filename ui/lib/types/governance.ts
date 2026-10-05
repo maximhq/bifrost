@@ -72,6 +72,8 @@ export interface Customer {
 	// Number of virtual keys owned by this customer (server-computed; the list
 	// endpoint reports this instead of embedding the virtual keys themselves)
 	virtual_key_count?: number;
+	// Number of teams attached to this customer (server-computed on the list endpoint)
+	team_count?: number;
 	// Populated relationships
 	teams?: Team[];
 	budgets?: Budget[];
