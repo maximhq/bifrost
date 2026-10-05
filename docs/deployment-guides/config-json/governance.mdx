@@ -341,7 +341,7 @@ A team, customer, or business unit can hold one [access profile](/enterprise/acc
 ```json
 {
   "access_profiles": [
-    { "name": "Engineering Baseline", "budgets": [{ "max_limit": 500, "reset_duration": "1M" }] }
+    { "name": "Engineering Baseline", "budgets": [{ "id": "budget-engineering-baseline", "max_limit": 500, "reset_duration": "1M" }] }
   ],
   "governance": {
     "customers": [{ "id": "customer-acme", "name": "Acme Corp", "access_profile": "Engineering Baseline" }],
