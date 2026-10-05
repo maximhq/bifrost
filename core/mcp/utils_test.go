@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/maximhq/bifrost/core/internal/injectedauth"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -322,4 +323,120 @@ func TestAuthorizeCodeModeToolCall(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func injectedToolTestManager(state schemas.MCPConnectionState) *MCPManager {
+	return &MCPManager{
+		logger: &MockLogger{},
+		clientMap: map[string]*schemas.MCPClientState{
+			"id-tavily": {
+				State: state,
+				ExecutionConfig: &schemas.MCPClientConfig{
+					ID:   "id-tavily",
+					Name: "tavily",
+					// The operator exposes nothing from this client to callers. The
+					// provider's injected web search must still resolve and run.
+					ToolsToExecute: schemas.WhiteList{},
+				},
+				ToolMap: map[string]schemas.ChatTool{
+					"tavily-search": {
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name:        "tavily-search",
+							Description: schemas.Ptr("Search the web"),
+							Parameters:  &schemas.ToolFunctionParameters{Type: "object", Required: []string{"query"}},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestGetInjectedTool(t *testing.T) {
+	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
+
+	tool, err := m.GetInjectedTool("tavily", "search")
+	require.NoError(t, err, "injected tools ignore tools_to_execute: the provider config is the authorization")
+	require.NotNil(t, tool.Function)
+	assert.Equal(t, "tavily-search", tool.Function.Name)
+
+	tool.Function.Name = "mutated"
+	tool.Function.Parameters.Required[0] = "mutated"
+	tool.Function.Parameters.Type = "mutated"
+	again, err := m.GetInjectedTool("tavily", "search")
+	require.NoError(t, err)
+	assert.Equal(t, "tavily-search", again.Function.Name, "the returned tool must be a copy, never the client's ToolMap entry")
+	assert.Equal(t, "object", again.Function.Parameters.Type, "the parameter schema is copied too")
+	assert.Equal(t, []string{"query"}, again.Function.Parameters.Required, "nested schema slices are copied too")
+
+	_, err = m.GetInjectedTool("exa", "search")
+	assert.ErrorContains(t, err, "not found")
+	_, err = m.GetInjectedTool("tavily", "crawl")
+	assert.ErrorContains(t, err, "does not expose")
+
+	_, err = injectedToolTestManager(schemas.MCPConnectionStateDisabled).GetInjectedTool("tavily", "search")
+	assert.ErrorContains(t, err, "disabled")
+}
+
+func TestCheckToolExecutionPermitted_InjectedToolBypassesFilters(t *testing.T) {
+	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
+	state := m.clientMap["id-tavily"]
+
+	plain := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	assert.ErrorContains(t, checkToolExecutionPermitted(plain, state, "tavily-search", m.logger), "ToolsToExecute",
+		"without the injected marker the client's allow-list still applies")
+
+	injected := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	injectedauth.Set(injected, "tavily", "tavily-search")
+	injected.SetValue(schemas.MCPContextKeyIncludeClients, []string{"other"})
+	injected.SetValue(schemas.MCPContextKeyIncludeTools, []string{"other-tool"})
+	assert.NoError(t, checkToolExecutionPermitted(injected, state, "tavily-search", m.logger),
+		"the injected tool runs whatever the caller's include lists say")
+
+	other := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	injectedauth.Set(other, "tavily", "tavily-crawl")
+	assert.Error(t, checkToolExecutionPermitted(other, state, "tavily-search", m.logger),
+		"the marker authorizes exactly one tool, never its siblings")
+
+	wrongClient := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	injectedauth.Set(wrongClient, "exa", "tavily-search")
+	assert.Error(t, checkToolExecutionPermitted(wrongClient, state, "tavily-search", m.logger),
+		"the marker authorizes one client's tool; the executing client must be that client")
+
+	disabled := *state
+	disabled.State = schemas.MCPConnectionStateDisabled
+	assert.ErrorContains(t, checkToolExecutionPermitted(injected, &disabled, "tavily-search", m.logger), "disabled",
+		"a disabled client stays off even for injected tools")
+}
+
+// A plugin holds the request context and can lift BlockRestrictedWrites, so a marker
+// reachable through public SetValue is not a trusted boundary. Only core may plant it.
+func TestCheckToolExecutionPermitted_PluginCannotForgeInjectedMarker(t *testing.T) {
+	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
+	state := m.clientMap["id-tavily"]
+
+	forged := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	forged.BlockRestrictedWrites()
+	forged.Root().UnblockRestrictedWrites()
+	forged.SetValue(schemas.BifrostContextKey("bifrost-injected-tool-execution"), struct{ ClientName, ToolName string }{ClientName: "tavily", ToolName: "tavily-search"})
+	assert.ErrorContains(t, checkToolExecutionPermitted(forged, state, "tavily-search", m.logger), "ToolsToExecute",
+		"a marker written through public SetValue must not bypass the client's allow-list")
+}
+
+// A plugin running inside a genuine injected execution can find the marker's key through
+// GetUserValues, but it cannot build a value that names a different tool.
+func TestCheckToolExecutionPermitted_PluginCannotRetargetInjectedMarker(t *testing.T) {
+	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
+	state := m.clientMap["id-tavily"]
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	injectedauth.Set(ctx, "tavily", "tavily-crawl")
+	for key := range ctx.GetUserValues() {
+		if _, isBifrostKey := key.(schemas.BifrostContextKey); !isBifrostKey {
+			ctx.SetValue(key, struct{ clientName, toolName string }{"tavily", "tavily-search"})
+		}
+	}
+	assert.ErrorContains(t, checkToolExecutionPermitted(ctx, state, "tavily-search", m.logger), "ToolsToExecute",
+		"a look-alike value under the real key must not authorize another tool")
 }
