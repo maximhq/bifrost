@@ -24,6 +24,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -593,6 +594,9 @@ type Config struct {
 	GovernanceConfig *configstore.GovernanceConfig
 	FrameworkConfig  *framework.FrameworkConfig
 	ProxyConfig      *configstoreTables.GlobalProxyConfig
+	// HTTPClientFactory hands out outbound clients that honour ProxyConfig per purpose
+	// and follow its changes live (see network.HTTPClientFactory).
+	HTTPClientFactory *network.HTTPClientFactory
 
 	// SetupToken is the resolved operator-provisioned bootstrap secret (see
 	// ConfigData.SetupToken / resolveSetupToken). Empty when the operator hasn't
@@ -1017,6 +1021,14 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		return nil, err
 	}
 	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
+	// 4a. Global proxy (store only). Loaded before providers so the first
+	// GetConfigForProvider already sees it for providers that inherit it.
+	loadGlobalProxyConfig(ctx, config)
+	// Outbound clients for non-inference traffic (webhooks, skills, plugin downloads,
+	// MCP, OAuth, catalog sync, telemetry), built now so everything constructed below
+	// can take it. Registered as the process default for call sites without a handle.
+	config.HTTPClientFactory = network.NewHTTPClientFactory(config.ProxyConfig.ToNetwork(), logger)
+	network.SetDefaultHTTPClientFactory(config.HTTPClientFactory)
 	// 5. Providers (store → file → auto-detect)
 	if err := loadProviders(ctx, config, &configData); err != nil {
 		return nil, err
@@ -5881,6 +5893,59 @@ func (c *Config) GetRawConfigString() string {
 //   - Thread-safe with read locks for concurrent access
 //
 // Returns a copy of the configuration to prevent external modifications.
+// loadGlobalProxyConfig reads the global proxy from the config store. A read
+// failure is logged and leaves the proxy unset rather than failing startup, the
+// same as before the global proxy reached inference.
+func loadGlobalProxyConfig(ctx context.Context, config *Config) {
+	if config.ConfigStore == nil {
+		return
+	}
+	proxyConfig, err := config.ConfigStore.GetProxyConfig(ctx)
+	if err != nil {
+		logger.Warn("failed to load global proxy config: %v", err)
+		return
+	}
+	config.ProxyConfig = proxyConfig
+}
+
+// GetGlobalProxyConfig returns the global proxy configuration, or nil when none is set.
+func (c *Config) GetGlobalProxyConfig() *configstoreTables.GlobalProxyConfig {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ProxyConfig
+}
+
+// SetGlobalProxyConfig stores the global proxy and rebuilds every provider that has
+// no proxy_config of its own, so their clients pick up (or drop) the inherited proxy
+// without a restart. Providers with their own proxy are untouched: theirs always wins.
+func (c *Config) SetGlobalProxyConfig(proxyConfig *configstoreTables.GlobalProxyConfig) error {
+	c.Mu.Lock()
+	c.ProxyConfig = proxyConfig
+	var inheriting []schemas.ModelProvider
+	for provider, providerConfig := range c.Providers {
+		if !hasOwnProxy(providerConfig.ProxyConfig) {
+			inheriting = append(inheriting, provider)
+		}
+	}
+	client := c.client
+	// Release before UpdateProvider: it calls GetConfigForProvider, which takes RLock.
+	c.Mu.Unlock()
+
+	if client == nil {
+		return nil
+	}
+	var errs []error
+	for _, provider := range inheriting {
+		if err := client.UpdateProvider(provider); err != nil {
+			errs = append(errs, fmt.Errorf("provider %s: %w", provider, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to apply global proxy to providers: %w", errors.Join(errs...))
+	}
+	return nil
+}
+
 func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configstore.ProviderConfig, error) {
 	c.Mu.RLock()
 	defer c.Mu.RUnlock()

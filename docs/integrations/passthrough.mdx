@@ -12,6 +12,12 @@ When you use passthrough endpoints, the request still flows through Bifrost core
 
 ---
 
+## Allowed operations
+
+Passthrough accepts **POST inference operations only**. OpenAI supports chat/completions, completions, responses, embeddings, moderation, speech/transcription/translation, and image generation/edit/variation. Anthropic supports messages, token counting, and legacy completion. Azure supports the equivalent OpenAI operations under deployment or `/openai/v1` paths. GenAI supports model generation, streaming, token counting, embedding, and prediction operations. Bedrock supports the three operations listed under [Bedrock Passthrough](#bedrock-passthrough). Other methods and account, file, batch, stored-response, or fine-tuning operations return `403` before key selection or forwarding. Use the dedicated Bifrost APIs for supported resource operations.
+
+The `x-model-provider` header may only repeat the route's resolved provider; it cannot switch a passthrough route to another provider or custom backend. GenAI retains automatic Gemini/Vertex detection. This changes older catch-all behavior: integrations that relied on arbitrary endpoints must migrate to dedicated APIs.
+
 ## Endpoints
 
 - `/openai_passthrough`
@@ -69,7 +75,7 @@ Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) is handled sep
 ### Bedrock Passthrough
 
 - Uses `bedrock` as the default provider.
-- **Not a general AWS proxy.** Bifrost forwards only the Bedrock operations it has no native route for, and refuses every other path, method or malformed identifier with a `400` before any request is built:
+- **Not a general AWS proxy.** Bifrost forwards only the Bedrock operations it has no native route for, and refuses every other path, method or malformed identifier with a `403` from the passthrough route policy, before key selection or any request is built:
 
   | Operation | Method and path (after `/bedrock_passthrough`) | AWS service host |
   |---|---|---|

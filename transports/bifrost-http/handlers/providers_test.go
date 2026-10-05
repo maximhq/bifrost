@@ -225,6 +225,91 @@ func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {
 	}
 }
 
+func TestAddProvider_RejectsBaseURLComponents(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	for _, suffix := range []string{"?x=", "?", "#ignored", "#"} {
+		t.Run(suffix, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				modelsManager: &mockModelsManager{},
+			}
+			body, err := schemas.MarshalSorted(providerCreatePayload{
+				Provider:             "mock-openai",
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+				NetworkConfig:        &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1/base" + suffix},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBody(body)
+			h.addProvider(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), "base URL must not contain") {
+				t.Fatalf("expected base URL rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if len(h.inMemoryStore.Providers) != 0 {
+				t.Fatal("invalid provider was persisted")
+			}
+		})
+	}
+}
+
+// The update path must reject the same base URL components as creation, before
+// saving or reloading the provider.
+func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	const storedURL = "https://1.1.1.1/v1"
+	for _, suffix := range []string{"?x=", "?", "#ignored", "#"} {
+		t.Run(suffix, func(t *testing.T) {
+			customConfig := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
+			modelsManager := &mockModelsManager{}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					ClientConfig: &configstore.ClientConfig{},
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						"mock-openai": {
+							NetworkConfig:            &schemas.NetworkConfig{BaseURL: storedURL},
+							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+							CustomProviderConfig:     customConfig,
+						},
+					},
+				},
+				modelsManager: modelsManager,
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			body, err := schemas.MarshalSorted(providerUpdatePayload{
+				NetworkConfig:            schemas.NetworkConfig{BaseURL: storedURL + suffix},
+				ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 4},
+				CustomProviderConfig:     customConfig,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			ctx.Request.SetRequestURI("/api/providers/mock-openai")
+			ctx.Request.SetBody(body)
+			ctx.SetUserValue("provider", "mock-openai")
+
+			h.updateProvider(ctx)
+
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), "base URL must not contain") {
+				t.Fatalf("expected base URL rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			stored := h.inMemoryStore.Providers["mock-openai"]
+			if stored.NetworkConfig.BaseURL != storedURL || stored.ConcurrencyAndBufferSize.Concurrency != 1 {
+				t.Fatalf("rejected update changed the stored provider: base_url=%q concurrency=%d", stored.NetworkConfig.BaseURL, stored.ConcurrencyAndBufferSize.Concurrency)
+			}
+			if len(modelsManager.reloadCalls) != 0 {
+				t.Fatalf("rejected update reloaded the provider: %v", modelsManager.reloadCalls)
+			}
+		})
+	}
+}
+
 // TestAddProvider_RejectsBaseURLWhenAuthBypassed covers the second route to the same
 // outcome as the Ollama key case: a custom provider's network_config.base_url + explicit
 // allow_private_network:true, which an unauthenticated caller could set together to
@@ -525,15 +610,24 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 	const storedURL = "https://1.1.1.1/v1"
 	cases := []struct {
 		name                string
+		storedBaseURL       string
+		storedAllowPrivate  bool
 		baseURL             string
 		allowPrivateNetwork bool
+		authenticated       bool // a real credential, not the fail-open bypass
 		wantStatus          int
 		wantConcurrency     int
 	}{
-		{name: "unchanged base url, concurrency edit", baseURL: storedURL, allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
-		{name: "unchanged base url, allow_private_network turned on", baseURL: storedURL, allowPrivateNetwork: true, wantStatus: fasthttp.StatusForbidden, wantConcurrency: 1},
-		{name: "no base url, concurrency edit", baseURL: "", allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
-		{name: "no base url, allow_private_network turned on", baseURL: "", allowPrivateNetwork: true, wantStatus: fasthttp.StatusForbidden, wantConcurrency: 1},
+		{name: "unchanged base url, concurrency edit", storedBaseURL: storedURL, baseURL: storedURL, allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "unchanged base url, allow_private_network turned on", storedBaseURL: storedURL, baseURL: storedURL, allowPrivateNetwork: true, wantStatus: fasthttp.StatusForbidden, wantConcurrency: 1},
+		{name: "no base url, concurrency edit", storedBaseURL: "", baseURL: "", allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "no base url, allow_private_network turned on", storedBaseURL: "", baseURL: "", allowPrivateNetwork: true, wantStatus: fasthttp.StatusForbidden, wantConcurrency: 1},
+		// Narrowing the dial target needs no authenticated request.
+		{name: "stored base url cleared", storedBaseURL: storedURL, baseURL: "", allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "stored allow_private_network turned off", storedBaseURL: storedURL, storedAllowPrivate: true, baseURL: storedURL, allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		// Widening is refused only for the bypass; any authenticated caller may widen.
+		{name: "authenticated base url change", storedBaseURL: storedURL, baseURL: "https://8.8.8.8/v1", authenticated: true, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "authenticated allow_private_network turned on", storedBaseURL: storedURL, baseURL: storedURL, allowPrivateNetwork: true, authenticated: true, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
 	}
 
 	for _, tc := range cases {
@@ -544,7 +638,7 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 					ClientConfig: &configstore.ClientConfig{},
 					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 						"mock-openai": {
-							NetworkConfig:            &schemas.NetworkConfig{BaseURL: tc.baseURL},
+							NetworkConfig:            &schemas.NetworkConfig{BaseURL: tc.storedBaseURL, AllowPrivateNetwork: tc.storedAllowPrivate},
 							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 							CustomProviderConfig:     customConfig,
 						},
@@ -568,7 +662,9 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 			ctx.Request.SetRequestURI("/api/providers/mock-openai")
 			ctx.Request.SetBody(body)
 			ctx.SetUserValue("provider", "mock-openai")
-			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			if !tc.authenticated {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
 
 			h.updateProvider(ctx)
 
@@ -581,6 +677,9 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 			}
 			if stored.NetworkConfig.AllowPrivateNetwork && tc.wantStatus == fasthttp.StatusForbidden {
 				t.Fatalf("expected allow_private_network not to be persisted")
+			}
+			if tc.wantStatus == fasthttp.StatusOK && (stored.NetworkConfig.BaseURL != tc.baseURL || stored.NetworkConfig.AllowPrivateNetwork != tc.allowPrivateNetwork) {
+				t.Fatalf("stored network config got base_url=%q allow_private_network=%v, want %q/%v", stored.NetworkConfig.BaseURL, stored.NetworkConfig.AllowPrivateNetwork, tc.baseURL, tc.allowPrivateNetwork)
 			}
 		})
 	}
@@ -2542,4 +2641,17 @@ func listModelsForTest(t *testing.T, h *ProviderHandler, uri string) ListModelsR
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 	return resp
+}
+
+func TestProviderBaseURLShape(t *testing.T) {
+	for _, raw := range []string{"https://user:pass@127.0.0.1/base", "https://127.0.0.1/base?", "https://127.0.0.1/base#", "https://127.0.0.1/base?q=1"} {
+		if validateProviderBaseURLShape(raw) == nil {
+			t.Errorf("accepted %q", raw)
+		}
+	}
+	for _, raw := range []string{"", "http://127.0.0.1:1234/v1", "https://example.com/nested/path", "https://example.com/a%3Fb%23c"} {
+		if err := validateProviderBaseURLShape(raw); err != nil {
+			t.Errorf("rejected %q: %v", raw, err)
+		}
+	}
 }
