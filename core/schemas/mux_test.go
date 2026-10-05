@@ -1817,6 +1817,26 @@ func TestReasoningTypeSurvivesChatResponsesConversion(t *testing.T) {
 	}
 }
 
+// reasoning.mode must survive the chat<->responses conversion: a chat request that
+// sets it is served by the Responses API, and a mode-only reasoning object must not
+// be dropped by the "anything set?" guard.
+func TestReasoningModeSurvivesChatResponsesConversion(t *testing.T) {
+	chat := &BifrostChatRequest{
+		Model:  "gpt-6-luna",
+		Params: &ChatParameters{Reasoning: &ChatReasoning{Mode: Ptr("pro")}},
+	}
+	responses := chat.ToResponsesRequest()
+	if responses.Params == nil || responses.Params.Reasoning == nil || responses.Params.Reasoning.Mode == nil ||
+		*responses.Params.Reasoning.Mode != "pro" {
+		t.Fatalf("chat->responses dropped reasoning.mode: %+v", responses.Params)
+	}
+	back := responses.ToChatRequest()
+	if back.Params == nil || back.Params.Reasoning == nil || back.Params.Reasoning.Mode == nil ||
+		*back.Params.Reasoning.Mode != "pro" {
+		t.Fatalf("responses->chat dropped reasoning.mode: %+v", back.Params)
+	}
+}
+
 // TestGuardContentMarkerSurvivesChatResponsesMux: the Bedrock guard marker crosses the
 // chat <-> responses bridge in both directions, like cache_control does.
 func TestGuardContentMarkerSurvivesChatResponsesMux(t *testing.T) {
