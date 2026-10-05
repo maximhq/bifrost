@@ -198019,6 +198019,153 @@
           }
         }
       ]
+    },
+    {
+      "name": "OAuth callback registration policy (oauth-redirect-policy)",
+      "description": "Default profile rejects unapproved remote destinations and malformed callbacks before registration. No provider spend.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai oauth-redirect-policy remote callback rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oauth-redirect-policy remote callback rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"invalid_redirect_uri\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_name\": \"Redirect check\",\n  \"redirect_uris\": [\n    \"https://unlisted.example/callback\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai oauth-redirect-policy fragment callback rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oauth-redirect-policy fragment callback rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"invalid_redirect_uri\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_name\": \"Redirect check\",\n  \"redirect_uris\": [\n    \"http://127.0.0.1/callback#tail\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai oauth-redirect-policy hostless callback rejected",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oauth-redirect-policy hostless callback rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"invalid_redirect_uri\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_name\": \"Redirect check\",\n  \"redirect_uris\": [\n    \"https:///callback\"\n  ]\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }
