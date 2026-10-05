@@ -76,7 +76,7 @@ func chTestTargetIsDedicated(cfg *ClickHouseConfig, overridden bool) bool {
 func requireDedicatedClickHouseTestDB(t *testing.T, cfg *ClickHouseConfig) {
 	t.Helper()
 	if !chTestTargetIsDedicated(cfg, chTestOverridden()) {
-		t.Fatalf("refusing to run destructive ClickHouse tests against database %q: BIFROST_TEST_CLICKHOUSE_* overrides must point at a database whose name contains \"test\" (the suite truncates logs, mcp_tool_logs, async_jobs and webhook_deliveries and rewrites their TTL)", cfg.Database.GetValue())
+		t.Fatalf("refusing to run destructive ClickHouse tests against database %q: BIFROST_TEST_CLICKHOUSE_* overrides must point at a database whose name contains \"test\" (the suite truncates logs, mcp_tool_logs, async_jobs, webhook_deliveries and user_agent_mappings and rewrites their TTL)", cfg.Database.GetValue())
 	}
 }
 
@@ -108,7 +108,7 @@ func trySetupClickHouseStore(t *testing.T) *ClickHouseLogStore {
 		t.Skipf("ClickHouse not available, skipping test: %v", err)
 	}
 	ch := store.(*ClickHouseLogStore)
-	for _, table := range []string{"logs", "mcp_tool_logs", "async_jobs", "webhook_deliveries"} {
+	for _, table := range []string{"logs", "mcp_tool_logs", "async_jobs", "webhook_deliveries", "user_agent_mappings"} {
 		require.NoError(t, ch.db.Exec("TRUNCATE TABLE "+table).Error)
 	}
 	t.Cleanup(func() { _ = ch.Close(context.Background()) })
@@ -1422,4 +1422,108 @@ func TestClickHouseWarpWriteStopsWhenTheLeaseIsLost(t *testing.T) {
 	counts, err := store.CountWarpMessages(ctx, []string{owner + "-c"})
 	require.NoError(t, err)
 	require.Zero(t, counts[owner+"-c"], "nothing was written without the lock")
+}
+
+// TestClickHouseUserAgentMappingCRUD pins the user-agent mapping methods on a
+// pure ClickHouse store. Before the user_agent_mappings migration existed the
+// first List failed with "Unknown table expression identifier"; before the
+// Update/Delete overrides existed the inherited GORM paths reported zero rows
+// affected on every mutation and so returned not-found for existing rows.
+func TestClickHouseUserAgentMappingCRUD(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+
+	empty, err := store.ListUserAgentMappings(ctx, false)
+	require.NoError(t, err, "list on a fresh store must not fail")
+	require.Empty(t, empty)
+
+	mime := "image/png"
+	active := &UserAgentMapping{
+		ID:        "ch-ua-active",
+		Pattern:   "my-agent/",
+		MatchType: "prefix",
+		App:       "my-app",
+		Logo:      []byte{0x89, 0x50, 0x4e, 0x47},
+		LogoMime:  &mime,
+		IsActive:  true,
+	}
+	inactive := &UserAgentMapping{
+		ID:        "ch-ua-inactive",
+		Pattern:   "other-agent",
+		MatchType: "contains",
+		App:       "other-app",
+		IsActive:  false,
+	}
+	require.NoError(t, store.CreateUserAgentMapping(ctx, active))
+	require.NoError(t, store.CreateUserAgentMapping(ctx, inactive))
+
+	onlyActive, err := store.ListUserAgentMappings(ctx, true)
+	require.NoError(t, err)
+	require.Len(t, onlyActive, 1)
+	assert.Equal(t, "ch-ua-active", onlyActive[0].ID)
+	assert.Equal(t, []byte{0x89, 0x50, 0x4e, 0x47}, onlyActive[0].Logo)
+	require.NotNil(t, onlyActive[0].LogoMime)
+	assert.Equal(t, "image/png", *onlyActive[0].LogoMime)
+
+	all, err := store.ListUserAgentMappings(ctx, false)
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+	assert.Equal(t, "ch-ua-active", all[0].ID, "list is ordered by created_at ASC")
+	assert.Equal(t, "ch-ua-inactive", all[1].ID)
+	createdAt := all[0].CreatedAt
+	updatedAt := all[0].UpdatedAt
+
+	// Update must rewrite the row in place: same id, same created_at, one
+	// logical row after the ReplacingMergeTree version collapse.
+	time.Sleep(5 * time.Millisecond)
+	newMime := "image/svg+xml"
+	require.NoError(t, store.UpdateUserAgentMapping(ctx, "ch-ua-active", &UserAgentMapping{
+		Pattern:   "my-agent-v2/",
+		MatchType: "regex",
+		App:       "my-app-v2",
+		Logo:      []byte("<svg/>"),
+		LogoMime:  &newMime,
+		IsActive:  false,
+	}))
+	all, err = store.ListUserAgentMappings(ctx, false)
+	require.NoError(t, err)
+	require.Len(t, all, 2, "update must not leave a second version visible")
+	var updated *UserAgentMapping
+	for i := range all {
+		if all[i].ID == "ch-ua-active" {
+			updated = &all[i]
+		}
+	}
+	require.NotNil(t, updated)
+	assert.Equal(t, "my-agent-v2/", updated.Pattern)
+	assert.Equal(t, "regex", updated.MatchType)
+	assert.Equal(t, "my-app-v2", updated.App)
+	assert.Equal(t, []byte("<svg/>"), updated.Logo)
+	require.NotNil(t, updated.LogoMime)
+	assert.Equal(t, "image/svg+xml", *updated.LogoMime)
+	assert.False(t, updated.IsActive)
+	assert.True(t, updated.CreatedAt.Equal(createdAt), "created_at must be preserved across update")
+	assert.True(t, updated.UpdatedAt.After(updatedAt), "updated_at must advance on update")
+
+	onlyActive, err = store.ListUserAgentMappings(ctx, true)
+	require.NoError(t, err)
+	assert.Empty(t, onlyActive, "deactivated mapping must drop out of the active list")
+
+	// Unknown ids surface the same sentinel the SQL stores return, which the
+	// HTTP handler maps to 404.
+	err = store.UpdateUserAgentMapping(ctx, "ch-ua-missing", &UserAgentMapping{Pattern: "x", MatchType: "exact", App: "x"})
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	err = store.DeleteUserAgentMapping(ctx, "ch-ua-missing")
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
+
+	require.NoError(t, store.DeleteUserAgentMapping(ctx, "ch-ua-active"))
+	all, err = store.ListUserAgentMappings(ctx, false)
+	require.NoError(t, err)
+	require.Len(t, all, 1)
+	assert.Equal(t, "ch-ua-inactive", all[0].ID)
+
+	// A second delete of the same id is not-found, proving the lightweight
+	// delete actually removed the row rather than hiding one version.
+	err = store.DeleteUserAgentMapping(ctx, "ch-ua-active")
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
 }

@@ -68,6 +68,7 @@ func parityBackends(t *testing.T) map[string]LogStore {
 	require.NoError(t, db.Exec("DROP TABLE IF EXISTS mcp_tool_logs CASCADE").Error)
 	require.NoError(t, db.Exec("DROP TABLE IF EXISTS async_jobs CASCADE").Error)
 	require.NoError(t, db.Exec("DROP TABLE IF EXISTS webhook_deliveries CASCADE").Error)
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS user_agent_mappings CASCADE").Error)
 	require.NoError(t, db.Exec("DROP TABLE IF EXISTS logs CASCADE").Error)
 	require.NoError(t, db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)").Error)
 	require.NoError(t, db.Exec("DELETE FROM migrations").Error)
@@ -509,6 +510,25 @@ func webhookDeliverySearchProjection(r *WebhookDeliverySearchResult) any {
 		deliveries = append(deliveries, webhookDeliveryProjection(&d))
 	}
 	return map[string]any{"total": r.Pagination.TotalCount, "deliveries": deliveries}
+}
+
+// userAgentMappingProjection reduces a mapping to the operator-visible fields
+// every backend must agree on. updated_at is excluded because each store stamps
+// it independently at write time.
+func userAgentMappingProjection(m *UserAgentMapping) map[string]any {
+	return map[string]any{
+		"id": m.ID, "pattern": m.Pattern, "match_type": m.MatchType, "app": m.App,
+		"logo": m.Logo, "logo_mime": m.LogoMime, "is_active": m.IsActive,
+		"created_ms": m.CreatedAt.UnixMilli(),
+	}
+}
+
+func userAgentMappingsProjection(ms []UserAgentMapping) []map[string]any {
+	out := make([]map[string]any, 0, len(ms))
+	for i := range ms {
+		out = append(out, userAgentMappingProjection(&ms[i]))
+	}
+	return out
 }
 
 // remainingLogIDs lists surviving log ids - the post-state assertion used
@@ -1264,6 +1284,69 @@ func TestLogStoreParity(t *testing.T) {
 			}
 			return webhookDeliverySearchProjection(res), nil
 		})
+	})
+
+	// --- Phase: user-agent mappings (config rows; full CRUD on every backend) ---
+
+	t.Run("UserAgentMappings", func(t *testing.T) {
+		mime := "image/png"
+		mkMapping := func(id, pattern, matchType, app string, logo []byte, logoMime *string, active bool, createdOffset time.Duration) *UserAgentMapping {
+			return &UserAgentMapping{
+				ID: id, Pattern: pattern, MatchType: matchType, App: app,
+				Logo: logo, LogoMime: logoMime, IsActive: active,
+				CreatedAt: base.Add(createdOffset), UpdatedAt: base.Add(createdOffset),
+			}
+		}
+		listAll := func(ctx context.Context, s LogStore) (any, error) {
+			ms, err := s.ListUserAgentMappings(ctx, false)
+			if err != nil {
+				return nil, err
+			}
+			return userAgentMappingsProjection(ms), nil
+		}
+		listActive := func(ctx context.Context, s LogStore) (any, error) {
+			ms, err := s.ListUserAgentMappings(ctx, true)
+			if err != nil {
+				return nil, err
+			}
+			return userAgentMappingsProjection(ms), nil
+		}
+
+		runOnAll(t, stores, func(ctx context.Context, s LogStore) error {
+			if err := s.CreateUserAgentMapping(ctx, mkMapping("ua1", "my-agent/", "prefix", "my-app", []byte{0x89, 0x50, 0x4e, 0x47}, &mime, true, -2*time.Minute)); err != nil {
+				return err
+			}
+			return s.CreateUserAgentMapping(ctx, mkMapping("ua2", "other-agent", "contains", "other-app", nil, nil, false, -time.Minute))
+		})
+		assertParity(t, stores, 1e-6, listAll)
+		assertParity(t, stores, 1e-6, listActive)
+
+		// Update rewrites every mutable column and flips the active flag; the
+		// row keeps its id and created_at so list order is unchanged.
+		svg := "image/svg+xml"
+		runOnAll(t, stores, func(ctx context.Context, s LogStore) error {
+			return s.UpdateUserAgentMapping(ctx, "ua1", &UserAgentMapping{
+				Pattern: "my-agent-v2/", MatchType: "regex", App: "my-app-v2",
+				Logo: []byte("<svg/>"), LogoMime: &svg, IsActive: false,
+			})
+		})
+		assertParity(t, stores, 1e-6, listAll)
+		assertParity(t, stores, 1e-6, listActive)
+
+		for name, s := range stores {
+			err := s.UpdateUserAgentMapping(ctx, "ua-missing", &UserAgentMapping{Pattern: "x", MatchType: "exact", App: "x"})
+			assert.ErrorIs(t, err, gorm.ErrRecordNotFound, name)
+			err = s.DeleteUserAgentMapping(ctx, "ua-missing")
+			assert.ErrorIs(t, err, gorm.ErrRecordNotFound, name)
+		}
+
+		runOnAll(t, stores, func(ctx context.Context, s LogStore) error {
+			return s.DeleteUserAgentMapping(ctx, "ua1")
+		})
+		assertParity(t, stores, 1e-6, listAll)
+		for name, s := range stores {
+			assert.ErrorIs(t, s.DeleteUserAgentMapping(ctx, "ua1"), gorm.ErrRecordNotFound, name)
+		}
 	})
 
 	// --- Phase: deletes (destructive; order matters) ---
