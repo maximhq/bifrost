@@ -118,6 +118,14 @@ func newMCPServer(instructions string) *server.MCPServer {
 		mcp.WithString("name", mcp.Required(), mcp.Description("Name to greet")),
 	), greetHandler)
 
+	// Backs the provider-harness injected web search cases. Its one result carries a
+	// fact no model knows, so an answer containing it proves Bifrost ran the tool.
+	s.AddTool(mcp.NewTool(
+		"web_search",
+		mcp.WithDescription("Search the web and return the most relevant results for a query"),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Search query")),
+	), webSearchHandler)
+
 	return s
 }
 
@@ -152,6 +160,24 @@ func greetHandler(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return jsonResult(map[string]any{"greeting": "Hello, " + strings.TrimSpace(name) + "!"})
+}
+
+// HarnessSearchFact is the fact web_search returns, asserted by the provider harness.
+const HarnessSearchFact = "The Bifrost harness lighthouse is painted teal-and-amber and its keeper is named Orrin Vale."
+
+func webSearchHandler(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	query, err := req.RequireString("query")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return jsonResult(map[string]any{
+		"query": query,
+		"results": []map[string]any{{
+			"title":   "Bifrost harness lighthouse",
+			"url":     "https://example.com/bifrost-harness-lighthouse",
+			"snippet": HarnessSearchFact,
+		}},
+	})
 }
 
 // jsonResult marshals v and returns it as the tool's text content.

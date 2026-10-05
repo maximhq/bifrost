@@ -218932,6 +218932,309 @@
           ]
         }
       ]
+    },
+    {
+      "name": "192. Provider-injected MCP web search (injected-web-search)",
+      "description": "Provider config `injected_tools.web_search` names an MCP tool that Bifrost adds to every chat and responses request for the provider, replacing any native web search the client sent, and executes server side when the model calls it. The harness profile points `openai_websearch` and `anthropic_websearch` at `sse_mcp/web_search` (examples/mcps/remote-test-server), whose single result states a fact no model knows: the lighthouse is teal-and-amber and its keeper is Orrin Vale. An answer naming Orrin proves the gateway ran the search and fed the result back; every case also pins that the client never sees the injected tool call. `sse_mcp` keeps `web_search` out of its tools_to_execute, so the cases also prove the injected tool bypasses the client allow-list. Red before the feature: the profile field is unknown and no turn runs the tool.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai_websearch gpt-4o-mini chat injected-web-search answers from the MCP tool",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_websearch/gpt-4o-mini\",\n  \"tool_choice\": \"required\",\n  \"max_tokens\": 200,\n  \"web_search_options\": {},\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use web search to look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the answer comes from the server-side search and hides the injected call', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var msg = body.choices[0].message;",
+                  "  pm.expect(String(msg.content), 'answer does not use the search result: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  pm.expect(msg.tool_calls || [], 'the injected tool call leaked to the client: ' + pm.response.text()).to.have.length(0);",
+                  "  pm.expect(body.choices[0].finish_reason).to.equal('stop');",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "  pm.expect(raw, 'native web_search_options reached the provider: ' + raw).to.not.include('web_search_options');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_websearch gpt-4o-mini chat stream injected-web-search is one client stream",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_websearch/gpt-4o-mini\",\n  \"tool_choice\": \"required\",\n  \"max_tokens\": 200,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use web search to look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function sseEvents(text) {",
+                  "  var out = [];",
+                  "  var lines = text.split('\\n');",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "    if (lines[i].indexOf('data:') !== 0 || t === '' || t === '[DONE]') continue;",
+                  "    try { out.push(JSON.parse(t)); } catch (e) {}",
+                  "  }",
+                  "  return out;",
+                  "}",
+                  "pm.test('turns chain into one stream with no injected call deltas', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var events = sseEvents(pm.response.text());",
+                  "  pm.expect(events.length, 'no chunks: ' + pm.response.text()).to.be.above(0);",
+                  "  var text = '', finishes = 0, ids = {};",
+                  "  events.forEach(function (e) {",
+                  "    pm.expect(e.id, 'a chunk is missing the stream id: ' + JSON.stringify(e)).to.be.a('string').and.not.empty;",
+                  "    ids[e.id] = true;",
+                  "    (e.choices || []).forEach(function (c) {",
+                  "      var d = c.delta || {};",
+                  "      pm.expect(d.tool_calls || [], 'an injected call delta reached the client: ' + JSON.stringify(e)).to.have.length(0);",
+                  "      if (d.content) text += d.content;",
+                  "      if (c.finish_reason) finishes++;",
+                  "    });",
+                  "  });",
+                  "  pm.expect(text, 'answer does not use the search result: ' + text).to.match(/orrin/i);",
+                  "  pm.expect(finishes, 'expected exactly one finish_reason across turns').to.equal(1);",
+                  "  pm.expect(Object.keys(ids), 'every chunk carries one stream id').to.have.length(1);",
+                  "  var raws = events.filter(function (e) { return e.extra_fields && e.extra_fields.raw_request; }).map(function (e) { return JSON.stringify(e.extra_fields.raw_request); });",
+                  "  pm.expect(raws.length, 'no raw_request in the stream (send_back_raw_request is on for this profile provider)').to.be.above(0);",
+                  "  raws.forEach(function (raw) {",
+                  "    pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "    pm.expect(raw, 'the native web search reached the provider: ' + raw).to.not.include('web_search_20250305');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_websearch gpt-4o-mini responses stream injected-web-search is one response",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_websearch/gpt-4o-mini\",\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 300,\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use web search to look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function sseEvents(text) {",
+                  "  var out = [];",
+                  "  var lines = text.split('\\n');",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "    if (lines[i].indexOf('data:') !== 0 || t === '' || t === '[DONE]') continue;",
+                  "    try { out.push(JSON.parse(t)); } catch (e) {}",
+                  "  }",
+                  "  return out;",
+                  "}",
+                  "pm.test('one created, one completed, gapless sequence numbers, no function call events', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var events = sseEvents(pm.response.text());",
+                  "  var created = 0, completed = null, completedCount = 0, text = '', last = -1;",
+                  "  events.forEach(function (e) {",
+                  "    pm.expect(e.sequence_number, 'sequence numbers must run without gaps: ' + JSON.stringify(e)).to.equal(last + 1);",
+                  "    last = e.sequence_number;",
+                  "    pm.expect(String(e.type), 'a function call event reached the client: ' + JSON.stringify(e)).to.not.include('function_call');",
+                  "    if (e.item && e.item.type === 'function_call') pm.expect.fail('function_call item leaked: ' + JSON.stringify(e));",
+                  "    if (e.type === 'response.created') created++;",
+                  "    if (e.type === 'response.completed') { completedCount++; completed = e.response; }",
+                  "    if (e.type === 'response.output_text.delta') text += e.delta;",
+                  "  });",
+                  "  pm.expect(created).to.equal(1);",
+                  "  pm.expect(completedCount).to.equal(1);",
+                  "  pm.expect(text, 'answer does not use the search result: ' + text).to.match(/orrin/i);",
+                  "  pm.expect(completed.usage.input_tokens, 'usage must cover every turn').to.be.above(0);",
+                  "  var raws = events.filter(function (e) { return e.extra_fields && e.extra_fields.raw_request; }).map(function (e) { return JSON.stringify(e.extra_fields.raw_request); });",
+                  "  pm.expect(raws.length, 'no raw_request in the stream (send_back_raw_request is on for this profile provider)').to.be.above(0);",
+                  "  raws.forEach(function (raw) {",
+                  "    pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "    pm.expect(raw, 'the native web search reached the provider: ' + raw).to.not.include('\"type\":\"web_search\"');",
+                  "  });",
+                  "  (completed.output || []).forEach(function (item) {",
+                  "    pm.expect(item.type, 'an injected call or its result leaked into response.completed: ' + JSON.stringify(item)).to.not.match(/^function_call/);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic_websearch claude-haiku-4-5 messages injected-web-search replaces web_search_20250305",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic_websearch/claude-haiku-4-5\",\n  \"tool_choice\": {\n    \"type\": \"any\"\n  },\n  \"max_tokens\": 300,\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\",\n      \"max_uses\": 2\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use web search to look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the Anthropic route answers from the MCP search, not native search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = '';",
+                  "  (body.content || []).forEach(function (block) {",
+                  "    pm.expect(block.type, 'a tool block leaked to the client: ' + JSON.stringify(block)).to.not.match(/tool_use|tool_result/);",
+                  "    if (block.type === 'text') text += block.text;",
+                  "  });",
+                  "  pm.expect(text, 'answer does not use the search result: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  pm.expect(body.stop_reason).to.equal('end_turn');",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "  pm.expect(raw, 'native web_search_20250305 reached Anthropic: ' + raw).to.not.include('web_search_20250305');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic_websearch provider API injected-web-search returns injected_tools",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/anthropic_websearch"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the provider API reports the configured injected web search tool', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var injected = pm.response.json().injected_tools;",
+                  "  pm.expect(injected, 'injected_tools missing from the provider response: ' + pm.response.text()).to.eql({ web_search: { mcp_client_name: 'sse_mcp', tool_name: 'web_search' } });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] anthropic_websearch provider API injected-web-search rejects a tool-less web_search",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 10,\n    \"buffer_size\": 100\n  },\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"anthropic\",\n    \"is_key_less\": false\n  },\n  \"injected_tools\": {\n    \"web_search\": {\n      \"mcp_client_name\": \"sse_mcp\"\n    }\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/providers/anthropic_websearch"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the validator rejects injected_tools without a tool_name, before anything is saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'rejected for another reason: ' + pm.response.text()).to.include('web_search.tool_name is required');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
