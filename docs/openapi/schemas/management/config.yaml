@@ -116,6 +116,45 @@ ClientConfig:
         caller can see. This rides on every MCP-bearing request that carries
         tools, so raising it raises per-request tokens. 0 uses the
         built-in default of 16384.
+    mcp_code_mode_limits:
+      type: object
+      description: >
+        Limits applied to each code mode (executeToolCode) execution. Omit the
+        object to keep the current limits; send {} to reset every limit to its
+        default. Any field omitted or set to 0 uses its default. There is no
+        limit on concurrent executions.
+      properties:
+        max_source_bytes:
+          type: integer
+          minimum: 0
+          description: Maximum submitted code size in bytes. 0 uses the default of 65536.
+        max_steps:
+          type: integer
+          minimum: 0
+          description: Maximum interpreter computation steps per execution. 0 uses the default of 1000000.
+        max_memory_bytes:
+          type: integer
+          minimum: 0
+          description: Estimated allocation budget per execution in bytes. 0 uses the default of 67108864.
+        max_log_bytes:
+          type: integer
+          minimum: 0
+          description: Maximum log output per execution in bytes, including newlines. 0 uses the default of 65536.
+        max_tool_calls:
+          type: integer
+          minimum: 0
+          description: Maximum nested MCP tool calls per execution. 0 uses the default of 64.
+        max_value_bytes:
+          type: integer
+          anyOf:
+            - const: 0
+            - minimum: 1024
+          description: Size budget for each tool payload and converted result in bytes. Must be 0 (default of 1048576) or at least 1024.
+        max_nesting_depth:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: Maximum nesting depth of values crossing the tool boundary. 0 uses the default of 64.
     required_headers:
       type: array
       items:
