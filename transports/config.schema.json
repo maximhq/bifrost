@@ -112,7 +112,7 @@
               }
             ]
           },
-          "description": "CORS allowed origins (supports \"*\" or URI strings)"
+          "description": "CORS allowed origins: exact URI strings, wildcard-host patterns such as https://*.example.com, or \"*\". While dashboard auth is disabled, browser requests to the management API are accepted only from localhost origins, the gateway's own origin, and origins listed here explicitly; the \"*\" entry does not admit them."
         },
         "enable_logging": {
           "type": "boolean",
@@ -340,6 +340,10 @@
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
+        "mcp_code_mode_limits": {
+          "$ref": "#/$defs/mcp_code_mode_limits",
+          "description": "Per-execution code mode limits, as stored and served by the config API. In config.json prefer mcp.tool_manager_config.code_mode_limits, which takes precedence when both are set."
+        },
         "mcp_enable_temp_token_auth": {
           "type": "boolean",
           "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth and per-user-headers auth pages so anonymous browser visitors can complete the flow without a dashboard session. User-mode flows are never minted regardless of this setting \u2014 they always require SSO login.",
@@ -397,6 +401,12 @@
         "oauth2_server_config": {
           "type": "object",
           "properties": {
+            "allowed_redirect_uris": {
+              "type": "array",
+              "items": { "type": "string", "format": "uri" },
+              "default": [],
+              "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries. Remote callbacks are denied by default; changing this list through the API requires dashboard authentication."
+            },
             "issuer_url": {
               "anyOf": [
                 {
@@ -903,6 +913,10 @@
                 "type": "string",
                 "description": "Associated rate limit ID"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this customer holds. The profile governs everything under the customer and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap the customer's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
@@ -974,6 +988,10 @@
                 "type": "object",
                 "description": "Team claims data"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this team holds. The profile governs everything under the team and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap the team's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
@@ -1027,6 +1045,10 @@
                 "type": "object",
                 "description": "Business unit claims data"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this business unit holds. The profile governs everything under the business unit and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "team_ids": {
                 "type": "array",
                 "description": "Team IDs to assign to this business unit",
@@ -1058,10 +1080,12 @@
               },
               "dac": {
                 "type": "string",
-                "description": "Data Access Control scope: own-data (user's own records), team-data (user's team records), all-data (unrestricted). Defaults to all-data.",
+                "description": "Data Access Control scope: own-data (user's own records), team-data (plus records of the user's teams), business-unit-data (plus records of the user's business units), customer-data (everything under the customers the user reaches through their teams or business units), all-data (unrestricted). Defaults to all-data.",
                 "enum": [
                   "own-data",
                   "team-data",
+                  "business-unit-data",
+                  "customer-data",
                   "all-data"
                 ],
                 "default": "all-data"
@@ -1074,6 +1098,8 @@
                   "enum": [
                     "own-data",
                     "team-data",
+                    "business-unit-data",
+                    "customer-data",
                     "all-data"
                   ]
                 }
@@ -4866,10 +4892,74 @@
     },
     "circuit_breaker_config": {
       "$ref": "#/$defs/circuit_breaker_config"
+    },
+    "proxy_config": {
+      "$ref": "#/$defs/global_proxy_config"
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "global_proxy_config": {
+      "type": "object",
+      "description": "Global outbound proxy (the dashboard's proxy settings page) and which components use it. Under source_of_truth \"split\" it is applied when new or changed and dashboard edits are kept otherwise; under \"config.json\" it is applied on every startup. Omit to manage the proxy from the dashboard. Not the same as a provider's own proxy_config.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Turn the proxy on",
+          "default": false
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "http"
+          ],
+          "default": "http",
+          "description": "Proxy type. Only http is supported."
+        },
+        "url": {
+          "type": "string",
+          "description": "Proxy URL, e.g. http://proxy.example.com:8080 (supports env.VAR_NAME). Required when enabled."
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for proxy authentication (supports env.VAR_NAME)"
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for proxy authentication (supports env.VAR_NAME)"
+        },
+        "no_proxy": {
+          "type": "string",
+          "description": "Comma-separated hosts that bypass the proxy: exact hosts, .example.com (domain and subdomains), *.example.com (subdomains), or *"
+        },
+        "timeout": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Connection timeout in seconds"
+        },
+        "skip_tls_verify": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip TLS certificate verification for the proxy"
+        },
+        "enable_for_scim": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enterprise: route SCIM directory sync and identity-provider requests through the proxy"
+        },
+        "enable_for_inference": {
+          "type": "boolean",
+          "default": false,
+          "description": "Route inference requests through the proxy"
+        },
+        "enable_for_api": {
+          "type": "boolean",
+          "default": false,
+          "description": "Route API requests through the proxy"
+        }
+      },
+      "additionalProperties": false
+    },
     "complexity_jev_tier_criteria": {
       "type": "object",
       "properties": {
@@ -5908,7 +5998,7 @@
         "base_url": {
           "type": "string",
           "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama)"
+          "description": "Base URL for the provider (optional, required for Ollama). Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
         },
         "extra_headers": {
           "type": "object",
@@ -7934,6 +8024,66 @@
           "minimum": 0,
           "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.",
           "default": 0
+        },
+        "code_mode_limits": {
+          "$ref": "#/$defs/mcp_code_mode_limits"
+        }
+      }
+    },
+    "mcp_code_mode_limits": {
+      "type": "object",
+      "description": "Limits applied to each code mode (executeToolCode) execution. Every field is optional; omit it or set 0 to use the built-in default. There is no limit on how many executions run concurrently.",
+      "additionalProperties": false,
+      "properties": {
+        "max_source_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum size of the submitted code in bytes. 0 uses the default of 65536 (64 KiB).",
+          "default": 0
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum interpreter computation steps per execution, including work inside builtins. 0 uses the default of 1000000.",
+          "default": 0
+        },
+        "max_memory_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Estimated allocation budget per execution in bytes, enforced by the interpreter and value converters before allocating. 0 uses the default of 67108864 (64 MiB).",
+          "default": 0
+        },
+        "max_log_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum print and tool log output per execution in bytes, including newlines. 0 uses the default of 65536 (64 KiB).",
+          "default": 0
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum nested MCP tool calls per execution. 0 uses the default of 64.",
+          "default": 0
+        },
+        "max_value_bytes": {
+          "type": "integer",
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "minimum": 1024
+            }
+          ],
+          "description": "Size budget in bytes for each tool payload and converted result, counted conservatively for JSON escaping. Must be 0 (default of 1048576, 1 MiB) or at least 1024.",
+          "default": 0
+        },
+        "max_nesting_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "Maximum nesting depth of values crossing the tool boundary. 0 uses the default of 64; at most 1000.",
+          "default": 0
         }
       }
     },
@@ -8400,7 +8550,7 @@
         },
         "ca_cert_pem": {
           "type": "string",
-          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, supports env.VAR_NAME)"
+          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, and for the proxy itself when the URL is https://, supports env.VAR_NAME)"
         }
       },
       "required": [
@@ -8860,7 +9010,7 @@
         },
         "apiToken": {
           "type": "string",
-          "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
+          "description": "Okta API token for Admin API access (optional; enables background user/group reconciliation on the bulkSyncInterval schedule, 24h by default)"
         },
         "audience": {
           "type": "string",
@@ -8905,6 +9055,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -8996,6 +9152,12 @@
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         },
@@ -9069,6 +9231,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9152,6 +9320,12 @@
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         },
@@ -9224,6 +9398,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9314,6 +9494,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9443,6 +9629,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -11852,6 +12044,39 @@
         ],
         "additionalProperties": false
       }
+    },
+    "scim_attribute_project_mappings": {
+      "type": "array",
+      "description": "Attribute -> project mappings. Every matching rule applies: the user is added to each project it matches. Projects are never auto-created; a rule naming a missing project is dropped. Memberships added this way are removed when the rule stops matching; members added from the dashboard are kept.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "project": {
+            "type": "string",
+            "description": "Name of the project to add the user to on match"
+          }
+        },
+        "required": [
+          "attribute",
+          "value",
+          "project"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "scim_bulk_sync_interval": {
+      "type": "string",
+      "pattern": "^([0-9]+d|([0-9]+(\\.[0-9]+)?(h|m|s))+)$",
+      "default": "24h",
+      "description": "How often the directory reconcile lists the IdP's users through its admin API and deprovisions the ones it no longer returns, as whole days or h/m/s pairs (e.g. '12h', '1h30m', '7d'). Must be between 1h and 30d. Defaults to 24h. Inert when SCIM provisioning is enabled or the provider has no directory API access (e.g. Okta without apiToken)."
     },
     "scim_attribute_business_unit_mappings": {
       "type": "array",

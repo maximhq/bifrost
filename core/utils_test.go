@@ -572,3 +572,72 @@ func TestWaitRetryBackoffReportsCancellationAtTimerExpiry(t *testing.T) {
 		}
 	}
 }
+
+// OpenAI-compatible clients take the assistant role from the first chunk of a
+// choice and drop tool calls without it (maximhq/bifrost#7693). Some clients
+// concatenate a repeated role, so it must appear exactly once.
+func TestWrapConvertedStreamPostHookRunnerSendsAssistantRoleOnce(t *testing.T) {
+	reasoning := schemas.ResponsesMessageTypeReasoning
+	functionCall := schemas.ResponsesMessageTypeFunctionCall
+	message := schemas.ResponsesMessageTypeMessage
+
+	tests := []struct {
+		name   string
+		events []*schemas.BifrostResponsesStreamResponse
+	}{
+		{
+			name: "tool call turn without a message item",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated},
+				{Type: schemas.ResponsesStreamResponseTypeInProgress},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &reasoning}},
+				{
+					Type:        schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					OutputIndex: schemas.Ptr(1),
+					Item: &schemas.ResponsesMessage{
+						Type: &functionCall,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_1"),
+							Name:   schemas.Ptr("get_weather"),
+						},
+					},
+				},
+				{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, Delta: schemas.Ptr("{}")},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted},
+			},
+		},
+		{
+			name: "text turn",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &message}},
+				{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("Hello")},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var roles []*string
+			runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				require.NotNil(t, result.ChatResponse)
+				require.NotEmpty(t, result.ChatResponse.Choices)
+				roles = append(roles, result.ChatResponse.Choices[0].Delta.Role)
+				return result, bifrostErr
+			}, schemas.ResponsesRequest)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			for _, event := range tt.events {
+				runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+			}
+
+			require.Len(t, roles, len(tt.events))
+			require.NotNil(t, roles[0], "first chunk has no role")
+			assert.Equal(t, string(schemas.ChatMessageRoleAssistant), *roles[0])
+			for i, role := range roles[1:] {
+				assert.Nil(t, role, "chunk %d repeats the role", i+1)
+			}
+		})
+	}
+}

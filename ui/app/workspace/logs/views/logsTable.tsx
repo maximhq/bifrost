@@ -254,12 +254,16 @@ export function LogsDataTable({
 										// The nesting marker on a child row is an inset shadow on the
 										// leading cell rather than a border on the row: a real border
 										// takes width from the first cell and shifts the whole row's
-										// content sideways as it expands.
+										// content sideways as it expands. Session members are blue and
+										// chain rows grey, so the kind reads even with the expand
+										// column scrolled away; a chain under a session member is wider.
 										const nestingMarker =
 											display.__chainChild && cellIndex === 0
-												? display.__depth === 2
-													? "shadow-[inset_4px_0_0_0_#a1a1aa] dark:shadow-[inset_4px_0_0_0_#71717a]"
-													: "shadow-[inset_2px_0_0_0_#d4d4d8] dark:shadow-[inset_2px_0_0_0_#52525b]"
+												? display.__rowKind === "session-member"
+													? "shadow-[inset_2px_0_0_0_#93c5fd] dark:shadow-[inset_2px_0_0_0_#1d4ed8]"
+													: display.__depth === 2
+														? "shadow-[inset_4px_0_0_0_#a1a1aa] dark:shadow-[inset_4px_0_0_0_#71717a]"
+														: "shadow-[inset_2px_0_0_0_#d4d4d8] dark:shadow-[inset_2px_0_0_0_#52525b]"
 												: undefined;
 										return (
 											<TableCell
@@ -273,10 +277,10 @@ export function LogsDataTable({
 												}}
 												className={cn(
 													"py-1.5 align-middle",
-													// The expander is a 52px column whose control fills it;
-													// the cell's default px-4 would leave 20px of usable
-													// width and squeeze the chevron and its count.
-													cell.column.id === "expand" ? "px-0" : undefined,
+													// The expander's control fills its cell and lays out its own
+													// padding, and the tree lines it draws are positioned against
+													// the cell's full height so they meet across rows.
+													cell.column.id === "expand" ? "relative px-0 py-0" : undefined,
 													pinned && "bg-card",
 													cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
 													cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,

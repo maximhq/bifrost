@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -940,5 +941,85 @@ func TestSignAWSRequest_ExcludesVolatileHeadersFromSignature(t *testing.T) {
 	}
 	if !slices.Contains(signedHeaders, "host") {
 		t.Errorf("host must be signed; SignedHeaders=%q", signedHeadersStr)
+	}
+}
+
+// TestBedrockTransportUsesProxyConfig pins that Bedrock's net/http runtime client honours
+// proxy_config. It used to hard-code http.ProxyFromEnvironment, so a proxy set on the
+// provider reached only the fasthttp Mantle clients and runtime calls went direct.
+func TestBedrockTransportUsesProxyConfig(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse", nil)
+	require.NoError(t, err)
+
+	config := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 300},
+		ProxyConfig:   &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://10.0.0.9:3128")},
+	}
+	config.CheckAndSetDefaults()
+
+	provider, err := NewBedrockProvider(config, noopLogger{})
+	require.NoError(t, err)
+	transport, ok := provider.client.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotNil(t, transport.Proxy)
+	proxyURL, err := transport.Proxy(req)
+	require.NoError(t, err)
+	require.NotNil(t, proxyURL, "runtime requests must go through the configured proxy")
+	assert.Equal(t, "10.0.0.9:3128", proxyURL.Host)
+
+	// No proxy_config (or the UI's "none") keeps the environment-driven default.
+	for _, proxyConfig := range []*schemas.ProxyConfig{nil, {Type: schemas.NoProxy}} {
+		config := &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 300},
+			ProxyConfig:   proxyConfig,
+		}
+		config.CheckAndSetDefaults()
+		provider, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+		transport, ok := provider.client.Transport.(*http.Transport)
+		require.True(t, ok)
+		assert.NotNil(t, transport.Proxy, "unconfigured proxy must still honour HTTPS_PROXY")
+	}
+}
+
+// TestBedrockTransportProxyMatrix pins the Bedrock runtime client's route for every
+// combination of proxy_config source, proxy env vars and target, sending real requests
+// through provider.client (the net/http client Bedrock keeps for HTTP/2) and the
+// core/network/proxytest recorders. Bedrock follows net/http's rule for the
+// environment: the variable is picked by scheme, and with no proxy_config it keeps
+// proxying from the environment. Like every stack it reads the environment through
+// golang.org/x/net's httpproxy, so the lowercase spelling wins when both are set. The
+// fasthttp stacks are covered by TestProxyRoutingMatrix in core/providers/utils.
+func TestBedrockTransportProxyMatrix(t *testing.T) {
+	set := proxytest.NewSet(t)
+	for _, source := range proxytest.Sources {
+		for _, env := range proxytest.Envs {
+			for _, target := range proxytest.Targets {
+				t.Run(source.Name+"/"+env.Name+"/"+target.Name, func(t *testing.T) {
+					set.Reset()
+					proxytest.SetEnv(t, set, env, proxytest.TargetHost)
+					want := proxytest.Expect(set, source, env, target, proxytest.ByScheme, true)
+
+					config := &schemas.ProviderConfig{
+						NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5},
+						ProxyConfig:   source.Config(set),
+					}
+					config.CheckAndSetDefaults()
+					provider, err := NewBedrockProvider(config, noopLogger{})
+					require.NoError(t, err)
+
+					hostPort := net.JoinHostPort(proxytest.TargetHost, target.Port)
+					ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+					defer cancel()
+					req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.Scheme+"://"+hostPort+"/model/x/converse", nil)
+					require.NoError(t, err)
+					resp, err := provider.client.Do(req)
+					if err == nil {
+						resp.Body.Close()
+					}
+					proxytest.AssertRoute(t, set, want, hostPort, err)
+				})
+			}
+		}
 	}
 }

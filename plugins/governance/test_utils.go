@@ -379,11 +379,26 @@ func newTestModelCatalog(t *testing.T) *modelcatalog.ModelCatalog {
 // test can assert the verdict end to end. It takes the access rather than a key: the funnel composes
 // the same two steps for every request, keyed or not.
 func evaluateGrantedRequest(r *BudgetResolver, ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string, requestType schemas.RequestType) *EvaluationResult {
-	evaluationRequest := &EvaluationRequest{
+	return evaluateGrantedRequestWith(r, ctx, access, &EvaluationRequest{
 		RequestType: requestType,
 		Provider:    provider,
 		Model:       model,
-	}
+	})
+}
+
+// evaluateOpaqueBatch is evaluateGrantedRequest for a batch create defined by an uploaded file or
+// blob, the shape PreLLMHook marks with OpaqueBatchInput.
+func evaluateOpaqueBatch(r *BudgetResolver, ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *EvaluationResult {
+	return evaluateGrantedRequestWith(r, ctx, ctx.Grant().Access(), &EvaluationRequest{
+		RequestType:      schemas.BatchCreateRequest,
+		Provider:         provider,
+		Model:            model,
+		OpaqueBatchInput: true,
+	})
+}
+
+func evaluateGrantedRequestWith(r *BudgetResolver, ctx *schemas.BifrostContext, access schemas.Access, evaluationRequest *EvaluationRequest) *EvaluationResult {
+	provider, model := evaluationRequest.Provider, evaluationRequest.Model
 	if result := r.evaluateAccess(ctx, evaluationRequest, access); result.Decision != DecisionAllow {
 		return result
 	}
