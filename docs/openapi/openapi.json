@@ -115466,6 +115466,31 @@
               }
             }
           },
+          "injected_tools": {
+            "additionalProperties": false,
+            "type": "object",
+            "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer.",
+            "properties": {
+              "web_search": {
+                "type": "object",
+                "description": "MCP tool used as the provider's web search. Replaces any native web search tool or web_search_options the client sends.",
+                "required": ["mcp_client_name", "tool_name"],
+                "additionalProperties": false,
+                "properties": {
+                  "mcp_client_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Name of the configured MCP client that provides the tool."
+                  },
+                  "tool_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Tool name as the MCP server exposes it, without the client prefix."
+                  }
+                }
+              }
+            }
+          },
           "provider_status": {
             "type": "string",
             "enum": [
@@ -115708,6 +115733,31 @@
                 }
               }
             }
+          },
+          "injected_tools": {
+            "additionalProperties": false,
+            "type": "object",
+            "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer.",
+            "properties": {
+              "web_search": {
+                "type": "object",
+                "description": "MCP tool used as the provider's web search. Replaces any native web search tool or web_search_options the client sends.",
+                "required": ["mcp_client_name", "tool_name"],
+                "additionalProperties": false,
+                "properties": {
+                  "mcp_client_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Name of the configured MCP client that provides the tool."
+                  },
+                  "tool_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Tool name as the MCP server exposes it, without the client prefix."
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -115909,6 +115959,39 @@
                 }
               }
             }
+          },
+          "injected_tools": {
+            "description": "Send null to remove the provider's injected tools.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer.",
+                "properties": {
+                  "web_search": {
+                    "type": "object",
+                    "description": "MCP tool used as the provider's web search. Replaces any native web search tool or web_search_options the client sends.",
+                    "required": ["mcp_client_name", "tool_name"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "mcp_client_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Name of the configured MCP client that provides the tool."
+                      },
+                      "tool_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Tool name as the MCP server exposes it, without the client prefix."
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
