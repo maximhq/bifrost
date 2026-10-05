@@ -3514,6 +3514,14 @@ func OpenAILivePaths(pathPrefix string) []string {
 	}
 }
 
+// OpenAILiveAttachPaths returns WebSocket paths for GPT Live sideband attach under an integration prefix.
+func OpenAILiveAttachPaths(pathPrefix string) []string {
+	return []string{
+		pathPrefix + "/v1/live/sessions/{session_id}/attach",
+		pathPrefix + "/live/sessions/{session_id}/attach",
+	}
+}
+
 // OpenAIRealtimeWebRTCCallsPaths returns HTTP POST paths for the GA /realtime/calls
 // WebRTC SDP exchange endpoint (multipart sdp + session format).
 func OpenAIRealtimeWebRTCCallsPaths(pathPrefix string) []string {
