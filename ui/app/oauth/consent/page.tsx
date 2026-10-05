@@ -137,6 +137,10 @@ function ConsentView({ flowId }: { flowId: string }) {
 				</div>
 				<h1 className="text-xl font-semibold tracking-tight">{clientName} wants to connect</h1>
 				<p className="text-muted-foreground mt-1.5 text-sm">Choose how you'd like to identify yourself to Bifrost</p>
+				<p className="mt-4 text-sm">Continue only if you recognize this application and its callback destination:</p>
+				<p className="mt-2 font-mono text-sm break-all" data-testid="oauth-consent-redirect-uri">
+					{flow.redirect_uri}
+				</p>
 			</div>
 
 			<div className="space-y-3">

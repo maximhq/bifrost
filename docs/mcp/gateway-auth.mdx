@@ -151,6 +151,7 @@ curl -X PUT http://localhost:8080/api/config \
 |-------|------|----------|-------------|
 | `mcp_server_auth_mode` | string | No | `headers` (default), `both`, or `oauth`. |
 | `oauth2_server_config.issuer_url` | string | Yes, when mode is `both` or `oauth` | Stable public URL advertised as the issuer in discovery docs and the JWT `iss` claim. Supports `env.MY_VAR` syntax. |
+| `oauth2_server_config.allowed_redirect_uris` | string[] | No | Exact approved remote callback URIs. Remote callbacks are denied unless listed. Loopback callbacks and `cursor://anysphere.cursor-mcp` remain available without entries. API changes require dashboard authentication. |
 | `oauth2_server_config.auth_code_ttl` | integer | No | Authorization code lifetime in seconds (default `300`, max `900` = 15 minutes). |
 | `oauth2_server_config.access_token_ttl` | integer | No | Issued JWT lifetime in seconds (default `600`). |
 | `oauth2_server_config.disable_vk_identity` | boolean | No | Require identity-provider login: removes the virtual-key option from consent and cuts off existing vk-mode grants (see [Token Lifetime & Revocation](#token-lifetime--revocation)). Only honored when an identity provider is configured, and only valid when `mcp_server_auth_mode` is `oauth` (400 otherwise). |
@@ -279,3 +280,7 @@ Client registration bounds its free-text fields: `client_name` up to 2048 bytes,
 - **[Bifrost as an MCP Gateway](./gateway)** — Expose aggregated tools to external MCP clients.
 - **[MCP Sessions](./sessions)** — Inspect and manage per-user credentials for upstream servers.
 - **[Virtual Keys](../features/governance/virtual-keys)** — Govern budgets, rate limits, and tool scope for the identities behind grants.
+
+### Callback destinations
+
+Remote OAuth clients must have their exact callback URI configured in `client.oauth2_server_config.allowed_redirect_uris` before registration or authorization. For example, add `"https://app.example.com/oauth/callback"`; wildcards are not supported. Existing registrations and pending flows are checked against the current list. URI credentials, fragments, missing hosts, and unsafe schemes are rejected. The consent page shows the client name and exact callback destination before you grant access. Only approve applications and destinations you recognize.

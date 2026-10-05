@@ -719,6 +719,7 @@ export interface CoreConfig {
 		issuer_url?: SecretVar;
 		auth_code_ttl?: number;
 		access_token_ttl?: number;
+		allowed_redirect_uris?: string[];
 		disable_vk_identity?: boolean;
 	};
 }
