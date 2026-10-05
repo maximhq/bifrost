@@ -4852,6 +4852,16 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 		bifrostUsage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: billable.ServerToolUse.WebSearchRequests}}
 	}
 
+	// Propagate the code execution call count. The billable session count is decided
+	// by the caller, which has the request context needed to apply the web-search
+	// exemption — see ApplyCodeExecutionSessionBilling.
+	if billable.ServerToolUse != nil && billable.ServerToolUse.CodeExecutionRequests > 0 {
+		if bifrostUsage.OutputTokensDetails == nil {
+			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+		}
+		bifrostUsage.OutputTokensDetails.NumCodeExecutionRequests = schemas.Ptr(billable.ServerToolUse.CodeExecutionRequests)
+	}
+
 	// Extended-thinking token count. Already a subset of OutputTokens upstream, so it
 	// carries across unchanged and OutputTokens/TotalTokens are left alone. Presence is
 	// the signal: Anthropic reports an explicit thinking_tokens: 0 when thinking was
@@ -4909,9 +4919,20 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 		}
 	}
 
-	// Handle server tool use statistics (e.g., web search)
-	if bifrostUsage.ToolUsage != nil && bifrostUsage.ToolUsage.WebSearch != nil && bifrostUsage.ToolUsage.WebSearch.NumRequests > 0 {
-		anthropicUsage.ServerToolUse = &AnthropicServerToolUseUsage{WebSearchRequests: bifrostUsage.ToolUsage.WebSearch.NumRequests}
+	// Handle server tool use statistics (e.g., web search, code execution)
+	searchRequests := 0
+	if bifrostUsage.ToolUsage != nil && bifrostUsage.ToolUsage.WebSearch != nil {
+		searchRequests = bifrostUsage.ToolUsage.WebSearch.NumRequests
+	}
+	codeExecutionRequests := 0
+	if bifrostUsage.OutputTokensDetails != nil && bifrostUsage.OutputTokensDetails.NumCodeExecutionRequests != nil {
+		codeExecutionRequests = *bifrostUsage.OutputTokensDetails.NumCodeExecutionRequests
+	}
+	if searchRequests > 0 || codeExecutionRequests > 0 {
+		anthropicUsage.ServerToolUse = &AnthropicServerToolUseUsage{
+			WebSearchRequests:     searchRequests,
+			CodeExecutionRequests: codeExecutionRequests,
+		}
 	}
 
 	// Reasoning tokens map back to Anthropic's thinking-token breakdown. Unlike the
@@ -4983,6 +5004,7 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 
 	// Convert usage information using common converter (handles iterations recursively)
 	bifrostResp.Usage = ConvertAnthropicUsageToBifrostUsage(response.Usage)
+	ApplyCodeExecutionSessionBilling(ctx, bifrostResp.Usage)
 
 	// Record the model that actually served the turn when server-side fallback
 	// handed off mid-request. Routing cannot see this, so pricing reads it here.
