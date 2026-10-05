@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -89,11 +91,12 @@ func drainChatStream(ch chan *schemas.BifrostStreamChunk) (string, []string) {
 	return content.String(), errs
 }
 
-func newStreamTestClient(t *testing.T, account *MockAccount) *Bifrost {
+func newStreamTestClient(t *testing.T, account *MockAccount, plugins ...schemas.LLMPlugin) *Bifrost {
 	t.Helper()
 	client, err := Init(context.Background(), schemas.BifrostConfig{
-		Account: account,
-		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: plugins,
 	})
 	if err != nil {
 		t.Fatalf("failed to initialize bifrost: %v", err)
@@ -358,6 +361,480 @@ func TestStreamRetryAfterFirstChunkError(t *testing.T) {
 	}
 	if content != "hello" {
 		t.Fatalf("retried stream content = %q, want %q", content, "hello")
+	}
+}
+
+// streamHookRecorder records the post-hooks a streamed request reaches, the way
+// the logging and telemetry plugins see them.
+type streamHookRecorder struct {
+	mu     sync.Mutex
+	pre    int
+	errs   []string
+	chunks int
+	finals int
+}
+
+func (r *streamHookRecorder) GetName() string { return "stream-hook-recorder" }
+
+func (r *streamHookRecorder) Cleanup() error { return nil }
+
+func (r *streamHookRecorder) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (r *streamHookRecorder) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pre++
+	return req, nil, nil
+}
+
+func (r *streamHookRecorder) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if bifrostErr != nil {
+		r.errs = append(r.errs, bifrostErr.GetErrorString())
+		return resp, bifrostErr, nil
+	}
+	r.chunks++
+	if IsFinalChunk(ctx) {
+		r.finals++
+	}
+	return resp, bifrostErr, nil
+}
+
+func (r *streamHookRecorder) snapshot() (pre int, errs []string, chunks, finals int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pre, slices.Clone(r.errs), r.chunks, r.finals
+}
+
+const streamRateLimitEvent = `{"error":{"message":"rate limit exceeded, please retry","type":"rate_limit_error"}}`
+
+// anthropicRateLimitHandler fails an Anthropic stream with a rate-limit error event.
+func anthropicRateLimitHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	fmt.Fprint(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"rate limit exceeded, please retry\"}}\n\n")
+}
+
+// A streamed attempt that fails before any output and is then retried must stay
+// invisible to plugins: one request, no error, exactly one last chunk. Before
+// the fix the failed attempt ran every post-hook, so logging closed the request
+// and dropped the retry that served the client, and telemetry's active-requests
+// gauge was decremented twice.
+func TestStreamRetryRunsPostHooksOnlyForServedAttempt(t *testing.T) {
+	openAISuccess := sseHandler(
+		`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"he"}}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"llo"}}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`,
+	)
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		failure  http.HandlerFunc
+		success  http.HandlerFunc
+	}{
+		{
+			name:     "openai error as first event",
+			provider: schemas.OpenAI,
+			model:    "gpt-4o-mini",
+			failure:  sseHandler(streamRateLimitEvent),
+			success:  openAISuccess,
+		},
+		{
+			name:     "openai error after startup event",
+			provider: schemas.OpenAI,
+			model:    "gpt-4o-mini",
+			failure:  sseHandler(`{"id":"failed","choices":[{"index":0,"delta":{"role":"assistant"}}]}`, streamRateLimitEvent),
+			success:  openAISuccess,
+		},
+		{
+			name:     "anthropic error as first event",
+			provider: schemas.Anthropic,
+			model:    "claude-3-5-haiku-20241022",
+			failure:  anthropicRateLimitHandler,
+			success:  anthropicMessagesHandler(),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if hits.Add(1) == 1 {
+					tc.failure(w, r)
+					return
+				}
+				tc.success(w, r)
+			}))
+			defer server.Close()
+
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(tc.provider, 1, 1, server.URL)
+			account.configs[tc.provider].NetworkConfig.MaxRetries = 1
+			account.configs[tc.provider].NetworkConfig.RetryBackoffInitial = time.Millisecond
+			account.SetKeysForProvider(tc.provider, []schemas.Key{
+				{ID: "retry-key", Value: *schemas.NewSecretVar("sk-retry"), Models: schemas.WhiteList{"*"}, Weight: 100},
+			})
+			recorder := &streamHookRecorder{}
+			client := newStreamTestClient(t, account, recorder)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+				},
+			})
+			if bifrostErr != nil {
+				t.Fatalf("retried stream failed (server hit %d time(s)): %s", hits.Load(), bifrostErr.GetErrorString())
+			}
+			content, chunkErrs := drainChatStream(stream)
+			if hits.Load() != 2 || content != "hello" || len(chunkErrs) > 0 {
+				t.Fatalf("server hits = %d, content = %q, error chunks = %v; want 2, %q, none", hits.Load(), content, chunkErrs, "hello")
+			}
+
+			pre, errs, chunks, finals := recorder.snapshot()
+			if pre != 1 {
+				t.Errorf("pre-hooks = %d, want 1", pre)
+			}
+			if len(errs) != 0 {
+				t.Errorf("error post-hooks = %v, want none: the retried attempt's error reached plugins", errs)
+			}
+			if finals != 1 {
+				t.Errorf("post-hooks marked as the last chunk = %d of %d, want exactly 1", finals, chunks)
+			}
+		})
+	}
+}
+
+// resetCountingTracer gives each request a trace and counts accumulator resets on it.
+type resetCountingTracer struct {
+	schemas.NoOpTracer
+	resets atomic.Int32
+}
+
+func (t *resetCountingTracer) CreateTrace(_ string, _ ...string) string { return "retry-trace" }
+
+func (t *resetCountingTracer) ResetStreamAccumulator(traceID string) {
+	if traceID == "retry-trace" {
+		t.resets.Add(1)
+	}
+}
+
+// A retried stream attempt starts with the request's accumulated chunks cleared,
+// so the failed attempt's startup events cannot shadow the retry's, whose chunk
+// indexes restart at 0.
+func TestStreamRetryResetsAccumulatedChunks(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			sseHandler(`{"id":"failed","choices":[{"index":0,"delta":{"role":"assistant"}}]}`, streamRateLimitEvent)(w, r)
+			return
+		}
+		sseHandler(`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`)(w, r)
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 1
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "retry-key", Value: *schemas.NewSecretVar("sk-retry"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	tracer := &resetCountingTracer{}
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		Tracer:  tracer,
+	})
+	if err != nil {
+		t.Fatalf("failed to initialize bifrost: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("retried stream failed: %s", bifrostErr.GetErrorString())
+	}
+	drainChatStream(stream)
+	if hits.Load() != 2 || tracer.resets.Load() != 1 {
+		t.Fatalf("server hits = %d, accumulator resets = %d; want 2 and one reset before the retry", hits.Load(), tracer.resets.Load())
+	}
+}
+
+// When every streamed attempt fails before any output, plugins see the request
+// end exactly once. Before the fix each attempt ran the error post-hooks and the
+// caller ran them again, so logging wrote one error row per attempt plus one.
+func TestStreamRetriesExhaustedRunErrorPostHooksOnce(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		sseHandler(streamRateLimitEvent)(w, r)
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 1
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "retry-key", Value: *schemas.NewSecretVar("sk-retry"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	recorder := &streamHookRecorder{}
+	client := newStreamTestClient(t, account, recorder)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+		},
+	})
+	if bifrostErr == nil {
+		drainChatStream(stream)
+		t.Fatal("expected the request to fail once retries were exhausted")
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("server hits = %d, want 2 (initial attempt plus one retry)", hits.Load())
+	}
+
+	pre, errs, _, _ := recorder.snapshot()
+	if pre != 1 || len(errs) != 1 {
+		t.Fatalf("pre-hooks = %d, error post-hooks = %v; want 1 and exactly one error", pre, errs)
+	}
+	if !strings.Contains(errs[0], "rate limit exceeded") {
+		t.Fatalf("error post-hook = %q, want the last attempt's rate-limit error", errs[0])
+	}
+}
+
+// postHookSpanTracer records the plugin post-hook spans a request emits.
+type postHookSpanTracer struct {
+	schemas.NoOpTracer
+	mu    sync.Mutex
+	spans []string
+}
+
+func (t *postHookSpanTracer) StartSpan(ctx context.Context, name string, kind schemas.SpanKind) (context.Context, schemas.SpanHandle) {
+	if strings.HasSuffix(name, ".posthook") {
+		t.mu.Lock()
+		t.spans = append(t.spans, name)
+		t.mu.Unlock()
+	}
+	return t.NoOpTracer.StartSpan(ctx, name, kind)
+}
+
+// Stream post-hooks only accumulate timing; spans come from finalizing the
+// pipeline. The worker's final error hooks for a held-back error must finalize
+// theirs, or a request whose retries all fail traces no post-hook span.
+func TestStreamRetriesExhaustedTraceErrorPostHooks(t *testing.T) {
+	server := httptest.NewServer(sseHandler(streamRateLimitEvent))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 1
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "retry-key", Value: *schemas.NewSecretVar("sk-retry"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	tracer := &postHookSpanTracer{}
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		Tracer:     tracer,
+		LLMPlugins: []schemas.LLMPlugin{&streamHookRecorder{}},
+	})
+	if err != nil {
+		t.Fatalf("failed to initialize bifrost: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+		},
+	})
+	if bifrostErr == nil {
+		drainChatStream(stream)
+		t.Fatal("expected the request to fail once retries were exhausted")
+	}
+
+	tracer.mu.Lock()
+	defer tracer.mu.Unlock()
+	if len(tracer.spans) != 1 || tracer.spans[0] != "plugin.stream-hook-recorder.posthook" {
+		t.Fatalf("post-hook spans = %v, want one for the final error hooks", tracer.spans)
+	}
+}
+
+// A client that gives up while a failed streamed attempt waits out its retry
+// backoff must still leave plugins one terminal error. The failed attempt's
+// error is held back in case the retry serves the request, so once no retry
+// will run, the worker owes plugins the end of the request.
+func TestStreamHeldBackErrorReachesPluginsWhenClientLeavesDuringBackoff(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		sseHandler(streamRateLimitEvent)(w, r)
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 1
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = 3 * time.Second
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = 3 * time.Second
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "retry-key", Value: *schemas.NewSecretVar("sk-retry"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	recorder := &streamHookRecorder{}
+	client := newStreamTestClient(t, account, recorder)
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		stream, _ := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+			},
+		})
+		if stream != nil {
+			drainChatStream(stream)
+		}
+	}()
+
+	// Leave once the first attempt has failed and the retry is waiting out its backoff.
+	deadline := time.Now().Add(2 * time.Second)
+	for hits.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("server hits = %d, want the first attempt to have run", hits.Load())
+	}
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, errs, _, _ := recorder.snapshot(); len(errs) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Give a duplicate terminal time to land before counting.
+	time.Sleep(100 * time.Millisecond)
+	pre, errs, _, _ := recorder.snapshot()
+	if pre != 1 || len(errs) != 1 {
+		t.Fatalf("pre-hooks = %d, error post-hooks = %v; want 1 and exactly one error", pre, errs)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("server hits = %d, want 1: the retry must not run after the client left", hits.Load())
+	}
+}
+
+// errorRecoveringPlugin turns every error into an empty chat response, as a plugin
+// that answers failed requests itself does.
+type errorRecoveringPlugin struct{}
+
+func (errorRecoveringPlugin) GetName() string { return "error-recovering" }
+func (errorRecoveringPlugin) Cleanup() error  { return nil }
+func (errorRecoveringPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (errorRecoveringPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (errorRecoveringPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if bifrostErr != nil {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}, nil, nil
+	}
+	return resp, nil, nil
+}
+
+// A held-back error that a plugin recovers after the client left must not leave the
+// recovered stream's sender blocked. The worker's handoff to the departed caller can
+// win its select over ctx.Done, and then nothing ever reads that stream.
+func TestStreamRecoveredAfterClientLeftLeavesNoBlockedSender(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		sseHandler(streamRateLimitEvent)(w, r)
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 1
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = 300 * time.Millisecond
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = 300 * time.Millisecond
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "retry-key", Value: *schemas.NewSecretVar("sk-retry"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newStreamTestClient(t, account, errorRecoveringPlugin{})
+
+	// Each handoff is a coin flip, so repeat until a leak is all but certain.
+	const requests = 20
+	for range requests {
+		before := hits.Load()
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			stream, _ := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+				},
+			})
+			if stream != nil {
+				drainChatStream(stream)
+			}
+		}()
+		// Leave once the first attempt has failed and the retry is waiting out its backoff.
+		deadline := time.Now().Add(2 * time.Second)
+		for hits.Load() == before && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if hits.Load() == before {
+			cancel()
+			t.Fatal("first attempt never reached the server")
+		}
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		<-done
+	}
+
+	blocked := 0
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		buf := make([]byte, 1<<20)
+		blocked = strings.Count(string(buf[:runtime.Stack(buf, true)]), "newBifrostMessageChan.func1(")
+		if blocked == 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if blocked != 0 {
+		t.Fatalf("%d of %d recovered streams left their sender goroutine blocked", blocked, requests)
 	}
 }
 

@@ -560,6 +560,60 @@ func (a *Accumulator) CleanupStreamAccumulator(requestID string) error {
 	return nil
 }
 
+// ResetStreamAccumulator drops the chunks accumulated so far, keeping the
+// reference count, start time and pause/resume gate, so a retried attempt starts clean.
+func (a *Accumulator) ResetStreamAccumulator(requestID string) {
+	acc, exists := a.streamAccumulators.Load(requestID)
+	if !exists {
+		return
+	}
+	accumulator, ok := acc.(*StreamAccumulator)
+	if !ok {
+		return
+	}
+	accumulator.mu.Lock()
+	defer accumulator.mu.Unlock()
+	for _, chunk := range accumulator.ChatStreamChunks {
+		a.putChatStreamChunk(chunk)
+	}
+	for _, chunk := range accumulator.ResponsesStreamChunks {
+		a.putResponsesStreamChunk(chunk)
+	}
+	for _, chunk := range accumulator.AudioStreamChunks {
+		a.putAudioStreamChunk(chunk)
+	}
+	for _, chunk := range accumulator.TranscriptionStreamChunks {
+		a.putTranscriptionStreamChunk(chunk)
+	}
+	for _, chunk := range accumulator.ImageStreamChunks {
+		a.putImageStreamChunk(chunk)
+	}
+	accumulator.ChatStreamChunks = nil
+	accumulator.ResponsesStreamChunks = nil
+	accumulator.AudioStreamChunks = nil
+	accumulator.TranscriptionStreamChunks = nil
+	accumulator.ImageStreamChunks = nil
+	clear(accumulator.ChatChunksSeen)
+	clear(accumulator.ResponsesChunksSeen)
+	clear(accumulator.TranscriptionChunksSeen)
+	clear(accumulator.AudioChunksSeen)
+	clear(accumulator.ImageChunksSeen)
+	accumulator.chatStreamType = ""
+	accumulator.MaxChatChunkIndex = -1
+	accumulator.MaxResponsesChunkIndex = -1
+	accumulator.MaxTranscriptionChunkIndex = -1
+	accumulator.MaxAudioChunkIndex = -1
+	accumulator.TerminalErrorChunkIndex = -1
+	accumulator.TerminalResponseChunkIndex = -1
+	accumulator.PassthroughBody = nil
+	accumulator.PassthroughStatusCode = 0
+	accumulator.PassthroughHeaders = nil
+	accumulator.PassthroughPath = ""
+	accumulator.FirstChunkTimestamp = time.Time{}
+	accumulator.FinalTimestamp = time.Time{}
+	accumulator.IsComplete = false
+}
+
 // ForceCleanupStreamAccumulator reaps a stream accumulator regardless of its
 // reference counter. It is the guaranteed end-of-stream backstop: callers invoke
 // it from the stream's terminal lifecycle hook (the provider goroutine's

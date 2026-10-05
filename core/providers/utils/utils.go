@@ -4435,16 +4435,19 @@ func CreateBifrostChatCompletionChunkResponse(
 
 // HandleStreamControlSkip checks if the stream control should be skipped.
 func HandleStreamControlSkip(bifrostErr *schemas.BifrostError) bool {
-	if bifrostErr == nil || bifrostErr.StreamControl == nil {
+	if !isStreamControlSkip(bifrostErr) {
 		return false
 	}
-	if bifrostErr.StreamControl.SkipStream != nil && *bifrostErr.StreamControl.SkipStream {
-		if bifrostErr.StreamControl.LogError != nil && *bifrostErr.StreamControl.LogError {
-			getLogger().Warn("Error in stream: " + bifrostErr.Error.Message)
-		}
-		return true
+	if bifrostErr.StreamControl.LogError != nil && *bifrostErr.StreamControl.LogError {
+		getLogger().Warn("Error in stream: " + bifrostErr.Error.Message)
 	}
-	return false
+	return true
+}
+
+// isStreamControlSkip reports whether a plugin asked for this chunk to be dropped from the stream.
+func isStreamControlSkip(bifrostErr *schemas.BifrostError) bool {
+	return bifrostErr != nil && bifrostErr.StreamControl != nil &&
+		bifrostErr.StreamControl.SkipStream != nil && *bifrostErr.StreamControl.SkipStream
 }
 
 // GetProviderName extracts the provider name from custom provider configuration.
