@@ -78,6 +78,7 @@ func (h *OAuth2ConsentHandler) RegisterRoutes(r *router.Router, middlewares ...s
 
 // consentFlowDetailResponse is the wire shape for GET /api/oauth2/consent/flows/{id}.
 type consentFlowDetailResponse struct {
+	RedirectURI    string            `json:"redirect_uri"`
 	ClientName     string            `json:"client_name"`
 	AvailableModes []consentFlowMode `json:"available_modes"`
 	LoggedInUser   *loggedInUser     `json:"logged_in_user,omitempty"` // non-nil when a valid session is present
@@ -122,6 +123,7 @@ func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp := consentFlowDetailResponse{
+		RedirectURI:    req.RedirectURI,
 		ClientName:     client.ClientName,
 		AvailableModes: h.availableModes(ctx),
 		ExpiresAt:      req.ExpiresAt.UTC().Format(time.RFC3339),
@@ -287,6 +289,12 @@ func (h *OAuth2ConsentHandler) loadPendingFlow(ctx *fasthttp.RequestCtx, flowID 
 	}
 	if time.Now().After(req.ExpiresAt) {
 		SendError(ctx, fasthttp.StatusGone, "authorization flow has expired")
+		return nil
+	}
+	// Device-grant rows (Claude Code gateway sign-in) carry no redirect_uri: consent
+	// sends the browser to Bifrost's own /oauth/device page, so there is nothing to approve.
+	if req.DeviceCodeHash == nil && !oauth2RedirectAllowed(h.store, req.RedirectURI) {
+		SendError(ctx, fasthttp.StatusBadRequest, "redirect_uri is no longer approved")
 		return nil
 	}
 	return req

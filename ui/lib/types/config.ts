@@ -7,7 +7,7 @@ import { SecretVar } from "./schemas";
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export const BaseProviderNames = ["openai", "anthropic", "cohere", "gemini", "bedrock", "replicate", "fireworks"] as const;
+export const BaseProviderNames = ["openai", "anthropic", "cohere", "gemini", "bedrock", "replicate", "fireworks", "typesafe"] as const;
 
 export type BaseProvider = (typeof BaseProviderNames)[number];
 
@@ -382,6 +382,7 @@ export type RequestType =
 	| "responses_input_items"
 	| "embedding"
 	| "rerank"
+	| "decisions"
 	| "speech"
 	| "speech_stream"
 	| "transcription"
@@ -453,6 +454,7 @@ export interface AllowedRequests {
 	list_models: boolean;
 	model_retrieve?: boolean;
 	rerank: boolean;
+	decisions?: boolean;
 	video_generation: boolean;
 	video_edit: boolean;
 	video_retrieve: boolean;
@@ -700,6 +702,17 @@ export interface CompatConfig {
 	azure_deepseek: boolean;
 }
 
+// Per-execution code mode limits; an omitted or 0 field uses the server default.
+export interface MCPCodeModeLimits {
+	max_source_bytes?: number;
+	max_steps?: number;
+	max_memory_bytes?: number;
+	max_log_bytes?: number;
+	max_tool_calls?: number;
+	max_value_bytes?: number;
+	max_nesting_depth?: number;
+}
+
 // Core Bifrost configuration types
 // How far an upstream MCP server's initialize `instructions` travel: dropped, forwarded on
 // the /mcp gateway handshake, or additionally injected into LLM requests.
@@ -733,6 +746,7 @@ export interface CoreConfig {
 	mcp_disable_auto_tool_inject: boolean;
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;
+	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
 	async_job_result_ttl: number;
 	required_headers: string[];
@@ -752,6 +766,7 @@ export interface CoreConfig {
 		issuer_url?: SecretVar;
 		auth_code_ttl?: number;
 		access_token_ttl?: number;
+		allowed_redirect_uris?: string[];
 		disable_vk_identity?: boolean;
 		claude_code_gateway?: {
 			enabled?: boolean;

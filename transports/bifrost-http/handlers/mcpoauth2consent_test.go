@@ -80,6 +80,9 @@ func TestConsentFlowDetail(t *testing.T) {
 		ctx := consentCtx("flow-1", "")
 		h.flowDetail(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+		var destination map[string]any
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &destination))
+		require.Equal(t, "http://127.0.0.1/cb", destination["redirect_uri"])
 
 		var resp consentFlowDetailResponse
 		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
@@ -458,4 +461,22 @@ func TestConsentSessionModeRequiresIdentity(t *testing.T) {
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 		assert.Equal(t, "session", store.authReqs["flow-1"].BfMode)
 	})
+}
+
+func TestConsentRechecksCallbackPolicy(t *testing.T) {
+	store := newConsentStore()
+	seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+	store.authReqs["flow-1"].RedirectURI = "https://removed.example/cb"
+	h := newConsentHandler(store, nil, false)
+	for _, submit := range []bool{false, true} {
+		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-unused"}`)
+		if submit {
+			h.flowSubmit(ctx)
+		} else {
+			h.flowDetail(ctx)
+		}
+		require.Equal(t, 400, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		require.Contains(t, string(ctx.Response.Body()), "no longer approved")
+	}
+	require.Equal(t, configtables.OAuth2AuthorizeRequestStatusPending, store.authReqs["flow-1"].Status)
 }

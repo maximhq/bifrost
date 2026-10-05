@@ -136,8 +136,8 @@ func (h *OAuth2IssuanceHandler) handleRegister(ctx *fasthttp.RequestCtx) {
 			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", fmt.Sprintf("redirect_uri exceeds %d bytes", maxOAuth2RedirectURILen))
 			return
 		}
-		if !isAllowedRedirectScheme(uri) {
-			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", "redirect_uris must use https (or http for loopback addresses)")
+		if !oauth2RedirectAllowed(h.store, uri) {
+			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", "redirect_uri must be a valid local callback or an administrator-approved remote callback")
 			return
 		}
 	}
@@ -251,7 +251,7 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Validate redirect_uri (loopback any-port per RFC 8252 §7.3).
-	if !matchRedirectURI(redirectURIRaw, client.RedirectURIs) {
+	if !oauth2RedirectAllowed(h.store, redirectURIRaw) || !matchRedirectURI(redirectURIRaw, client.RedirectURIs) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", "redirect_uri not registered for this client")
 		return
 	}
@@ -421,7 +421,7 @@ func (h *OAuth2IssuanceHandler) handleTokenAuthCode(ctx *fasthttp.RequestCtx) {
 	// against the client's registered URIs at /oauth2/authorize), so per RFC 6749
 	// §4.1.3 the token request must present it and it must match exactly. Accepting
 	// a missing redirect_uri would let a code be exchanged outside its bound redirect.
-	if redirectURI == "" || req.RedirectURI != redirectURI {
+	if !oauth2RedirectAllowed(h.store, redirectURI) || req.RedirectURI != redirectURI {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "redirect_uri mismatch")
 		return
 	}
@@ -744,7 +744,7 @@ var allowedPrivateUseRedirectSchemes = map[string]struct{}{
 // It is default-deny: any scheme not matching one of the above is rejected.
 func isAllowedRedirectScheme(candidate string) bool {
 	parsed, err := url.Parse(candidate)
-	if err != nil {
+	if err != nil || parsed.Hostname() == "" || parsed.Opaque != "" || parsed.User != nil || strings.ContainsAny(candidate, "#\\") {
 		return false
 	}
 	switch parsed.Scheme {
@@ -765,6 +765,9 @@ func isAllowedRedirectScheme(candidate string) bool {
 // matchRedirectURI validates redirect_uri against registered URIs.
 // For loopback addresses (localhost / 127.0.0.1 / [::1]), port is ignored per RFC 8252 §7.3.
 func matchRedirectURI(candidate string, registered []string) bool {
+	if !isAllowedRedirectScheme(candidate) {
+		return false
+	}
 	parsed, err := url.Parse(candidate)
 	if err != nil {
 		return false
@@ -778,7 +781,7 @@ func matchRedirectURI(candidate string, registered []string) bool {
 		}
 		if isLoopback && isLoopbackRedirectHost(rParsed.Hostname()) {
 			// Loopback: match scheme + host (without port) + path.
-			if parsed.Scheme == rParsed.Scheme && parsed.Path == rParsed.Path {
+			if parsed.Scheme == rParsed.Scheme && parsed.EscapedPath() == rParsed.EscapedPath() && parsed.RawQuery == rParsed.RawQuery && parsed.ForceQuery == rParsed.ForceQuery {
 				return true
 			}
 		} else {

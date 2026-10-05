@@ -40,6 +40,7 @@ const (
 // MCPServerAuthMode is MCPServerAuthModeBoth or MCPServerAuthModeOAuth.
 // Not a table of its own.
 type OAuth2ServerConfig struct {
+	AllowedRedirectURIs []string `json:"allowed_redirect_uris,omitempty"` // Exact administrator-approved remote callbacks.
 	// IssuerURL is Bifrost's OAuth authorization-server identity — it appears
 	// as the `issuer` in discovery documents and as the `iss` claim in every
 	// issued JWT. Supports env var syntax ("env.MY_VAR"). Required whenever MCP

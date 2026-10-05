@@ -271,6 +271,20 @@ false
 {{- if .Values.bifrost.setupToken }}
 {{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
 {{- end }}
+{{- with .Values.bifrost.proxyConfig }}
+{{- $proxy := dict "enabled" (.enabled | default false) }}
+{{- if .type }}{{- $_ := set $proxy "type" .type }}{{- end }}
+{{- if .url }}{{- $_ := set $proxy "url" .url }}{{- end }}
+{{- if .username }}{{- $_ := set $proxy "username" .username }}{{- end }}
+{{- if .password }}{{- $_ := set $proxy "password" .password }}{{- end }}
+{{- if .noProxy }}{{- $_ := set $proxy "no_proxy" .noProxy }}{{- end }}
+{{- if hasKey . "timeout" }}{{- $_ := set $proxy "timeout" (.timeout | int) }}{{- end }}
+{{- if hasKey . "skipTlsVerify" }}{{- $_ := set $proxy "skip_tls_verify" .skipTlsVerify }}{{- end }}
+{{- if hasKey . "enableForScim" }}{{- $_ := set $proxy "enable_for_scim" .enableForScim }}{{- end }}
+{{- if hasKey . "enableForInference" }}{{- $_ := set $proxy "enable_for_inference" .enableForInference }}{{- end }}
+{{- if hasKey . "enableForApi" }}{{- $_ := set $proxy "enable_for_api" .enableForApi }}{{- end }}
+{{- $_ := set $config "proxy_config" $proxy }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}
@@ -590,6 +604,7 @@ false
 {{- if .profile }}{{- $_ := set $bu "profile" .profile }}{{- end }}
 {{- if .config }}{{- $_ := set $bu "config" .config }}{{- end }}
 {{- if .claims }}{{- $_ := set $bu "claims" .claims }}{{- end }}
+{{- if .access_profile }}{{- $_ := set $bu "access_profile" .access_profile }}{{- end }}
 {{- if .teamIds }}{{- $_ := set $bu "team_ids" .teamIds }}{{- end }}
 {{- $businessUnits = append $businessUnits $bu }}
 {{- end }}
@@ -1425,6 +1440,34 @@ false
 {{- end }}
 {{- if .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
 {{- $_ := set $tmConfig "max_instructions_total" .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
+{{- end }}
+{{- if hasKey .Values.bifrost.mcp.toolManagerConfig "codeModeLimits" }}
+{{- $limits := dict }}
+{{- with .Values.bifrost.mcp.toolManagerConfig.codeModeLimits }}
+{{- if .maxSourceBytes }}
+{{- $_ := set $limits "max_source_bytes" .maxSourceBytes }}
+{{- end }}
+{{- if .maxSteps }}
+{{- $_ := set $limits "max_steps" .maxSteps }}
+{{- end }}
+{{- if .maxMemoryBytes }}
+{{- $_ := set $limits "max_memory_bytes" .maxMemoryBytes }}
+{{- end }}
+{{- if .maxLogBytes }}
+{{- $_ := set $limits "max_log_bytes" .maxLogBytes }}
+{{- end }}
+{{- if .maxToolCalls }}
+{{- $_ := set $limits "max_tool_calls" .maxToolCalls }}
+{{- end }}
+{{- if .maxValueBytes }}
+{{- $_ := set $limits "max_value_bytes" .maxValueBytes }}
+{{- end }}
+{{- if .maxNestingDepth }}
+{{- $_ := set $limits "max_nesting_depth" .maxNestingDepth }}
+{{- end }}
+{{- end }}
+{{- /* Render the key even when every limit is 0, so an explicit setting resets stored limits to defaults. */}}
+{{- $_ := set $tmConfig "code_mode_limits" $limits }}
 {{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
