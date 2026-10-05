@@ -16,6 +16,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.10
 	github.com/aws/smithy-go v1.27.1
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
+	github.com/canonical/starlark v0.0.0-20260428155828-9a81051fac39
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/fasthttp/websocket v1.5.12
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -28,7 +29,6 @@ require (
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/valyala/fasthttp v1.74.0
-	go.starlark.net v0.0.0-20260102030733-3fee463870c9
 	golang.org/x/net v0.58.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/text v0.41.0
