@@ -296,6 +296,12 @@ type BifrostHTTPServer struct {
 	// per-user governance, so Warp does not offer the tool; set by the
 	// enterprise wrapper before RegisterAPIRoutes, like the resolvers above.
 	WarpUserGovernanceReader warp.UserGovernanceReader
+	// WarpCallerRestrictionResolver tells Warp whether row-level access control
+	// narrows the caller's reads, so a restricted caller's totals are not
+	// described as the whole deployment's. Nil on OSS builds, where the
+	// request's own query scope is the only one; set by the enterprise wrapper
+	// before RegisterAPIRoutes, like the reader above.
+	WarpCallerRestrictionResolver warp.CallerRestrictionResolver
 
 	SidekiqRunner *sidekiq.Runner
 	// GovernanceHandler is kept so the expired-key cleanup scheduler can be started and stopped.
@@ -2669,6 +2675,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		ExternalQuotaBudgets: s.ExternalQuotaBudgetResolver,
 		VirtualKeyAssignees:  s.VirtualKeyAssigneeResolver,
 		UserGovernance:       s.WarpUserGovernanceReader,
+		CallerRestriction:    s.WarpCallerRestrictionResolver,
 	})
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
