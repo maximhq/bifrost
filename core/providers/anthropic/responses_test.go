@@ -2383,3 +2383,148 @@ func TestConvertBifrostToolOutputFallbackPreservesExistingBehavior(t *testing.T)
 		}
 	})
 }
+
+// TestConvertBifrostToolsToAnthropic_ServerToolCacheControl pins that a
+// cache_control breakpoint on a server tool reaches Anthropic for every branch
+// of convertBifrostToolToAnthropic, not only the generic function path.
+func TestConvertBifrostToolsToAnthropic_ServerToolCacheControl(t *testing.T) {
+	const cc = `"cache_control":{"type":"ephemeral"}`
+	for _, tc := range []struct {
+		name  string
+		model string
+		raw   string
+	}{
+		{"function", "claude-sonnet-4-6", `{"type":"function","name":"get_weather",` + cc + `}`},
+		{"computer dated", "claude-sonnet-4-6", `{"type":"computer_use_preview","display_width":1280,"display_height":800,"environment":"browser",` + cc + `}`},
+		{"computer toolset", "claude-opus-5-5", `{"type":"computer_use_preview","display_width":1280,"display_height":800,"environment":"browser",` + cc + `}`},
+		{"code interpreter", "claude-sonnet-4-6", `{"type":"code_interpreter",` + cc + `}`},
+		{"web search", "claude-sonnet-4-6", `{"type":"web_search",` + cc + `}`},
+		{"web fetch", "claude-sonnet-4-6", `{"type":"web_fetch",` + cc + `}`},
+		{"memory", "claude-sonnet-4-6", `{"type":"memory_20250818","name":"memory",` + cc + `}`},
+		{"tool search", "claude-sonnet-4-6", `{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex",` + cc + `}`},
+		{"local shell", "claude-sonnet-4-6", `{"type":"local_shell",` + cc + `}`},
+		{"text editor", "claude-sonnet-4-6", `{"type":"text_editor_20250728","name":"str_replace_based_edit_tool",` + cc + `}`},
+		{"advisor", "claude-sonnet-4-6", `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-8",` + cc + `}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(schemas.Anthropic, tc.model)
+			tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{responsesToolFromJSON(t, tc.raw)}, schemas.Anthropic)
+			if err != nil {
+				t.Fatalf("convert failed: %v", err)
+			}
+			if len(tools) != 1 {
+				t.Fatalf("expected one tool, got %d", len(tools))
+			}
+			data, err := sonic.Marshal(tools[0])
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			if !strings.Contains(string(data), cc) {
+				t.Fatalf("cache_control dropped: %s", data)
+			}
+		})
+	}
+}
+
+// TestAnthropicToolsRoundTrip_ServerToolCacheControl pins that a cache_control
+// breakpoint on an inbound /v1/messages server tool survives the Anthropic ->
+// Responses -> Anthropic round trip, not only on the function tool path.
+// The outgoing tool must own its cache_control: stripping the scope for a cloud
+// surface must not reach the caller's tool, or an Anthropic fallback built from the
+// same request loses the scope it asked for.
+func TestServerToolCacheControlStripLeavesSourceUnchanged(t *testing.T) {
+	const model = "claude-sonnet-4-6"
+	strippedForVertex := func(t *testing.T, tools []AnthropicTool) {
+		t.Helper()
+		req := &AnthropicMessageRequest{Model: model, Tools: tools}
+		stripUnsupportedAnthropicFields(req, schemas.Vertex, model)
+		if cc := req.Tools[0].CacheControl; cc != nil && cc.Scope != nil {
+			t.Fatalf("precondition: Vertex strip kept the scope %q", *cc.Scope)
+		}
+	}
+
+	t.Run("responses tool to anthropic", func(t *testing.T) {
+		source := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch,
+			CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, Scope: schemas.Ptr("global")}}
+		tools, _, err := convertBifrostToolsToAnthropic(schemas.ResolveModelCaps(schemas.Vertex, model), []schemas.ResponsesTool{source}, schemas.Vertex)
+		if err != nil || len(tools) != 1 {
+			t.Fatalf("convert: %v, %+v", err, tools)
+		}
+		strippedForVertex(t, tools)
+		if source.CacheControl.Scope == nil || *source.CacheControl.Scope != "global" {
+			t.Fatalf("the caller's tool lost its scope: %+v", source.CacheControl)
+		}
+	})
+
+	t.Run("anthropic tool through responses and back", func(t *testing.T) {
+		var req AnthropicMessageRequest
+		raw := `{"model":"anthropic/` + model + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}],` +
+			`"tools":[{"type":"web_search_20250305","name":"web_search","cache_control":{"type":"ephemeral","scope":"global"}}]}`
+		if err := sonic.Unmarshal([]byte(raw), &req); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		bifrostReq := req.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+		tools, _, err := convertBifrostToolsToAnthropic(schemas.ResolveModelCaps(schemas.Vertex, model), bifrostReq.Params.Tools, schemas.Vertex)
+		if err != nil || len(tools) != 1 {
+			t.Fatalf("convert: %v, %+v", err, tools)
+		}
+		strippedForVertex(t, tools)
+		if cc := bifrostReq.Params.Tools[0].CacheControl; cc == nil || cc.Scope == nil || *cc.Scope != "global" {
+			t.Fatalf("the neutral tool lost its scope: %+v", cc)
+		}
+		if cc := req.Tools[0].CacheControl; cc == nil || cc.Scope == nil || *cc.Scope != "global" {
+			t.Fatalf("the client's tool lost its scope: %+v", cc)
+		}
+	})
+}
+
+func TestAnthropicToolsRoundTrip_ServerToolCacheControl(t *testing.T) {
+	const cc = `"cache_control":{"type":"ephemeral"}`
+	for _, tc := range []struct {
+		name  string
+		model string
+		raw   string
+	}{
+		{"custom", "claude-sonnet-4-6", `{"name":"get_weather","input_schema":{"type":"object","properties":{}},` + cc + `}`},
+		{"web search", "claude-sonnet-4-6", `{"type":"web_search_20250305","name":"web_search",` + cc + `}`},
+		{"web fetch", "claude-sonnet-4-6", `{"type":"web_fetch_20250910","name":"web_fetch",` + cc + `}`},
+		{"computer dated", "claude-sonnet-4-6", `{"type":"computer_20251124","name":"computer","display_width_px":1280,"display_height_px":800,` + cc + `}`},
+		{"computer toolset", "claude-opus-5-5", `{"type":"computer_toolset_20260801",` + cc + `}`},
+		{"code execution", "claude-sonnet-4-6", `{"type":"code_execution_20250825","name":"code_execution",` + cc + `}`},
+		{"memory", "claude-sonnet-4-6", `{"type":"memory_20250818","name":"memory",` + cc + `}`},
+		{"tool search", "claude-sonnet-4-6", `{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex",` + cc + `}`},
+		{"bash", "claude-sonnet-4-6", `{"type":"bash_20250124","name":"bash",` + cc + `}`},
+		{"text editor", "claude-sonnet-4-6", `{"type":"text_editor_20250728","name":"str_replace_based_edit_tool",` + cc + `}`},
+		{"advisor", "claude-sonnet-4-6", `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-8",` + cc + `}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `{"model":"anthropic/` + tc.model + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"tools":[` + tc.raw + `]}`
+			var req AnthropicMessageRequest
+			if err := sonic.Unmarshal([]byte(raw), &req); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			if bifrostReq.Params == nil || len(bifrostReq.Params.Tools) != 1 {
+				t.Fatalf("expected one responses tool, got %+v", bifrostReq.Params)
+			}
+			if bifrostReq.Params.Tools[0].CacheControl == nil {
+				t.Fatalf("cache_control dropped on ingress: %+v", bifrostReq.Params.Tools[0])
+			}
+			out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("convert failed: %v", err)
+			}
+			if len(out.Tools) != 1 {
+				t.Fatalf("expected one anthropic tool, got %d", len(out.Tools))
+			}
+			data, err := sonic.Marshal(out.Tools[0])
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			if !strings.Contains(string(data), cc) {
+				t.Fatalf("cache_control dropped on egress: %s", data)
+			}
+		})
+	}
+}
