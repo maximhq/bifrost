@@ -8046,3 +8046,114 @@ collect:
 	require.Equal(t, 29, final.Usage.CompletionTokens, "completion_tokens")
 	require.Equal(t, 42, final.Usage.TotalTokens, "total_tokens")
 }
+
+// TestBedrockConverseFineGrainedToolStreaming pins the Converse carrier for
+// fine-grained tool streaming. Converse has no slot for the per-tool
+// eager_input_streaming flag and Bedrock's edge consumes the outer
+// anthropic-beta header, so the only way the opt-in reaches Claude is
+// additionalModelRequestFields.anthropic_beta. Without it Claude emits a tool's
+// input one complete JSON value at a time: Claude Code saw a Write call's
+// file_path immediately, then minutes of silence, then the whole content in one
+// burst, and aborted on its idle watchdog. Claude Code sends no flag at all when
+// pointed at a gateway, so Bifrost must default it on for the models Claude Code
+// itself enables on Bedrock.
+func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
+	const beta = "fine-grained-tool-streaming-2025-05-14"
+	params := func() *schemas.ToolFunctionParameters {
+		return &schemas.ToolFunctionParameters{
+			Type:       "object",
+			Properties: schemas.NewOrderedMapFromPairs(schemas.KV("content", map[string]interface{}{"type": "string"})),
+		}
+	}
+
+	cases := []struct {
+		name       string
+		model      string
+		eager      *bool
+		noTools    bool
+		clientBeta string
+		serverTool bool
+		wantBeta   bool
+	}{
+		{name: "opus 5 tool without flag gets the default", model: "global.anthropic.claude-opus-5", wantBeta: true},
+		{name: "sonnet 4.6 tool without flag gets the default", model: "us.anthropic.claude-sonnet-4-6", wantBeta: true},
+		{name: "explicit true on an older model", model: "anthropic.claude-sonnet-4-5-20250929-v1:0", eager: schemas.Ptr(true), wantBeta: true},
+		{name: "client anthropic-beta header on an older model", model: "anthropic.claude-sonnet-4-5-20250929-v1:0", clientBeta: beta + ",interleaved-thinking-2025-05-14", wantBeta: true},
+		{name: "older model without any opt-in", model: "anthropic.claude-sonnet-4-5-20250929-v1:0", wantBeta: false},
+		{name: "explicit false is respected", model: "global.anthropic.claude-opus-5", eager: schemas.Ptr(false), wantBeta: false},
+		{name: "no custom tools", model: "global.anthropic.claude-opus-5", noTools: true, wantBeta: false},
+		{name: "non-Anthropic model", model: "amazon.nova-pro-v1:0", eager: schemas.Ptr(true), wantBeta: false},
+		{name: "dedupes against server-tool betas", model: "global.anthropic.claude-opus-5", serverTool: true, wantBeta: true},
+	}
+
+	for _, tc := range cases {
+		newCtx := func() *schemas.BifrostContext {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.clientBeta != "" {
+				ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"anthropic-beta": {tc.clientBeta}})
+			}
+			return ctx
+		}
+		assertBeta := func(t *testing.T, fields *schemas.OrderedMap) {
+			t.Helper()
+			got := fields != nil && betaListContains(t, fields, beta)
+			assert.Equal(t, tc.wantBeta, got, "additionalModelRequestFields.anthropic_beta contains %s", beta)
+			if fields == nil {
+				return
+			}
+			if raw, ok := fields.Get("anthropic_beta"); ok {
+				encoded, err := json.Marshal(raw)
+				require.NoError(t, err)
+				assert.LessOrEqual(t, strings.Count(string(encoded), beta), 1, "beta duplicated: %s", encoded)
+			}
+		}
+
+		t.Run(tc.name+"/responses", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Model:  tc.model,
+				Input:  []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ResponsesParameters{},
+			}
+			if !tc.noTools {
+				req.Params.Tools = append(req.Params.Tools, schemas.ResponsesTool{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("Write"),
+					Description:           schemas.Ptr("Write a file"),
+					EagerInputStreaming:   tc.eager,
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params()},
+				})
+			}
+			bedrockReq, err := bedrock.ToBedrockResponsesRequest(newCtx(), req)
+			require.NoError(t, err)
+			assertBeta(t, bedrockReq.AdditionalModelRequestFields)
+		})
+
+		t.Run(tc.name+"/chat", func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Model:  tc.model,
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ChatParameters{},
+			}
+			if !tc.noTools {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{
+					Type:                schemas.ChatToolTypeFunction,
+					Function:            &schemas.ChatToolFunction{Name: "Write", Description: schemas.Ptr("Write a file"), Parameters: params()},
+					EagerInputStreaming: tc.eager,
+				})
+			}
+			if tc.serverTool {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: "memory_20250818", Name: "memory"})
+			}
+			bedrockReq, err := bedrock.ToBedrockChatCompletionRequest(newCtx(), req)
+			require.NoError(t, err)
+			assertBeta(t, bedrockReq.AdditionalModelRequestFields)
+			if tc.serverTool {
+				raw, ok := bedrockReq.AdditionalModelRequestFields.Get("anthropic_beta")
+				require.True(t, ok)
+				encoded, err := json.Marshal(raw)
+				require.NoError(t, err)
+				assert.Greater(t, strings.Count(string(encoded), ","), 0, "server-tool beta was dropped: %s", encoded)
+			}
+		})
+	}
+}

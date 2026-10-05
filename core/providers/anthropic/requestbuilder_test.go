@@ -12,6 +12,7 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 func makeSimpleInput(text string) []schemas.ResponsesMessage {
@@ -1160,6 +1161,139 @@ func TestRawBodyBuilderKeepsToolsAndSetsBetaHeaders(t *testing.T) {
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("beta header %q missing from the outbound request; got %v", want, got)
+		}
+	}
+}
+
+// TestBuildAnthropicRequestBody_DefaultEagerInputStreaming pins the fine-grained
+// tool streaming default. Claude Code pointed at a gateway sends custom tools
+// without eager_input_streaming; on Vertex and Bedrock that makes Claude emit a
+// tool's input one complete JSON value at a time, so a long Write content
+// argument arrives as one burst after minutes of silence and the client's idle
+// watchdog aborts. The builder must opt such tools in where the upstream needs
+// it, derive the beta into the body, keep an explicit false, leave server tools
+// alone, and leave Anthropic direct (which streams natively) untouched.
+func TestBuildAnthropicRequestBody_DefaultEagerInputStreaming(t *testing.T) {
+	const rawTools = `[` +
+		`{"name":"Write","description":"Write a file","input_schema":{"type":"object","properties":{"content":{"type":"string"}}}},` +
+		`{"type":"custom","name":"Optout","description":"Opted out","input_schema":{"type":"object"},"eager_input_streaming":false},` +
+		`{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768}` +
+		`]`
+	typedTools := func(t *testing.T) []schemas.ResponsesTool {
+		return []schemas.ResponsesTool{
+			responsesToolFromJSON(t, `{"type":"function","name":"Write","description":"Write a file","parameters":{"type":"object","properties":{"content":{"type":"string"}}}}`),
+			responsesToolFromJSON(t, `{"type":"function","name":"Optout","description":"Opted out","parameters":{"type":"object"},"eager_input_streaming":false}`),
+		}
+	}
+
+	cases := []struct {
+		name      string
+		provider  schemas.ModelProvider
+		model     string
+		wantEager bool
+	}{
+		{"vertex claude", schemas.Vertex, "claude-sonnet-4-5", true},
+		{"vertex opus 5", schemas.Vertex, "claude-opus-5", true},
+		{"bedrock invoke opus 5", schemas.Bedrock, "us.anthropic.claude-opus-5", true},
+		{"bedrock invoke sonnet 4.6", schemas.Bedrock, "global.anthropic.claude-sonnet-4-6", true},
+		{"bedrock invoke sonnet 4.5 not in catalog", schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", false},
+		{"anthropic direct streams natively", schemas.Anthropic, "claude-opus-5", false},
+	}
+
+	for _, tc := range cases {
+		for _, raw := range []bool{true, false} {
+			name := tc.name + "/typed"
+			if raw {
+				name = tc.name + "/raw"
+			}
+			t.Run(name, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				request := &schemas.BifrostResponsesRequest{
+					Provider: tc.provider,
+					Model:    tc.model,
+					Input:    makeSimpleInput("write the file"),
+				}
+				if raw {
+					ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+					request.RawRequestBody = []byte(`{"model":"` + tc.model + `","max_tokens":1024,"tools":` + rawTools +
+						`,"messages":[{"role":"user","content":"write the file"}]}`)
+				} else {
+					request.Params = &schemas.ResponsesParameters{Tools: typedTools(t)}
+				}
+				cfgModel := ""
+				if tc.provider != schemas.Anthropic {
+					cfgModel = tc.model
+				}
+				body, bErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+					Provider:    tc.provider,
+					Model:       cfgModel,
+					IsStreaming: true,
+				})
+				if bErr != nil {
+					t.Fatalf("building request body: %v", bErr.Error.Message)
+				}
+
+				byName := map[string]gjson.Result{}
+				for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+					byName[tool.Get("name").String()] = tool
+				}
+				write, ok := byName["Write"]
+				if !ok {
+					t.Fatalf("custom tool Write missing from body: %s", body)
+				}
+				gotEager := write.Get("eager_input_streaming")
+				if tc.wantEager && (!gotEager.Exists() || !gotEager.Bool()) {
+					t.Errorf("Write.eager_input_streaming = %s, want true (tool input would be buffered upstream): %s", gotEager.Raw, body)
+				}
+				if !tc.wantEager && gotEager.Exists() {
+					t.Errorf("Write.eager_input_streaming = %s, want absent for %s/%s", gotEager.Raw, tc.provider, tc.model)
+				}
+				if optout := byName["Optout"].Get("eager_input_streaming"); !optout.Exists() || optout.Bool() {
+					t.Errorf("explicit eager_input_streaming:false was not kept: %s", byName["Optout"].Raw)
+				}
+				if computer, ok := byName["computer"]; ok && computer.Get("eager_input_streaming").Exists() {
+					t.Errorf("server tool got eager_input_streaming: %s", computer.Raw)
+				}
+
+				if tc.provider == schemas.Anthropic {
+					return
+				}
+				var betas []string
+				for _, b := range providerUtils.GetJSONField(body, "anthropic_beta").Array() {
+					betas = append(betas, b.String())
+				}
+				if hasBeta := slices.Contains(betas, AnthropicEagerInputStreamingBetaHeader); hasBeta != tc.wantEager {
+					t.Errorf("anthropic_beta = %v, want fine-grained beta present=%v", betas, tc.wantEager)
+				}
+			})
+		}
+	}
+}
+
+func TestDefaultEagerInputStreaming(t *testing.T) {
+	cases := []struct {
+		provider schemas.ModelProvider
+		model    string
+		want     bool
+	}{
+		{schemas.Vertex, "claude-3-5-haiku@20241022", true},
+		{schemas.Vertex, "claude-opus-4-6", true},
+		{schemas.Vertex, "gemini-2.5-pro", false},
+		{schemas.Bedrock, "us.anthropic.claude-sonnet-4-6", true},
+		{schemas.Bedrock, "global.anthropic.claude-sonnet-5", true},
+		{schemas.Bedrock, "anthropic.claude-opus-4-7", true},
+		{schemas.Bedrock, "anthropic.claude-opus-5-5", true},
+		{schemas.Bedrock, "anthropic.claude-fable-5-1", true},
+		{schemas.Bedrock, "anthropic.claude-opus-4-6-v1", false},
+		{schemas.Bedrock, "anthropic.claude-sonnet-4-5", false},
+		{schemas.Bedrock, "amazon.nova-pro-v1:0", false},
+		{schemas.Anthropic, "claude-opus-5", false},
+		{schemas.Azure, "claude-opus-5", false},
+		{schemas.BedrockMantle, "anthropic.claude-opus-5", false},
+	}
+	for _, tc := range cases {
+		if got := DefaultEagerInputStreaming(tc.provider, tc.model); got != tc.want {
+			t.Errorf("DefaultEagerInputStreaming(%s, %q) = %v, want %v", tc.provider, tc.model, got, tc.want)
 		}
 	}
 }
