@@ -859,6 +859,7 @@ export const allowedRequestsSchema = z.object({
 	ocr: z.boolean().optional(),
 	ocr_stream: z.boolean().optional(),
 	rerank: z.boolean(),
+	decisions: z.boolean().optional(),
 	video_generation: z.boolean(),
 	video_edit: z.boolean(),
 	video_retrieve: z.boolean(),
@@ -1033,6 +1034,21 @@ export const coreConfigSchema = z.object({
 	mcp_disable_auto_tool_inject: z.boolean().default(false),
 	mcp_max_instructions_per_client: z.number().int().min(0).default(0),
 	mcp_max_instructions_total: z.number().int().min(0).default(0),
+	mcp_code_mode_limits: z
+		.object({
+			max_source_bytes: z.number().int().min(0).optional(),
+			max_steps: z.number().int().min(0).optional(),
+			max_memory_bytes: z.number().int().min(0).optional(),
+			max_log_bytes: z.number().int().min(0).optional(),
+			max_tool_calls: z.number().int().min(0).optional(),
+			max_value_bytes: z
+				.number()
+				.int()
+				.refine((v) => v === 0 || v >= 1024, { message: "max_value_bytes must be 0 or at least 1024" })
+				.optional(),
+			max_nesting_depth: z.number().int().min(0).max(1000).optional(),
+		})
+		.optional(),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
 });
 

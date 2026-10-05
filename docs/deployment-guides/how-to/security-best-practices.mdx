@@ -235,3 +235,7 @@ Network-level controls limit the impact of a misconfiguration:
 - [Virtual keys](/features/governance/virtual-keys)
 - [Budgets and limits](/features/governance/budget-and-limits)
 - [Security at Bifrost](/security): how Bifrost itself is built and scanned
+
+## Provider endpoint URLs
+
+Provider create and update requests accept a base URL consisting of an origin and optional path. Credentials, query parameters (including an empty `?`), and fragments are rejected before saving or model discovery. Configure authentication through provider keys and extra headers. Changes that widen where a provider can dial (setting or changing a non-empty base URL, or turning on `allow_private_network`) require a genuinely authenticated request (with RBAC, the provider create or update permission); requests let through only because dashboard authentication is disabled or unconfigured are rejected. Clearing the base URL or turning the flag off is allowed either way. Without `allow_private_network`, private ranges (RFC 1918, IPv6 unique-local) are rejected; loopback stays allowed, and link-local addresses are always blocked.
