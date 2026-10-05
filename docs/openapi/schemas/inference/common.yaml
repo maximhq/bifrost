@@ -35,6 +35,7 @@ ModelProvider:
     - sarvam
     - wafer
     - databricks
+    - typesafe
 
 Fallback:
   type: object

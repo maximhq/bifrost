@@ -47,9 +47,9 @@ import {
 	isFiniteNumber,
 	retainedWarpBackfillForSpace,
 	retainFinishedWarpBackfill,
-	type RetainedWarpBackfill,
 	validateWarpRetentionDays,
 	warpSavedSpaceKey,
+	type RetainedWarpBackfill,
 } from "./warpView.utils";
 
 /**
@@ -526,7 +526,7 @@ export default function WarpView() {
 	};
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="warp-config-view">
+		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="warp-config-view">
 			<form onSubmit={onSubmit} className="space-y-4">
 				<PageTitle title="Warp">
 					Warp answers questions about your Bifrost data in natural language. It runs on its own model, configured here and kept separate

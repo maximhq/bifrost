@@ -438,6 +438,107 @@ test.describe('LLM Logs', () => {
     })
   })
 
+  test.describe('Grouped View', () => {
+    // One session root (A) that also has its own fallback attempt, one session
+    // peer (M), and a plain chain root (B) with one attempt. The rows are mocked
+    // so the test does not depend on traffic having produced sessions or chains.
+    const now = Date.now()
+    const row = (id: string, offsetMs: number, extra: Record<string, unknown> = {}) => ({
+      id,
+      object: 'chat.completion',
+      timestamp: new Date(now - offsetMs).toISOString(),
+      created_at: new Date(now - offsetMs).toISOString(),
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      number_of_retries: 0,
+      fallback_index: 0,
+      status: 'success',
+      stream: false,
+      latency: 120,
+      cost: 0.0001,
+      input_history: [],
+      responses_input_history: [],
+      ...extra,
+    })
+    const sessionRoot = row('grp-session-root', 60_000, {
+      session_id: 'grp-session',
+      child_count: 1,
+      session_child_count: 1,
+      session_total_cost: 0.0002,
+      session_total_tokens: 40,
+    })
+    const sessionPeer = row('grp-session-peer', 30_000, { session_id: 'grp-session' })
+    const sessionRootAttempt = row('grp-session-root-attempt', 59_000, { parent_request_id: 'grp-session-root', fallback_index: 1 })
+    const chainRoot = row('grp-chain-root', 10_000, { child_count: 1 })
+    const chainAttempt = row('grp-chain-attempt', 9_000, { parent_request_id: 'grp-chain-root', fallback_index: 1 })
+
+    test.beforeEach(async ({ page }) => {
+      await page.route(
+        (url) => url.pathname === '/api/logs',
+        async (route) => {
+          if (route.request().method() !== 'GET') return route.continue()
+          const params = new URL(route.request().url()).searchParams
+          const parent = params.get('parent_request_id')
+          const session = params.get('session_id')
+          let logs
+          if (parent === sessionRoot.id) logs = [sessionRootAttempt]
+          else if (parent === chainRoot.id) logs = [chainAttempt]
+          else if (session === 'grp-session') logs = [sessionRoot, sessionPeer]
+          else logs = [chainRoot, sessionRoot]
+          await route.fulfill({
+            json: {
+              logs,
+              pagination: { limit: 50, offset: 0, sort_by: 'timestamp', order: 'desc' },
+              stats: {
+                total_requests: logs.length,
+                success_rate: 100,
+                user_facing_success_rate: 100,
+                user_facing_total_requests: logs.length,
+                average_latency: 120,
+                total_tokens: 0,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_cost: 0,
+              },
+              has_logs: true,
+            },
+          })
+        },
+      )
+    })
+
+    test('should tell session rows apart from fallback chain rows', async ({ page }) => {
+      await page.goto('/workspace/logs?grouped=true')
+
+      const sessionBtn = page.getByTestId('log-session-expand-btn')
+      const chainBtn = page.getByTestId('log-chain-expand-btn')
+      await expect(sessionBtn).toHaveCount(1)
+      await expect(chainBtn).toHaveCount(1)
+      // The toggles say what they open in words, not just a bare count.
+      await expect(sessionBtn).toHaveText('2 turns')
+      await expect(chainBtn).toHaveText('1 fallback')
+
+      // Each expander names its own grouping key, so the matching counts stop
+      // reading as the same thing.
+      await sessionBtn.hover()
+      await expect(page.getByRole('tooltip')).toContainText('session_id')
+      await chainBtn.hover()
+      await expect(page.getByRole('tooltip')).toContainText('parent_request_id')
+
+      // A session expands into its peer plus the root's own attempt, and each
+      // nested row is marked with the kind of link that put it there.
+      await sessionBtn.click()
+      await expect(page.getByTestId('log-row-kind-session')).toHaveCount(1)
+      await expect(page.getByTestId('log-row-kind-session')).toHaveText('turn 2')
+      await expect(page.getByTestId('log-row-kind-chain')).toHaveCount(1)
+      await expect(page.getByTestId('log-row-kind-chain')).toHaveText('fallback 1')
+
+      await chainBtn.click()
+      await expect(page.getByTestId('log-row-kind-session')).toHaveCount(1)
+      await expect(page.getByTestId('log-row-kind-chain')).toHaveCount(2)
+    })
+  })
+
   test.describe('URL State Persistence', () => {
     test('should persist filters in URL', async ({ logsPage }) => {
       const searchVisible = await logsPage.searchInput.isVisible().catch(() => false)

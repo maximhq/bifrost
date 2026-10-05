@@ -279,6 +279,43 @@ A top-level `auth_config` is also accepted for backwards compatibility, but `gov
 
 ---
 
+## Global Proxy
+
+The global outbound proxy is the one on the dashboard's **Config → Proxy** page, including which components send their outbound requests through it. Declare it as a top-level `proxy_config` (not to be confused with a provider's own [`proxy_config`](/deployment-guides/config-json/providers)):
+
+```json
+{
+  "proxy_config": {
+    "enabled": true,
+    "type": "http",
+    "url": "http://proxy.example.com:8080",
+    "username": "env.PROXY_USERNAME",
+    "password": "env.PROXY_PASSWORD",
+    "no_proxy": "localhost,.internal.example.com",
+    "timeout": 30,
+    "enable_for_scim": true,
+    "enable_for_inference": false,
+    "enable_for_api": false
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Turn the proxy on |
+| `type` | `"http"` | Proxy type. Only `http` is supported |
+| `url` | - | Proxy URL. Required when `enabled` is `true`. Supports `env.VAR_NAME` |
+| `username` / `password` | - | Optional proxy credentials. Support `env.VAR_NAME` |
+| `no_proxy` | - | Comma-separated hosts that bypass the proxy: exact hosts, `.example.com` (domain and subdomains), `*.example.com` (subdomains only), or `*` |
+| `timeout` | `0` | Connection timeout in seconds |
+| `skip_tls_verify` | `false` | Skip TLS verification for the proxy |
+| `enable_for_scim` | `false` | *(enterprise)* Route SCIM directory sync and identity-provider requests through the proxy |
+| `enable_for_inference` | `false` | Route inference requests through the proxy |
+| `enable_for_api` | `false` | Route API requests through the proxy |
+
+
+---
+
 ## Full Example
 
 ```json
