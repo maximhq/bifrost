@@ -332,6 +332,25 @@ Define organizational entities and attach rate limits directly. Team budgets ref
 }
 ```
 
+### Access profiles on teams, customers, and business units
+
+<Info>Enterprise-only.</Info>
+
+A team, customer, or business unit can hold one [access profile](/enterprise/access-profiles) instead of budgets and a rate limit of its own. Name it with `access_profile` on the entity's entry; the profile itself is declared under the top-level `access_profiles`:
+
+```json
+{
+  "access_profiles": [
+    { "name": "Engineering Baseline", "budgets": [{ "id": "budget-engineering-baseline", "max_limit": 500, "reset_duration": "1M" }] }
+  ],
+  "governance": {
+    "customers": [{ "id": "customer-acme", "name": "Acme Corp", "access_profile": "Engineering Baseline" }],
+    "teams": [{ "id": "team-ml", "name": "ML Team", "access_profile": "Engineering Baseline" }],
+    "business_units": [{ "id": "bu-emea", "name": "EMEA", "access_profile": "Engineering Baseline" }]
+  }
+}
+```
+
 ---
 
 ## Projects

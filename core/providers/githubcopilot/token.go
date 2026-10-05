@@ -131,8 +131,8 @@ type copilotTokenEntry struct {
 
 // copilotTokenPool maps cache key to *copilotTokenEntry.
 //
-// Entries are never deleted, which is a deliberate departure from vertexTokenSourcePool
-// (core/providers/vertex/vertex.go:48) where removeVertexClient deletes. That is safe
+// Entries are never deleted, which is a deliberate departure from VertexProvider.tokenSources
+// (core/providers/vertex/vertex.go) where removeVertexClient deletes. That is safe
 // there because the cached value is a Google oauth2.TokenSource that locks internally.
 // Here the entry is the lock, and it also holds the negative cache. Deleting it on
 // invalidation would split goroutines across two mutexes for as long as any of them still

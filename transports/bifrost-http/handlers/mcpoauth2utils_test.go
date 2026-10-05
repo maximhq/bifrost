@@ -25,6 +25,8 @@ func TestMatchRedirectURI(t *testing.T) {
 		{"loopback scheme must still match", "https://127.0.0.1:5/cb", []string{"http://127.0.0.1:1/cb"}, false},
 		{"malformed candidate", "://bad", []string{"https://app.example/cb"}, false},
 		{"no registered uris", "https://app.example/cb", nil, false},
+		{"loopback query must match", "http://localhost:1234/cb?next=other", []string{"http://localhost:4321/cb?next=original"}, false},
+		{"fragment is rejected", "http://localhost:1234/cb#tail", []string{"http://localhost:4321/cb#tail"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

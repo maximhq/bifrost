@@ -817,11 +817,17 @@ export interface LogEntry {
 // injected below an expanded parent in the grouped view; they never come from
 // the API. __chainChild covers any nested row so the table can indent it,
 // __rowKind says which expansion produced it, and __depth separates a session
-// member (1) from a fallback attempt under that member (2).
+// member (1) from a fallback attempt under that member (2). __turn is a session
+// member's position in its session (the root is turn 1), and __isLast marks the
+// last sibling so the tree branch can close. __parentIsLast does the same for
+// the session member a depth-2 row hangs from.
 export type DisplayLogEntry = LogEntry & {
 	__chainChild?: boolean;
 	__rowKind?: "chain-child" | "session-member";
 	__depth?: 1 | 2;
+	__turn?: number;
+	__isLast?: boolean;
+	__parentIsLast?: boolean;
 };
 
 export interface LogFilters {
