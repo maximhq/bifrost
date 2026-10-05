@@ -57,7 +57,8 @@ type SessionAffinity interface {
 	// ResolveKey is asked once the eligible key pool for a provider attempt has been built
 	// with two or more keys in it. It answers with the key the session's state settles on, or
 	// with ok=false to leave the choice to ordinary key selection. A returned key is used for
-	// every attempt of the request.
+	// every attempt of the request until the provider rejects it outright (a credential, quota
+	// or model-access failure); the request then continues on another eligible key.
 	ResolveKey(ctx *BifrostContext, provider ModelProvider, model string, eligible []Key) (key Key, ok bool)
 	// Observe is told how the request ended, once: for a unary request when its response is
 	// in, for a stream once the upstream has accepted it and started streaming.
