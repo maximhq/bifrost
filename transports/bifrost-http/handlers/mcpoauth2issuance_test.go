@@ -9,9 +9,11 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -848,4 +850,114 @@ func TestHandleAuthorize_RejectsOversizeParameters(t *testing.T) {
 	var resp map[string]string
 	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
 	assert.Equal(t, "invalid_request", resp["error"])
+}
+
+func TestHandleRegister_RedirectPolicy(t *testing.T) {
+	for _, uri := range []string{"https://unlisted.example/cb", "https:///callback", "https:callback", "http://127.0.0.1/cb#fragment", "http://127.0.0.1/cb#", "http://name@127.0.0.1/cb", "javascript:alert(1)"} {
+		t.Run(uri, func(t *testing.T) {
+			h, _, _ := newIssuanceHandler(t)
+			body, err := json.Marshal(map[string]any{"redirect_uris": []string{uri}})
+			require.NoError(t, err)
+			ctx := formPostCtx("")
+			ctx.Request.SetBody(body)
+			h.handleRegister(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Contains(t, string(ctx.Response.Body()), "invalid_redirect_uri")
+		})
+	}
+}
+
+func TestHandleRegister_ApprovedRemoteCallback(t *testing.T) {
+	h, _, cfg := newIssuanceHandler(t)
+	cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = []string{"https://app.example/cb"}
+	for _, tc := range []struct {
+		uri    string
+		status int
+	}{
+		{"https://app.example/cb", 201}, {"https://app.example/other", 400}, {"https://app.example/cb?next=https://other.example", 400},
+		{"http://127.0.0.1:1234/cb", 201}, {"cursor://anysphere.cursor-mcp/oauth/callback", 201},
+	} {
+		body, err := schemas.MarshalSorted(map[string]any{"redirect_uris": []string{tc.uri}})
+		require.NoError(t, err)
+		ctx := formPostCtx("")
+		ctx.Request.SetBody(body)
+		h.handleRegister(ctx)
+		require.Equal(t, tc.status, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
+func TestHandleAuthorize_RechecksCallbackPolicy(t *testing.T) {
+	h, store, _ := newIssuanceHandler(t)
+	cid := seedClient(t, store, []string{"https://unlisted.example/cb"})
+	ctx := getCtx("/oauth2/authorize?" + url.Values{"client_id": {cid}, "redirect_uri": {"https://unlisted.example/cb"}, "response_type": {"code"}, "code_challenge": {pkceChallenge("verifier")}, "code_challenge_method": {"S256"}}.Encode())
+	h.handleAuthorize(ctx)
+	require.Equal(t, 400, ctx.Response.StatusCode())
+	require.Empty(t, ctx.Response.Header.Peek("Location"))
+}
+
+func TestUpdateConfig_RedirectPolicyRequiresAdmin(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	h := &ConfigHandler{store: cfg}
+	ctx := putConfigCtx(`{"client_config":{"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["https://new.example/cb"]}}}`)
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updateConfig(ctx)
+	require.Equal(t, 403, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Empty(t, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs)
+}
+
+// TestUpdateConfig_ConcurrentSavesAreSerialized runs under -race: overlapping saves
+// must not snapshot the live config while another save publishes it.
+func TestUpdateConfig_ConcurrentSavesAreSerialized(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failures []string
+	for _, uri := range []string{"https://a.example/cb", "https://b.example/cb"} {
+		wg.Add(1)
+		go func(uri string) {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["` + uri + `"]}}}`)
+				h.updateConfig(ctx)
+				if ctx.Response.StatusCode() != fasthttp.StatusOK {
+					mu.Lock()
+					failures = append(failures, string(ctx.Response.Body()))
+					mu.Unlock()
+				}
+			}
+		}(uri)
+	}
+	wg.Wait()
+	require.Empty(t, failures, "overlapping saves must each succeed")
+}
+
+// TestUpdateConfig_RedirectPolicyPublishRacesNoReader runs under -race: an
+// authenticated save publishes a new allowlist while an OAuth flow step reads it.
+func TestUpdateConfig_RedirectPolicyPublishRacesNoReader(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				oauth2RedirectAllowed(cfg, "https://new.example/cb")
+			}
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["https://new.example/cb"]}}}`)
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	close(stop)
+	<-done
+	require.True(t, oauth2RedirectAllowed(cfg, "https://new.example/cb"))
 }

@@ -172,6 +172,12 @@ ClientConfig:
           minimum: 1
           default: 600
           description: Lifetime of the issued JWT Bearer token in seconds (default 600).
+        allowed_redirect_uris:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: Exact administrator-approved remote callback URIs; remote callbacks are denied unless listed.
         disable_vk_identity:
           type: boolean
           default: false

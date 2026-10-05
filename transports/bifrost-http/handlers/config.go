@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -107,6 +108,7 @@ type ConfigManager interface {
 type ConfigHandler struct {
 	store         *lib.Config
 	configManager ConfigManager
+	saveMu        sync.Mutex // Serializes updateConfig from snapshot through publication
 }
 
 // NewConfigHandler creates a new handler for configuration management.
@@ -304,6 +306,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Config store not initialized")
 		return
 	}
+	// Overlapping saves would each snapshot the same live config and race its
+	// publication, so a later save could undo an earlier one.
+	h.saveMu.Lock()
+	defer h.saveMu.Unlock()
 
 	payload := struct {
 		ClientConfig    configstore.ClientConfig               `json:"client_config"`
@@ -470,6 +476,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	effectiveOAuth2Config := currentConfig.OAuth2ServerConfig
 	if payload.ClientConfig.OAuth2ServerConfig != nil {
 		effectiveOAuth2Config = payload.ClientConfig.OAuth2ServerConfig
+		var previousRedirects []string
+		if currentConfig.OAuth2ServerConfig != nil {
+			previousRedirects = currentConfig.OAuth2ServerConfig.AllowedRedirectURIs
+		}
+		if isAuthBypassed(ctx) && !slices.Equal(previousRedirects, effectiveOAuth2Config.AllowedRedirectURIs) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing allowed_redirect_uris requires an authenticated admin session")
+			return
+		}
+		for _, uri := range effectiveOAuth2Config.AllowedRedirectURIs {
+			if !isAllowedRedirectScheme(uri) {
+				SendError(ctx, fasthttp.StatusBadRequest, "allowed_redirect_uris contains an invalid callback URI")
+				return
+			}
+		}
 	}
 
 	// disable_vk_identity only makes sense in oauth mode: in both mode virtual
@@ -794,8 +814,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Apply the in-memory change only after persistence succeeds, copying
 	// into the live struct (the same way ReloadClientConfigFromConfigStore
-	// publishes) so every holder of the pointer observes it.
+	// publishes) so every holder of the pointer observes it. Mu orders the
+	// copy with readers such as the OAuth redirect policy check.
+	h.store.Mu.Lock()
 	*h.store.ClientConfig = *updatedConfig
+	h.store.Mu.Unlock()
 	// Reloading client config from config store
 	if err := h.configManager.ReloadClientConfigFromConfigStore(ctx); err != nil {
 		logger.Warn("failed to reload client config from config store: %v", err)
