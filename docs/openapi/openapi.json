@@ -95690,7 +95690,8 @@
           "fireworks",
           "sarvam",
           "wafer",
-          "databricks"
+          "databricks",
+          "typesafe"
         ]
       },
       "Fallback": {
@@ -108180,6 +108181,10 @@
                   "embedding": {
                     "type": "boolean"
                   },
+                  "decisions": {
+                    "type": "boolean",
+                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                  },
                   "speech": {
                     "type": "boolean"
                   },
@@ -108399,6 +108404,10 @@
                   "embedding": {
                     "type": "boolean"
                   },
+                  "decisions": {
+                    "type": "boolean",
+                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                  },
                   "speech": {
                     "type": "boolean"
                   },
@@ -108581,6 +108590,10 @@
                   },
                   "embedding": {
                     "type": "boolean"
+                  },
+                  "decisions": {
+                    "type": "boolean",
+                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
                   },
                   "speech": {
                     "type": "boolean"

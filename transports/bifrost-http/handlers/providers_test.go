@@ -179,6 +179,52 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	}
 }
 
+// TestAddProvider_CustomProviderBaseTypes pins which base_provider_type values
+// the provider API accepts: typesafe is a supported base, vertex is not.
+func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name       string
+		provider   schemas.ModelProvider
+		base       schemas.ModelProvider
+		wantStatus int
+	}{
+		{name: "typesafe base accepted", provider: "my-typesafe", base: schemas.Typesafe, wantStatus: fasthttp.StatusOK},
+		{name: "vertex base rejected", provider: "my-vertex", base: schemas.Vertex, wantStatus: fasthttp.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				modelsManager: &mockModelsManager{},
+			}
+			body, err := sonic.Marshal(providerCreatePayload{
+				Provider:             tc.provider,
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: tc.base, IsKeyLess: true},
+			})
+			if err != nil {
+				t.Fatalf("failed to marshal request body: %v", err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI("/api/providers")
+			ctx.Request.SetBody(body)
+
+			h.addProvider(ctx)
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			_, exists := h.inMemoryStore.Providers[tc.provider]
+			if exists != (tc.wantStatus == fasthttp.StatusOK) {
+				t.Fatalf("provider persisted=%v, want %v", exists, tc.wantStatus == fasthttp.StatusOK)
+			}
+		})
+	}
+}
+
 // TestAddProvider_RejectsBaseURLWhenAuthBypassed covers the second route to the same
 // outcome as the Ollama key case: a custom provider's network_config.base_url + explicit
 // allow_private_network:true, which an unauthenticated caller could set together to
