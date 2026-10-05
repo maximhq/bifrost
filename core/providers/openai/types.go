@@ -844,6 +844,11 @@ func isFunctionCallOutputBlocksFlattenable(blocks []schemas.ResponsesMessageCont
 		if block.Text == nil {
 			return false
 		}
+		// A string has nowhere to carry a prompt_cache_breakpoint; the array
+		// form is the documented home for it on a function_call_output.
+		if block.PromptCacheBreakpoint != nil {
+			return false
+		}
 	}
 	return true
 }
