@@ -1,4 +1,4 @@
-## ⚠️ Breaking Changes
+## ✨ Features
 
 - **OSS Management API Setup Lock** - While dashboard auth is not active (no admin account, or auth disabled), every non-public `/api` call on OSS Bifrost now needs the setup token, sent as the `X-Bifrost-Setup-Token` header or as the `bifrost_setup_session` cookie the dashboard gets from `POST /api/session/setup`. A missing token returns `401`. A wrong token, or no token set on the server, returns `403`. `/health`, `/api/version`, the session login routes, `/.well-known/*` and whitelisted routes stay public. The lock lifts as soon as an enabled admin is saved (#8010)
   <Warning>
@@ -16,12 +16,12 @@
 - **Private Framework Config URLs Rejected** - `pricing_url`, `model_parameters_url` and `mcp_library_url` are now checked at save time and at dial time against private, link-local and CGNAT addresses, and redirects are not followed. Air-gapped setups should use `file://` URLs (#7861)
 - **Semantic Cache Scoped per Virtual Key** - Cache buckets are now partitioned by virtual key, so a shared `cache_key` or `default_cache_key` no longer serves one virtual key's cached response to another. Entries written before the upgrade under a virtual key are not reused, so expect a cold cache. Unscoped cache keys that start with `vk:` are moved to `raw:vk:`. A per-request threshold override can only raise the configured threshold, and is capped at 1.0 (#7862)
 - **zstd Decoder Window Cap** - zstd-compressed bodies whose frame header asks for a window above 100 MiB are rejected before any allocation (#7859)
-
-## ✨ Features
-
 - **Dashboard Setup Session** - The login page has a new setup screen that trades the setup token for a 12-hour `HttpOnly; SameSite=Strict` cookie. The cookie is signed with a key derived from the token, so the browser never stores the token itself. A sidebar card flags missing dashboard auth until an admin exists. `GET /api/session/is-auth-enabled` now reports `setup_required` and `setup_token_configured`, and `PUT /api/config` accepts a setup-token request as first-admin proof (#8010)
 - **Compat: Clamp Over-Limit Output Tokens** - With `should_convert_params` on (UI: Convert Unsupported Param Values, or `x-bf-compat: ["should_convert_params"]`), a `max_output_tokens`, `max_completion_tokens` or `max_tokens` above the model's `max_output_tokens` in the model catalog is lowered to that limit instead of being rejected by the provider. This works for every provider whose model has a limit in the catalog. A thinking budget at or above the lowered cap is moved just below it. Values are never raised, and models with no catalog limit are left alone. Each change is logged as a warning on the request. The setting did nothing before this release. A config.json whose `client_config` has no `compat` block turns it on by default
 - **Datasheet Control for Per-Message Effort** - Per-message effort support can now be set per provider and model with the datasheet field `supports_mid_conversation_output_config`, so a surface that ships the feature can be enabled without a release. With no datasheet value the current behaviour applies (Anthropic direct on Fable 5.1, Opus 5+ and Sonnet 5.5). On a provider other than Anthropic, also allow the beta header with `beta_header_overrides: {"mid-conversation-output-config-": true}` in that provider's network config
+- **Per-Message Effort Override** - A per-turn effort override sent as an effort-only system message (`{"role":"system","content":[],"output_config":{"effort":"low"}}`) now reaches Anthropic instead of being dropped, with the `mid-conversation-output-config-2026-07-01` beta added. Models without per-turn effort, and OpenAI-shaped providers, drop it instead of returning an error (#7714)
+- **Claude Code Per-Message Effort on Vertex and Other Cloud Surfaces** - Claude Code requests to Opus 5.5, Fable 5.1 and Sonnet 5.5 on Vertex no longer fail with `messages.1.output_config: Extra inputs are not permitted`. The per-message `output_config` is now removed for every provider and model without per-message effort (Vertex, Bedrock, Bedrock Mantle, Azure, DeepSeek, Fireworks, vLLM, SGL). The system message text and the top-level effort are kept
+
 
 ## 🐞 Fixed
 
@@ -30,8 +30,6 @@
 - **Handler Panic Recovery** - A panic in a request handler now returns a `500` and logs a server-side stack trace instead of crashing the process (#7866)
 - **Secret Redaction in Config Responses** - Env and vault-resolved values in provider alias configs (region, project ID, Azure endpoint, Vertex project, Bedrock inference profile ARN) and in Bedrock endpoint overrides are now masked in management API responses (#7858)
 - **Admin Password Autofill** - The Security page's admin fields carry `autoComplete="username"` and `"new-password"`, so password managers no longer fill a saved host password into the new admin's password field (#8010)
-- **Per-Message Effort Override** - A per-turn effort override sent as an effort-only system message (`{"role":"system","content":[],"output_config":{"effort":"low"}}`) now reaches Anthropic instead of being dropped, with the `mid-conversation-output-config-2026-07-01` beta added. Models without per-turn effort, and OpenAI-shaped providers, drop it instead of returning an error (#7714)
-- **Claude Code Per-Message Effort on Vertex and Other Cloud Surfaces** - Claude Code requests to Opus 5.5, Fable 5.1 and Sonnet 5.5 on Vertex no longer fail with `messages.1.output_config: Extra inputs are not permitted`. The per-message `output_config` is now removed for every provider and model without per-message effort (Vertex, Bedrock, Bedrock Mantle, Azure, DeepSeek, Fireworks, vLLM, SGL). The system message text and the top-level effort are kept
 
 ## 🗄️ Database Migrations
 
