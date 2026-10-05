@@ -3794,6 +3794,25 @@ func RegisterVirtualKeyPruneGuard(fn VirtualKeyPruneGuard) {
 	virtualKeyPruneGuardMu.Unlock()
 }
 
+// GovernanceLimitPruneGuard reports which of the candidate budgets and rate limits must survive the
+// source_of_truth config.json prune although governance.budgets and governance.rate_limits do not
+// declare them: rows another owner holds, such as the enterprise build's access profiles, which their
+// own section of config.json governs. Any error keeps every candidate for this boot.
+type GovernanceLimitPruneGuard func(ctx context.Context, store configstore.ConfigStore, budgetIDs, rateLimitIDs []string) (budgets, rateLimits map[string]bool, err error)
+
+var (
+	governanceLimitPruneGuardMu sync.RWMutex
+	governanceLimitPruneGuard   GovernanceLimitPruneGuard
+)
+
+// RegisterGovernanceLimitPruneGuard installs the guard consulted by pruneGovernanceConfigToFile
+// before deleting budgets and rate limits. Must be called before LoadConfig. Passing nil clears it.
+func RegisterGovernanceLimitPruneGuard(fn GovernanceLimitPruneGuard) {
+	governanceLimitPruneGuardMu.Lock()
+	governanceLimitPruneGuard = fn
+	governanceLimitPruneGuardMu.Unlock()
+}
+
 // ConfigStoreReadyHook runs once LoadConfig has opened the config store, before anything from
 // config.json is written to it. Enterprise registers one to install the governance plugin's legacy
 // limit guard against this store, so the governance reconcile below can already tell which teams and
@@ -3868,6 +3887,90 @@ func virtualKeyPruneCandidates(existing []configstoreTables.TableVirtualKey, con
 	return candidates
 }
 
+// fileManagedModelConfigScope reports whether config.json can declare a model config of this scope -
+// "global" and "virtual_key" - which is what makes a stored row of that scope the file's to prune. A
+// row of any other scope belongs to whatever registered the scope, such as the enterprise build's
+// per-model limits for an access profile, and is pruned with its owner instead.
+func fileManagedModelConfigScope(scope string) bool {
+	return scope == "" || scope == configstoreTables.ModelConfigScopeGlobal || scope == configstoreTables.ModelConfigScopeVirtualKey
+}
+
+// governanceLimitsToKeep names the budgets and rate limits config.json no longer declares that the
+// prune must still keep, because something the file does not govern through governance.budgets or
+// governance.rate_limits owns them:
+//
+//   - a model config of a scope the file does not manage (fileManagedModelConfigScope), which is kept
+//     itself, so the budgets and rate limit it owns stay with it
+//   - whatever the registered GovernanceLimitPruneGuard claims, such as an access profile's rows
+//
+// Resolved before the prune transaction opens, since the guard reads through the store's own
+// connection. A guard error keeps every candidate this boot: the rows are left for the next boot to
+// prune rather than deleted while something may still use them.
+func governanceLimitsToKeep(ctx context.Context, store configstore.ConfigStore, existing *configstore.GovernanceConfig, configData *ConfigData) (budgets, rateLimits map[string]bool) {
+	budgets, rateLimits = map[string]bool{}, map[string]bool{}
+	ownedByKeptModelConfig := map[string]bool{}
+	for _, mc := range existing.ModelConfigs {
+		if fileManagedModelConfigScope(mc.Scope) {
+			continue
+		}
+		ownedByKeptModelConfig[mc.ID] = true
+		if mc.BudgetID != nil {
+			budgets[*mc.BudgetID] = true
+		}
+		if mc.RateLimitID != nil {
+			rateLimits[*mc.RateLimitID] = true
+		}
+	}
+
+	var budgetCandidates, rateLimitCandidates []string
+	if configData.governanceSectionPresent("budgets") {
+		declared := make(map[string]bool, len(configData.Governance.Budgets))
+		for _, budget := range configData.Governance.Budgets {
+			declared[budget.ID] = true
+		}
+		for _, budget := range existing.Budgets {
+			if budget.ModelConfigID != nil && ownedByKeptModelConfig[*budget.ModelConfigID] {
+				budgets[budget.ID] = true
+			}
+			if budget.ID != "" && !declared[budget.ID] && !budgets[budget.ID] {
+				budgetCandidates = append(budgetCandidates, budget.ID)
+			}
+		}
+	}
+	if configData.governanceSectionPresent("rate_limits") {
+		declared := make(map[string]bool, len(configData.Governance.RateLimits))
+		for _, rateLimit := range configData.Governance.RateLimits {
+			declared[rateLimit.ID] = true
+		}
+		for _, rateLimit := range existing.RateLimits {
+			if rateLimit.ID != "" && !declared[rateLimit.ID] && !rateLimits[rateLimit.ID] {
+				rateLimitCandidates = append(rateLimitCandidates, rateLimit.ID)
+			}
+		}
+	}
+
+	governanceLimitPruneGuardMu.RLock()
+	guard := governanceLimitPruneGuard
+	governanceLimitPruneGuardMu.RUnlock()
+	if guard == nil || (len(budgetCandidates) == 0 && len(rateLimitCandidates) == 0) {
+		return budgets, rateLimits
+	}
+	guardedBudgets, guardedRateLimits, err := guard(ctx, store, budgetCandidates, rateLimitCandidates)
+	if err != nil {
+		logger.Error("failed to resolve which budgets and rate limits are owned outside config.json, skipping their pruning this boot: %v", err)
+		guardedBudgets, guardedRateLimits = map[string]bool{}, map[string]bool{}
+		for _, id := range budgetCandidates {
+			guardedBudgets[id] = true
+		}
+		for _, id := range rateLimitCandidates {
+			guardedRateLimits[id] = true
+		}
+	}
+	maps.Copy(budgets, guardedBudgets)
+	maps.Copy(rateLimits, guardedRateLimits)
+	return budgets, rateLimits
+}
+
 // routingRulePruneCandidates returns the IDs of stored routing rules a present config.json
 // section no longer declares. Mirrors virtualKeyPruneCandidates, but carries the
 // source-of-truth check itself because it is called from the merge path rather than from
@@ -3926,6 +4029,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 	logger.Debug("source_of_truth=config.json: pruning governance rows not present in config file")
 	protected := resolveProtectedVirtualKeys(ctx, config.ConfigStore,
 		virtualKeyPruneCandidates(config.GovernanceConfig.VirtualKeys, configData))
+	keepBudgets, keepRateLimits := governanceLimitsToKeep(ctx, config.ConfigStore, config.GovernanceConfig, configData)
 	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		if configData.governanceSectionPresent("virtual_keys") {
 			keep := make(map[string]bool, len(configData.Governance.VirtualKeys))
@@ -3981,14 +4085,20 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			for _, row := range configData.Governance.ModelConfigs {
 				keep[row.ID] = true
 			}
+			nextModelConfigs := append([]configstoreTables.TableModelConfig(nil), configData.Governance.ModelConfigs...)
 			for _, existing := range config.GovernanceConfig.ModelConfigs {
-				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteModelConfig(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
-						return fmt.Errorf("failed to delete model config %s: %w", existing.ID, err)
-					}
+				if existing.ID == "" || keep[existing.ID] {
+					continue
+				}
+				if !fileManagedModelConfigScope(existing.Scope) {
+					nextModelConfigs = append(nextModelConfigs, existing)
+					continue
+				}
+				if err := config.ConfigStore.DeleteModelConfig(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+					return fmt.Errorf("failed to delete model config %s: %w", existing.ID, err)
 				}
 			}
-			config.GovernanceConfig.ModelConfigs = configData.Governance.ModelConfigs
+			config.GovernanceConfig.ModelConfigs = nextModelConfigs
 		}
 		if configData.governanceSectionPresent("teams") {
 			keep := make(map[string]bool, len(configData.Governance.Teams))
@@ -4041,34 +4151,46 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			for _, row := range configData.Governance.Budgets {
 				keep[row.ID] = true
 			}
+			nextBudgets := append([]configstoreTables.TableBudget(nil), configData.Governance.Budgets...)
 			for _, existing := range config.GovernanceConfig.Budgets {
-				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteBudget(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
-						return fmt.Errorf("failed to delete budget %s: %w", existing.ID, err)
-					}
+				if existing.ID == "" || keep[existing.ID] {
+					continue
+				}
+				if keepBudgets[existing.ID] {
+					nextBudgets = append(nextBudgets, existing)
+					continue
+				}
+				if err := config.ConfigStore.DeleteBudget(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+					return fmt.Errorf("failed to delete budget %s: %w", existing.ID, err)
 				}
 			}
-			config.GovernanceConfig.Budgets = configData.Governance.Budgets
+			config.GovernanceConfig.Budgets = nextBudgets
 		}
 		if configData.governanceSectionPresent("rate_limits") {
 			keep := make(map[string]bool, len(configData.Governance.RateLimits))
 			for _, row := range configData.Governance.RateLimits {
 				keep[row.ID] = true
 			}
+			nextRateLimits := append([]configstoreTables.TableRateLimit(nil), configData.Governance.RateLimits...)
 			for _, existing := range config.GovernanceConfig.RateLimits {
-				if existing.ID != "" && !keep[existing.ID] {
-					if err := tx.Exec(
-						"UPDATE governance_model_configs SET rate_limit_id = NULL WHERE rate_limit_id = ?",
-						existing.ID,
-					).Error; err != nil {
-						return fmt.Errorf("failed to unlink rate limit %s from model configs: %w", existing.ID, err)
-					}
-					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
-						return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
-					}
+				if existing.ID == "" || keep[existing.ID] {
+					continue
+				}
+				if keepRateLimits[existing.ID] {
+					nextRateLimits = append(nextRateLimits, existing)
+					continue
+				}
+				if err := tx.Exec(
+					"UPDATE governance_model_configs SET rate_limit_id = NULL WHERE rate_limit_id = ?",
+					existing.ID,
+				).Error; err != nil {
+					return fmt.Errorf("failed to unlink rate limit %s from model configs: %w", existing.ID, err)
+				}
+				if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+					return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
 				}
 			}
-			config.GovernanceConfig.RateLimits = configData.Governance.RateLimits
+			config.GovernanceConfig.RateLimits = nextRateLimits
 		}
 		return nil
 	})
