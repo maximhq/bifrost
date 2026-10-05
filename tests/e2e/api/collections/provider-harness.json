@@ -199209,6 +199209,147 @@
           }
         }
       ]
+    },
+    {
+      "name": "166. Chat reasoning mode pro routes OpenAI through the Responses API (#7580) (chat-reasoning-mode)",
+      "description": "reasoning.mode (standard | pro) exists only on the OpenAI Responses API for GPT-5.6/GPT-6 (https://developers.openai.com/api/docs/guides/reasoning#reasoning-mode). A chat caller sets it inside the reasoning object; Bifrost must serve the request through Responses so pro is not silently downgraded to standard. Red before the fix: raw_request is a chat body with reasoning_effort and no mode. Green after: raw_request is a Responses body with reasoning.mode = pro, and the caller still receives chat.completion / chat.completion.chunk.",
+      "item": [
+        {
+          "name": "166.1 openai/gpt-6-luna chat reasoning mode pro unary - chat reasoning mode",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('166.1 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('166.1 caller still gets a chat completion', function () {",
+                  "  pm.expect(body.object, txt.slice(0, 400)).to.eql('chat.completion');",
+                  "  pm.expect(((body.choices || [])[0] || {}).message, txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(body.choices[0].message.content, 'empty assistant content (finish_reason=' + body.choices[0].finish_reason + '; length means the reasoning budget ran out): ' + txt.slice(0, 400)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('166.1 reasoning.mode pro reaches OpenAI on the Responses wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.input, 'raw_request has no input[]: the chat request was not converted to Responses: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('array');",
+                  "  pm.expect(rr.messages, 'raw_request still carries messages[]: sent to /chat/completions, where mode does not exist').to.be.undefined;",
+                  "  pm.expect(rr.reasoning_effort, 'reasoning_effort is the chat wire spelling; Responses uses reasoning.effort').to.be.undefined;",
+                  "  pm.expect(rr.reasoning, 'reasoning object missing on the wire').to.be.an('object');",
+                  "  pm.expect(rr.reasoning.mode, 'reasoning.mode was dropped before the provider').to.eql('pro');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('low');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: OK\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"mode\": \"pro\"\n  },\n  \"max_completion_tokens\": 4096\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "166.2 openai/gpt-6-luna chat reasoning mode pro streaming - chat reasoning mode",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('166.2 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('166.2 caller still gets a chat completion stream', function () {",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('event-stream');",
+                  "  pm.expect(txt, txt.slice(0, 400)).to.include('chat.completion.chunk');",
+                  "  pm.expect(txt, 'no [DONE] terminator: ' + txt.slice(-400)).to.include('[DONE]');",
+                  "  pm.expect(txt, 'Responses event names leaked to a chat caller').to.not.include('response.completed');",
+                  "});",
+                  "var rr = null;",
+                  "var content = '', finish = null;",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  var raw = ev && ev.extra_fields && ev.extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "  if (raw) { rr = raw; }",
+                  "  var ch = (ev && ev.choices || [])[0] || {};",
+                  "  if (ch.delta && typeof ch.delta.content === 'string') { content += ch.delta.content; }",
+                  "  if (ch.finish_reason) { finish = ch.finish_reason; }",
+                  "});",
+                  "pm.test('166.2 caller receives visible answer text', function () {",
+                  "  pm.expect(content, 'no visible content deltas (finish_reason=' + finish + '; length means the reasoning budget ran out)').to.not.be.empty;",
+                  "});",
+                  "pm.test('166.2 reasoning.mode pro reaches OpenAI on the Responses wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.input, 'raw_request has no input[]: the chat request was not converted to Responses: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('array');",
+                  "  pm.expect(rr.messages, 'raw_request still carries messages[]: sent to /chat/completions, where mode does not exist').to.be.undefined;",
+                  "  pm.expect(rr.reasoning_effort, 'reasoning_effort is the chat wire spelling; Responses uses reasoning.effort').to.be.undefined;",
+                  "  pm.expect(rr.reasoning, 'reasoning object missing on the wire').to.be.an('object');",
+                  "  pm.expect(rr.reasoning.mode, 'reasoning.mode was dropped before the provider').to.eql('pro');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('low');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: OK\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"mode\": \"pro\"\n  },\n  \"max_completion_tokens\": 4096,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
