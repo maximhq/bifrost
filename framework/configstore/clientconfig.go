@@ -1321,6 +1321,11 @@ func GenerateCustomerHash(c tables.TableCustomer) (string, error) {
 		hash.Write([]byte("budgetID:" + id))
 	}
 
+	// Only when set, so a customer declaring none keeps the hash it had before the field existed.
+	if c.AccessProfile != "" {
+		hash.Write([]byte("accessProfile:" + c.AccessProfile))
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -1393,6 +1398,11 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 			return "", err
 		}
 		hash.Write([]byte("claims:" + string(data)))
+	}
+
+	// Only when set, so a team declaring none keeps the hash it had before the field existed.
+	if t.AccessProfile != "" {
+		hash.Write([]byte("accessProfile:" + t.AccessProfile))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
