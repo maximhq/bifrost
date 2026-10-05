@@ -89,6 +89,7 @@ type BifrostContext struct {
 	err                   error
 	errMu                 sync.RWMutex
 	userValues            map[any]any
+	trustedValues         map[any]any // read only by a holder of the key; see SetTrustedValue
 	valuesMu              sync.RWMutex
 	blockRestrictedWrites atomic.Bool
 	grant                 atomic.Pointer[Grant] // what the request has been granted; installed by the transport, root contexts only
@@ -589,6 +590,42 @@ func (bc *BifrostContext) GetUserValues() map[any]any {
 	bc.valuesMu.RUnlock()
 
 	return result
+}
+
+// SetTrustedValue stores value under key in a store that Value, GetUserValues and
+// GetParentCtxWithUserValues never expose. Only a caller that already holds key can
+// read it back with TrustedValue, so a key of an unexported type is a capability: code
+// that cannot name the type can neither read nor write that slot, nor copy it out.
+// Scoped contexts write through to their root, as SetValue does.
+func (bc *BifrostContext) SetTrustedValue(key, value any) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.SetTrustedValue(key, value)
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.trustedValues == nil {
+		bc.trustedValues = make(map[any]any)
+	}
+	bc.trustedValues[key] = value
+}
+
+// TrustedValue returns the value SetTrustedValue stored under key on this context or a
+// BifrostContext ancestor, or nil. Plain context.Context parents cannot hold one.
+func (bc *BifrostContext) TrustedValue(key any) any {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.TrustedValue(key)
+	}
+	bc.valuesMu.RLock()
+	val, ok := bc.trustedValues[key]
+	bc.valuesMu.RUnlock()
+	if ok {
+		return val
+	}
+	if parent, isBifrost := bc.parent.(*BifrostContext); isBifrost {
+		return parent.TrustedValue(key)
+	}
+	return nil
 }
 
 // GetParentCtxWithUserValues returns a copy of the parent context with all user-set values merged in.
