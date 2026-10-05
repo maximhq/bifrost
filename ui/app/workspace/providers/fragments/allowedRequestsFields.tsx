@@ -46,6 +46,10 @@ const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType
 		responses: "/v1/messages",
 		responses_stream: "/v1/messages",
 	},
+	typesafe: {
+		list_models: "/v1/models",
+		decisions: "/v1/systemone",
+	},
 	cohere: {
 		chat_completion: "/v2/chat",
 		chat_completion_stream: "/v2/chat",
@@ -87,6 +91,7 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "image_edit_stream", label: "Image Edit Stream" },
 	{ key: "image_variation", label: "Image Variation" },
 	{ key: "count_tokens", label: "Count Tokens" },
+	{ key: "decisions", label: "Decisions" },
 ];
 
 // Path overrides replace the default path verbatim; these request paths embed a
@@ -177,7 +182,12 @@ export function AllowedRequestsFields({
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<div>
-													<Switch checked={isDisabled ? false : allowedField.value} disabled={true} size="md" />
+													<Switch
+														checked={isDisabled ? false : allowedField.value}
+														disabled={true}
+														size="md"
+														data-testid={`allowed-request-switch-${requestType.key}`}
+													/>
 												</div>
 											</TooltipTrigger>
 											<TooltipContent>
@@ -186,7 +196,13 @@ export function AllowedRequestsFields({
 										</Tooltip>
 									</TooltipProvider>
 								) : (
-									<Switch checked={allowedField.value} onCheckedChange={allowedField.onChange} size="md" disabled={disabled} />
+									<Switch
+										checked={allowedField.value}
+										onCheckedChange={allowedField.onChange}
+										size="md"
+										disabled={disabled}
+										data-testid={`allowed-request-switch-${requestType.key}`}
+									/>
 								)}
 							</FormControl>
 						</div>
