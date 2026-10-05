@@ -1,3 +1,4 @@
+- feat: ModelCatalog.GetMaxOutputTokens returns a model's datasheet max_output_tokens, memoized per catalog generation (misses included) so a model missing from the sheet no longer pays a full-sheet scan per call
 - fix: oauth2_server_config.issuer_url is required when mcp_server_auth_mode is oauth or both; the issuer is never derived from the request Host header (#7863)
   <Warning>
   Set oauth2_server_config.issuer_url before upgrading any deployment with MCP OAuth discovery enabled, or config load fails.

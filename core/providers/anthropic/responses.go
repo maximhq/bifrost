@@ -5220,6 +5220,10 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	seenConversation := false
 	midConvSystemSupported := isRequestMessage && caps.SupportsMidConversationSystem(
 		DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
+	// Per-message effort (output_config.effort on a role:"system" message) is a separate,
+	// narrower gate: models without per-turn effort 400 on the field, so the override is
+	// dropped fail-soft for them rather than forwarded.
+	midConvOutputConfigSupported := isRequestMessage && supportsPerMessageOutputConfig(caps)
 	// When the native role:"system" form isn't available, inline the reminder as a user turn
 	// rather than hoisting it into the top-level system block: hoisting preserves the
 	// breakpoint but invalidates the cached prefix behind it, costing roughly half the prompt on
@@ -5272,16 +5276,45 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// does not attempt to recognize the assistant-ending-in-server-tool-use exception. A
 	// false negative costs nothing: the caller falls back to inlining, which is cache-preserving
 	// and always accepted. A false positive would be a 400.
+	//
+	// "Consecutive system messages are accepted and treated as a single system section, which
+	// follows the same placement rule as a whole" (Anthropic docs), so the trailing run of
+	// already-emitted role:"system" messages (an effort-only override, an earlier reminder) is
+	// skipped before requiring the user turn; without that, the second member of a system
+	// group would be judged against its sibling and inlined, dropping its override.
 	midConvPlacementOK := func(i int) bool {
-		if len(anthropicMessages) == 0 ||
-			anthropicMessages[len(anthropicMessages)-1].Role != AnthropicMessageRoleUser {
+		prev := len(anthropicMessages) - 1
+		for prev >= 0 && anthropicMessages[prev].Role == AnthropicMessageRoleSystem {
+			prev--
+		}
+		if prev < 0 || anthropicMessages[prev].Role != AnthropicMessageRoleUser {
 			return false
 		}
-		if i == len(bifrostMessages)-1 {
+		// The trailing clause is judged at the END of the group too: skip the input items
+		// that will join this system section, then require end-of-messages or an assistant
+		// turn. Judging the first member by its system sibling would inline it.
+		next := i + 1
+		for next < len(bifrostMessages) && bifrostMessages[next].Role != nil &&
+			(*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleSystem ||
+				*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleDeveloper) {
+			next++
+		}
+		if next == len(bifrostMessages) {
 			return true
 		}
-		next := bifrostMessages[i+1]
-		return next.Role != nil && *next.Role == schemas.ResponsesInputMessageRoleAssistant
+		return bifrostMessages[next].Role != nil && *bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleAssistant
+	}
+
+	// hasConversationTurn reports whether a user or assistant message has been emitted. An
+	// effort-only system message emitted at the top of messages is not a conversation turn,
+	// so it must not flip the system prompt that follows it into mid-conversation handling.
+	hasConversationTurn := func() bool {
+		for _, m := range anthropicMessages {
+			if m.Role != AnthropicMessageRoleSystem {
+				return true
+			}
+		}
+		return false
 	}
 
 	// Helper to emit orphaned tool results (no matching tool_use) as a single user
@@ -5454,31 +5487,61 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 					})
 					pendingReasoningContentBlocks = nil
 				}
-				if !seenConversation && (len(anthropicMessages) > 0 ||
+				if !seenConversation && (hasConversationTurn() ||
 					len(pendingToolCalls) > 0 ||
 					len(pendingToolResultBlocks) > 0 ||
 					currentAssistantMessage != nil) {
 					seenConversation = true
 				}
-				if content := convertBifrostMessageToAnthropicSystemContent(&msg); content != nil {
-					switch {
-					case seenConversation && midConvSystemSupported && midConvPlacementOK(i):
-						// Mid-conversation system message — emit as role:"system" in messages array.
+				content := convertBifrostMessageToAnthropicSystemContent(&msg)
+				if msg.IsEffortOnlySystemItem() {
+					// content:"" with an override is the effort-only form too; a non-nil empty
+					// string must not fall through to the hoist branch and lose the effort.
+					content = nil
+				}
+				// Per-message effort override (beta mid-conversation-output-config). The
+				// effort-only form carries no text, is exempt from the placement rules and can
+				// sit anywhere in messages, including as the first entry (Anthropic effort
+				// docs), so it is emitted where it appears. A system message that also carries
+				// text keeps the placement rules and carries the override itself only on the
+				// native emission; on the inline and hoist fallbacks the text cannot carry it,
+				// so the override goes out as a separate effort-only message instead.
+				perMessageOutputConfig := perMessageOutputConfigFor(&msg, midConvOutputConfigSupported)
+				appendEffortOnly := func() {
+					if perMessageOutputConfig != nil {
 						anthropicMessages = append(anthropicMessages, AnthropicMessage{
-							Role:    AnthropicMessageRoleSystem,
-							Content: *content,
+							Role:         AnthropicMessageRoleSystem,
+							Content:      AnthropicContent{ContentBlocks: []AnthropicContentBlock{}},
+							OutputConfig: perMessageOutputConfig,
 						})
-					case seenConversation && inlineMidConvSystem:
-						// Native form unavailable (unsupported model, or a placement Anthropic
-						// rejects). Inline in place so the cache anchor stays inside `messages`
-						// instead of collapsing the prefix from the system block.
-						if inlined := inlineMidConversationSystem(content); inlined != nil {
-							anthropicMessages = append(anthropicMessages, *inlined)
-						}
-					default:
-						// Leading system run, or a non-Anthropic model: hoist (historical behavior).
-						systemContent = appendToSystemContent(systemContent, *content)
 					}
+				}
+				if content == nil {
+					appendEffortOnly()
+					continue
+				}
+				switch {
+				case seenConversation && midConvSystemSupported && midConvPlacementOK(i):
+					// Mid-conversation system message — emit as role:"system" in messages array.
+					anthropicMessages = append(anthropicMessages, AnthropicMessage{
+						Role:         AnthropicMessageRoleSystem,
+						Content:      *content,
+						OutputConfig: perMessageOutputConfig,
+					})
+				case seenConversation && inlineMidConvSystem:
+					// Native form unavailable (unsupported model, or a placement Anthropic
+					// rejects). Inline in place so the cache anchor stays inside `messages`
+					// instead of collapsing the prefix from the system block. The override goes
+					// first: effort applies "from the next user turn on", so the reply to the
+					// reminder turn already runs at the new level, as the native item would.
+					appendEffortOnly()
+					if inlined := inlineMidConversationSystem(content); inlined != nil {
+						anthropicMessages = append(anthropicMessages, *inlined)
+					}
+				default:
+					// Leading system run, or a non-Anthropic model: hoist (historical behavior).
+					systemContent = appendToSystemContent(systemContent, *content)
+					appendEffortOnly()
 				}
 				continue
 			}
@@ -5992,16 +6055,36 @@ func convertSingleAnthropicMessageToBifrostMessages(ctx *schemas.BifrostContext,
 			// validators (Bedrock Mantle, #7074), same as the block-content paths.
 			bifrostMsg.Status = schemas.Ptr("completed")
 		}
-		return []schemas.ResponsesMessage{bifrostMsg}
+		return attachPerMessageEffort(msg, []schemas.ResponsesMessage{bifrostMsg})
 	}
 
 	// Handle content blocks
 	if msg.Content.ContentBlocks != nil {
 		roleVal := schemas.ResponsesMessageRoleType(msg.Role)
-		return convertAnthropicContentBlocksToResponsesMessages(ctx, msg.Content.ContentBlocks, &roleVal, isOutput, structuredOutputToolName)
+		return attachPerMessageEffort(msg, convertAnthropicContentBlocksToResponsesMessages(ctx, msg.Content.ContentBlocks, &roleVal, isOutput, structuredOutputToolName))
 	}
 
-	return []schemas.ResponsesMessage{}
+	return attachPerMessageEffort(msg, nil)
+}
+
+// attachPerMessageEffort carries an Anthropic per-message output_config (beta
+// mid-conversation-output-config-2026-07-01) onto the neutral system item. The effort-only
+// form has an empty content array and converts to no item at all, so one is synthesized
+// with empty content; a system message that also carries text keeps its converted item and
+// gains the override on it. Only role:"system" is documented to carry the field.
+func attachPerMessageEffort(msg *AnthropicMessage, converted []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	if msg.Role != AnthropicMessageRoleSystem || msg.OutputConfig == nil || msg.OutputConfig.Effort == nil {
+		return converted
+	}
+	if len(converted) == 0 {
+		converted = []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{}},
+		}}
+	}
+	converted[0].OutputConfig = &schemas.ResponsesMessageOutputConfig{Effort: schemas.Ptr(*msg.OutputConfig.Effort)}
+	return converted
 }
 
 // Helper function to convert a single Anthropic message to Bifrost messages, grouping text and tool calls
@@ -6026,16 +6109,16 @@ func convertSingleAnthropicMessageToBifrostMessagesGrouped(msg *AnthropicMessage
 			// validators (Bedrock Mantle, #7074), same as the block-content paths.
 			bifrostMsg.Status = schemas.Ptr("completed")
 		}
-		return []schemas.ResponsesMessage{bifrostMsg}
+		return attachPerMessageEffort(msg, []schemas.ResponsesMessage{bifrostMsg})
 	}
 
 	// Handle content blocks with grouping for text and tool calls
 	if msg.Content.ContentBlocks != nil {
 		roleVal := schemas.ResponsesMessageRoleType(msg.Role)
-		return convertAnthropicContentBlocksToResponsesMessagesGrouped(msg.Content.ContentBlocks, &roleVal, isOutput)
+		return attachPerMessageEffort(msg, convertAnthropicContentBlocksToResponsesMessagesGrouped(msg.Content.ContentBlocks, &roleVal, isOutput))
 	}
 
-	return []schemas.ResponsesMessage{}
+	return attachPerMessageEffort(msg, nil)
 }
 
 // anthropicToolUseBlockToResponsesMessage converts one tool_use / server_tool_use /
@@ -7121,6 +7204,22 @@ func convertBifrostMessageToAnthropicSystemContent(msg *schemas.ResponsesMessage
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// perMessageOutputConfigFor returns the Anthropic per-message output_config for a neutral
+// system item, or nil when the item carries none, the model lacks per-turn effort support,
+// or the effort has no Anthropic level ("none" has no per-turn equivalent). The effort goes
+// through MapBifrostEffortToAnthropic so a neutral "minimal" lands on "low".
+func perMessageOutputConfigFor(msg *schemas.ResponsesMessage, supported bool) *AnthropicMessageOutputConfig {
+	if !supported || msg.OutputConfig == nil || msg.OutputConfig.Effort == nil {
+		return nil
+	}
+	effort := MapBifrostEffortToAnthropic(*msg.OutputConfig.Effort)
+	switch effort {
+	case "low", "medium", "high", "xhigh", "max":
+		return &AnthropicMessageOutputConfig{Effort: schemas.Ptr(effort)}
 	}
 	return nil
 }

@@ -46,6 +46,7 @@ type ModelCapabilities struct {
 	SupportsAdaptiveThinking        *bool `json:"supports_adaptive_thinking,omitempty"`
 	SupportsNativeEffort            *bool `json:"supports_native_effort,omitempty"`
 	SupportsMidConversationSystem   *bool `json:"supports_mid_conversation_system_messages,omitempty"`
+	SupportsMidConvOutputConfig     *bool `json:"supports_mid_conversation_output_config,omitempty"`
 	SupportsSamplingParams          *bool `json:"supports_sampling_params,omitempty"` // false ⇒ temperature/top_p/top_k rejected (adaptive-only models)
 	SupportsRedactThinking          *bool `json:"supports_redact_thinking,omitempty"`
 	SupportsTaskBudgets             *bool `json:"supports_task_budgets,omitempty"`

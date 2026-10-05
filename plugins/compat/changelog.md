@@ -1,1 +1,2 @@
+- feat: should_convert_params now lowers max_output_tokens / max_completion_tokens / max_tokens above the model's datasheet max_output_tokens to that limit, and keeps reasoning.max_tokens below the lowered cap
 - chore: upgraded core to v1.11.2 and framework to v1.8.1

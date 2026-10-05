@@ -201,6 +201,66 @@ var (
 	}
 )
 
+// supportsPerMessageOutputConfig reports whether output_config on a messages[] entry
+// (per-message effort, beta mid-conversation-output-config-2026-07-01) may be forwarded.
+// The datasheet's supports_mid_conversation_output_config wins when set: the record is
+// keyed per (provider, model), so a surface that ships the feature (e.g. Vertex) can be
+// enabled without a release. Without a record it falls back to the hardcoded gates:
+// ProviderFeatures.MidConvOutputConfig (Anthropic direct only) and the documented models.
+func supportsPerMessageOutputConfig(caps schemas.ModelCaps) bool {
+	return caps.SupportsMidConvOutputConfig(
+		ProviderFeatures[caps.Provider()].MidConvOutputConfig &&
+			DefaultSupportsMidConversationOutputConfig(caps.Provider(), caps.Model()))
+}
+
+var (
+	// outputConfigKeyToken is how the output_config key is spelled in raw JSON.
+	outputConfigKeyToken = []byte(`"output_config"`)
+	// cacheControlScopeKeyToken is how the cache_control.scope key is spelled in raw JSON.
+	cacheControlScopeKeyToken = []byte(`"scope"`)
+	// fallbackBlockTypeToken is how the server-side fallback block type value is spelled.
+	fallbackBlockTypeToken = []byte(`"` + string(AnthropicContentBlockTypeFallback) + `"`)
+)
+
+// mayCarryPerMessageOutputConfig is a conservative byte prefilter for messages[].output_config.
+// A JSON key is written with unescaped quotes, and inside a string value those quotes are
+// escaped, so the token only matches a key or a value that is exactly "output_config". When it
+// occurs no more often than the top-level output_config accounts for, no message carries the
+// field and the message walk is skipped; any other count falls through to the walk. A key
+// spelled with escapes ("output\u005fconfig") is not matched and reaches the provider as sent.
+func mayCarryPerMessageOutputConfig(jsonBody []byte) bool {
+	switch bytes.Count(jsonBody, outputConfigKeyToken) {
+	case 0:
+		return false
+	case 1:
+		return !providerUtils.JSONFieldExists(jsonBody, "output_config")
+	}
+	return true
+}
+
+// isEffortOnlyRawSystemMessage reports whether msg is role:"system" with missing, "" or []
+// content: the effort-only form, which carries nothing but its output_config.
+func isEffortOnlyRawSystemMessage(msg gjson.Result) bool {
+	if msg.Get("role").String() != string(AnthropicMessageRoleSystem) {
+		return false
+	}
+	content := msg.Get("content")
+	switch {
+	case !content.Exists():
+		return true
+	case content.IsArray():
+		empty := true
+		content.ForEach(func(_, _ gjson.Result) bool {
+			empty = false
+			return false
+		})
+		return empty
+	case content.Type == gjson.String:
+		return content.String() == ""
+	}
+	return false
+}
+
 // stripUnsupportedAnthropicFields removes request-level and tool-level fields
 // that the target Anthropic-family provider does not support, according to the
 // ProviderFeatures map (types.go). Tool-type validation (fail-closed) is handled
@@ -568,29 +628,78 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	// history. Anthropic-only; forwarding them to a provider without the feature
 	// (e.g. a gateway fallback from Anthropic to Vertex) sends an unknown content
 	// block. The marker carries no user content, so dropping it is lossless.
-	if !features.ServerSideFallback {
+	// The byte prefilter keeps the common body (no fallback block) off the message walk.
+	if !features.ServerSideFallback && bytes.Contains(jsonBody, fallbackBlockTypeToken) {
 		if msgs := providerUtils.GetJSONField(jsonBody, "messages"); msgs.IsArray() {
-			for mi, msg := range msgs.Array() {
+			mi := -1
+			msgs.ForEach(func(_, msg gjson.Result) bool {
+				mi++
 				content := msg.Get("content")
 				if !content.IsArray() {
-					continue
+					return true
 				}
-				kept := make([]string, 0, len(content.Array()))
+				isFallback := func(block gjson.Result) bool {
+					return block.Get("type").String() == string(AnthropicContentBlockTypeFallback)
+				}
 				dropped := false
-				for _, block := range content.Array() {
-					if block.Get("type").String() == string(AnthropicContentBlockTypeFallback) {
-						dropped = true
-						continue
-					}
-					kept = append(kept, block.Raw)
-				}
+				content.ForEach(func(_, block gjson.Result) bool {
+					dropped = isFallback(block)
+					return !dropped
+				})
 				if !dropped {
-					continue
+					return true
 				}
-				// Message indices are stable (only content arrays are replaced).
+				var kept []string
+				content.ForEach(func(_, block gjson.Result) bool {
+					if !isFallback(block) {
+						kept = append(kept, block.Raw)
+					}
+					return true
+				})
+				// Message indices are stable (only content arrays are replaced). The walk reads
+				// msgs, which holds the original bytes, so rewriting jsonBody mid-walk is safe.
 				jsonBody, err = sjson.SetRawBytes(jsonBody, fmt.Sprintf("messages.%d.content", mi), []byte("["+strings.Join(kept, ",")+"]"))
-				if err != nil {
-					return nil, fmt.Errorf("strip raw fallback blocks: %w", err)
+				return err == nil
+			})
+			if err != nil {
+				return nil, fmt.Errorf("strip raw fallback blocks: %w", err)
+			}
+		}
+	}
+
+	// messages[].output_config — per-message effort (beta mid-conversation-output-config).
+	// Claude Code sends it on a text-bearing role:"system" message next to the top-level
+	// output_config, and Vertex rejects it with "messages.N.output_config: Extra inputs are
+	// not permitted". Where per-message effort is unsupported it is removed; the message text
+	// and the top-level output_config stay. An effort-only system message (no content) exists
+	// solely to carry the override, so it is dropped whole rather than sent empty.
+	//
+	// The typed path needs no twin: AnthropicMessage.OutputConfig is only ever set by the
+	// conversion (perMessageOutputConfigFor), which applies the same gate.
+	if !supportsPerMessageOutputConfig(caps) && mayCarryPerMessageOutputConfig(jsonBody) {
+		if msgs := providerUtils.GetJSONField(jsonBody, "messages"); msgs.IsArray() {
+			type hit struct {
+				index       int
+				dropMessage bool
+			}
+			var hits []hit
+			mi := -1
+			msgs.ForEach(func(_, msg gjson.Result) bool {
+				mi++
+				if msg.Get("output_config").Exists() {
+					hits = append(hits, hit{index: mi, dropMessage: isEffortOnlyRawSystemMessage(msg)})
+				}
+				return true
+			})
+			// sjson has no wildcard delete, so each hit is deleted by index, last first:
+			// dropping a whole message shifts every later index.
+			for j := len(hits) - 1; j >= 0; j-- {
+				path := fmt.Sprintf("messages.%d", hits[j].index)
+				if !hits[j].dropMessage {
+					path += ".output_config"
+				}
+				if jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path); err != nil {
+					return nil, fmt.Errorf("strip raw %s: %w", path, err)
 				}
 			}
 		}
@@ -865,7 +974,9 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	// Addressing through the whole body (system.<i>.cache_control.scope) would
 	// reserialise the entire request per block, making this O(blocks × body).
 	// Pinned by TestStripUnsupportedFieldsFromRawBody_AllocationScaling.
-	if !features.PromptCachingScope {
+	// The byte prefilter skips both walks when no "scope" key can be present; each walk
+	// otherwise copies every block (and every message) just to look.
+	if !features.PromptCachingScope && bytes.Contains(jsonBody, cacheControlScopeKeyToken) {
 		if systemResult := providerUtils.GetJSONField(jsonBody, "system"); systemResult.Exists() && systemResult.IsArray() {
 			blocks := systemResult.Array()
 			rebuilt := make([][]byte, len(blocks))
@@ -886,7 +997,8 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			}
 		}
 
-		if messagesResult := providerUtils.GetJSONField(jsonBody, "messages"); messagesResult.Exists() && messagesResult.IsArray() {
+		if messagesResult := providerUtils.GetJSONField(jsonBody, "messages"); messagesResult.Exists() && messagesResult.IsArray() &&
+			messagesCarryCacheControlScope(messagesResult) {
 			messages := messagesResult.Array()
 			rebuiltMessages := make([][]byte, len(messages))
 			anyMessageChanged := false
@@ -925,6 +1037,24 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	}
 
 	return jsonBody, nil
+}
+
+// messagesCarryCacheControlScope reports whether any message content block carries
+// cache_control.scope, so the copying rebuild runs only when it will change something.
+func messagesCarryCacheControlScope(messages gjson.Result) bool {
+	found := false
+	messages.ForEach(func(_, msg gjson.Result) bool {
+		content := msg.Get("content")
+		if !content.IsArray() {
+			return true
+		}
+		content.ForEach(func(_, block gjson.Result) bool {
+			found = block.Get("cache_control.scope").Exists()
+			return !found
+		})
+		return !found
+	})
+	return found
 }
 
 // stripCacheControlScope removes cache_control.scope from one content block's JSON,
@@ -1464,9 +1594,9 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
 // system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus 4.8+ (including Opus 5) and the Claude
-// Fable/Mythos family (Fable post-dates Opus 4.8; the public doc lists Opus 4.8
-// but Fable supports it as well). No beta header is required.
+// Vertex. Supported on Claude Opus 4.8+ (including Opus 5 and 5.5), Claude
+// Sonnet 5.5 (not Sonnet 5), and the Claude Fable/Mythos family. No beta header
+// is required.
 //
 // Override-aware on the MODEL gate only: after the hardcoded Anthropic provider
 // gate, prefers the datasheet's supports_mid_conversation_system_messages
@@ -1479,11 +1609,29 @@ func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model 
 		return false
 	}
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsOpus5Plus(m) {
+	if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
 		return true
 	}
 	return strings.Contains(m, "opus") &&
 		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+}
+
+// DefaultSupportsMidConversationOutputConfig reports whether the provider+model pair
+// accepts output_config.effort on a role:"system" message inside messages (per-message
+// effort, beta mid-conversation-output-config-2026-07-01). Claude API direct only: the
+// Bedrock and Vertex converters have no native mid-conversation system role to carry it.
+// Documented on Claude Fable 5.1 / Mythos 5.1, Claude Opus 5 and 5.5, and Claude Sonnet
+// 5.5. Every other model, Claude Fable 5 and Opus 4.8 included, returns 400
+// "output_config.effort requires a model that supports per-turn effort", so callers drop
+// the override fail-soft when this is false instead of forwarding a guaranteed rejection.
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
+func DefaultSupportsMidConversationOutputConfig(provider schemas.ModelProvider, model string) bool {
+	if provider != schemas.Anthropic {
+		return false
+	}
+	m := strings.ToLower(model)
+	return schemas.IsFable51(m) || IsOpus5Plus(m) || IsSonnet55Plus(m)
 }
 
 // SupportsFastMode reports fast-mode support for a single (provider, model)
@@ -1724,13 +1872,37 @@ type anthropicMessageBetaSignals struct {
 	scopedCacheControl bool
 	// fileSource: some content block has a source of type "file" (Files API).
 	fileSource bool
+
+	// --- derived from messages[] themselves ---
+
+	// midConversationOutputConfig: some message carries output_config.effort (per-message effort).
+	midConversationOutputConfig bool
+}
+
+// complete reports whether every signal is already set, so a scan can stop early.
+func (s anthropicMessageBetaSignals) complete() bool {
+	return s.blocksDone() && s.midConversationOutputConfig
+}
+
+// blocksDone reports whether both block-level signals are set, so content blocks need no
+// further scanning even while the message-level effort signal is still being looked for.
+func (s anthropicMessageBetaSignals) blocksDone() bool {
+	return s.scopedCacheControl && s.fileSource
 }
 
 // scanMessagesForBetaSignals derives the signals from decoded messages.
 func scanMessagesForBetaSignals(messages []AnthropicMessage) anthropicMessageBetaSignals {
 	var signals anthropicMessageBetaSignals
 	for _, message := range messages {
-		if message.Content.ContentBlocks == nil {
+		if signals.complete() {
+			return signals
+		}
+		if message.OutputConfig != nil && message.OutputConfig.Effort != nil {
+			signals.midConversationOutputConfig = true
+		}
+		// Block scanning stops once both block-level signals are known; only the
+		// message-level effort check keeps walking the (potentially huge) array.
+		if signals.blocksDone() || message.Content.ContentBlocks == nil {
 			continue
 		}
 		for _, block := range message.Content.ContentBlocks {
@@ -1740,8 +1912,8 @@ func scanMessagesForBetaSignals(messages []AnthropicMessage) anthropicMessageBet
 			if block.Source != nil && block.Source.SourceObj != nil && block.Source.SourceObj.Type == "file" {
 				signals.fileSource = true
 			}
-			if signals.scopedCacheControl && signals.fileSource {
-				return signals
+			if signals.blocksDone() {
+				break
 			}
 		}
 	}
@@ -1757,12 +1929,26 @@ func scanRawMessagesForBetaSignals(jsonBody []byte) anthropicMessageBetaSignals 
 	if !messages.Exists() || !messages.IsArray() {
 		return signals
 	}
-	for _, message := range messages.Array() {
+	// ForEach walks the array in place; Array() would materialise every element first.
+	messages.ForEach(func(_, message gjson.Result) bool {
+		if signals.complete() {
+			return false
+		}
+		// A message-level sibling of content, so it is read before the content gate below:
+		// the effort-only form carries an empty content array and a string-content system
+		// message may carry it too. Type-checked for the same present-but-null reason as
+		// cache_control.scope.
+		if effort := message.Get("output_config.effort"); effort.Type == gjson.String {
+			signals.midConversationOutputConfig = true
+		}
+		if signals.blocksDone() {
+			return true
+		}
 		content := message.Get("content")
 		if !content.Exists() || !content.IsArray() {
-			continue
+			return true
 		}
-		for _, block := range content.Array() {
+		content.ForEach(func(_, block gjson.Result) bool {
 			// Exists() is `Type != Null || len(Raw) != 0`, so a present-but-null scope
 			// reports true while typed decoding leaves the *string nil. Check the type
 			// too, otherwise an explicit `"scope": null` injects a prompt-caching-scope
@@ -1773,11 +1959,10 @@ func scanRawMessagesForBetaSignals(jsonBody []byte) anthropicMessageBetaSignals 
 			if block.Get("source.type").String() == "file" {
 				signals.fileSource = true
 			}
-			if signals.scopedCacheControl && signals.fileSource {
-				return signals
-			}
-		}
-	}
+			return !signals.blocksDone()
+		})
+		return true
+	})
 	return signals
 }
 
@@ -2079,6 +2264,15 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicFilesAPIBetaHeader)
 		}
 	}
+	// Per-message effort: output_config.effort on a role:"system" message inside messages
+	// (the Pi / mid-conversation effort override). Sourced from signals so the raw-body path
+	// derives it identically. Model support is enforced at conversion time, where an
+	// unsupported model has the override dropped before it can reach here.
+	if signals.midConversationOutputConfig {
+		if !hasProvider || supportsPerMessageOutputConfig(caps) {
+			headers = appendUniqueHeader(headers, AnthropicMidConversationOutputConfigBetaHeader)
+		}
+	}
 	if len(headers) == 0 {
 		return nil
 	}
@@ -2141,6 +2335,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicServerSideFallbackBetaHeaderPrefix,
 	AnthropicFallbackCreditBetaHeaderPrefix,
 	AnthropicMidConversationToolChangesBetaHeaderPrefix,
+	AnthropicMidConversationOutputConfigBetaHeaderPrefix,
 }
 
 // betaHeaderProviderVersion rewrites a beta header's version date on providers
@@ -2684,7 +2879,8 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicServerSideFallbackBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.ServerSideFallback },
 	AnthropicFallbackCreditBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.FallbackCredit },
 	// Long key kept in its own group so gofmt doesn't realign the block above.
-	AnthropicMidConversationToolChangesBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
+	AnthropicMidConversationToolChangesBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
+	AnthropicMidConversationOutputConfigBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvOutputConfig },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
