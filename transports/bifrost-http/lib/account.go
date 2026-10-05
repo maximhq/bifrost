@@ -114,6 +114,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if config.PromptCache != nil {
 		providerConfig.PromptCache = config.PromptCache
 	}
+	if config.InjectedTools != nil {
+		providerConfig.InjectedTools = config.InjectedTools
+	}
 	return providerConfig, nil
 }
 
