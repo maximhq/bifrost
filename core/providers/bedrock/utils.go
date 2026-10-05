@@ -1792,24 +1792,44 @@ const foreignRedactedContentPrefix = "bifrost:redacted:v1:"
 // Bedrock blob) untouched and wraps anything else. Canonical, not merely decodable:
 // SDKs replay the decoded bytes re-encoded, so only a canonical blob comes back
 // byte-identical.
-func encodeRedactedContentForConverse(token string) string {
+//
+// A wrapped token also carries the reasoning item id it was issued under
+// (providerUtils.EmbedReasoningItemID). OpenAI and Azure bind encrypted reasoning
+// to that id and reject a replay under any other, and Converse has no field for it
+// (#7729). No provider gate is needed: the wrapper is Bifrost's own and is always
+// unwrapped on ingress, so the id never reaches an upstream inside a payload.
+//
+// The canonical check only guesses at origin from the token's characters. A caller
+// that knows a non-Bedrock upstream served the token wraps it with
+// wrapRedactedContentForConverse instead, since a foreign token can be canonical too.
+func encodeRedactedContentForConverse(id *string, token string) string {
 	if decoded, err := base64.StdEncoding.DecodeString(token); err == nil && base64.StdEncoding.EncodeToString(decoded) == token {
 		return token
 	}
-	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + token))
+	return wrapRedactedContentForConverse(id, token)
+}
+
+// wrapRedactedContentForConverse wraps token unconditionally, embedding id.
+func wrapRedactedContentForConverse(id *string, token string) string {
+	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + providerUtils.EmbedReasoningItemID(id, token)))
 }
 
 // decodeRedactedContentFromConverse unwraps a blob encodeRedactedContentForConverse
-// wrapped and returns every other blob unchanged.
-func decodeRedactedContentFromConverse(blob string) string {
+// wrapped, returning the reasoning item id it carried (nil if none) and the
+// upstream's token. Every other blob comes back unchanged with a nil id.
+func decodeRedactedContentFromConverse(blob string) (*string, string) {
 	decoded, err := base64.StdEncoding.DecodeString(blob)
 	if err != nil {
-		return blob
+		return nil, blob
 	}
-	if token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix); ok {
-		return token
+	token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix)
+	if !ok {
+		return nil, blob
 	}
-	return blob
+	if id, rest, found := providerUtils.ExtractReasoningItemID(token); found {
+		return id, rest
+	}
+	return nil, token
 }
 
 // newBedrockCachePoint builds a default cache point, attaching the TTL only for the values

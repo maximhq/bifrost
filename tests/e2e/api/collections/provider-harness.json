@@ -142191,6 +142191,112 @@
               }
             }
           ]
+        },
+        {
+          "name": "azure/gpt-5.6-luna /bedrock converse turn 2: replayed redactedContent keeps its upstream reasoning item id, no strip-and-retry (#7729) - converse-redacted-reasoning",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('converseReasoningItemIdRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Azure binds encrypted reasoning to the item id it issued it under. Converse has no field",
+                  "// for that id, so it must ride inside the redactedContent blob Bifrost wraps. Without it the",
+                  "// replay minted rs_<UnixNano>, Azure answered 400 \"Encrypted content item_id did not match the",
+                  "// target item id\", and the strip-and-retry fail-soft answered 200 with the reasoning dropped.",
+                  "// The row above only sees that 200, so this row reads the provider-bound request back from the",
+                  "// log. The unit test TestConverseRedactedContentReplayKeepsReasoningItemID pins the exact id.",
+                  "var body = pm.response.text() || '';",
+                  "var reqId = pm.variables.get('converseReasoningItemIdRequestId');",
+                  "var BIFROST_MINTED = /^rs_[0-9]{19}$/;",
+                  "pm.test('capture turn produced a conversation to replay', function () {",
+                  "  pm.expect(pm.request.body.raw.indexOf('{{'), 'turn 1 did not set bedrockConverseForeignRedactedMessages, so nothing was replayed').to.equal(-1);",
+                  "});",
+                  "pm.test('replayed turn answered', function () {",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "});",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = null;",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      row = res.json();",
+                  "      rr = row.raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var trail = row.attempt_trail || [];",
+                  "      var engine = String(row.routing_engine_logs || '');",
+                  "      pm.test('the replay reached Azure on the first attempt, with no strip-and-retry', function () {",
+                  "        var failed = trail.filter(function (a) { return a && a.fail_reason; });",
+                  "        pm.expect(failed, 'an attempt failed before the answer, so Azure rejected the replayed reasoning: ' + JSON.stringify(trail)).to.be.empty;",
+                  "        pm.expect(engine, 'Bifrost stripped the reasoning and retried, so the model answered without it: ' + engine.slice(0, 400)).to.not.include('Stripped unverifiable encrypted reasoning');",
+                  "      });",
+                  "      pm.test('the reasoning item reached Azure under its upstream id', function () {",
+                  "        var input = Array.isArray(rr.input) ? rr.input : [];",
+                  "        var reasoning = input.filter(function (i) { return i && i.type === 'reasoning' && i.encrypted_content; });",
+                  "        pm.expect(reasoning.length, 'no reasoning item with encrypted_content reached Azure: ' + JSON.stringify(rr).slice(0, 400)).to.be.above(0);",
+                  "        reasoning.forEach(function (i) {",
+                  "          pm.expect(BIFROST_MINTED.test(String(i.id)), 'the replay carried Bifrost-minted id ' + i.id + ' instead of the id Azure bound the token to').to.be.false;",
+                  "        });",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-5.6-luna",
+                "converse"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":{{bedrockConverseForeignRedactedMessages}},\"inferenceConfig\":{\"maxTokens\":2048},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"none\",\"toolConfig\":{\"tools\":[{\"toolSpec\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"inputSchema\":{\"json\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}}],\"toolChoice\":{\"auto\":{}}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
         }
       ]
     },
