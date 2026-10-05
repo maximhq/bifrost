@@ -641,30 +641,37 @@ func TestAccounting_SkipRequestCountChargesCostOnly(t *testing.T) {
 	assert.Equal(t, int64(10), f.tokens())
 }
 
-// TestPostHookWorker_LiveRequestDoesNotCountRequest pins the wiring: the live request
-// type is what marks an update as not counting toward request limits.
-func TestPostHookWorker_LiveRequestDoesNotCountRequest(t *testing.T) {
-	for _, tc := range []struct {
-		requestType  schemas.RequestType
-		wantRequests int64
-	}{
-		{schemas.LiveRequest, 0},
-		{schemas.ResponsesRequest, 1},
-	} {
-		t.Run(string(tc.requestType), func(t *testing.T) {
-			f := newAccountingFixture(t)
-			plugin := &GovernancePlugin{ctx: context.Background(), tracker: f.tracker}
-			result := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
-				Usage: &schemas.ResponsesResponseUsage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10},
-			}}
+// TestAccounting_SessionContinuationSkipsRequestLimits: a billing unit of an admitted session
+// (a GPT Live window) is neither refused by nor counted against request limits, while its tokens
+// still are. The session's admission unit, without the flag, is refused once the limit is spent.
+func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("rl-vk", 1_000_000, 0, 1, 1) // request limit already spent
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-live", "Live VK", rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
 
-			settled := settleLimits(f.store, "sk-bf-acct", schemas.OpenAI, "gpt-live-1", &UsageUpdate{})
-			plugin.postHookWorker(result, nil, schemas.OpenAI, "gpt-live-1", tc.requestType, "req-"+string(tc.requestType), "", false, 0, nil, settled.Budgets, settled.RateLimits, nil)
+	admission := resolverCtx(store, "sk-bf-live")
+	_, shortCircuit, err := plugin.PreLLMHook(admission, newChatRequest())
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "a new request is refused once the request limit is spent")
 
-			assert.EventuallyWithT(t, func(c *assert.CollectT) {
-				assert.Equal(c, int64(10), f.tokens())
-			}, time.Second, 10*time.Millisecond)
-			assert.Equal(t, tc.wantRequests, f.requests())
-		})
-	}
+	continuation := resolverCtx(store, "sk-bf-live")
+	continuation.SetValue(schemas.BifrostContextKeySessionContinuation, true)
+	_, shortCircuit, err = plugin.PreLLMHook(continuation, newChatRequest())
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "a continuation of an admitted session is not refused by the request limit")
+
+	_, _, err = plugin.PostLLMHook(continuation, countableResponse(), nil)
+	require.NoError(t, err)
+	settleAccounting(t, plugin)
+
+	updated := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
+	assert.Equal(t, int64(1), updated.RequestCurrentUsage, "the continuation is not counted as a request")
+	assert.Equal(t, int64(1000), updated.TokenCurrentUsage, "the continuation's tokens are still charged")
 }
