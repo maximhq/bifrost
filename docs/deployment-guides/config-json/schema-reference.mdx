@@ -34,6 +34,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
 | `mcp` | object | MCP server and tool configuration | [MCP](#mcp) |
 | `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
+| `proxy_config` | object | Global outbound proxy and which components use it (SCIM directory sync, inference, API) | [Client](/deployment-guides/config-json/client#global-proxy) |
 | `auth_config` | object | **Deprecated** - use `governance.auth_config` | [Client](/deployment-guides/config-json/client#authentication) |
 
 ---
@@ -241,8 +242,8 @@ Enterprise-only. Declares RBAC roles, the access profiles they grant, their data
 |-------|------|-------------|
 | `name` | string | Role name. Identity field — renaming declares a different role. |
 | `description` | string | Optional free-text description. |
-| `dac` | string | Role-level [data access scope](/enterprise/data-access-control): `own-data`, `team-data`, or `all-data`. |
-| `entity_dac` | object | Per-resource scope overrides, keyed by resource name (same names as `permissions`, below). Resources not listed follow `dac`. Applied as a **full replace** — removing `entity_dac` clears every override on the next sync. |
+| `dac` | string | Role-level [data access scope](/enterprise/data-access-control): `own-data`, `team-data`, `business-unit-data`, `customer-data`, or `all-data`. Defaults to `all-data`. A role with any other value is skipped with a warning in the startup logs. |
+| `entity_dac` | object | Per-resource scope overrides, keyed by resource name (same names as `permissions`, below), taking the same values as `dac`. Resources not listed follow `dac`. Applied as a **full replace** — removing `entity_dac` clears every override on the next sync. An entry with an invalid value is skipped with a warning. |
 | `access_profiles` | string[] | Names of every [access profile](/enterprise/access-profiles) this role grants. A role grants **all** of them, and users with the role receive each one. |
 | `access_profile` | string | **Deprecated** — single-profile form, kept for existing files. Ignored whenever `access_profiles` is set. |
 | `permissions` | array | `{ resource, operation }` pairs granted to the role. Both values are case-sensitive — see below. |
@@ -274,7 +275,8 @@ Enterprise-only. Declares business unit **definitions** and their governance.
     "business_units": [
       {
         "id": "bu-platform",
-        "name": "Platform"
+        "name": "Platform",
+        "access_profile": "Engineering Baseline"
       }
     ]
   }
@@ -285,6 +287,7 @@ Enterprise-only. Declares business unit **definitions** and their governance.
 |-------|------|-------------|
 | `id` | string | Stable identifier, referenced by other config rows. |
 | `name` | string | Display name. |
+| `access_profile` | string | Name of the [access profile](/enterprise/access-profiles) the business unit holds. Teams and customers take the same field. See [Access profiles on teams, customers, and business units](/deployment-guides/config-json/governance#access-profiles-on-teams-customers-and-business-units). |
 
 This section defines business units, not who belongs to them. Members are users, and they are added by an admin or by your identity provider — not from `config.json`, which cannot reference users that do not exist yet at startup. See [User Provisioning](/enterprise/user-provisioning#business-unit-membership).
 
@@ -491,6 +494,24 @@ Optional tuning for the WebSocket gateway (Responses API WebSocket mode, Realtim
 | `pool.max_total_connections` | `1000` | Max total idle upstream connections |
 | `pool.idle_timeout_seconds` | `600` | Evict idle connections after this many seconds |
 | `pool.max_connection_lifetime_seconds` | `7200` | Max lifetime of any upstream connection |
+
+---
+
+## `proxy_config`
+
+The global outbound proxy from the dashboard's Proxy page. `enable_for_scim` *(enterprise)*, `enable_for_inference` and `enable_for_api` choose which components use it. Applied when new or changed under split mode, and on every startup under `source_of_truth: "config.json"`.
+
+```json
+{
+  "proxy_config": {
+    "enabled": true,
+    "url": "http://proxy.example.com:8080",
+    "enable_for_scim": true
+  }
+}
+```
+
+Full documentation: [Client → Global Proxy](/deployment-guides/config-json/client#global-proxy).
 
 ---
 
