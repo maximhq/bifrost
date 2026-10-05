@@ -453,18 +453,62 @@ func TestLoadClientConfig_InferenceAuthExistingAndAbsentClient(t *testing.T) {
 	}
 }
 
-// File-only deployments (no config store) with dashboard auth must still boot, and
-// must not get the first-admin inference default since there is no stored auth to compare.
+// File-only deployments (no config store) with dashboard auth must still boot. With no
+// stored client config to honor, an omitted enforce_auth_on_inference takes the secure
+// default (true), the same as any fresh deployment.
 func TestLoadClientConfig_InferenceAuthWithoutConfigStore(t *testing.T) {
 	SetLogger(&testLogger{})
 	var data ConfigData
 	require.NoError(t, json.Unmarshal([]byte(`{"client":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"StrongPassword1!"}}`), &data))
 	cfg := &Config{}
 	require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
-	assert.False(t, cfg.ClientConfig.EnforceAuthOnInference)
+	assert.True(t, cfg.ClientConfig.EnforceAuthOnInference)
 	require.NoError(t, loadAuthConfig(context.Background(), cfg, &data))
 	require.NotNil(t, cfg.GovernanceConfig.AuthConfig)
 	assert.True(t, cfg.GovernanceConfig.AuthConfig.IsEnabled)
+}
+
+// TestLoadClientConfig_InferenceAuthDefaultsOnForFreshDeployments pins the default flip:
+// with no admin account involved, a fresh deployment (no stored client config) gets
+// enforce_auth_on_inference=true when the file omits it, an existing deployment keeps its
+// stored value, and an explicit false is honored and persisted as false.
+func TestLoadClientConfig_InferenceAuthDefaultsOnForFreshDeployments(t *testing.T) {
+	SetLogger(&testLogger{})
+	for _, tt := range []struct {
+		name   string
+		stored *bool
+		file   string
+		want   bool
+	}{
+		{name: "fresh, no client section", file: `{}`, want: true},
+		{name: "fresh, client omits field", file: `{"client":{"log_retention_days":7}}`, want: true},
+		{name: "fresh, explicit false", file: `{"client":{"log_retention_days":7,"enforce_auth_on_inference":false}}`, want: false},
+		{name: "existing false, client omits field", stored: new(false), file: `{"client":{"log_retention_days":7}}`, want: false},
+		{name: "existing false, no client section", stored: new(false), file: `{}`, want: false},
+		{name: "existing true, client omits field", stored: new(true), file: `{"client":{"log_retention_days":7}}`, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewMockConfigStore()
+			if tt.stored != nil {
+				store.clientConfig = &configstore.ClientConfig{EnforceAuthOnInference: *tt.stored}
+			}
+			var data ConfigData
+			require.NoError(t, json.Unmarshal([]byte(tt.file), &data))
+			cfg := &Config{ConfigStore: store}
+			require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+			assert.Equal(t, tt.want, cfg.ClientConfig.EnforceAuthOnInference)
+			persisted, err := store.GetClientConfig(context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, persisted)
+			assert.Equal(t, tt.want, persisted.EnforceAuthOnInference, "stored value")
+
+			// A restart with the same file must not flip the resolved value.
+			var restart ConfigData
+			require.NoError(t, json.Unmarshal([]byte(tt.file), &restart))
+			require.NoError(t, loadClientConfig(context.Background(), cfg, &restart))
+			assert.Equal(t, tt.want, cfg.ClientConfig.EnforceAuthOnInference, "after restart")
+		})
+	}
 }
 
 type inferenceAuthFailingStore struct {
@@ -19522,7 +19566,7 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.NotNil(t, cc.EnableLogging, "EnableLogging should not be nil")
 	require.Equal(t, true, *cc.EnableLogging, "EnableLogging should default to true")
 	require.Equal(t, false, cc.DisableContentLogging, "DisableContentLogging should default to false")
-	require.Equal(t, false, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to false")
+	require.Equal(t, true, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to true")
 	require.Equal(t, []string{"*"}, cc.AllowedOrigins, "AllowedOrigins should default to [*]")
 	require.Equal(t, 100, cc.MaxRequestBodySizeMB, "MaxRequestBodySizeMB should default to 100")
 	require.Equal(t, 10, cc.MCPAgentDepth, "MCPAgentDepth should default to 10")

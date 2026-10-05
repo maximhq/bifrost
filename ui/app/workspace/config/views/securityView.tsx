@@ -9,10 +9,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
-import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
+import { getErrorMessage, useGetCoreConfigQuery, useIsAuthEnabledQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
+import { getApiBaseUrl } from "@/lib/utils/port";
 import { validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
@@ -69,6 +70,12 @@ export default function SecurityView() {
 	// configured via setup_token in config.json (or BIFROST_SETUP_TOKEN), so this
 	// field only needs to show up that once.
 	const isFirstTimeSetup = !bifrostConfig?.auth_config;
+	// OSS setup lock: while it is active, this page only loads because the browser holds
+	// the HttpOnly setup session cookie from the login setup view. Every request (the
+	// save below included) carries it, and the server accepts it as first-admin proof,
+	// so the token is never asked for again here.
+	const { data: authState } = useIsAuthEnabledQuery(undefined, { skip: IS_ENTERPRISE });
+	const authorizedBySetupToken = isFirstTimeSetup && !IS_ENTERPRISE && !!authState?.setup_required;
 	// The config layout gates this query on loading, not on error, so a failed
 	// GET /api/config?from_db=true still renders this form with no config (the
 	// dashboard shell's own config request can succeed). isFirstTimeSetup then
@@ -227,7 +234,7 @@ export default function SecurityView() {
 				passwordInputRef.current?.focus({ preventScroll: true });
 				return;
 			}
-			if (isFirstTimeSetup && authConfig.is_enabled && !setupToken.trim()) {
+			if (isFirstTimeSetup && authConfig.is_enabled && !authorizedBySetupToken && !setupToken.trim()) {
 				setSetupTokenErrorMessage(
 					"Enter the setup token configured by your operator to create the first admin account. It's set via setup_token in config.json or the BIFROST_SETUP_TOKEN environment variable.",
 				);
@@ -242,13 +249,19 @@ export default function SecurityView() {
 					? {
 							auth_config: {
 								...(authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false }),
-								...(isFirstTimeSetup ? { setup_token: setupToken.trim() } : {}),
+								...(isFirstTimeSetup && !authorizedBySetupToken ? { setup_token: setupToken.trim() } : {}),
 							},
 						}
 					: {}),
 			}).unwrap();
 			setSetupToken("");
 			toast.success("Security settings updated successfully.");
+			// Dashboard auth is now on, so the OSS setup lock is lifted. Expire the setup
+			// session cookie (logout clears it) and sign in with the new admin account.
+			if (showPasswordSection && authConfig.is_enabled && hasUsername && hasPassword && authorizedBySetupToken) {
+				await fetch(`${getApiBaseUrl()}/session/logout`, { method: "POST", credentials: "include" }).catch(() => undefined);
+				window.location.href = "/login";
+			}
 		} catch (error) {
 			const message = getErrorMessage(error);
 			if (isFirstTimeSetup && message.toLowerCase().includes("setup token")) {
@@ -257,7 +270,7 @@ export default function SecurityView() {
 				toast.error(message);
 			}
 		}
-	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig, isFirstTimeSetup, setupToken]);
+	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig, isFirstTimeSetup, setupToken, authorizedBySetupToken]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
@@ -303,6 +316,7 @@ export default function SecurityView() {
 									<Label htmlFor="admin-username">Username</Label>
 									<SecretVarInput
 										id="admin-username"
+										autoComplete="username"
 										type="text"
 										placeholder="Enter admin username or env.VAR_NAME"
 										value={authConfig.admin_username}
@@ -315,6 +329,10 @@ export default function SecurityView() {
 									<SecretVarInput
 										ref={passwordInputRef}
 										id="admin-password"
+										// new-password: password managers offer to save or generate here instead of
+										// filling a password saved for this host, which would silently replace what
+										// the operator typed.
+										autoComplete="new-password"
 										aria-invalid={!!passwordError}
 										aria-describedby={passwordError ? "admin-password-error" : undefined}
 										type="password"
@@ -332,7 +350,12 @@ export default function SecurityView() {
 										</p>
 									) : null}
 								</div>
-								{isFirstTimeSetup && authConfig.is_enabled ? (
+								{isFirstTimeSetup && authConfig.is_enabled && authorizedBySetupToken ? (
+									<p className="text-muted-foreground text-xs" data-testid="security-setup-token-authorized">
+										Authorized with the setup token entered on the setup screen. Saving creates the admin account, after which the setup
+										token stops working.
+									</p>
+								) : isFirstTimeSetup && authConfig.is_enabled ? (
 									<div className="space-y-2">
 										<Label htmlFor="setup-token">Setup token</Label>
 										<Input
@@ -345,9 +368,9 @@ export default function SecurityView() {
 											onChange={(e) => setSetupToken(e.target.value)}
 										/>
 										<p className="text-muted-foreground text-xs">
-											No admin account exists yet, so this instance is reachable without a password. To finish setup, ask your operator for
-											the setup token configured via <code>setup_token</code> in <code>config.json</code> (or the{" "}
-											<code>BIFROST_SETUP_TOKEN</code> environment variable) and paste it here.
+											No admin account exists yet, so management APIs only accept the setup token. Enter the token configured via{" "}
+											<code>setup_token</code> in <code>config.json</code> (or the <code>BIFROST_SETUP_TOKEN</code> environment variable) to
+											create the admin account. Once it is enabled, the setup token stops working.
 										</p>
 									</div>
 								) : null}

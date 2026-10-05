@@ -55,7 +55,7 @@
     "setup_token": {
       "type": "string",
       "pattern": "\\S",
-      "description": "Operator-provisioned bootstrap secret required to create the very first admin account when no admin account is configured yet. You can set the value as env.<ENV_VAR_NAME> to use an environment variable, or as vault.<path> to use a Vault secret reference. We also read the setup token from the BIFROST_SETUP_TOKEN environment variable. Identical across every node in a multi-node deployment (unlike a randomly generated value), so any node can authorize first-admin creation. Never persisted and never logged; if left unset, creating the first admin account is rejected until this is configured. Whitespace-only values are rejected."
+      "description": "Operator-provisioned bootstrap secret required to create the very first admin account when no admin account is configured yet. In OSS, while dashboard auth is not active (no admin account, or auth disabled), every /api call must carry this value in the X-Bifrost-Setup-Token header. You can set the value as env.<ENV_VAR_NAME> to use an environment variable, or as vault.<path> to use a Vault secret reference. We also read the setup token from the BIFROST_SETUP_TOKEN environment variable. Identical across every node in a multi-node deployment (unlike a randomly generated value), so any node can authorize first-admin creation. Never persisted and never logged; if left unset, creating the first admin account is rejected until this is configured. Whitespace-only values are rejected."
     },
     "client": {
       "type": "object",
@@ -164,7 +164,8 @@
         },
         "enforce_auth_on_inference": {
           "type": "boolean",
-          "description": "Require auth (VK, API key, or user token) on inference endpoints. Defaults to true when creating the first enabled admin account if omitted; explicit false opts out. Existing deployments retain their setting when omitted."
+          "default": true,
+          "description": "Require auth (VK, API key, or user token) on inference endpoints. Defaults to true on new deployments and when creating the first enabled admin account if omitted; explicit false opts out. Existing deployments retain their stored setting when omitted."
         },
         "dual_credential_conflict_behavior": {
           "type": "string",

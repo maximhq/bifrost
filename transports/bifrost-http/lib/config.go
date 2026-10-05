@@ -686,7 +686,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	EnableLogging:                   new(true),
 	DisableContentLogging:           false,
 	RetainContentInObjectStorage:    false,
-	EnforceAuthOnInference:          false,
+	EnforceAuthOnInference:          true,
 	AllowedOrigins:                  []string{"*"},
 	AllowedHeaders:                  []string{},
 	WhitelistedRoutes:               []string{},
@@ -1353,15 +1353,18 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 			return fmt.Errorf("failed to hash client config: %w", err)
 		}
 		const defaultMarker = ":inference-auth-default"
-		if !fileInferenceAuthProvided && (firstAdmin ||
-			(clientConfig != nil && strings.HasSuffix(clientConfig.ConfigHash, defaultMarker))) {
+		if !fileInferenceAuthProvided && (firstAdmin || clientConfig == nil ||
+			strings.HasSuffix(clientConfig.ConfigHash, defaultMarker)) {
 			fileHash += defaultMarker
 		}
 	}
+	// An omitted enforce_auth_on_inference resolves to true for a first admin and for a
+	// fresh deployment (no stored client config). An existing deployment keeps whatever
+	// its database holds; an explicit value in the file always wins.
 	if configData.Client != nil && !fileInferenceAuthProvided {
-		if firstAdmin {
+		if firstAdmin || clientConfig == nil {
 			configData.Client.EnforceAuthOnInference = true
-		} else if clientConfig != nil {
+		} else {
 			configData.Client.EnforceAuthOnInference = clientConfig.EnforceAuthOnInference
 		}
 	}
