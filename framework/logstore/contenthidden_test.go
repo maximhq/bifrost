@@ -28,6 +28,9 @@ func newContentHiddenTestEntry(id string) *Log {
 		OutputMessageParsed: &schemas.ChatMessage{
 			Content: &schemas.ChatMessageContent{ContentStr: strPtr("sensitive answer")},
 		},
+		EmbeddingInputParsed: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: strPtr("sensitive embedding")}}},
+		},
 	}
 }
 
@@ -57,6 +60,7 @@ func TestHybrid_ContentHiddenStripsDBRowAndSkipsHydration(t *testing.T) {
 	assert.True(t, dbRow.HasObject)
 	assert.Empty(t, dbRow.InputHistory)
 	assert.Empty(t, dbRow.OutputMessage)
+	assert.Empty(t, dbRow.EmbeddingInput)
 	assert.Empty(t, dbRow.ContentSummary)
 	assert.NotEmpty(t, dbRow.TokenUsage)
 	require.NotNil(t, dbRow.TokenUsageParsed)
@@ -75,6 +79,8 @@ func TestHybrid_ContentHiddenStripsDBRowAndSkipsHydration(t *testing.T) {
 	assert.True(t, found.ContentHidden)
 	assert.Empty(t, found.InputHistory, "hidden log must not be hydrated")
 	assert.Empty(t, found.OutputMessage, "hidden log must not be hydrated")
+	assert.Empty(t, found.EmbeddingInput, "hidden log must not be hydrated")
+	assert.Nil(t, found.EmbeddingInputParsed, "hidden log must not be hydrated")
 	assert.Empty(t, found.ContentSummary)
 }
 

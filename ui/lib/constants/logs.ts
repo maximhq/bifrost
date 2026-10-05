@@ -64,6 +64,7 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"ollama",
 	"openai",
 	"openrouter",
+	"parasail",
 	"sgl",
 	"vertex",
 	"vllm",
@@ -74,6 +75,7 @@ export const Statuses = ["success", "error", "processing", "cancelled"] as const
 
 export const RequestTypes = [
 	"list_models",
+	"model_retrieve",
 	"text_completion",
 	"text_completion_stream",
 	"chat_completion",
@@ -287,6 +289,7 @@ export const RequestTypeLabels = {
 
 	// Request Types
 	list_models: "List Models",
+	model_retrieve: "Retrieve Model",
 	text_completion: "Text",
 	text_completion_stream: "Text Stream",
 	chat_completion: "Chat",
@@ -375,6 +378,7 @@ export const RequestTypeColors = {
 
 	// Request Types
 	list_models: "bg-green-100 text-green-800",
+	model_retrieve: "bg-green-100 text-green-800",
 	text_completion: "bg-green-100 text-green-800",
 	text_completion_stream: "bg-amber-100 text-amber-800",
 

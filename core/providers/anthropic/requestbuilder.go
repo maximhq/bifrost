@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -34,6 +35,12 @@ type AnthropicRequestBuildConfig struct {
 	// in both raw and typed paths. Used by Anthropic native count-tokens to
 	// strip max_tokens and temperature after typed conversion.
 	ExcludeFields []string
+
+	// IncludeFields maps JSON top-level keys to values set on the final body in
+	// both raw and typed paths, after ExcludeFields. Used by the Bedrock
+	// InvokeModel egress for amazon-bedrock-guardrailConfig, which has no
+	// slot in the Anthropic Messages schema.
+	IncludeFields map[string]any
 
 	// ValidateTools runs ValidateToolsForProvider before typed conversion,
 	// returning an error for any tool unsupported by the provider. Set true
@@ -252,6 +259,18 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
 			}
+			if maxTokens := providerUtils.GetJSONField(jsonBody, "max_tokens"); maxTokens.Exists() {
+				if clamped := clampToModelOutputCeiling(schemas.ResolveModelCaps(cfg.Provider, capModel), int(maxTokens.Int())); int64(clamped) != maxTokens.Int() {
+					jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", clamped)
+					if err != nil {
+						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+					}
+					jsonBody, err = fitRawThinkingBudget(jsonBody, clamped)
+					if err != nil {
+						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+					}
+				}
+			}
 
 		}
 
@@ -310,6 +329,12 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 		for _, field := range cfg.ExcludeFields {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
@@ -442,6 +467,12 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
 	}
 
 	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
@@ -565,6 +596,18 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+		if maxTokens := providerUtils.GetJSONField(jsonBody, "max_tokens"); maxTokens.Exists() {
+			if clamped := clampToModelOutputCeiling(schemas.ResolveModelCaps(cfg.Provider, capModel), int(maxTokens.Int())); int64(clamped) != maxTokens.Int() {
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", clamped)
+				if err != nil {
+					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+				}
+				jsonBody, err = fitRawThinkingBudget(jsonBody, clamped)
+				if err != nil {
+					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+				}
+			}
+		}
 
 		if cfg.IsStreaming {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
@@ -615,6 +658,12 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 		for _, field := range cfg.ExcludeFields {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
@@ -721,6 +770,12 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
 	}
 
 	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
@@ -764,4 +819,40 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 	}
 
 	return jsonBody, nil
+}
+
+// ProviderExtraFields keys under which a Bedrock native InvokeModel response keeps the
+// amazon-bedrock-guardrailAction / amazon-bedrock-trace fields AnthropicMessageResponse drops.
+const (
+	BedrockInvokeGuardrailActionKey = "invoke_guardrail_action"
+	BedrockInvokeGuardrailTraceKey  = "invoke_guardrail_trace"
+)
+
+// bedrockInvokeGuardrailOutcome reads the amazon-bedrock-guardrailAction and amazon-bedrock-trace
+// top-level fields of a native InvokeModel body or stream event. The trace is returned verbatim:
+// it has AWS's own shape, which the Converse-typed trace cannot represent.
+func bedrockInvokeGuardrailOutcome(body []byte) (action string, trace json.RawMessage) {
+	if a := providerUtils.GetJSONField(body, "amazon-bedrock-guardrailAction"); a.Exists() {
+		action = a.String()
+	}
+	if t := providerUtils.GetJSONField(body, "amazon-bedrock-trace"); t.Exists() {
+		trace = json.RawMessage(t.Raw)
+	}
+	return action, trace
+}
+
+// setBedrockInvokeGuardrailOutcome records a native InvokeModel guardrail outcome on the response.
+func setBedrockInvokeGuardrailOutcome(resp *schemas.BifrostResponsesResponse, action string, trace json.RawMessage) {
+	if action == "" && len(trace) == 0 {
+		return
+	}
+	if resp.ProviderExtraFields == nil {
+		resp.ProviderExtraFields = make(map[string]interface{}, 2)
+	}
+	if action != "" {
+		resp.ProviderExtraFields[BedrockInvokeGuardrailActionKey] = action
+	}
+	if len(trace) > 0 {
+		resp.ProviderExtraFields[BedrockInvokeGuardrailTraceKey] = trace
+	}
 }

@@ -60,6 +60,13 @@ func toGeminiStreamBifrostError(err error) *schemas.BifrostError {
 		}
 		ApplyRetryInfo(bifrostErr, apiErr.Err.Details)
 	}
+	// No usable status: the payload did not parse as a typed API error, or it parsed
+	// with "code" omitted, which Code's int zero value cannot distinguish from a real
+	// status. Either way ClassifyFailure has nothing to act on, so the failure is never
+	// retried — and a zero here is only saved from a caller 400 by status normalization.
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode == 0 {
+		bifrostErr.StatusCode = schemas.Ptr(fasthttp.StatusBadGateway)
+	}
 	return bifrostErr
 }
 

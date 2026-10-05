@@ -238,6 +238,16 @@ func TestBifrostResponsesResponseWithDefaultsPreservesUltrafastServiceTier(t *te
 	}
 }
 
+// OpenAI echoes service_tier "fast" (the renamed Priority tier) on served
+// requests; the client must see that value, not a coerced "auto".
+func TestBifrostResponsesResponseWithDefaultsPreservesFastServiceTier(t *testing.T) {
+	tier := BifrostServiceTierFast
+	got := (&BifrostResponsesResponse{ServiceTier: &tier}).WithDefaults()
+	if got.ServiceTier == nil || *got.ServiceTier != BifrostServiceTierFast {
+		t.Fatalf("service tier = %v, want fast", got.ServiceTier)
+	}
+}
+
 // Cursor (and other Chat Completions clients) send function tools nested under
 // a "function" wrapper. The unmarshal must lift name/description/parameters so
 // providers that require a top-level name (e.g. Bedrock) don't reject the tool.
@@ -1607,4 +1617,132 @@ func TestResponsesToolCallAsyncSurvives(t *testing.T) {
 			t.Fatalf("deep copy aliases the async pointer: %s", in)
 		}
 	}
+}
+
+// The Responses API carries tool_usage at the top level; internally it rides on usage for pricing.
+func TestBifrostResponsesResponseToolUsageIsTopLevelOnTheWire(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","output":[],
+		"tool_usage":{"web_search":{"num_requests":2}},
+		"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`
+	var resp BifrostResponsesResponse
+	require.NoError(t, json.Unmarshal([]byte(body), &resp))
+	require.NotNil(t, resp.Usage.ToolUsage, "top-level tool_usage must reach usage for pricing")
+	assert.Equal(t, 2, resp.Usage.ToolUsage.WebSearch.NumRequests)
+	require.NotNil(t, resp.ToolUsage)
+	assert.Equal(t, 2, resp.ToolUsage.WebSearch.NumRequests)
+
+	// Marshal must not mutate the caller's response.
+	defer func() { assert.NotNil(t, resp.Usage.ToolUsage, "marshal cleared the caller's usage.tool_usage") }()
+
+	out, err := json.Marshal(resp)
+	require.NoError(t, err)
+	var wire map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(out, &wire))
+	assert.JSONEq(t, `{"web_search":{"num_requests":2}}`, string(wire["tool_usage"]))
+	assert.NotContains(t, string(wire["usage"]), "tool_usage", "usage must not carry tool_usage on the wire")
+
+	// Streamed response.completed nests the response; same shape inside it.
+	event := BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCompleted, Response: &resp}
+	out, err = json.Marshal(event)
+	require.NoError(t, err)
+	var streamed struct {
+		Response map[string]json.RawMessage `json:"response"`
+	}
+	require.NoError(t, json.Unmarshal(out, &streamed))
+	assert.JSONEq(t, `{"web_search":{"num_requests":2}}`, string(streamed.Response["tool_usage"]))
+	assert.NotContains(t, string(streamed.Response["usage"]), "tool_usage")
+
+	// Set only on usage (how providers fill it): still sent top-level only.
+	out, err = json.Marshal(BifrostResponsesResponse{Usage: &ResponsesResponseUsage{TotalTokens: 1, ToolUsage: &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 4}}}})
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(out, &wire))
+	assert.JSONEq(t, `{"web_search":{"num_requests":4}}`, string(wire["tool_usage"]))
+	assert.NotContains(t, string(wire["usage"]), "tool_usage")
+
+	// A response without tool usage emits no tool_usage key.
+	out, err = json.Marshal(BifrostResponsesResponse{Usage: &ResponsesResponseUsage{TotalTokens: 1}})
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "tool_usage")
+
+	// Round trip through the stream event parser too.
+	var parsed BifrostResponsesStreamResponse
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"response.completed","sequence_number":3,"response":`+body+`}`), &parsed))
+	assert.Equal(t, 2, parsed.Response.Usage.ToolUsage.WebSearch.NumRequests)
+}
+
+func TestDeepCopyResponsesMessagePreservesGuardContent(t *testing.T) {
+	messageType := ResponsesMessageTypeMessage
+	role := ResponsesInputMessageRoleUser
+	text := "What is the capital of France?"
+
+	original := ResponsesMessage{
+		Type: &messageType,
+		Role: &role,
+		Content: &ResponsesMessageContent{
+			ContentBlocks: []ResponsesMessageContentBlock{{
+				Type:         ResponsesInputMessageContentBlockTypeText,
+				Text:         &text,
+				GuardContent: &GuardContent{Qualifiers: []string{"query"}},
+			}},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	got := copied.Content.ContentBlocks[0].GuardContent
+	if got == nil {
+		t.Fatal("deep copy dropped the guard marker")
+	}
+	if got == original.Content.ContentBlocks[0].GuardContent {
+		t.Error("copy aliases the original guard marker struct")
+	}
+	if len(got.Qualifiers) != 1 || got.Qualifiers[0] != "query" {
+		t.Fatalf("qualifiers = %v, want [query]", got.Qualifiers)
+	}
+	got.Qualifiers[0] = "grounding_source"
+	if original.Content.ContentBlocks[0].GuardContent.Qualifiers[0] != "query" {
+		t.Error("copy shares the qualifiers backing array with the original")
+	}
+}
+
+// TestResponsesMessageUnmarshalReasoningWrapperSummary: Gemini-shaped histories can
+// carry a reasoning item's summary under a "reasoning" wrapper
+// ({"reasoning":{"summary":["..."]}}) instead of OpenAI's top-level summary. The
+// decoder lifts it into ResponsesReasoning so the text survives to the provider;
+// plain strings become summary_text entries, objects decode as-is.
+func TestResponsesMessageUnmarshalReasoningWrapperSummary(t *testing.T) {
+	t.Run("string entries", func(t *testing.T) {
+		var msg ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(`{"type":"reasoning","id":"msg_abc123_reasoning_0","reasoning":{"summary":["thinking about this","and more"]}}`), &msg))
+		require.NotNil(t, msg.ResponsesReasoning, "reasoning wrapper summary must be lifted")
+		require.Len(t, msg.ResponsesReasoning.Summary, 2)
+		assert.Equal(t, ResponsesReasoningContentBlockTypeSummaryText, msg.ResponsesReasoning.Summary[0].Type)
+		assert.Equal(t, "thinking about this", msg.ResponsesReasoning.Summary[0].Text)
+		assert.Equal(t, "and more", msg.ResponsesReasoning.Summary[1].Text)
+	})
+
+	t.Run("object entries and encrypted_content", func(t *testing.T) {
+		var msg ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(`{"type":"reasoning","reasoning":{"summary":[{"type":"summary_text","text":"typed"},{"text":"untyped"}],"encrypted_content":"enc_123"}}`), &msg))
+		require.NotNil(t, msg.ResponsesReasoning)
+		require.Len(t, msg.ResponsesReasoning.Summary, 2)
+		assert.Equal(t, "typed", msg.ResponsesReasoning.Summary[0].Text)
+		assert.Equal(t, ResponsesReasoningContentBlockTypeSummaryText, msg.ResponsesReasoning.Summary[1].Type, "untyped entries default to summary_text")
+		assert.Equal(t, "untyped", msg.ResponsesReasoning.Summary[1].Text)
+		require.NotNil(t, msg.ResponsesReasoning.EncryptedContent)
+		assert.Equal(t, "enc_123", *msg.ResponsesReasoning.EncryptedContent)
+	})
+
+	t.Run("top-level summary wins", func(t *testing.T) {
+		var msg ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(`{"type":"reasoning","summary":[{"type":"summary_text","text":"native"}],"reasoning":{"summary":["ignored"]}}`), &msg))
+		require.NotNil(t, msg.ResponsesReasoning)
+		require.Len(t, msg.ResponsesReasoning.Summary, 1)
+		assert.Equal(t, "native", msg.ResponsesReasoning.Summary[0].Text)
+	})
+
+	t.Run("non-reasoning items ignore the wrapper", func(t *testing.T) {
+		var msg ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(`{"type":"message","role":"user","content":"hi","reasoning":{"summary":["x"]}}`), &msg))
+		assert.Nil(t, msg.ResponsesReasoning)
+	})
 }

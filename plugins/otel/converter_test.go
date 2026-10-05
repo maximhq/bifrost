@@ -112,7 +112,7 @@ func TestConvertTraceToResourceSpan_VirtualKeyContentLoggingOff(t *testing.T) {
 
 	// Profile exports content and raw payloads; the key turned content off: nothing content-shaped
 	// leaves, on the root or the child, and the raw payloads stay home too.
-	off := p.convertTraceToResourceSpan("svc", makeTrace(true), nil, false, true, false, false)
+	off := p.convertTraceToResourceSpan("svc", makeTrace(true), nil, false, false, true, false, false)
 	root := findRoot(off.ScopeSpans[0].Spans)
 	child := childSpan(off.ScopeSpans[0].Spans)
 	if got := attrString(root, schemas.AttrInputMessages); got != "" {
@@ -141,7 +141,7 @@ func TestConvertTraceToResourceSpan_VirtualKeyContentLoggingOff(t *testing.T) {
 	}
 
 	// Same profile, a trace whose key said nothing: content and raw payloads export as configured.
-	on := p.convertTraceToResourceSpan("svc", makeTrace(false), nil, false, true, false, false)
+	on := p.convertTraceToResourceSpan("svc", makeTrace(false), nil, false, false, true, false, false)
 	child = childSpan(on.ScopeSpans[0].Spans)
 	if got := attrString(child, schemas.AttrInputMessages); got == "" {
 		t.Error("without the key attribute, child content should export as the profile allows")
@@ -155,7 +155,7 @@ func TestConvertTraceToResourceSpan_VirtualKeyContentLoggingOff(t *testing.T) {
 
 	// A profile that disables content stays disabled with or without the key attribute.
 	for _, keyDisabled := range []bool{true, false} {
-		strict := p.convertTraceToResourceSpan("svc", makeTrace(keyDisabled), nil, true, true, false, false)
+		strict := p.convertTraceToResourceSpan("svc", makeTrace(keyDisabled), nil, true, false, true, false, false)
 		if got := attrString(childSpan(strict.ScopeSpans[0].Spans), schemas.AttrInputMessages); got != "" {
 			t.Errorf("profile disable_content_logging with keyDisabled=%v: child content = %q, want empty", keyDisabled, got)
 		}

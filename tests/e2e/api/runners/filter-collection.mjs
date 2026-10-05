@@ -16,7 +16,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
 import { buildHaystack } from "./lib/haystack.mjs";
-import { walkRequests, buildProducerIndex, chainedDependencies } from "./lib/chained-vars.mjs";
+import { walkRequests, buildProducerIndex, chainedDependencies, scriptDependencies } from "./lib/chained-vars.mjs";
 import { retryableNames } from "./lib/rate-limit-retry.mjs";
 import {
   DEFAULT_TARGET_SECONDS,
@@ -291,6 +291,12 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
   if (provider === "vertex") return isVertex;
   if (isVertex && (provider === "gemini" || provider === "anthropic")) return false;
+  // Rows that send a Gemini, OpenAI or Azure model through the Anthropic Messages ingress
+  // (POST /anthropic/v1/messages with model "gemini/...", "openai/..." or "azure/...") contain
+  // "anthropic" only because of the route or folder name, yet the upstream call goes to the
+  // model's own provider - same collision class as vertex above. Keep them out of the anthropic
+  // partition; they still match their own provider's keywords through the model prefix.
+  if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure)\//.test(item.request?.body?.raw || "")) return false;
   // Runware rows name the upstream vendor inside the AIR model id ("runware/anthropic:claude@...",
   // "runware/google:gemini@...", "runware/minimax:..."), so they'd otherwise be claimed by those
   // partitions too - same collision class as openrouter/bedrock_mantle/vertex above. Route them
@@ -446,10 +452,19 @@ const filterTree = (items, keep) => {
 // in this collection), so this never balloons a shard.
 const expandWithProducers = (selected, entries) => {
   const producerIndex = buildProducerIndex(entries);
+  // Both kinds of chain: a {{var}} in the body or URL, and a collectionVariables.get() in a
+  // script. The second is the cache-parity rounds - see scriptDependencies - and was the gap that
+  // let --rerun-failed replay every "round 2 (read)" without its "round 1 (write)", and let a
+  // cost slice put the two rounds of one cell in different newman processes. Both read as
+  // read=0 write=N: a cold write, not a cache defect.
+  const depsOf = (item) => [
+    ...chainedDependencies(item, producerIndex),
+    ...scriptDependencies(item, producerIndex),
+  ];
   const position = new Map(entries.map(({ item }, i) => [item, i]));
   const consumersOf = new Map();
   for (const { item } of entries) {
-    for (const { variable } of chainedDependencies(item, producerIndex)) {
+    for (const { variable } of depsOf(item)) {
       if (!consumersOf.has(variable)) consumersOf.set(variable, []);
       consumersOf.get(variable).push(item);
     }
@@ -465,7 +480,7 @@ const expandWithProducers = (selected, entries) => {
     // request that sets nothing while the actual producer is never pulled in -
     // leaving the consumer to fail on an unsubstituted {{var}}, which is the
     // failure this whole function exists to prevent.
-    for (const { producer, producerItem: dep, variable } of chainedDependencies(item, producerIndex)) {
+    for (const { producer, producerItem: dep, variable } of depsOf(item)) {
       for (const step of consumersOf.get(variable) || []) {
         if (keep.has(step) || position.get(step) >= position.get(item)) continue;
         keep.add(step);

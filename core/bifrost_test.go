@@ -567,6 +567,32 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 	}
 }
 
+// TestCreateBaseProvider_CustomTypesafeBase pins that typesafe is accepted as a
+// custom provider base and that the provider answers to the custom name, while
+// a base outside SupportedBaseProviders is still refused.
+func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	provider, err := bifrost.createBaseProvider("my-typesafe", &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", DefaultRequestTimeoutInSeconds: 1},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.Typesafe,
+		},
+	})
+	if err != nil {
+		t.Fatalf("typesafe must be a supported base provider: %v", err)
+	}
+	if provider.GetProviderKey() != schemas.ModelProvider("my-typesafe") {
+		t.Fatalf("expected custom provider key my-typesafe, got %q", provider.GetProviderKey())
+	}
+
+	_, err = bifrost.createBaseProvider("my-vertex", &schemas.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
+		t.Fatalf("vertex is not a supported base provider, got err=%v", err)
+	}
+}
+
 func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	providerConfig := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
@@ -3233,6 +3259,125 @@ func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
 	})
 }
 
+// modelRewritingPlugin rewrites the model in PreRequestHook the way a routing rule does, and
+// records what its PreLLMHook then reads for the caller's original route.
+type modelRewritingPlugin struct {
+	routedModel string
+
+	mu              sync.Mutex
+	sawProvider     schemas.ModelProvider
+	sawModel        string
+	sawRoutedModel  string
+	preLLMHookCalls int
+}
+
+func (p *modelRewritingPlugin) GetName() string { return "model-rewriting" }
+func (p *modelRewritingPlugin) Cleanup() error  { return nil }
+func (p *modelRewritingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	// The requested route is reserved, so a plugin cannot overwrite what the caller sent.
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "forged-by-plugin")
+	req.SetModel(p.routedModel)
+	return nil
+}
+func (p *modelRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.preLLMHookCalls++
+	p.sawProvider, _ = ctx.Value(schemas.BifrostContextKeyRequestedProvider).(schemas.ModelProvider)
+	p.sawModel, _ = ctx.Value(schemas.BifrostContextKeyRequestedModel).(string)
+	_, p.sawRoutedModel, _ = req.GetRequestFields()
+	return req, nil, nil
+}
+func (p *modelRewritingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestRequestedRouteSurvivesPreRequestRewrite pins that the provider/model the caller sent stay
+// readable after a PreRequestHook rewrites the model: on the context for a later plugin's
+// PreLLMHook, and on RoutingInfo next to the routed model, for JSON and streaming responses.
+func TestRequestedRouteSurvivesPreRequestRewrite(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			server, _ := openAICompatFallbackServer(t)
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+				{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+			})
+			plugin := &modelRewritingPlugin{routedModel: "gpt-4o"}
+			client, initErr := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewNoOpLogger(),
+				LLMPlugins: []schemas.LLMPlugin{plugin},
+			})
+			if initErr != nil {
+				t.Fatalf("Init failed: %v", initErr)
+			}
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			defer ctx.Cancel()
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+				},
+			}
+
+			var got schemas.RoutingInfo
+			if !stream {
+				resp, bifrostErr := client.ChatCompletionRequest(ctx, req)
+				if bifrostErr != nil {
+					t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+				}
+				got = resp.ExtraFields.RoutingInfo
+			} else {
+				ch, bifrostErr := client.ChatCompletionStreamRequest(ctx, req)
+				if bifrostErr != nil {
+					t.Fatalf("stream failed: %s", bifrostErr.Error.Message)
+				}
+				for chunk := range ch {
+					if chunk.BifrostError != nil && chunk.BifrostError.Error != nil {
+						t.Fatalf("stream emitted an error chunk: %s", chunk.BifrostError.Error.Message)
+					}
+					if chunk.BifrostChatResponse != nil {
+						got = chunk.BifrostChatResponse.ExtraFields.RoutingInfo
+					}
+				}
+				// The transport writes stream response headers from this snapshot before the
+				// first chunk, so it must carry the requested route too.
+				snapshot, ok := ctx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo)
+				if !ok {
+					t.Fatal("no RoutingInfo snapshot on the context after the stream")
+				}
+				if snapshot.RequestedProvider != schemas.OpenAI || snapshot.RequestedModel != "gpt-4o-mini" {
+					t.Errorf("snapshot requested route = (%q, %q), want (openai, gpt-4o-mini)", snapshot.RequestedProvider, snapshot.RequestedModel)
+				}
+			}
+
+			plugin.mu.Lock()
+			defer plugin.mu.Unlock()
+			if plugin.preLLMHookCalls == 0 {
+				t.Fatal("PreLLMHook never ran")
+			}
+			if plugin.sawProvider != schemas.OpenAI || plugin.sawModel != "gpt-4o-mini" {
+				t.Errorf("PreLLMHook read requested route (%q, %q), want (openai, gpt-4o-mini)", plugin.sawProvider, plugin.sawModel)
+			}
+			if plugin.sawRoutedModel != "gpt-4o" {
+				t.Errorf("PreLLMHook request model = %q, want the rewritten gpt-4o", plugin.sawRoutedModel)
+			}
+			if got.Model != "gpt-4o" {
+				t.Errorf("RoutingInfo.Model = %q, want the rewritten gpt-4o", got.Model)
+			}
+			if got.RequestedProvider != schemas.OpenAI || got.RequestedModel != "gpt-4o-mini" {
+				t.Errorf("RoutingInfo requested route = (%q, %q), want (openai, gpt-4o-mini)", got.RequestedProvider, got.RequestedModel)
+			}
+		})
+	}
+}
+
 // TestClearAnthropicPassthroughForNonNativeProvider verifies that Anthropic raw-body
 // passthrough flags are cleared only when an Anthropic-integration request resolves to a
 // provider/model pair that doesn't speak the Anthropic Messages API natively (e.g. Bedrock).
@@ -3718,6 +3863,32 @@ func TestApplyRawCaptureSignals_RunsAfterPassthroughClear(t *testing.T) {
 				t.Error("DropRawResponseFromClient = true, want false (store is off)")
 			}
 		})
+	}
+}
+
+// TestApplyProviderProxySignal_RewritesPerAttempt pins that each attempt publishes its
+// own provider's proxy, so a fallback from a proxied provider (Vertex behind a corporate
+// proxy) to a directly reachable one (Bedrock over a VPC endpoint) does not send the
+// fallback's URL fetches through the first provider's proxy.
+func TestApplyProviderProxySignal_RewritesPerAttempt(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	vertexProxy := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://10.0.0.9:3128")}
+
+	applyProviderProxySignal(ctx, &schemas.ProviderConfig{ProxyConfig: vertexProxy})
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != vertexProxy {
+		t.Fatalf("primary attempt: proxy = %v, want the Vertex proxy", got)
+	}
+
+	applyProviderProxySignal(ctx, &schemas.ProviderConfig{})
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != nil {
+		t.Fatalf("fallback attempt: proxy = %v, want nil (the fallback has no proxy)", got)
+	}
+
+	ctx.BlockRestrictedWrites()
+	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, vertexProxy)
+	ctx.UnblockRestrictedWrites()
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != nil {
+		t.Fatal("a plugin write must not be able to redirect provider fetches through another proxy")
 	}
 }
 
@@ -4365,5 +4536,67 @@ func TestFallbackPinOutsideAllowedKeysIsRefused(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestSDKFidelityDecisionRequestNullStateReachesProvider pins #7599 at the core
+// entrypoint: a decision request whose state is null (an SDK-valid EntryType)
+// must be dispatched to the provider as {"state": null} instead of being
+// rejected before dispatch.
+func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		if r.URL.Path != "/v1/systemone" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.25}},"usage":{"input_tokens":3,"output_tokens":0}}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Typesafe, 1, 1, server.URL)
+	account.SetKeysForProvider(schemas.Typesafe, []schemas.Key{{
+		ID:     "test-key-typesafe",
+		Value:  *schemas.NewSecretVar("sk-test-typesafe"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 100,
+	}})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	client, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	resp, bifrostErr := client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
+		Provider: schemas.Typesafe,
+		Model:    "jev-1.13.0",
+		State:    nil,
+		Questions: map[string]schemas.DecisionQuestion{
+			"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("null state must reach the provider, got error: %v", bifrostErr)
+	}
+	if resp == nil || resp.Answers["q"].Value != 0.25 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 || !strings.Contains(bodies[0], `"state":null`) {
+		t.Errorf("provider must receive state null, got bodies %v", bodies)
 	}
 }

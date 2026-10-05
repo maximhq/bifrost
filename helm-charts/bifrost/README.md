@@ -4,9 +4,28 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.43
+**Latest Version:** 2.1.45
 
 ## Changelog
+
+### Upcoming
+
+- Added `bifrost.governance.complexityAnalyzerConfig.jev.criteria` (renders into `complexity_analyzer_config.jev.criteria`): per-tier overrides of the Typesafe Jev `definition`, `signals`, and `examples`, keyed by `SIMPLE`, `MEDIUM`, or `COMPLEX` (exact case). Any tier or field left out sends the shipped default; a definition is at most 500 characters, and each list at most 12 items of 300 characters.
+- Added `bifrost.mcp.toolManagerConfig.maxInstructionsPerClient` and `.maxInstructionsTotal` (`max_instructions_per_client` / `max_instructions_total`) to bound forwarded MCP server instructions in bytes; 0 keeps the built-in defaults.
+- Added `access_profile` to `bifrost.governance.customers[]`, `.teams[]`, and `.businessUnits[]` (renders into `governance.{customers,teams,business_units}[].access_profile`), the enterprise access profile the entity holds in place of its own budgets and rate limit.
+- `bifrost.governance.roles[].dac` and `.entity_dac` now accept `business-unit-data` and `customer-data` (`governance.roles[].dac` / `entity_dac`).
+- Documented `ttft_timeout_ms` on `bifrost.governance.routingRules[].targets[]` (`governance.routing_rules[].targets[].ttft_timeout_ms`) in the values schema.
+- Added `bifrost.proxyConfig` (renders into the top-level `proxy_config`): the global outbound proxy from the dashboard's proxy settings page, including `enableForScim` (`enable_for_scim`), `enableForInference` and `enableForApi`; reconciled with the same config hash as the other sections.
+- Added `bifrost.scim.config.attributeProjectMappings` (`{ attribute, value, project }`, every SSO provider) — renders into `scim_config.config.attributeProjectMappings`. Every matching rule adds the user to that project by name (projects are never auto-created); memberships a rule added are removed when it stops matching, while members added from the dashboard are kept.
+- Added `bifrost.scim.config.bulkSyncInterval` (default `24h`, every SSO provider) — renders into `scim_config.config.bulkSyncInterval`. How often the directory reconcile deprovisions users the IdP no longer returns: whole days or h/m/s pairs (`12h`, `1h30m`, `7d`), between 1h and 30d. Inert when SCIM is enabled or the provider has no directory API access.
+- Added `bifrost.mcp.toolManagerConfig.codeModeLimits` (`maxSourceBytes`, `maxSteps`, `maxMemoryBytes`, `maxLogBytes`, `maxToolCalls`, `maxValueBytes`, `maxNestingDepth`) to tune the limits on each code mode execution; an omitted or 0 field keeps the built-in default. Renders into `mcp.tool_manager_config.code_mode_limits`. Code mode no longer limits concurrent executions.
+- Added a template-time guard: the chart now fails to render when `bifrost.client.mcpServerAuthMode` is `oauth` or `both` and `bifrost.client.oauth2ServerConfig.issuerUrl` (`client.oauth2_server_config.issuer_url`) is empty or unset, instead of letting the pod crash-loop on Bifrost's startup check. `env.VAR_NAME` references pass.
+
+### 2.1.44
+
+- Added `bifrost.auditLogs.omitIpAddresses` (default `false`) to stop recording client IP addresses in audit logs while keeping the rest of the audit trail. IPs stored before the flag was turned on are hidden from the API, filter data, search and exports, and archive copies written after the change omit them, but they stay in the database and in archive objects already written. Renders into `audit_logs.omit_ip_addresses`.
+- Added `excluded_attributes` to the OTEL, Datadog, Kafka, Pub/Sub, Splunk and BigQuery plugin configs (`bifrost.plugins.<connector>.config.excluded_attributes`, and `profiles[*].excluded_attributes` for OTEL). Names span attributes to leave out of exported traces, matched exactly (e.g. `gen_ai.request.tools`), for dropping large attributes that are not needed downstream. Unmatched names are ignored. On BigQuery these are **column names** (`tools`) rather than attribute names, because BigQuery writes typed columns; the column stays in the table schema and is left empty, and `trace_id` / `timestamp` are rejected. Renders into `excluded_attributes`.
+- Added `bifrost.plugins.bigquery.config.export_raw_payloads` and `bifrost.plugins.otel.config.export_raw_payloads` (also `profiles[*].export_raw_payloads`), default `false`. Stores the raw provider request and response bodies. Requires the provider's `store_raw_request_response` and is suppressed by `disable_content_logging`. Previously the field existed in Bifrost but had no Helm path, so it could not be enabled from a declarative install. Renders into `export_raw_payloads`.
 
 ### 2.1.43
 - Added `bifrost.plugins.telemetry.config.user_labels_enabled` (default `false`) — adds `user_id` and `user_name` labels to every `bifrost_*` metric. Off by default because these are unbounded: they multiply metric series by end-user count, on top of a `virtual_key_id` label that already reaches tens of thousands of values in large deployments, and Prometheus cannot drop a label after the fact. Datadog and Splunk emit these dimensions unconditionally, since a costly tag can be dropped server-side there.

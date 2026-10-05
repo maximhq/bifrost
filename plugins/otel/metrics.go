@@ -3,10 +3,12 @@ package otel
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -15,6 +17,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -268,18 +271,18 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetrichttp.Option{
 		otlpmetrichttp.WithEndpointURL(config.Endpoint),
+		// The global proxy when it is enabled for API traffic, else the environment.
+		otlpmetrichttp.WithProxy(network.DefaultProxyFunc(network.ClientPurposeAPI)),
 	}
 
 	if len(config.Headers) > 0 {
 		opts = append(opts, otlpmetrichttp.WithHeaders(config.Headers))
 	}
 
-	// HTTP metrics insecure mode disables TLS entirely (unlike the trace HTTP client
-	// which uses InsecureSkipVerify). buildTLSConfig is bypassed for that case.
-	if config.TLSCACert == "" && config.Insecure {
-		opts = append(opts, otlpmetrichttp.WithInsecure())
-	} else {
-		tlsConfig, err := buildTLSConfig(config.TLSCACert, false)
+	// The endpoint scheme decides the transport, so Insecure only relaxes certificate
+	// verification. The SDK rejects a TLS config on a plaintext endpoint.
+	if u, err := url.Parse(config.Endpoint); err == nil && u.Scheme == "https" {
+		tlsConfig, err := buildTLSConfig(config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
@@ -291,7 +294,11 @@ func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 
 func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetricgrpc.Option{
-		otlpmetricgrpc.WithEndpoint(config.Endpoint),
+		// passthrough hands the host name to the proxy dialer unresolved (see
+		// network.GRPCPassthroughTarget); the dialer uses the global proxy when it is
+		// enabled for API traffic, else the environment's HTTPS proxy as gRPC reads it.
+		otlpmetricgrpc.WithEndpoint(network.GRPCPassthroughTarget(config.Endpoint)),
+		otlpmetricgrpc.WithDialOption(grpc.WithContextDialer(network.DefaultGRPCDialer(network.ClientPurposeAPI))),
 	}
 
 	if len(config.Headers) > 0 {

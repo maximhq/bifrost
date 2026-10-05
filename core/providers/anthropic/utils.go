@@ -256,6 +256,21 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			req.OutputConfig = nil
 		}
 	}
+	// Pre-adaptive Claude (Haiku 4.5, Sonnet 4.5, Opus 4.5) 400s on adaptive thinking; rewrite to extended thinking.
+	// Runs before the effort strip below, which removes the effort the budget is derived from.
+	if req.Thinking != nil && req.Thinking.Type == "adaptive" && schemas.IsAnthropicModel(caps.Model()) &&
+		!caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model())) {
+		var effort *string
+		if req.OutputConfig != nil {
+			effort = req.OutputConfig.Effort
+		}
+		if budget, ok := fitThinkingBudget(req.Thinking.BudgetTokens, effort, req.MaxTokens); ok {
+			req.Thinking.Type = "enabled"
+			req.Thinking.BudgetTokens = &budget
+		} else {
+			req.Thinking = nil
+		}
+	}
 	// output_config.effort — model-gated per
 	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
 	// outside the supported set return: "This model does not support the
@@ -265,6 +280,10 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
 			req.OutputConfig = nil
 		}
+	}
+	// A kept effort snaps onto the model's ladder (xhigh/max on Opus 4.5, xhigh on 4.6 400 otherwise).
+	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && schemas.IsAnthropicModel(caps.Model()) {
+		req.OutputConfig.Effort = new(caps.NormalizeReasoningEffort(*req.OutputConfig.Effort, DefaultEffortControl(caps.Model())))
 	}
 	// thinking.type — model-gated. Adaptive-only models (Opus 4.7+, Sonnet 5+,
 	// Fable/Mythos) removed extended thinking and reject the legacy shape with:
@@ -301,6 +320,12 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	// resolves to on these models) rather than deleted, so a sibling
 	// thinking.display survives; Type has no omitempty, so a display-only block
 	// would serialize as {"type":""}.
+	// thinking.type:"between_tools" — downgraded to "disabled" on models that lack
+	// it (e.g. a fallback off Sonnet 5.5); the check below then adjusts it further.
+	if req.Thinking != nil && req.Thinking.Type == "between_tools" &&
+		!caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(model)) {
+		req.Thinking.Type = "disabled"
+	}
 	if req.Thinking != nil && req.Thinking.Type == "disabled" {
 		var effort *string
 		if req.OutputConfig != nil {
@@ -653,6 +678,38 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		}
 	}
 
+	// thinking.type:"adaptive" on pre-adaptive Claude — mirrors the typed path, before the effort strip below.
+	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "adaptive" && schemas.IsAnthropicModel(caps.Model()) &&
+		!caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model())) {
+		var budget *int
+		if b := providerUtils.GetJSONField(jsonBody, "thinking.budget_tokens"); b.Exists() {
+			budget = new(int(b.Int()))
+		}
+		var effort *string
+		if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
+			effort = new(e.String())
+		}
+		maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, caps.Model(), AnthropicDefaultMaxTokens)
+		if m := providerUtils.GetJSONField(jsonBody, "max_tokens"); m.Exists() {
+			maxTokens = int(m.Int())
+		}
+		if b, ok := fitThinkingBudget(budget, effort, maxTokens); ok {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "enabled")
+			if err != nil {
+				return nil, fmt.Errorf("rewrite raw thinking.type to enabled: %w", err)
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.budget_tokens", b)
+			if err != nil {
+				return nil, fmt.Errorf("set raw thinking.budget_tokens: %w", err)
+			}
+		} else {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking")
+			if err != nil {
+				return nil, fmt.Errorf("strip raw thinking: %w", err)
+			}
+		}
+	}
+
 	// output_config.effort — model-gated per
 	// https://platform.claude.com/docs/en/build-with-claude/effort.
 	// Mirrors the typed path; same cleanup of an empty parent.
@@ -666,6 +723,15 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw output_config: %w", err)
+			}
+		}
+	}
+	// A kept effort snaps onto the model's ladder — mirrors the typed path.
+	if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() && schemas.IsAnthropicModel(caps.Model()) {
+		if normalized := caps.NormalizeReasoningEffort(e.String(), DefaultEffortControl(caps.Model())); normalized != e.String() {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "output_config.effort", normalized)
+			if err != nil {
+				return nil, fmt.Errorf("normalize raw output_config.effort: %w", err)
 			}
 		}
 	}
@@ -699,6 +765,14 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	// thinking.type:"disabled" — mirrors the typed path in
 	// stripUnsupportedAnthropicFields; see there for why it is rewritten to
 	// "adaptive" rather than deleted.
+	// thinking.type:"between_tools" — mirrors the typed path's downgrade.
+	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "between_tools" &&
+		!caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(model)) {
+		jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "disabled")
+		if err != nil {
+			return nil, fmt.Errorf("rewrite raw thinking.type to disabled: %w", err)
+		}
+	}
 	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "disabled" {
 		var effort *string
 		if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
@@ -969,6 +1043,13 @@ func IsSonnet5Plus(model string) bool {
 	return strings.Contains(strings.ToLower(model), "sonnet-5")
 }
 
+// IsSonnet55Plus returns true for Claude Sonnet 5.5, matching the
+// Bedrock/Vertex/date-suffixed forms.
+func IsSonnet55Plus(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "sonnet-5-5") || strings.Contains(m, "sonnet-5.5")
+}
+
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
 // Mythos 5, Mythos Preview). These share Opus 4.7+'s request surface
 // (adaptive-only thinking, temperature/top_p/top_k removed) AND additionally
@@ -1101,17 +1182,89 @@ func DefaultSupportsAdaptiveThinking(model string) bool {
 	return strings.Contains(m, "opus") || strings.Contains(m, "sonnet")
 }
 
+// DefaultEffortControl: the output_config.effort ladder per family, for rows that publish none.
+// Opus 4.5 takes low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+/Sonnet 5+/Fable add xhigh.
+func DefaultEffortControl(model string) *schemas.EffortControl {
+	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
+	switch {
+	case IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model):
+		levels = append(levels, schemas.ReasoningEffortXHigh, schemas.ReasoningEffortMax)
+	case DefaultSupportsAdaptiveThinking(model):
+		levels = append(levels, schemas.ReasoningEffortMax)
+	}
+	return &schemas.EffortControl{Levels: levels}
+}
+
+// fitThinkingBudget returns an enabled-thinking budget_tokens valid under maxTokens:
+// the caller's budget if it fits [1024, maxTokens), else one from effort (default "high"); false when maxTokens leaves no room.
+func fitThinkingBudget(budget *int, effort *string, maxTokens int) (int, bool) {
+	if budget != nil && *budget >= MinimumReasoningMaxTokens && *budget < maxTokens {
+		return *budget, true
+	}
+	if maxTokens <= MinimumReasoningMaxTokens {
+		return 0, false
+	}
+	level := "high"
+	if effort != nil {
+		level = MapBifrostEffortToAnthropic(*effort)
+	}
+	b, err := providerUtils.GetBudgetTokensFromReasoningEffort(level, MinimumReasoningMaxTokens, maxTokens)
+	return b, err == nil
+}
+
+// fitRawThinkingBudget refits an enabled thinking budget that a just-clamped max_tokens no longer covers.
+func fitRawThinkingBudget(jsonBody []byte, maxTokens int) ([]byte, error) {
+	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() != "enabled" {
+		return jsonBody, nil
+	}
+	b := providerUtils.GetJSONField(jsonBody, "thinking.budget_tokens")
+	if !b.Exists() || b.Int() < int64(maxTokens) {
+		return jsonBody, nil
+	}
+	var effort *string
+	if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
+		effort = new(e.String())
+	}
+	fitted, ok := fitThinkingBudget(nil, effort, maxTokens)
+	if !ok {
+		return jsonBody, nil
+	}
+	return providerUtils.SetJSONField(jsonBody, "thinking.budget_tokens", fitted)
+}
+
 // DefaultAdaptiveOnlyThinking: models where budget_tokens thinking is removed
 // and temperature/top_p/top_k are rejected — adaptive is the only thinking mode.
 func DefaultAdaptiveOnlyThinking(model string) bool {
 	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
 }
 
-// DefaultCanDisableReasoning: the Fable/Mythos family and Opus 5.5 reject
-// thinking:{type:"disabled"} — adaptive thinking is always on, so the param must
-// be omitted entirely rather than sent as disabled.
+// DefaultCanDisableReasoning: the Fable/Mythos family, Opus 5.5 and Sonnet 5.5
+// reject thinking:{type:"disabled"} — adaptive thinking is always on, so the
+// param must be omitted entirely rather than sent as disabled.
 func DefaultCanDisableReasoning(model string) bool {
-	return !IsFableFamily(model) && !schemas.IsOpus55Plus(model)
+	return !IsFableFamily(model) && !schemas.IsOpus55Plus(model) && !IsSonnet55Plus(model)
+}
+
+// DefaultSupportsBetweenToolsThinking: Sonnet 5.5 accepts thinking:{type:"between_tools"}
+// as its lowest setting (it rejects "disabled").
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/thinking
+func DefaultSupportsBetweenToolsThinking(model string) bool {
+	return IsSonnet55Plus(model)
+}
+
+// BetweenToolsThinking returns the thinking config for a requested
+// thinking:{type:"between_tools"}: itself where the model accepts it, else the
+// nearest setting ("disabled" where accepted at this effort, or nil to omit) so
+// fallbacks to older models keep working.
+func BetweenToolsThinking(caps schemas.ModelCaps, effort *string) *AnthropicThinking {
+	if caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(caps.Model())) {
+		return &AnthropicThinking{Type: "between_tools"}
+	}
+	if !RejectsDisabledThinking(caps, effort) {
+		return &AnthropicThinking{Type: "disabled"}
+	}
+	return nil
 }
 
 // SupportsNativeEffort reports whether the model takes output_config.effort as
@@ -1333,9 +1486,9 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
 // system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus 4.8+ (including Opus 5) and the Claude
-// Fable/Mythos family (Fable post-dates Opus 4.8; the public doc lists Opus 4.8
-// but Fable supports it as well). No beta header is required.
+// Vertex. Supported on Claude Opus 4.8+ (including Opus 5 and 5.5), Claude
+// Sonnet 5.5 (not Sonnet 5), and the Claude Fable/Mythos family. No beta header
+// is required.
 //
 // Override-aware on the MODEL gate only: after the hardcoded Anthropic provider
 // gate, prefers the datasheet's supports_mid_conversation_system_messages
@@ -1348,11 +1501,29 @@ func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model 
 		return false
 	}
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsOpus5Plus(m) {
+	if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
 		return true
 	}
 	return strings.Contains(m, "opus") &&
 		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+}
+
+// DefaultSupportsMidConversationOutputConfig reports whether the provider+model pair
+// accepts output_config.effort on a role:"system" message inside messages (per-message
+// effort, beta mid-conversation-output-config-2026-07-01). Claude API direct only: the
+// Bedrock and Vertex converters have no native mid-conversation system role to carry it.
+// Documented on Claude Fable 5.1 / Mythos 5.1, Claude Opus 5 and 5.5, and Claude Sonnet
+// 5.5. Every other model, Claude Fable 5 and Opus 4.8 included, returns 400
+// "output_config.effort requires a model that supports per-turn effort", so callers drop
+// the override fail-soft when this is false instead of forwarding a guaranteed rejection.
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
+func DefaultSupportsMidConversationOutputConfig(provider schemas.ModelProvider, model string) bool {
+	if provider != schemas.Anthropic {
+		return false
+	}
+	m := strings.ToLower(model)
+	return schemas.IsFable51(m) || IsOpus5Plus(m) || IsSonnet55Plus(m)
 }
 
 // SupportsFastMode reports fast-mode support for a single (provider, model)
@@ -1593,13 +1764,37 @@ type anthropicMessageBetaSignals struct {
 	scopedCacheControl bool
 	// fileSource: some content block has a source of type "file" (Files API).
 	fileSource bool
+
+	// --- derived from messages[] themselves ---
+
+	// midConversationOutputConfig: some message carries output_config.effort (per-message effort).
+	midConversationOutputConfig bool
+}
+
+// complete reports whether every signal is already set, so a scan can stop early.
+func (s anthropicMessageBetaSignals) complete() bool {
+	return s.blocksDone() && s.midConversationOutputConfig
+}
+
+// blocksDone reports whether both block-level signals are set, so content blocks need no
+// further scanning even while the message-level effort signal is still being looked for.
+func (s anthropicMessageBetaSignals) blocksDone() bool {
+	return s.scopedCacheControl && s.fileSource
 }
 
 // scanMessagesForBetaSignals derives the signals from decoded messages.
 func scanMessagesForBetaSignals(messages []AnthropicMessage) anthropicMessageBetaSignals {
 	var signals anthropicMessageBetaSignals
 	for _, message := range messages {
-		if message.Content.ContentBlocks == nil {
+		if signals.complete() {
+			return signals
+		}
+		if message.OutputConfig != nil && message.OutputConfig.Effort != nil {
+			signals.midConversationOutputConfig = true
+		}
+		// Block scanning stops once both block-level signals are known; only the
+		// message-level effort check keeps walking the (potentially huge) array.
+		if signals.blocksDone() || message.Content.ContentBlocks == nil {
 			continue
 		}
 		for _, block := range message.Content.ContentBlocks {
@@ -1609,8 +1804,8 @@ func scanMessagesForBetaSignals(messages []AnthropicMessage) anthropicMessageBet
 			if block.Source != nil && block.Source.SourceObj != nil && block.Source.SourceObj.Type == "file" {
 				signals.fileSource = true
 			}
-			if signals.scopedCacheControl && signals.fileSource {
-				return signals
+			if signals.blocksDone() {
+				break
 			}
 		}
 	}
@@ -1626,12 +1821,26 @@ func scanRawMessagesForBetaSignals(jsonBody []byte) anthropicMessageBetaSignals 
 	if !messages.Exists() || !messages.IsArray() {
 		return signals
 	}
-	for _, message := range messages.Array() {
+	// ForEach walks the array in place; Array() would materialise every element first.
+	messages.ForEach(func(_, message gjson.Result) bool {
+		if signals.complete() {
+			return false
+		}
+		// A message-level sibling of content, so it is read before the content gate below:
+		// the effort-only form carries an empty content array and a string-content system
+		// message may carry it too. Type-checked for the same present-but-null reason as
+		// cache_control.scope.
+		if effort := message.Get("output_config.effort"); effort.Type == gjson.String {
+			signals.midConversationOutputConfig = true
+		}
+		if signals.blocksDone() {
+			return true
+		}
 		content := message.Get("content")
 		if !content.Exists() || !content.IsArray() {
-			continue
+			return true
 		}
-		for _, block := range content.Array() {
+		content.ForEach(func(_, block gjson.Result) bool {
 			// Exists() is `Type != Null || len(Raw) != 0`, so a present-but-null scope
 			// reports true while typed decoding leaves the *string nil. Check the type
 			// too, otherwise an explicit `"scope": null` injects a prompt-caching-scope
@@ -1642,11 +1851,10 @@ func scanRawMessagesForBetaSignals(jsonBody []byte) anthropicMessageBetaSignals 
 			if block.Get("source.type").String() == "file" {
 				signals.fileSource = true
 			}
-			if signals.scopedCacheControl && signals.fileSource {
-				return signals
-			}
-		}
-	}
+			return !signals.blocksDone()
+		})
+		return true
+	})
 	return signals
 }
 
@@ -1948,6 +2156,15 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicFilesAPIBetaHeader)
 		}
 	}
+	// Per-message effort: output_config.effort on a role:"system" message inside messages
+	// (the Pi / mid-conversation effort override). Sourced from signals so the raw-body path
+	// derives it identically. Model support is enforced at conversion time, where an
+	// unsupported model has the override dropped before it can reach here.
+	if signals.midConversationOutputConfig {
+		if !hasProvider || features.MidConvOutputConfig {
+			headers = appendUniqueHeader(headers, AnthropicMidConversationOutputConfigBetaHeader)
+		}
+	}
 	if len(headers) == 0 {
 		return nil
 	}
@@ -2010,6 +2227,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicServerSideFallbackBetaHeaderPrefix,
 	AnthropicFallbackCreditBetaHeaderPrefix,
 	AnthropicMidConversationToolChangesBetaHeaderPrefix,
+	AnthropicMidConversationOutputConfigBetaHeaderPrefix,
 }
 
 // betaHeaderProviderVersion rewrites a beta header's version date on providers
@@ -2553,7 +2771,8 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicServerSideFallbackBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.ServerSideFallback },
 	AnthropicFallbackCreditBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.FallbackCredit },
 	// Long key kept in its own group so gofmt doesn't realign the block above.
-	AnthropicMidConversationToolChangesBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
+	AnthropicMidConversationToolChangesBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
+	AnthropicMidConversationOutputConfigBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvOutputConfig },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
@@ -2593,6 +2812,14 @@ func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]strin
 		}
 	}
 	return all
+}
+
+// clampToModelOutputCeiling lowers maxTokens to the target model's max_output_tokens: the datasheet row, else the static Claude table.
+func clampToModelOutputCeiling(caps schemas.ModelCaps, maxTokens int) int {
+	if ceiling := caps.MaxOutputTokens(providerUtils.KnownClaudeMaxOutputTokens(caps.Model())); ceiling > 0 && maxTokens > ceiling {
+		return ceiling
+	}
+	return maxTokens
 }
 
 // FilterBetaHeadersForProvider validates that all beta headers are supported by the given provider.
@@ -3103,6 +3330,38 @@ func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopRe
 		return providerReason
 	}
 	return AnthropicStopReason(bifrostReason)
+}
+
+// anthropicStopReasonWithSequence restores Anthropic's stop_sequence stop reason, which
+// Bifrost folds into "stop". Only a matched sequence reported by an Anthropic upstream
+// upgrades end_turn; without one (e.g. an OpenAI-style "stop") end_turn is kept.
+func anthropicStopReasonWithSequence(reason AnthropicStopReason, stopSequence *string) (AnthropicStopReason, *string) {
+	if reason == AnthropicStopReasonEndTurn && stopSequence != nil {
+		return AnthropicStopReasonStopSequence, stopSequence
+	}
+	return reason, nil
+}
+
+// anthropicResponsesStatus derives the Responses status and incomplete_details from a
+// stop reason already converted by ConvertAnthropicFinishReasonToBifrost. refusal is a
+// content-filter stop and model_context_window_exceeded a truncation; reasons with no
+// Responses equivalent (pause_turn, compaction) leave the status unset.
+func anthropicResponsesStatus(stopReason *string) (*string, *schemas.ResponsesResponseIncompleteDetails) {
+	if stopReason == nil {
+		return nil, nil
+	}
+	reason := *stopReason
+	switch AnthropicStopReason(reason) {
+	case AnthropicStopReasonRefusal:
+		reason = "content_filter"
+	case AnthropicStopReasonModelContextWindowExceeded:
+		reason = string(schemas.BifrostFinishReasonLength)
+	}
+	status, details, mapped := schemas.ResponsesStatusFromFinishReason(reason)
+	if !mapped {
+		return nil, nil
+	}
+	return &status, details
 }
 
 // anthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the

@@ -289,7 +289,14 @@ func TestSemanticSearchToolHintsWhenNothingMatches(t *testing.T) {
 	require.Equal(t, 0, response["returned"])
 	hint, _ := response["hint"].(string)
 	require.Contains(t, hint, "threshold")
-	require.Contains(t, hint, "Do not fall back to count_logs or query_logs")
+	require.Contains(t, hint, "do not fall back to count_logs or query_logs")
+	// A survey question ("what kinds of tasks was Rohan doing") has no meaning
+	// to embed, so an empty result is the expected outcome of the wrong first
+	// step, not a finding. Forbidding the fallback outright here had Warp tell
+	// a person with 42k requests in the window that nothing matched.
+	require.Contains(t, hint, "survey question")
+	require.Contains(t, hint, "query_logs using include_content and limit 25")
+	require.Contains(t, hint, "not representative of the entire traffic")
 }
 
 // The default threshold is a Weaviate certainty, (1 + cosine) / 2. At 0.80 it
@@ -303,4 +310,235 @@ func TestWarpDefaultSemanticThresholdAdmitsAQuestionToConversationMatch(t *testi
 	const measuredMatch = 0.738
 	require.LessOrEqual(t, (&schemas.WarpConfig{}).EffectiveSemanticSearchThreshold(), measuredMatch)
 	require.Equal(t, 0.70, schemas.WarpDefaultSemanticSearchThreshold)
+}
+
+// Visibility is an OR across fields and vector filters only AND, so each
+// dimension is its own filter set - the question's filters, plus one of the
+// caller's sets.
+func TestWarpSemanticPrefiltersFanOutByVisibilityDimension(t *testing.T) {
+	base := vectorstore.Query{Field: "warp_log", Operator: vectorstore.QueryOperatorEqual, Value: true}
+	provider := vectorstore.Query{Field: "provider", Operator: vectorstore.QueryOperatorEqual, Value: "openai"}
+	filters := &logstore.SearchFilters{Providers: []string{"openai"}}
+
+	t.Run("no visibility is the question's own filter", func(t *testing.T) {
+		require.Equal(t, [][]vectorstore.Query{{base, provider}}, semanticPrefilters(filters, nil))
+	})
+
+	t.Run("one filter set per populated dimension", func(t *testing.T) {
+		prefilters := semanticPrefilters(filters, &LogVisibility{
+			// Mixed case: the index stores scalar ids lowered.
+			UserIDs:       []string{"User-7"},
+			VirtualKeyIDs: []string{"vk-1", "vk-2"},
+			TeamIDs:       []string{"team-1"},
+		})
+		require.Equal(t, [][]vectorstore.Query{
+			{base, provider, {Field: "user_id", Operator: vectorstore.QueryOperatorEqual, Value: "user-7"}},
+			{base, provider, {Field: "virtual_key_id", Operator: vectorstore.QueryOperatorContainsAny, Value: []string{"vk-1", "vk-2"}}},
+			{base, provider, {Field: "team_ids", Operator: vectorstore.QueryOperatorContainsAny, Value: []string{"team-1"}}},
+		}, prefilters)
+	})
+
+	// Nothing to narrow by is not "match nothing": the store still decides, and
+	// a prefilter that returned no candidates would be an access decision.
+	t.Run("empty visibility searches unfiltered", func(t *testing.T) {
+		require.Equal(t, [][]vectorstore.Query{{base, provider}}, semanticPrefilters(filters, &LogVisibility{}))
+	})
+
+	t.Run("a set too large to send searches unfiltered", func(t *testing.T) {
+		members := make([]string, warpVisibilityPrefilterMaxIDs+1)
+		for index := range members {
+			members[index] = fmt.Sprintf("user-%d", index)
+		}
+		require.Equal(t, [][]vectorstore.Query{{base, provider}},
+			semanticPrefilters(filters, &LogVisibility{UserIDs: members, TeamIDs: []string{"team-1"}}))
+	})
+
+	// The default scope names the caller, which is already inside their own
+	// visibility: one query, not five returning the same rows.
+	t.Run("a question inside a visibility set needs no fan-out", func(t *testing.T) {
+		named := &logstore.SearchFilters{UserIDs: []string{"user-7"}}
+		prefilters := semanticPrefilters(named, &LogVisibility{UserIDs: []string{"USER-7", "user-8"}, TeamIDs: []string{"team-1"}})
+		require.Equal(t, [][]vectorstore.Query{{base, {Field: "user_id", Operator: vectorstore.QueryOperatorEqual, Value: "user-7"}}}, prefilters)
+
+		// One named id outside the set and the question may reach rows the
+		// caller cannot see, so the fan-out stays.
+		outside := &logstore.SearchFilters{UserIDs: []string{"user-7", "user-9"}}
+		require.Len(t, semanticPrefilters(outside, &LogVisibility{UserIDs: []string{"user-7"}, TeamIDs: []string{"team-1"}}), 2)
+	})
+}
+
+func scoredCandidates(pairs ...any) []vectorstore.SearchResult {
+	out := make([]vectorstore.SearchResult, 0, len(pairs)/2)
+	for index := 0; index < len(pairs); index += 2 {
+		score := pairs[index+1].(float64)
+		out = append(out, vectorstore.SearchResult{ID: pairs[index].(string), Score: &score})
+	}
+	return out
+}
+
+func TestWarpSemanticMergePages(t *testing.T) {
+	t.Run("one page keeps the store's order", func(t *testing.T) {
+		scores := map[string]float64{}
+		ids, exhausted := mergeSemanticPages([][]vectorstore.SearchResult{scoredCandidates("b", 0.8, "a", 0.9)}, 5, scores, false)
+		require.Equal(t, []string{"b", "a"}, ids)
+		require.True(t, exhausted)
+		require.Equal(t, 0.9, scores["a"])
+	})
+
+	t.Run("pages merge by score without duplicates", func(t *testing.T) {
+		scores := map[string]float64{}
+		ids, exhausted := mergeSemanticPages([][]vectorstore.SearchResult{
+			scoredCandidates("a", 0.9, "c", 0.7),
+			scoredCandidates("b", 0.8, "a", 0.9),
+		}, 5, scores, false)
+		require.Equal(t, []string{"a", "b", "c"}, ids)
+		require.True(t, exhausted, "no page was full")
+	})
+
+	// A full page stopped at 0.80; the row it would have returned next may be
+	// 0.79, which outranks the other page's 0.60. Returning the 0.60 now would
+	// put it ahead of a better match the wider round is about to find.
+	t.Run("holds back candidates a full page could still outrank", func(t *testing.T) {
+		pages := [][]vectorstore.SearchResult{
+			scoredCandidates("a1", 0.95, "a2", 0.80),
+			scoredCandidates("b1", 0.90),
+			scoredCandidates("c1", 0.60),
+		}
+		ids, exhausted := mergeSemanticPages(pages, 2, map[string]float64{}, false)
+		require.Equal(t, []string{"a1", "b1", "a2"}, ids)
+		require.False(t, exhausted)
+
+		// With no wider round to come, everything found is used.
+		ids, _ = mergeSemanticPages(pages, 2, map[string]float64{}, true)
+		require.Equal(t, []string{"a1", "b1", "a2", "c1"}, ids)
+	})
+
+	// Hydration accepts at most the candidate limit, and silently drops the
+	// rest - which would read as "not visible".
+	t.Run("capped at the candidate limit, best first", func(t *testing.T) {
+		var first, second []vectorstore.SearchResult
+		for index := range warpSemanticCandidateLimit {
+			low, high := 0.5-float64(index)/1000, 0.9-float64(index)/1000
+			first = append(first, vectorstore.SearchResult{ID: fmt.Sprintf("low-%d", index), Score: &low})
+			second = append(second, vectorstore.SearchResult{ID: fmt.Sprintf("high-%d", index), Score: &high})
+		}
+		ids, _ := mergeSemanticPages([][]vectorstore.SearchResult{first, second}, warpSemanticCandidateLimit, map[string]float64{}, true)
+		require.Len(t, ids, warpSemanticCandidateLimit)
+		require.Equal(t, "high-0", ids[0])
+		require.Equal(t, fmt.Sprintf("high-%d", warpSemanticCandidateLimit-1), ids[len(ids)-1])
+	})
+}
+
+// The failure this exists for: a caller who may see a sliver of a large
+// deployment. The index's nearest hundred rows are all other people's, the
+// store discards every one after hydration, and the caller's own match - a
+// good one, just not in the deployment's top hundred - is never reached.
+func TestWarpSemanticSearchReachesARestrictedCallersRows(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	mine, teamKey := "user-7", "vk-team"
+	// The reader stands in for the scoped store: it only holds what the caller
+	// may read, so every other candidate hydrates as absent.
+	reader := &semanticLogReader{logs: map[string]logstore.Log{
+		"mine": {
+			ID: "mine", Timestamp: now.Add(-time.Hour), Object: string(schemas.ChatCompletionRequest),
+			Status: "success", Provider: "openai", Model: "gpt-4o", UserID: &mine, ContentSummary: "card declined at checkout",
+		},
+		"team-key": {
+			ID: "team-key", Timestamp: now.Add(-time.Hour), Object: string(schemas.ChatCompletionRequest),
+			Status: "success", Provider: "openai", Model: "gpt-4o", VirtualKeyID: &teamKey, ContentSummary: "declined card on renewal",
+		},
+	}}
+	var others []vectorstore.SearchResult
+	for index := range 300 {
+		score := 0.99 - float64(index)/10000
+		others = append(others, vectorstore.SearchResult{ID: fmt.Sprintf("other-%03d", index), Score: &score})
+	}
+	hasQuery := func(queries []vectorstore.Query, field string) bool {
+		for _, query := range queries {
+			if query.Field == field {
+				return true
+			}
+		}
+		return false
+	}
+	newVectors := func() *fakeWarpVectorStore {
+		vectors := newFakeWarpVectorStore()
+		vectors.respond = func(queries []vectorstore.Query) []vectorstore.SearchResult {
+			switch {
+			case hasQuery(queries, "user_id"):
+				return scoredCandidates("mine", 0.71)
+			case hasQuery(queries, "virtual_key_id"):
+				return scoredCandidates("team-key", 0.74)
+			case hasQuery(queries, "team_ids"):
+				return nil
+			}
+			return others
+		}
+		return vectors
+	}
+	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
+	}
+
+	t.Run("unfiltered, the cap is spent on rows the caller cannot read", func(t *testing.T) {
+		searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newVectors(), executor, reader)
+		result, err := searcher.Search(context.Background(), "card declined", nil, 5)
+		require.NoError(t, err)
+		require.Zero(t, result.Returned)
+	})
+
+	t.Run("with the caller's visibility, their rows are found in score order", func(t *testing.T) {
+		vectors := newVectors()
+		searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, executor, reader)
+		visible := &LogVisibility{UserIDs: []string{mine}, VirtualKeyIDs: []string{teamKey}, TeamIDs: []string{"team-1"}}
+		result, err := searcher.SearchVisible(context.Background(), "card declined", nil, visible, 5)
+		require.NoError(t, err)
+		require.Equal(t, 2, result.Returned)
+		require.Equal(t, "team-key", result.Rows[0].ID)
+		require.Equal(t, "mine", result.Rows[1].ID)
+		require.Len(t, vectors.calls, 3, "one query per populated dimension, and no wider round once all are exhausted")
+		for _, queries := range vectors.calls {
+			require.Contains(t, queries, vectorstore.Query{Field: "warp_log", Operator: vectorstore.QueryOperatorEqual, Value: true})
+		}
+	})
+
+	// The prefilter chooses candidates; it is not the access check. A row the
+	// index offers under the caller's filter is still dropped when the store
+	// will not hand it over.
+	t.Run("hydration still decides", func(t *testing.T) {
+		vectors := newFakeWarpVectorStore()
+		vectors.respond = func([]vectorstore.Query) []vectorstore.SearchResult {
+			return scoredCandidates("not-readable", 0.95, "mine", 0.71)
+		}
+		searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, executor, reader)
+		result, err := searcher.SearchVisible(context.Background(), "card declined", nil, &LogVisibility{UserIDs: []string{mine}}, 5)
+		require.NoError(t, err)
+		require.Equal(t, 1, result.Returned)
+		require.Equal(t, "mine", result.Rows[0].ID)
+	})
+}
+
+// The tool hands the searcher the visibility Warp resolved for the caller.
+func TestSemanticSearchToolPrefiltersByCallerVisibility(t *testing.T) {
+	reader := &semanticLogReader{logs: map[string]logstore.Log{}}
+	vectors := newFakeWarpVectorStore()
+	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
+	}
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, executor, reader)
+	scope := Scope{HasIdentity: true, UserID: "user-7", Visible: &LogVisibility{UserIDs: []string{"user-7"}, TeamIDs: []string{"team-1"}}}
+	// scope "all": the one question a restricted caller's default does not
+	// already narrow to their own user id.
+	_, err := runTool(t, "semantic_search_logs", &ToolDeps{logManager: reader, semantic: searcher, scope: scope}, map[string]any{
+		"query": "payment failures", "filters": map[string]any{"scope": "all"},
+	})
+	require.NoError(t, err)
+	require.Len(t, vectors.calls, 2)
+	fields := map[string]bool{}
+	for _, queries := range vectors.calls {
+		for _, query := range queries {
+			fields[query.Field] = true
+		}
+	}
+	require.True(t, fields["user_id"] && fields["team_ids"])
 }

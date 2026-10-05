@@ -37,6 +37,11 @@ describe("pricingFieldUnit", () => {
 			"cache_read_input_token_cost_above_200k_tokens_priority",
 			"cache_creation_input_token_cost_above_1hr_fast",
 			"cache_read_input_token_cost_flex_above_272k_tokens",
+			"input_cost_per_token_above_272k_tokens_ultrafast",
+			"output_cost_per_token_above_272k_tokens_ultrafast",
+			"cache_read_input_token_cost_above_272k_tokens_ultrafast",
+			"cache_creation_input_token_cost_above_272k_tokens_ultrafast",
+			"cache_creation_input_token_cost_above_272k_tokens_priority",
 		]) {
 			expect(pricingFieldUnit(key), key).toBe("token");
 		}
@@ -66,7 +71,7 @@ describe("pricingFieldUnit", () => {
 			"input_cost_per_image",
 			"ocr_cost_per_page",
 			"annotation_cost_per_page",
-			"search_context_cost_per_query",
+			"web_search_cost_per_request",
 			"input_cost_per_query",
 			"code_interpreter_cost_per_session",
 			"output_cost_per_image_high_quality",
@@ -84,7 +89,7 @@ describe("pricingFieldUnit", () => {
 			expect(byUnit[unit], `${field.key} resolved to unexpected unit ${unit}`).toBeDefined();
 			byUnit[unit].push(field.key);
 		}
-		expect(PRICING_FIELDS).toHaveLength(107);
+		expect(PRICING_FIELDS).toHaveLength(112);
 		expect(byUnit.multiplier).toEqual(["inference_geo_us_multiplier", "off_peak_cost_multiplier"]);
 		expect(byUnit.character).toEqual(["input_cost_per_character"]);
 		// Sanity: the split is real, not everything collapsing into one bucket.

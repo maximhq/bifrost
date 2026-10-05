@@ -52,6 +52,70 @@ func NewWarpLogReader(manager logging.LogManager) warp.LogReader {
 	return warpLogReader{manager}
 }
 
+// WarpResolvers are the governance overlays the server may have, handed to Warp
+// so describe_virtual_key sees a key the way the dashboard's key pages do and
+// describe_user_limits has something to answer with. All optional: an OSS
+// build passes the zero value and Warp reads key rows as they are.
+type WarpResolvers struct {
+	// ExternalQuotaBudgets overlays access-profile budgets and rate limits onto
+	// a managed key, the same resolver the governance handler uses.
+	ExternalQuotaBudgets ExternalQuotaBudgetResolver
+	// VirtualKeyAssignees names the user a key is assigned to.
+	VirtualKeyAssignees VirtualKeyAssigneeResolver
+	// UserGovernance answers what governs one person's spend. Nil leaves
+	// describe_user_limits out of Warp's tool set.
+	UserGovernance warp.UserGovernanceReader
+	// CallerRestriction reports whether row-level access control narrows the
+	// caller's reads. Nil leaves Warp reading that off the request's own
+	// query scope, which is all an OSS deployment has.
+	CallerRestriction warp.CallerRestrictionResolver
+}
+
+// warpVirtualKeyDecorator builds the overlay describe_virtual_key applies to a
+// key row: the standalone-key rehydration from key-scoped model configs that
+// every dashboard read path does, then the external budget resolver for a
+// managed key, then the assignee. Read raw, a standalone key with a budget
+// reported none, and a managed key reported none while the dashboard showed
+// $450 at 85% - both because the row is not where the cap lives.
+func warpVirtualKeyDecorator(store vkModelConfigReader, resolvers WarpResolvers) warp.VirtualKeyDecorator {
+	return func(ctx context.Context, vk *tables.TableVirtualKey) ([]string, error) {
+		if store != nil {
+			if err := hydrateVKGovernanceFromStoreErr(ctx, store, vk); err != nil {
+				return nil, err
+			}
+		}
+		var governedBy []string
+		ext, err := applyExternalQuotaBudgets(ctx, resolvers.ExternalQuotaBudgets, vk)
+		if err != nil {
+			return nil, err
+		}
+		if ext != nil {
+			seen := map[string]bool{}
+			for _, budget := range ext.Budgets {
+				name := strings.TrimSpace(budget.SourceName)
+				if name == "" || seen[name] {
+					continue
+				}
+				seen[name] = true
+				governedBy = append(governedBy, strings.TrimSpace(strings.ReplaceAll(budget.SourceType, "_", " ")+" "+name))
+			}
+			if vk.AssignedUser == nil && ext.UsageUserID != "" {
+				vk.AssignedUser = &tables.AssignedUser{ID: ext.UsageUserID}
+			}
+		}
+		if resolvers.VirtualKeyAssignees != nil {
+			assignees, err := resolvers.VirtualKeyAssignees(ctx, []string{vk.ID})
+			if err != nil {
+				return nil, err
+			}
+			if assignee := assignees[vk.ID]; assignee != nil {
+				vk.AssignedUser = assignee
+			}
+		}
+		return governedBy, nil
+	}
+}
+
 // NewWarpHandler builds the handler and the service behind it.
 //
 // A nil loggerPlugin is a supported deployment (logging disabled): Warp then
@@ -66,8 +130,17 @@ func NewWarpLogReader(manager logging.LogManager) warp.LogReader {
 // because the flag can be switched on at runtime and routes are only
 // registered once; what the flag withholds is every route and the indexing of
 // new logs.
-func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool) *WarpHandler {
+func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool, resolvers WarpResolvers) *WarpHandler {
 	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors)}
+	if store != nil {
+		opts = append(opts, warp.WithVirtualKeyDecorator(warpVirtualKeyDecorator(store, resolvers)))
+	}
+	if resolvers.UserGovernance != nil {
+		opts = append(opts, warp.WithUserGovernanceReader(resolvers.UserGovernance))
+	}
+	if resolvers.CallerRestriction != nil {
+		opts = append(opts, warp.WithCallerRestrictionResolver(resolvers.CallerRestriction))
+	}
 	if client != nil {
 		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest), warp.WithResponsesExecutor(client.ResponsesRequest))
 	}
@@ -293,8 +366,14 @@ func (h *WarpHandler) backfillStatus(ctx *fasthttp.RequestCtx) {
 		job, err = h.backfillStore.GetInFlightSidekiqJobByKind(ctx, warp.BackfillJobKind)
 		if err == nil && job == nil {
 			// Nothing running. A reloaded page still wants to see how the last
-			// backfill ended, so fall back to the newest job of any status.
+			// backfill ended, so fall back to the newest job of any status -
+			// unless it ran under an embedding space that is no longer the
+			// configured one, in which case it says nothing about this space
+			// and the page shows its empty default instead.
 			job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, warp.BackfillJobKind)
+			if err == nil && job != nil && !h.service.BackfillMatchesConfig(ctx, job.Metadata) {
+				job = nil
+			}
 		}
 	}
 	if err != nil {

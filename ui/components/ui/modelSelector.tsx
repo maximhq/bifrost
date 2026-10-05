@@ -446,6 +446,13 @@ export function ModelSelector(props: ModelSelectorProps) {
 											e.stopPropagation();
 											toggle(value);
 										}}
+										onKeyDown={(e) => {
+											if (e.key === "Enter" || e.key === " ") {
+												e.preventDefault();
+												e.stopPropagation();
+												toggle(value);
+											}
+										}}
 									>
 										<XIcon className="size-3" />
 									</span>

@@ -175,6 +175,7 @@ export const MCP_CREDENTIAL_STATUS_COLORS: Record<string, string> = {
 export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 	openai: [
 		"list_models",
+		"model_retrieve",
 		"text_completion",
 		"text_completion_stream",
 		"chat_completion",
@@ -204,9 +205,18 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"video_list",
 		"video_remix",
 	],
-	anthropic: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "count_tokens"],
+	anthropic: [
+		"list_models",
+		"model_retrieve",
+		"chat_completion",
+		"chat_completion_stream",
+		"responses",
+		"responses_stream",
+		"count_tokens",
+	],
 	gemini: [
 		"list_models",
+		"model_retrieve",
 		"chat_completion",
 		"chat_completion_stream",
 		"responses",
@@ -226,7 +236,16 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"video_list",
 		"video_remix",
 	],
-	cohere: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "embedding", "count_tokens"],
+	cohere: [
+		"list_models",
+		"model_retrieve",
+		"chat_completion",
+		"chat_completion_stream",
+		"responses",
+		"responses_stream",
+		"embedding",
+		"count_tokens",
+	],
 	bedrock: [
 		"list_models",
 		"text_completion",
@@ -267,6 +286,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"responses_stream",
 		"embedding",
 	],
+	typesafe: ["list_models", "decisions"],
 };
 
 export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";

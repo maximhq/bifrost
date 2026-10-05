@@ -159,13 +159,23 @@ func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance Governanc
 	return &Agent{
 		chat:             chat,
 		cost:             cost,
-		tools:            buildToolsFor(searcher),
+		tools:            buildToolsFor(searcher, false),
 		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance, charts: newChartRegistry()},
 		config:           config,
 		maxIterations:    config.EffectiveMaxIterations(),
 		utcOffsetMinutes: utcOffsetMinutes,
 		timezone:         timezone,
 	}
+}
+
+// SetGovernanceExtras hands the agent the two governance overlays the service
+// may have been given: the key decorator and the per-user reader. The tool set
+// is rebuilt because describe_user_limits is only offered when there is a
+// reader to answer it. Called once, before Run.
+func (a *Agent) SetGovernanceExtras(decorator VirtualKeyDecorator, users UserGovernanceReader) {
+	a.deps.vkDecorator = decorator
+	a.deps.userGovernance = users
+	a.tools = buildToolsFor(a.deps.semantic, users != nil)
 }
 
 // accumulateUsage folds one iteration's usage into the running total.
@@ -201,6 +211,7 @@ func accumulateUsage(total, next *schemas.BifrostLLMUsage, price CostFunc) *sche
 	// prices each turn as it arrives.
 	total.PromptTokensDetails = mergePromptTokenDetails(total.PromptTokensDetails, next.PromptTokensDetails)
 	total.CompletionTokensDetails = mergeCompletionTokenDetails(total.CompletionTokensDetails, next.CompletionTokensDetails)
+	total.ToolUsage = total.ToolUsage.Add(next.ToolUsage)
 
 	turnCost := 0.0
 	if next.Cost != nil {
@@ -495,7 +506,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// a.tools is buildToolsFor's fixed output for this deployment's semantic
 	// search availability (see NewAgent), so this is the matching memoized
 	// declaration set - parsed once for the process, not once per turn.
-	declared, err := declaredTools(a.deps != nil && a.deps.semantic != nil)
+	declared, err := declaredTools(a.deps != nil && a.deps.semantic != nil, a.deps != nil && a.deps.userGovernance != nil)
 	if err != nil {
 		emit(Event{Type: EventError, Code: ErrUpstream, Message: err.Error()})
 		return
@@ -511,7 +522,10 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// system item. The Responses API models instructions as a property of the
 	// request, not a turn in the transcript, and keeping it out of Input means the
 	// history bound below counts only real turns.
-	instructions := systemInstructions(a.config, a.deps != nil && a.deps.semantic != nil, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes})
+	instructions := systemInstructionsFor(a.config, toolAvailability{
+		semantic:   a.deps != nil && a.deps.semantic != nil,
+		userLimits: a.deps != nil && a.deps.userGovernance != nil,
+	}, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes})
 	finalInstructions := instructions + finalStepInstructions
 	conversation := append([]schemas.ResponsesMessage{}, messages...)
 	// conversationTokens tracks the running estimate behind
@@ -602,7 +616,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			// which discarded every step before it.
 			if !finalNudged {
 				finalNudged = true
-				nudge := userNudge("This is your final step and no tools are available now. Write your answer from the results above: lead with what you found, then say plainly what you could not check.")
+				nudge := loopNudge("This is your final step and no tools are available now. Write your answer from the results above: lead with what you found, then say plainly what you could not check.")
 				conversation = append(conversation, nudge)
 				conversationTokens += estimateMessageTokens(nudge)
 			}
@@ -656,7 +670,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 				return
 			}
 			emptyRetried = true
-			nudge := userNudge("Your last reply was empty. Continue: call a tool if you still need data and tools are available, otherwise write your answer from the results above.")
+			nudge := loopNudge("Your last reply was empty. Continue: call a tool if you still need data and tools are available, otherwise write your answer from the results above.")
 			conversation = append(conversation, nudge)
 			conversationTokens += estimateMessageTokens(nudge)
 			iteration--
@@ -700,7 +714,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			// Sent back once, so the model draws it properly or says why not.
 			if droppedCharts > 0 && !finalStep && !chartRedirected && iteration+1 < a.maxIterations {
 				chartRedirected = true
-				nudge := userNudge(droppedChartRedirect)
+				nudge := loopNudge(droppedChartRedirect)
 				conversation = append(conversation, nudge)
 				conversationTokens += estimateMessageTokens(nudge)
 				continue
@@ -1005,7 +1019,8 @@ func (a *Agent) executeTool(ctx context.Context, name, arguments string) (string
 	// An argument the tool does not take is refused rather than dropped. Dropped,
 	// the call runs as if it had been honoured, and the model reads the result
 	// as shaped by an argument that never existed - then guesses another.
-	if accepted := tool.argumentNames(); len(accepted) > 0 {
+	accepted := tool.argumentNames()
+	if len(accepted) > 0 {
 		unknown := []string{}
 		for name := range args {
 			if !slices.Contains(accepted, name) {
@@ -1021,9 +1036,37 @@ func (a *Agent) executeTool(ctx context.Context, name, arguments string) (string
 
 	result, err := tool.execute(ctx, a.deps, args)
 	if err != nil {
-		return fmt.Sprintf(`{"error":%q}`, err.Error()), true
+		return fmt.Sprintf(`{"error":%q}`, misplacedArgumentHint(err, name, accepted)), true
 	}
-	return boundToolResult(result), false
+	return boundToolResult(noteCallerVisibility(result, a.deps.scope)), false
+}
+
+// misplacedArgumentHint is the mirror of the refusal above. That one catches a
+// filter field sent beside filters and says where it goes; this one catches an
+// argument the tool takes beside filters ("limit") sent inside them, and says
+// so. Without it the refusal listed every supported filter field and nothing
+// else, which the model read as "limit is not available" rather than "limit is
+// in the wrong place", and it spent a step finding out.
+func misplacedArgumentHint(err error, tool string, accepted []string) string {
+	message := err.Error()
+	var unknown *unknownFilterFieldsError
+	if !errors.As(err, &unknown) {
+		return message
+	}
+	misplaced := []string{}
+	for _, field := range unknown.fields {
+		if field != "filters" && slices.Contains(accepted, field) {
+			misplaced = append(misplaced, field)
+		}
+	}
+	switch len(misplaced) {
+	case 0:
+		return message
+	case 1:
+		return fmt.Sprintf("%s %s is an argument of %s, not a filter field: pass it beside filters, not inside them.", message, misplaced[0], tool)
+	default:
+		return fmt.Sprintf("%s %s are arguments of %s, not filter fields: pass them beside filters, not inside them.", message, strings.Join(misplaced, " and "), tool)
+	}
 }
 
 // errorMessage extracts a human-readable message from an upstream error,
@@ -1112,28 +1155,35 @@ func endsWithProseQuestion(text string) bool {
 	return strings.HasSuffix(text, "?") && !strings.Contains(text, "```warp-scope")
 }
 
-// unsupportedReplyRedirect is the one-time nudge sent back for a reply that
-// called no tool, or that asked in prose after one did. It rides as a user
-// message because it is feedback on the last reply, not a standing
-// instruction.
-// userNudge builds a user-role message from the loop itself: feedback on the
+// loopNudge builds a message from the loop itself: feedback on the
 // conversation so far rather than a standing instruction, which is why it rides
 // in the transcript and not in the system prompt.
-func userNudge(content string) schemas.ResponsesMessage {
+//
+// It rides as a developer message, not a user one. These nudges are not the
+// person's words, and a reasoning model that was handed the no-data redirect
+// as a user turn - "if it declines ... give the same reply again" - read it as
+// someone trying to steer it, refused it ("I can't help with instructions
+// about how to respond"), and that refusal reached the screen as the answer.
+// The developer role is the application speaking, which is what this is.
+// Every provider converter carries it: OpenAI as is, Anthropic and Bedrock as
+// an in-place system turn, Gemini as a user turn.
+func loopNudge(content string) schemas.ResponsesMessage {
 	itemType := schemas.ResponsesMessageTypeMessage
-	role := schemas.ResponsesInputMessageRoleUser
+	role := schemas.ResponsesInputMessageRoleDeveloper
 	return schemas.ResponsesMessage{Type: &itemType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &content}}
 }
 
+// unsupportedReplyRedirect is the one-time nudge sent back for a reply that
+// called no tool, or that asked in prose after one did. It rides as a
+// developer message, like every loopNudge, because it is feedback on the last
+// reply from the loop rather than anything the person said.
 func unsupportedReplyRedirect(calledTool, describedFilterSpace bool) schemas.ResponsesMessage {
-	itemType := schemas.ResponsesMessageTypeMessage
-	role := schemas.ResponsesInputMessageRoleUser
 	content := "That reply asked a question in prose, which reaches the person with nothing to click. " +
 		"If you need to ask, call " + AskUserTool + " with the options instead. If you did not need to ask, answer without the question."
 	if !calledTool {
-		options := "call describe_filter_space first so the options are ones that have traffic, and offer the person's own traffic only if describe_filter_space says they are identified. "
+		options := "call describe_filter_space first so the options are ones that have traffic, and offer the person's own traffic only if describe_filter_space says they are identified, with its caller_user_id as that option's hint. "
 		if describedFilterSpace {
-			options = "describe_filter_space has already run this turn, so build the options from the result you have rather than calling it again, and offer the person's own traffic only if it says they are identified. "
+			options = "describe_filter_space has already run this turn, so build the options from the result you have rather than calling it again, and offer the person's own traffic only if it says they are identified, with its caller_user_id as that option's hint. "
 		}
 		// Declining comes first. Listed after ask_user, it read as the last resort,
 		// and correct refusals came back as scope questions.
@@ -1145,7 +1195,7 @@ func unsupportedReplyRedirect(calledTool, describedFilterSpace bool) schemas.Res
 			"If it asks the person something, call " + AskUserTool + " with options instead - " + options +
 			"If it says a question about this deployment cannot be answered, investigate with your tools first - query_usage_by with dimension error_type and status error counts every failure by kind, query_logs returns failed rows with error_type, provider and model, and get_request_trace explains one request."
 	}
-	return schemas.ResponsesMessage{Type: &itemType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &content}}
+	return loopNudge(content)
 }
 
 func toolResultMessage(callID, result string) schemas.ResponsesMessage {
@@ -1217,5 +1267,6 @@ func usageFromResponses(usage *schemas.ResponsesResponseUsage) *schemas.BifrostL
 			NumSearchQueries:         details.NumSearchQueries,
 		}
 	}
+	converted.ToolUsage = usage.ToolUsage.DeepCopy()
 	return converted
 }

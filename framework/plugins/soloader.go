@@ -21,8 +21,25 @@ type SharedObjectPluginLoader struct {
 // NewSharedObjectPluginLoader constructs a loader whose plugin-download client is
 // additionally permitted to reach the hosts/CIDRs in allow. allow may be nil for the
 // default (all private/loopback/CGNAT/link-local targets blocked).
-func NewSharedObjectPluginLoader(allow *network.Allowlist) *SharedObjectPluginLoader {
-	return &SharedObjectPluginLoader{downloadClient: NewPluginDownloadClient(allow)}
+func NewSharedObjectPluginLoader(allow *network.Allowlist, opts ...LoaderOption) *SharedObjectPluginLoader {
+	var options loaderOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+	return &SharedObjectPluginLoader{downloadClient: NewProxiedPluginDownloadClient(allow, options.httpClients)}
+}
+
+// LoaderOption customizes a plugin loader at construction.
+type LoaderOption func(*loaderOptions)
+
+type loaderOptions struct {
+	httpClients *network.HTTPClientFactory
+}
+
+// WithHTTPClientFactory sends plugin downloads through the global proxy when it is
+// enabled for API traffic, keeping the SSRF policy and allowlist.
+func WithHTTPClientFactory(factory *network.HTTPClientFactory) LoaderOption {
+	return func(o *loaderOptions) { o.httpClients = factory }
 }
 
 func (l *SharedObjectPluginLoader) openPlugin(dp *DynamicPlugin) (*plugin.Plugin, error) {
@@ -116,6 +133,13 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 	if sym, err := pluginObj.Lookup("HTTPTransportStreamChunkHook"); err == nil {
 		if dp.httpTransportStreamChunkHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)); !ok {
 			return nil, fmt.Errorf("failed to cast HTTPTransportStreamChunkHook to expected signature")
+		}
+	}
+
+	// Optional: HTTPTransportResponseHeadersHook
+	if sym, err := pluginObj.Lookup("HTTPTransportResponseHeadersHook"); err == nil {
+		if dp.httpTransportResponseHeadersHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error); !ok {
+			return nil, fmt.Errorf("failed to cast HTTPTransportResponseHeadersHook to expected signature")
 		}
 	}
 

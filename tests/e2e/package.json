@@ -18,10 +18,12 @@
     "test:observability": "playwright test features/observability",
     "test:config": "playwright test features/config",
     "test:plugins": "playwright test features/plugins",
+    "test:a11y": "playwright test --config=playwright.a11y.config.ts",
     "report": "playwright show-report",
     "codegen": "playwright codegen http://localhost:3000"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@playwright/test": "1.57.0",
     "@types/node": "20.19.27",
     "typescript": "5.9.3"

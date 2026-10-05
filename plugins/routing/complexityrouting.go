@@ -5,23 +5,24 @@ import (
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 )
 
 const noClassifiableComplexityInputLog = "Complexity analysis skipped: no routable human-authored text detected"
 
-// complexityProposal is one request classifier's answer before monotonic
-// session state is applied. Score is nil for mechanisms, such as the LLM
-// fallback, that do not produce a meaningful numeric confidence.
+// complexityProposal is one classifier's answer before monotonic session state is applied.
 type complexityProposal struct {
 	Result          *complexity.ComplexityResult
 	Mechanism       string
 	Score           *float64
+	Confidence      *float64
 	MatchedExemplar string
 	LogLevel        schemas.LogLevel
 	LogMessage      string
 }
 
+// computeComplexity reuses continuation or session state before classifying the request.
 func (p *RoutingPlugin) computeComplexity(
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostRequest,
@@ -31,6 +32,26 @@ func (p *RoutingPlugin) computeComplexity(
 	sessionActive := p.sessionEnabled.Load() && sessionID != "" && p.sessionStore != nil
 
 	if disposition == complexity.InputContinuation {
+		if sessionID != "" && p.turnTierStore != nil {
+			tier, found, err := p.turnTierStore.load(complexityTurnTierKey(ctx))
+			if err != nil {
+				p.logComplexitySessionStoreError("load continuation tier", err)
+			} else if found {
+				if sessionActive {
+					resolution, resolveErr := p.sessionStore.resolve(complexitySessionKey(ctx), tier)
+					if resolveErr != nil {
+						p.logComplexitySessionStoreError("refresh continuation", resolveErr)
+					} else if resolution.EffectiveTier != "" {
+						tier = resolution.EffectiveTier
+					}
+				}
+				result := &complexity.ComplexityResult{Tier: tier}
+				publishComplexityDecision(ctx, result, complexity.MechanismSession, nil)
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo,
+					fmt.Sprintf("Session complexity reused: effective=%s reason=tool-continuation", tier))
+				return result
+			}
+		}
 		if sessionActive {
 			key := complexitySessionKey(ctx)
 			tier, found, err := p.sessionStore.load(key, true)
@@ -158,8 +179,26 @@ func (p *RoutingPlugin) computeComplexity(
 	return result
 }
 
+// classifyComplexityInput selects the configured primary classifier and fallback chain.
 func (p *RoutingPlugin) classifyComplexityInput(ctx *schemas.BifrostContext, input complexity.ComplexityInput) complexityProposal {
+	config := p.complexityConfig.Load()
+	if config != nil && config.Classifier == complexity.ClassifierJev {
+		return p.classifyJevComplexity(ctx, input)
+	}
+	return p.classifySemanticComplexity(ctx, input, config)
+}
+
+// classifySemanticComplexity runs semantic routing and its configured fallback.
+func (p *RoutingPlugin) classifySemanticComplexity(ctx *schemas.BifrostContext, input complexity.ComplexityInput, config *complexity.AnalyzerConfig) complexityProposal {
 	if p.semanticClassifier == nil || !p.semanticClassifier.IsConfigured() {
+		if config != nil && config.Semantic != nil && config.Semantic.Fallback == configstore.ComplexitySemanticFallbackJev {
+			ctx.AppendRoutingEngineLog(
+				schemas.RoutingEngineRoutingRule,
+				schemas.LogLevelInfo,
+				noSemanticClassifierLog+"; falling back to Jev",
+			)
+			return p.classifyJevComplexity(ctx, input)
+		}
 		if p.logger != nil {
 			p.logger.Debug("[Routing] %s", noSemanticClassifierLog)
 		}
@@ -227,6 +266,14 @@ func (p *RoutingPlugin) classifyComplexityInput(ctx *schemas.BifrostContext, inp
 		)
 	}
 
+	if config != nil && config.Semantic != nil && config.Semantic.Fallback == configstore.ComplexitySemanticFallbackJev {
+		ctx.AppendRoutingEngineLog(
+			schemas.RoutingEngineRoutingRule,
+			schemas.LogLevelInfo,
+			unavailableCause+"; falling back to Jev",
+		)
+		return p.classifyJevComplexity(ctx, input)
+	}
 	if p.llmClassifier != nil && p.llmClassifier.FallbackEnabled() {
 		ctx.AppendRoutingEngineLog(
 			schemas.RoutingEngineRoutingRule,
@@ -242,6 +289,7 @@ func (p *RoutingPlugin) classifyComplexityInput(ctx *schemas.BifrostContext, inp
 	}
 }
 
+// publishLocalSessionFallback keeps the prior tier when session storage cannot be updated.
 func (p *RoutingPlugin) publishLocalSessionFallback(
 	ctx *schemas.BifrostContext,
 	priorTier string,
@@ -277,12 +325,14 @@ func (p *RoutingPlugin) publishLocalSessionFallback(
 	return result
 }
 
+// logComplexitySessionStoreError logs a failed session-state operation.
 func (p *RoutingPlugin) logComplexitySessionStoreError(operation string, err error) {
 	if p.logger != nil {
 		p.logger.Warn("[Routing] complexity session store %s failed: %v", operation, err)
 	}
 }
 
+// publishComplexityProposal publishes a classifier result and its routing log.
 func publishComplexityProposal(ctx *schemas.BifrostContext, proposal complexityProposal) {
 	publishComplexityDecision(ctx, proposal.Result, proposal.Mechanism, proposal.Score)
 	if proposal.LogMessage != "" {
@@ -290,6 +340,7 @@ func publishComplexityProposal(ctx *schemas.BifrostContext, proposal complexityP
 	}
 }
 
+// publishComplexityDecision updates the request context with the selected tier and mechanism.
 func publishComplexityDecision(
 	ctx *schemas.BifrostContext,
 	result *complexity.ComplexityResult,
@@ -321,6 +372,9 @@ func formatSessionProposalLog(event, effectiveTier, previousTier string, proposa
 	message += fmt.Sprintf(" proposed=%s source=%s", proposal.Result.Tier, proposal.Mechanism)
 	if proposal.Score != nil {
 		message += fmt.Sprintf(" proposed_similarity=%.2f", *proposal.Score)
+	}
+	if proposal.Confidence != nil {
+		message += fmt.Sprintf(" proposed_confidence=%.2f", *proposal.Confidence)
 	}
 	if matched := truncateExemplarForLog(proposal.MatchedExemplar); matched != "" {
 		message += fmt.Sprintf(" proposed_matched=%q", matched)

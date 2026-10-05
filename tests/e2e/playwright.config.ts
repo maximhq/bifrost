@@ -10,7 +10,7 @@ const projects: NonNullable<PlaywrightTestConfig['projects']> = [
     name: 'chromium',
     testDir: './features',
     use: { ...devices['Desktop Chrome'] },
-    testIgnore: ['**/config/**', '**/mobile/**', '**/plugins/**', '**/virtual-keys/**', '**/mcp-registry/**', '**/model-limits/**', '**/providers/**'],
+    testIgnore: ['**/accessibility/**', '**/config/**', '**/mobile/**', '**/plugins/**', '**/virtual-keys/**', '**/mcp-registry/**', '**/model-limits/**', '**/providers/**'],
   },
   {
     name: 'chromium-serial',

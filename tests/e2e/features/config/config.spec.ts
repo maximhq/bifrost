@@ -1,5 +1,147 @@
+import { coreConfigApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { ConfigSettingsState } from './pages/config-settings.page'
+import { DefaultCoreConfig } from '../../../../ui/lib/types/config'
+
+test.describe('Inference auth setup defaults', () => {
+  test.use({ skipAutoLogin: true })
+
+  for (const existing of [false, true]) {
+    test(`inference setup preserves explicit opt-out (existing admin: ${existing})`, async ({ page }) => {
+      // Exercise the real form without changing credentials on the shared test gateway.
+      await page.route('**/api/**', async route => {
+        const path = new URL(route.request().url()).pathname
+        if (path === '/api/config') {
+          if (route.request().method() === 'PUT') {
+            await route.fulfill({ json: { status: 'success', message: 'configuration updated successfully' } })
+          } else {
+            await route.fulfill({ json: {
+              client_config: { ...DefaultCoreConfig, enforce_auth_on_inference: false, allowed_origins: ['http://localhost:3000'] },
+              auth_config: existing ? { is_enabled: true, admin_username: { value: 'admin', ref: '' }, admin_password: { value: '', ref: '' } } : null,
+              framework_config: {}, is_db_connected: true, metadata: { onboarding_dismissed: true },
+            } })
+          }
+        } else if (path === '/api/version') {
+          await route.fulfill({ json: '1.0.0' })
+        } else if (path === '/api/session/is-auth-enabled') {
+          await route.fulfill({ json: { is_auth_enabled: false, has_valid_token: false, auth_type: 'none', inference_auth_enforced: false } })
+        } else {
+          await route.fulfill({ json: {} })
+        }
+      })
+      await page.goto('/workspace/config/security')
+      const inference = page.getByTestId('enforce-auth-on-inference-switch')
+      const dashboard = page.locator('#auth-enabled')
+      await expect(inference).not.toBeChecked()
+      if (!existing) {
+        await dashboard.click()
+        await expect(inference).toBeChecked()
+        await inference.click()
+      }
+      await expect(page.getByTestId('inference-auth-off-warning')).toBeVisible()
+      // Toggling dashboard auth again must not undo the operator's explicit choice.
+      await dashboard.click()
+      await dashboard.click()
+      await expect(inference).not.toBeChecked()
+      await page.locator('#admin-username').fill('admin')
+      await page.locator('#admin-password').fill('StrongPassword1!')
+      if (!existing) await page.locator('#setup-token').fill('test-setup-token')
+      const submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
+      await page.getByRole('button', { name: /Save/i }).click()
+      expect((await submitted).postDataJSON().client_config.enforce_auth_on_inference).toBe(false)
+    })
+  }
+
+  test('inference setup preserves a choice made before enabling dashboard auth', async ({ page }) => {
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      await route.fulfill({ json: path === '/api/config' ? {
+        client_config: { ...DefaultCoreConfig, enforce_auth_on_inference: false }, auth_config: null,
+        framework_config: {}, is_db_connected: true, metadata: { onboarding_dismissed: true },
+      } : path === '/api/version' ? '1.0.0' : path === '/api/session/is-auth-enabled' ? { is_auth_enabled: false, auth_type: 'none' } : {} })
+    })
+    await page.goto('/workspace/config/security')
+    const inference = page.getByTestId('enforce-auth-on-inference-switch')
+    await inference.click()
+    await inference.click()
+    await page.locator('#auth-enabled').click()
+    await expect(inference).not.toBeChecked()
+    await expect(page.getByTestId('inference-auth-off-warning')).toBeVisible()
+  })
+
+  test('canceling first-time dashboard auth restores the stored inference setting', async ({ page }) => {
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      await route.fulfill({ json: path === '/api/config' ? {
+        client_config: { ...DefaultCoreConfig, enforce_auth_on_inference: false }, auth_config: null,
+        framework_config: {}, is_db_connected: true, metadata: { onboarding_dismissed: true },
+      } : path === '/api/version' ? '1.0.0' : path === '/api/session/is-auth-enabled' ? { is_auth_enabled: false, auth_type: 'none' } : {} })
+    })
+    await page.goto('/workspace/config/security')
+    const inference = page.getByTestId('enforce-auth-on-inference-switch')
+    const dashboard = page.locator('#auth-enabled')
+    await dashboard.click()
+    await expect(inference).toBeChecked()
+    // The switch mirrors the client_config value Save sends, so an unchecked switch means cancel did not persist inference auth.
+    await dashboard.click()
+    await expect(inference).not.toBeChecked()
+  })
+
+  test('setup toggles stay disabled when the stored config failed to load', async ({ page }) => {
+    // The dashboard shell loads GET /api/config?from_db=false, while the config layout gates the from_db=true copy
+    // on loading only, not on error. With just that copy failing the form rendered with no config, and a toggle made
+    // then was overwritten by a later successful refetch, saving dashboard auth on and inference auth off.
+    await page.route('**/api/**', async route => {
+      const url = new URL(route.request().url())
+      if (url.pathname === '/api/config' && url.searchParams.get('from_db') === 'true') {
+        await route.fulfill({ status: 500, json: { error: { message: 'config store unavailable' } } })
+        return
+      }
+      await route.fulfill({ json: url.pathname === '/api/config' ? {
+        client_config: { ...DefaultCoreConfig, enforce_auth_on_inference: false }, auth_config: null,
+        framework_config: {}, is_db_connected: true, metadata: { onboarding_dismissed: true },
+      } : url.pathname === '/api/version' ? '1.0.0' : url.pathname === '/api/session/is-auth-enabled' ? { is_auth_enabled: false, auth_type: 'none' } : {} })
+    })
+    await page.goto('/workspace/config/security')
+    await expect(page.locator('#auth-enabled')).toBeDisabled()
+    await expect(page.getByTestId('enforce-auth-on-inference-switch')).toBeDisabled()
+  })
+})
+
+test.describe('Onboarding widget snooze', () => {
+  test.use({ skipAutoLogin: true })
+
+  test('remind me later opens a picker above the widget and snoozes it', async ({ page }) => {
+    // Mock an unconfigured instance so the checklist is incomplete and visible.
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/config') {
+        await route.fulfill({ json: {
+          client_config: { ...DefaultCoreConfig, enforce_auth_on_inference: false, allowed_origins: [] },
+          auth_config: null,
+          framework_config: {}, is_db_connected: true, metadata: {},
+        } })
+      } else if (path === '/api/version') {
+        await route.fulfill({ json: '1.0.0' })
+      } else if (path === '/api/session/is-auth-enabled') {
+        await route.fulfill({ json: { is_auth_enabled: false, has_valid_token: false, auth_type: 'none', inference_auth_enforced: false } })
+      } else if (path === '/api/keys') {
+        await route.fulfill({ json: [] })
+      } else {
+        await route.fulfill({ json: {} })
+      }
+    })
+    await page.goto('/workspace/config/client-settings')
+
+    await page.getByTestId('onboarding-later').click()
+    // The popover is portaled to body, so it must stack above the widget card.
+    // A non-forced click fails if the card covers the option.
+    await page.getByTestId('onboarding-remind-tomorrow').click({ timeout: 5000 })
+    await expect(page.getByTestId('onboarding-later')).not.toBeVisible()
+    const cookies = await page.context().cookies()
+    expect(cookies.some(c => c.name === 'bifrost_onboarding_remind_at')).toBe(true)
+  })
+})
 
 test.describe('Config Settings', () => {
   // Run all config tests serially to avoid parallel writes to the same config/store
@@ -445,6 +587,85 @@ test.describe('Config Settings', () => {
     test('should display rate limiting section', async ({ configSettingsPage }) => {
       const isVisible = await configSettingsPage.isRateLimitingSectionVisible()
       expect(isVisible).toBeDefined()
+    })
+
+    test.describe('Dashboard Auth Confirmation', () => {
+      // Once an admin account exists, switching dashboard protection off lets
+      // anyone reach the settings API without signing in, so switching it back
+      // on from that state must prove control of the instance with the stored
+      // admin password (or the operator's setup token). The fixture signs the
+      // browser back in with BIFROST_ADMIN_USERNAME/PASSWORD when the server
+      // flushes sessions, so that password is also what this test confirms with.
+      const adminPassword = process.env.BIFROST_ADMIN_PASSWORD
+
+      test.beforeEach(async ({ configSettingsPage, request }) => {
+        test.skip(!adminPassword, 'BIFROST_ADMIN_PASSWORD is not set, so there is no stored admin password to confirm with')
+        const current = await coreConfigApi.get(request)
+        test.skip(
+          current.auth_config?.is_enabled !== true,
+          'Dashboard auth is not enabled with stored credentials on this instance'
+        )
+        // The onboarding checklist covers the Save button in the bottom-right
+        // corner on a fresh instance, so dismiss it before touching settings.
+        await configSettingsPage.dismissOnboardingWidget()
+      })
+
+      test.afterEach(async ({ configSettingsPage, request }) => {
+        // If the test stopped while protection was off, turn it back on with the
+        // proof the server now requires. GET fails with 401 once auth is already
+        // on and the session was flushed, which means there is nothing to undo.
+        const current = await coreConfigApi.get(request).catch(() => null)
+        if (current?.auth_config && !current.auth_config.is_enabled) {
+          await coreConfigApi.setDashboardAuthEnabled(request, true, { currentPassword: adminPassword })
+        }
+        // Refresh the page state so the outer restore sees the switch already on
+        // rather than clicking it and saving without proof.
+        await configSettingsPage.goto('security')
+        await expect(configSettingsPage.dashboardAuthSwitch).toHaveAttribute('data-state', 'checked', { timeout: 20000 })
+      })
+
+      test('should require the current admin password to turn protection back on after disabling it', async ({
+        configSettingsPage,
+        request,
+      }) => {
+        // Signed-in session: no confirmation field while protection is on, and
+        // switching it off needs no proof.
+        await expect(configSettingsPage.dashboardAuthSwitch).toHaveAttribute('data-state', 'checked')
+        await expect(configSettingsPage.currentPasswordInput).not.toBeVisible()
+        await configSettingsPage.toggleDashboardAuth()
+        await configSettingsPage.saveSettings()
+
+        await configSettingsPage.goto('security')
+        await expect(configSettingsPage.dashboardAuthSwitch).toHaveAttribute('data-state', 'unchecked')
+        expect((await coreConfigApi.get(request)).auth_config?.is_enabled).toBe(false)
+
+        // Protection off, stored account: turning it on reveals the confirmation
+        // field, and saving without filling it is refused in the form itself.
+        await configSettingsPage.toggleDashboardAuth()
+        await expect(configSettingsPage.currentPasswordInput).toBeVisible()
+        await configSettingsPage.saveBtn.click()
+        await expect(configSettingsPage.currentPasswordError).toBeVisible()
+        await expect(configSettingsPage.currentPasswordError).toContainText(/current admin password/i)
+        expect((await coreConfigApi.get(request)).auth_config?.is_enabled).toBe(false)
+
+        // A wrong password is refused by the server with 403, shown inline on the
+        // same field rather than as a toast, and nothing is saved.
+        await configSettingsPage.setCurrentPassword(`${adminPassword}-wrong`)
+        await configSettingsPage.saveBtn.click()
+        await expect(configSettingsPage.currentPasswordError).toContainText(/current_password|setup_token/i)
+        await expect(configSettingsPage.getToast('error')).not.toBeVisible()
+        expect((await coreConfigApi.get(request)).auth_config?.is_enabled).toBe(false)
+
+        // The stored password turns protection back on. The server flushes every
+        // session on that change, so the next page load goes through the login
+        // redirect, which the base fixture completes.
+        await configSettingsPage.setCurrentPassword(adminPassword!)
+        await configSettingsPage.saveBtn.click()
+        await configSettingsPage.goto('security')
+        await expect(configSettingsPage.dashboardAuthSwitch).toHaveAttribute('data-state', 'checked', { timeout: 20000 })
+        await expect(configSettingsPage.currentPasswordInput).not.toBeVisible()
+        expect((await coreConfigApi.get(request)).auth_config?.is_enabled).toBe(true)
+      })
     })
 
     test.describe('Virtual Key Rotation Cooldown', () => {

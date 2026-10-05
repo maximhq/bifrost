@@ -1419,3 +1419,137 @@ func TestEncryptPlaintextOAuthTokens_EmptyRefreshToken(t *testing.T) {
 	assert.Equal(t, "access-only-startup", found.AccessToken)
 	assert.Equal(t, "", found.RefreshToken)
 }
+
+// TestEncryptPlaintextKeys_VertexAWSWorkloadIdentity_EncryptsAndDecryptsCorrectly pins the
+// vertex_aws_workload_identity_json column: a plaintext row is encrypted by the startup pass
+// (the role ARN must not be readable at rest) and the GORM hooks rebuild the nested block.
+func TestEncryptPlaintextKeys_VertexAWSWorkloadIdentity_EncryptsAndDecryptsCorrectly(t *testing.T) {
+	store, db := setupEncryptionTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+	wifJSON := `{"audience":"//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/eks/providers/aws","service_account_email":"vertex@my-project.iam.gserviceaccount.com","token_lifetime_seconds":1800,"aws_region":"us-east-1","aws_role_arn":"arn:aws:iam::123456789012:role/VertexHop"}`
+	insertPlaintextRow(t, db,
+		`INSERT INTO config_keys (name, provider_id, provider, key_id, value, vertex_project_id, vertex_region, vertex_aws_workload_identity_json, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'plain_text', ?, ?)`,
+		"vertex-wif-key", 1, "vertex", "vx-wif", "",
+		"my-gcp-project", "us-central1", wifJSON, now, now)
+
+	count, err := store.encryptPlaintextKeys(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+
+	var raw map[string]any
+	db.Table("config_keys").Where("name = ?", "vertex-wif-key").Take(&raw)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	assert.NotContains(t, fmt.Sprintf("%v", raw["vertex_aws_workload_identity_json"]), "VertexHop")
+
+	var found tables.TableKey
+	require.NoError(t, db.Where("name = ?", "vertex-wif-key").First(&found).Error)
+	require.NotNil(t, found.VertexKeyConfig)
+	wif := found.VertexKeyConfig.AWSWorkloadIdentity
+	require.NotNil(t, wif)
+	assert.Equal(t, "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/eks/providers/aws", wif.Audience.GetValue())
+	assert.Equal(t, "vertex@my-project.iam.gserviceaccount.com", wif.ServiceAccountEmail.GetValue())
+	assert.Equal(t, 1800, wif.TokenLifetimeSeconds)
+	assert.Equal(t, "us-east-1", wif.AWSRegion.GetValue())
+	assert.Equal(t, "arn:aws:iam::123456789012:role/VertexHop", wif.AWSRoleARN.GetValue())
+}
+
+// TestVertexAWSWorkloadIdentity_GORMRoundTrip saves a key through the hooks (BeforeSave serializes
+// and encrypts, AfterFind decrypts and rebuilds) and checks env. references survive the trip and a
+// key without the block leaves the column NULL.
+func TestVertexAWSWorkloadIdentity_GORMRoundTrip(t *testing.T) {
+	_, db := setupEncryptionTestStore(t)
+	t.Setenv("TEST_WIF_AUDIENCE", "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/eks/providers/aws")
+
+	withWIF := tables.TableKey{
+		Name: "vertex-wif", ProviderID: 1, Provider: "vertex", KeyID: "vx-wif-1",
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewSecretVar("my-gcp-project"),
+			Region:    *schemas.NewSecretVar("us-central1"),
+			AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{
+				Audience:   *schemas.NewSecretVar("env.TEST_WIF_AUDIENCE"),
+				AWSRoleARN: schemas.NewSecretVar("arn:aws:iam::123456789012:role/VertexHop"),
+			},
+		},
+	}
+	withoutWIF := tables.TableKey{
+		Name: "vertex-adc", ProviderID: 1, Provider: "vertex", KeyID: "vx-adc-1",
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewSecretVar("my-gcp-project"),
+			Region:    *schemas.NewSecretVar("us-central1"),
+		},
+	}
+	require.NoError(t, db.Create(&withWIF).Error)
+	require.NoError(t, db.Create(&withoutWIF).Error)
+
+	var raw map[string]any
+	db.Table("config_keys").Where("name = ?", "vertex-wif").Take(&raw)
+	assert.NotContains(t, fmt.Sprintf("%v", raw["vertex_aws_workload_identity_json"]), "VertexHop", "stored encrypted")
+	db.Table("config_keys").Where("name = ?", "vertex-adc").Take(&raw)
+	assert.Nil(t, raw["vertex_aws_workload_identity_json"], "keys without federation keep the column NULL")
+
+	var found tables.TableKey
+	require.NoError(t, db.Where("name = ?", "vertex-wif").First(&found).Error)
+	require.NotNil(t, found.VertexKeyConfig)
+	require.NotNil(t, found.VertexKeyConfig.AWSWorkloadIdentity)
+	wif := found.VertexKeyConfig.AWSWorkloadIdentity
+	assert.True(t, wif.Audience.IsFromEnv(), "env reference must survive persistence")
+	assert.Equal(t, "env.TEST_WIF_AUDIENCE", wif.Audience.GetRawRef())
+	assert.Equal(t, "arn:aws:iam::123456789012:role/VertexHop", wif.AWSRoleARN.GetValue())
+
+	// A fresh receiver: First() on a populated struct also filters by its primary key.
+	var adc tables.TableKey
+	require.NoError(t, db.Where("name = ?", "vertex-adc").First(&adc).Error)
+	require.NotNil(t, adc.VertexKeyConfig)
+	assert.Nil(t, adc.VertexKeyConfig.AWSWorkloadIdentity)
+}
+
+// TestMigrationAddVertexAWSWorkloadIdentityColumn verifies the upgrade path: a config_keys table
+// provisioned before this release gains the column, and replaying the migration is a no-op.
+func TestMigrationAddVertexAWSWorkloadIdentityColumn(t *testing.T) {
+	_, db := setupEncryptionTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableKey{}, "vertex_aws_workload_identity_json"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableKey{}, "vertex_aws_workload_identity_json"),
+		"precondition: the column must be absent before the migration runs")
+
+	require.NoError(t, migrationAddVertexAWSWorkloadIdentityColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "vertex_aws_workload_identity_json"))
+
+	require.NoError(t, migrationAddVertexAWSWorkloadIdentityColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "vertex_aws_workload_identity_json"))
+}
+
+// TestMigrationAddVertexAWSWorkloadIdentityColumn_RollbackRefuses pins the down path: the column holds
+// operator-entered federation configuration, so a rollback must refuse instead of dropping it (the same
+// contract as the other non-rollbackable operator-settings columns), leaving the schema and data intact.
+func TestMigrationAddVertexAWSWorkloadIdentityColumn_RollbackRefuses(t *testing.T) {
+	_, db := setupEncryptionTestStore(t)
+	ctx := context.Background()
+	require.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "vertex_aws_workload_identity_json"))
+
+	seed := tables.TableKey{
+		Name: "vertex-wif", ProviderID: 1, Provider: "vertex", KeyID: "vx-wif-rollback",
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewSecretVar("my-gcp-project"),
+			Region:    *schemas.NewSecretVar("us-central1"),
+			AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{
+				Audience: *schemas.NewSecretVar("//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/eks/providers/aws"),
+			},
+		},
+	}
+	require.NoError(t, db.Create(&seed).Error)
+
+	err := rollbackVertexAWSWorkloadIdentityColumn(ctx, db, testMigrationLogger)
+	require.Error(t, err, "rollback must refuse: dropping the column destroys stored federation configuration")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "vertex_aws_workload_identity_json"),
+		"a refused rollback must leave the column intact")
+
+	var found tables.TableKey
+	require.NoError(t, db.Where("name = ?", "vertex-wif").First(&found).Error)
+	require.NotNil(t, found.VertexKeyConfig)
+	require.NotNil(t, found.VertexKeyConfig.AWSWorkloadIdentity, "the stored federation config must survive the refused rollback")
+}

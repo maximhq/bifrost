@@ -33,12 +33,7 @@ export function PluginsEmptyState({ onCreateClick, canCreate = true }: PluginsEm
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button
-						aria-label="Create your first plugin"
-						data-testid="plugins-button-install-new"
-						onClick={onCreateClick}
-						disabled={!canCreate}
-					>
+					<Button data-testid="plugins-button-install-new" onClick={onCreateClick} disabled={!canCreate}>
 						Install New Plugin
 					</Button>
 				</div>

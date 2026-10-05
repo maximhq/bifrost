@@ -1598,6 +1598,26 @@ type openAIResponsesResponse struct {
 	Usage *openAIResponsesUsage `json:"usage,omitempty"`
 }
 
+// MarshalJSON is required because the embedded response's own MarshalJSON would otherwise be
+// promoted and drop the flattened usage override. Like it, tool_usage goes top-level only.
+func (r openAIResponsesResponse) MarshalJSON() ([]byte, error) {
+	type responsesAlias schemas.BifrostResponsesResponse
+	resp := *r.BifrostResponsesResponse
+	usage := r.Usage
+	if usage != nil && usage.ResponsesResponseUsage != nil && usage.ResponsesResponseUsage.ToolUsage != nil {
+		if resp.ToolUsage == nil {
+			resp.ToolUsage = usage.ResponsesResponseUsage.ToolUsage
+		}
+		inner := *usage.ResponsesResponseUsage
+		inner.ToolUsage = nil
+		usage = &openAIResponsesUsage{ResponsesResponseUsage: &inner, Cost: usage.Cost}
+	}
+	return schemas.Marshal(struct {
+		*responsesAlias
+		Usage *openAIResponsesUsage `json:"usage,omitempty"`
+	}{(*responsesAlias)(&resp), usage})
+}
+
 type openAIResponsesStreamResponse struct {
 	*schemas.BifrostResponsesStreamResponse
 	Response *openAIResponsesResponse `json:"response,omitempty"`
@@ -1705,6 +1725,79 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 	}
 
 	return routes
+}
+
+// CreateOpenAIModelRetrieveRouteConfigs creates route configurations for the OpenAI retrieve model endpoint.
+func CreateOpenAIModelRetrieveRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+	var routes []RouteConfig
+
+	// Retrieve model endpoint. The catch-all lets a model be addressed as "provider/model" too.
+	for _, path := range []string{
+		"/v1/models/{model:*}",
+		"/models/{model:*}",
+		"/openai/models/{model:*}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ModelRetrieveRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostModelRetrieveRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if modelRetrieveReq, ok := req.(*schemas.BifrostModelRetrieveRequest); ok {
+					return &schemas.BifrostRequest{
+						ModelRetrieveRequest: modelRetrieveReq,
+					}, nil
+				}
+				return nil, errors.New("invalid request type")
+			},
+			ModelRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostModelRetrieveResponse) (interface{}, error) {
+				return openai.ToOpenAIModelRetrieveResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: extractOpenAIModelRetrieveParams,
+		})
+	}
+
+	return routes
+}
+
+// extractOpenAIModelRetrieveParams maps GET /v1/models/{model} onto a model retrieve request.
+func extractOpenAIModelRetrieveParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	modelRetrieveReq, ok := req.(*schemas.BifrostModelRetrieveRequest)
+	if !ok {
+		return errors.New("invalid request type for OpenAI model retrieve")
+	}
+
+	rawModel, _ := ctx.UserValue("model").(string)
+	// The router hands the catch-all over still percent-encoded, and OpenAI SDKs send "provider%2Fmodel".
+	decodedModel, err := url.PathUnescape(rawModel)
+	if err != nil {
+		return errors.New("invalid model encoding")
+	}
+	rawModel = strings.Trim(strings.TrimSpace(decodedModel), "/")
+	if rawModel == "" {
+		return errors.New("model parameter is required")
+	}
+
+	// An explicit header wins, since ParseModelString cannot recognise a custom provider.
+	provider := getProviderFromHeader(ctx, "")
+	model := rawModel
+	if provider != "" {
+		model = strings.TrimPrefix(rawModel, string(provider)+"/")
+	} else {
+		provider, model = schemas.ParseModelString(rawModel, schemas.OpenAI)
+	}
+
+	modelRetrieveReq.Provider = provider
+	modelRetrieveReq.Model = model
+	return nil
 }
 
 // CreateOpenAIBatchRouteConfigs creates route configurations for OpenAI Batch API endpoints.
@@ -3445,6 +3538,7 @@ func OpenAIRealtimeClientSecretPaths(pathPrefix string) []string {
 func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *OpenAIRouter {
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 	routes = append(routes, CreateOpenAIListModelsRouteConfigs("/openai", handlerStore)...)
+	routes = append(routes, CreateOpenAIModelRetrieveRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIBatchRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIFileRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIContainerRouteConfigs("/openai", handlerStore)...)

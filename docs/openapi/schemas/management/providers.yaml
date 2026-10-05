@@ -101,6 +101,51 @@ VertexKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     auth_credentials:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
+    force_single_region:
+      type: boolean
+      default: false
+      description: When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint.
+    aws_workload_identity:
+      type: object
+      description: >-
+        GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity,
+        ECS task role, EC2 instance profile, AWS_* env vars). Takes precedence over auth_credentials;
+        the two must not be combined. aws_role_arn is redacted in GET responses; the other fields are
+        identifiers and are returned in clear.
+      properties:
+        audience:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        service_account_email:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        token_lifetime_seconds:
+          type: integer
+          minimum: 600
+          maximum: 43200
+          description: Lifetime of the impersonated service-account token in seconds; only used with service_account_email. Default 3600. Lifetimes above 3600 require the target service account to be allowed by the organization policy constraint constraints/iam.allowServiceAccountCredentialLifetimeExtension; otherwise token generation fails.
+        aws_region:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        aws_role_arn:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+      required: [audience]
+      additionalProperties: false
+  # A key authenticates with either a credentials JSON or AWS workload identity federation, never
+  # both; mirrors the rule in transports/config.schema.json and the API's validation.
+  if:
+    required: [aws_workload_identity]
+  then:
+    properties:
+      auth_credentials:
+        anyOf:
+          - type: string
+            maxLength: 0
+          - type: object
+            properties:
+              value:
+                type: string
+                maxLength: 0
+              ref:
+                type: string
+                maxLength: 0
 
 BedrockKeyConfig:
   type: object
@@ -265,6 +310,9 @@ AllowedRequests:
       type: boolean
     embedding:
       type: boolean
+    decisions:
+      type: boolean
+      description: Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API
     speech:
       type: boolean
     speech_stream:

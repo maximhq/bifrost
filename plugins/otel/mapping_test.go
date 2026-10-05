@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -669,6 +670,15 @@ func TestRawPayloadsNeverEnterSpanAttributes(t *testing.T) {
 // stubOtelClient stands in for a built trace client; only its presence matters.
 type stubOtelClient struct{}
 
+// captureOtelClient records what Emit would have shipped.
+type captureOtelClient struct{ emitted []*ResourceSpan }
+
+func (c *captureOtelClient) Emit(_ context.Context, rs []*ResourceSpan) error {
+	c.emitted = append(c.emitted, rs...)
+	return nil
+}
+func (c *captureOtelClient) Close() error { return nil }
+
 func (stubOtelClient) Emit(context.Context, []*ResourceSpan) error { return nil }
 func (stubOtelClient) Close() error                                { return nil }
 
@@ -717,5 +727,142 @@ func TestOtelRawDemandRespectsContentLogging(t *testing.T) {
 	}}
 	if metricsOnly.ConsumesRawPayloads() {
 		t.Error("metrics-only profile demanded raw payloads it cannot export")
+	}
+}
+
+// profileForStorage mirrors Profile by hand, so a field added to one and not the
+// other is dropped on save — export_raw_payloads regressed this way.
+func TestProfileStorageKeepsEveryConfigField(t *testing.T) {
+	jsonTags := func(v any) []string {
+		rt := reflect.TypeOf(v)
+		var out []string
+		for i := 0; i < rt.NumField(); i++ {
+			tag := strings.Split(rt.Field(i).Tag.Get("json"), ",")[0]
+			if tag != "" && tag != "-" {
+				out = append(out, tag)
+			}
+		}
+		return out
+	}
+	stored := map[string]bool{}
+	for _, tag := range jsonTags(profileForStorage{}) {
+		stored[tag] = true
+	}
+	for _, tag := range jsonTags(Profile{}) {
+		if !stored[tag] {
+			t.Errorf("Profile field %q is missing from profileForStorage and will be dropped on save", tag)
+		}
+	}
+}
+
+// Attributes named in excluded_attributes must not reach the collector.
+func TestExcludedAttributesAreStripped(t *testing.T) {
+	trace := &schemas.Trace{
+		TraceID: "t1",
+		Spans: []*schemas.Span{{
+			SpanID:     "s1",
+			Attributes: map[string]any{schemas.AttrTools: "big", schemas.AttrRequestModel: "m"},
+		}},
+	}
+	out := schemas.StripTraceAttributes(trace, []string{schemas.AttrTools})
+	if _, ok := out.Spans[0].Attributes[schemas.AttrTools]; ok {
+		t.Error("excluded attribute survived")
+	}
+	if out.Spans[0].Attributes[schemas.AttrRequestModel] != "m" {
+		t.Error("unrelated attribute dropped")
+	}
+	if _, ok := trace.Spans[0].Attributes[schemas.AttrTools]; !ok {
+		t.Error("source trace mutated")
+	}
+}
+
+// The helper test covers the strip; this covers the export path, where the raw
+// fields actually become attributes.
+func TestExcludedAttributesClearRawPayloads(t *testing.T) {
+	newTrace := func() *schemas.Trace {
+		return &schemas.Trace{TraceID: "t1", Spans: []*schemas.Span{{
+			SpanID:     "s1",
+			Attributes: map[string]any{schemas.AttrProviderName: "openai"},
+			LLM: &schemas.LLMSpanData{
+				RawRequest:  `{"prompt":"RAW-REQ-SENTINEL"}`,
+				RawResponse: `{"text":"RAW-RESP-SENTINEL"}`,
+			},
+		}}}
+	}
+	for _, tc := range []struct {
+		name             string
+		deny             []string
+		wantReq, wantRsp bool
+	}{
+		{"no denylist", nil, true, true},
+		{"request excluded", []string{schemas.AttrBifrostRawRequest}, false, true},
+		{"both excluded", []string{schemas.AttrBifrostRawRequest, schemas.AttrBifrostRawResponse}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stripped := schemas.StripTraceAttributes(newTrace(), tc.deny)
+			got := kvMap(convertSpanToOTELSpan("t1", stripped.Spans[0], false, true).Attributes)
+			if _, ok := got[schemas.AttrBifrostRawRequest]; ok != tc.wantReq {
+				t.Errorf("raw_request exported = %v, want %v", ok, tc.wantReq)
+			}
+			if _, ok := got[schemas.AttrBifrostRawResponse]; ok != tc.wantRsp {
+				t.Errorf("raw_response exported = %v, want %v", ok, tc.wantRsp)
+			}
+			if _, ok := got[schemas.AttrProviderName]; !ok {
+				t.Error("unrelated attributes were dropped")
+			}
+		})
+	}
+}
+
+// The trace-level strip cannot reach attributes conversion adds afterwards.
+func TestExcludedAttributesDropConverterAddedKeys(t *testing.T) {
+	p := &OtelPlugin{}
+	trace := &schemas.Trace{
+		TraceID:        "t1",
+		RequestID:      "req-1",
+		Attributes:     map[string]any{schemas.TraceAttrSessionID: "sess-1"},
+		RequestHeaders: map[string]string{"Authorization": "Bearer secret"},
+	}
+	root := &schemas.Span{
+		SpanID:     "s1",
+		Attributes: map[string]any{schemas.AttrProviderName: "openai"},
+	}
+	trace.Spans = []*schemas.Span{root}
+	trace.RootSpan = root
+
+	rs := p.convertTraceToResourceSpan("svc", trace, []string{"*"}, false, false, false, false, false)
+	got := kvMap(rs.ScopeSpans[0].Spans[0].Attributes)
+	for _, k := range []string{"session.id", schemas.AttrBifrostRequestID, "http.request.header.Authorization"} {
+		if _, ok := got[k]; !ok {
+			t.Fatalf("baseline: converter did not add %s; test would prove nothing", k)
+		}
+	}
+
+	// Through Inject: covers the call site, not just the helper.
+	cap := &captureOtelClient{}
+	injected := &OtelPlugin{targets: []*otelTarget{{
+		serviceName:        "svc",
+		client:             cap,
+		requestHeaders:     []string{"*"},
+		exportTimeout:      5 * time.Second,
+		excludedAttributes: []string{"session.id", "http.request.header.Authorization"},
+	}}}
+	if err := injected.Inject(context.Background(), trace); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if len(cap.emitted) != 1 {
+		t.Fatalf("expected 1 emitted ResourceSpan, got %d", len(cap.emitted))
+	}
+	got = kvMap(cap.emitted[0].ScopeSpans[0].Spans[0].Attributes)
+	for _, k := range []string{"session.id", "http.request.header.Authorization"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s survived the denylist", k)
+		}
+	}
+	if _, ok := got[schemas.AttrBifrostRequestID]; !ok {
+		t.Error("an undenied converter attribute was dropped")
+	}
+	if _, ok := got[schemas.AttrProviderName]; !ok {
+		t.Error("an undenied span attribute was dropped")
 	}
 }

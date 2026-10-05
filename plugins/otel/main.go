@@ -137,6 +137,10 @@ type Profile struct {
 	// requires store_raw_request_response and is suppressed by disable_content_logging.
 	ExportRawPayloads bool `json:"export_raw_payloads,omitempty"`
 
+	// ExcludedAttributes lists span-attribute names to drop before export, matched
+	// exactly (e.g. "gen_ai.request.tools"). Unknown names are a no-op.
+	ExcludedAttributes []string `json:"excluded_attributes,omitempty"`
+
 	// GroupTracesBySession, when true, groups all requests sharing the same x-bf-session-id
 	// header into a single OTEL trace: every span adopts a session-derived trace ID and each
 	// request's root span becomes a top-level sibling under one synthetic session parent
@@ -306,6 +310,8 @@ type profileForStorage struct {
 	RequestHeaders           []string          `json:"request_headers,omitempty"`
 	DisableContentLogging    bool              `json:"disable_content_logging,omitempty"`
 	ApplyTraceDimensionsToChildSpans bool              `json:"apply_trace_dimensions_to_child_spans,omitempty"`
+	ExportRawPayloads                bool              `json:"export_raw_payloads,omitempty"`
+	ExcludedAttributes               []string          `json:"excluded_attributes,omitempty"`
 	GroupTracesBySession     bool              `json:"group_traces_by_session,omitempty"`
 	DisableRootSpanContent   bool              `json:"disable_root_span_content,omitempty"`
 }
@@ -351,6 +357,8 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			RequestHeaders:           p.RequestHeaders,
 			DisableContentLogging:    p.DisableContentLogging,
 			ApplyTraceDimensionsToChildSpans: p.ApplyTraceDimensionsToChildSpans,
+			ExportRawPayloads:                p.ExportRawPayloads,
+			ExcludedAttributes:               p.ExcludedAttributes,
 			GroupTracesBySession:     p.GroupTracesBySession,
 			DisableRootSpanContent:   p.DisableRootSpanContent,
 		})
@@ -434,6 +442,7 @@ type otelTarget struct {
 	disableContentLogging    bool
 	applyTraceDimensionsToChildSpans bool
 	exportRawPayloads                bool
+	excludedAttributes               []string
 	groupTracesBySession     bool
 	disableRootSpanContent   bool
 	overheadBreakdownEnabled bool
@@ -637,6 +646,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		disableContentLogging:    profile.DisableContentLogging,
 		applyTraceDimensionsToChildSpans: profile.ApplyTraceDimensionsToChildSpans,
 		exportRawPayloads:                profile.ExportRawPayloads,
+		excludedAttributes:               profile.ExcludedAttributes,
 		groupTracesBySession:     profile.GroupTracesBySession,
 		disableRootSpanContent:   profile.DisableRootSpanContent,
 		overheadBreakdownEnabled: profile.OverheadBreakdownEnabled,
@@ -790,6 +800,11 @@ func (p *OtelPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *sch
 	return nil
 }
 
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *OtelPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
 func (p *OtelPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
@@ -893,6 +908,38 @@ func (p *OtelPlugin) ConsumesOverheadSpans() bool {
 }
 
 // ConsumesRawPayloads opts in when any profile exports raw bodies.
+// stripExcludedFromResourceSpan drops denied attributes from converted spans,
+// matched exactly against the exported key.
+func stripExcludedFromResourceSpan(rs *ResourceSpan, excluded []string) {
+	if rs == nil || len(excluded) == 0 {
+		return
+	}
+	denied := make(map[string]struct{}, len(excluded))
+	for _, k := range excluded {
+		if k != "" {
+			denied[k] = struct{}{}
+		}
+	}
+	if len(denied) == 0 {
+		return
+	}
+	for _, ss := range rs.ScopeSpans {
+		for _, span := range ss.Spans {
+			if span == nil || len(span.Attributes) == 0 {
+				continue
+			}
+			kept := span.Attributes[:0]
+			for _, kv := range span.Attributes {
+				if _, bad := denied[kv.GetKey()]; bad {
+					continue
+				}
+				kept = append(kept, kv)
+			}
+			span.Attributes = kept
+		}
+	}
+}
+
 func (p *OtelPlugin) ConsumesRawPayloads() bool {
 	for _, t := range p.targets {
 		// Raw bodies ride spans: a nil client means metrics-only, and
@@ -925,7 +972,12 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			if t.client == nil || t.breakerOpen() {
 				return
 			}
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.applyTraceDimensionsToChildSpans, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
+			// Free when unconfigured: an empty list returns the trace unchanged.
+			traceForTarget := schemas.StripTraceAttributes(trace, t.excludedAttributes)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, t.requestHeaders, t.disableContentLogging, t.applyTraceDimensionsToChildSpans, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
+			// Again after conversion: it adds root-span attributes of its own
+			// (session.id, request id, instance attrs, captured headers).
+			stripExcludedFromResourceSpan(resourceSpan, t.excludedAttributes)
 			// The caller passes context.Background(), so this deadline is the only bound
 			// on the export — and the only bound at all on the gRPC path.
 			emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)
@@ -1304,7 +1356,14 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 			if code := schemas.GetIntAttr(span.Attributes, schemas.AttrHTTPResponseStatusCode); code != 0 {
 				statusCode = strconv.Itoa(code)
 			}
-			errorAttrs := append(spanAttrs[:len(spanAttrs):len(spanAttrs)], attribute.String("status_code", statusCode))
+			// error_type mirrors Prometheus: status_code alone cannot attribute fault.
+			errorType := schemas.GetStringAttr(span.Attributes, schemas.AttrBifrostErrorType)
+			if errorType == "" {
+				errorType = string(schemas.ErrorTypeOther)
+			}
+			errorAttrs := append(spanAttrs[:len(spanAttrs):len(spanAttrs)],
+				attribute.String("status_code", statusCode),
+				attribute.String("error_type", errorType))
 			exporter.RecordErrorRequest(ctx, errorAttrs...)
 		} else {
 			exporter.RecordSuccessRequest(ctx, spanAttrs...)
