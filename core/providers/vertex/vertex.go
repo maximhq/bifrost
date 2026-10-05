@@ -41,13 +41,6 @@ type VertexError struct {
 	} `json:"error"`
 }
 
-// vertexTokenSourcePool caches oauth2.TokenSource instances keyed by a hash of
-// the auth credentials. The Google TokenSource internally handles token refresh
-// and expiry, so caching the source avoids re-parsing credentials JSON and
-// re-creating the credentials object on every request.
-// Entries are evicted by removeVertexClient on 401/403 or token-acquisition errors.
-var vertexTokenSourcePool sync.Map
-
 // vertexLocationsPathRe matches /locations/{region} in Vertex API paths for region replacement.
 var vertexLocationsPathRe = regexp.MustCompile(`/locations/[^/]+`)
 
@@ -168,9 +161,9 @@ func getClientKey(credentialIdentity string) string {
 // - API returns authentication/authorization errors (401, 403)
 // - Token acquisition fails (tokenSource.Token() error)
 // This forces the next request to re-create the token source from scratch.
-func removeVertexClient(key schemas.Key) {
+func (provider *VertexProvider) removeVertexClient(key schemas.Key) {
 	clientKey := getClientKey(vertexCredentialIdentity(key))
-	vertexTokenSourcePool.Delete(clientKey)
+	provider.tokenSources.Delete(clientKey)
 }
 
 // VertexProvider implements the Provider interface for Google's Vertex AI API.
@@ -178,9 +171,18 @@ type VertexProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
 	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	authHTTPClient      *http.Client          // net/http client for OAuth token exchange and refresh, routed through proxy_config like the fasthttp clients
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+
+	// tokenSources caches oauth2.TokenSource instances keyed by a hash of the auth
+	// credentials. The Google TokenSource handles token refresh and expiry, so caching
+	// the source avoids re-parsing credentials JSON on every request. It is per provider
+	// because each source is bound to authHTTPClient: a config change rebuilds the
+	// provider, and a source built for the old proxy must not outlive it.
+	// Entries are evicted by removeVertexClient on 401/403 or token-acquisition errors.
+	tokenSources sync.Map
 }
 
 // NewVertexProvider creates a new Vertex provider instance.
@@ -207,6 +209,7 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
+		authHTTPClient:      providerUtils.NewProviderHTTPClient(config.ProxyConfig, config.NetworkConfig, logger),
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -216,26 +219,36 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 
 // getAuthTokenSource returns an authenticated token source for Vertex AI API requests.
-// Token sources are cached in vertexTokenSourcePool keyed by a hash of the credential
+// Token sources are cached in provider.tokenSources keyed by a hash of the credential
 // identity (see vertexCredentialIdentity). The Google oauth2.TokenSource handles token
 // refresh and expiry internally, so caching the source is safe and avoids re-parsing
 // credentials on every request.
 //
 // Auth mode precedence: aws_workload_identity (AWS→GCP Workload Identity Federation),
 // then auth_credentials JSON, then Application Default Credentials.
-func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
+//
+// Token exchange and refresh go through provider.authHTTPClient, carried on the
+// context via oauth2.HTTPClient: the Google token sources keep that context for
+// every refresh, so the proxy applies for the life of the source. Metadata-server
+// credentials (GCE, GKE workload identity) use the metadata package's own client,
+// which is right: link-local metadata traffic must never be proxied.
+func (provider *VertexProvider) getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 	authCredentials := key.VertexKeyConfig.AuthCredentials
 	clientKey := getClientKey(vertexCredentialIdentity(key))
 
 	// Fast path: return cached token source.
-	if cached, ok := vertexTokenSourcePool.Load(clientKey); ok {
+	if cached, ok := provider.tokenSources.Load(clientKey); ok {
 		return cached.(oauth2.TokenSource), nil
 	}
 
 	// Slow path: create a new token source and cache it.
+	authCtx := context.Background()
+	if provider.authHTTPClient != nil {
+		authCtx = context.WithValue(authCtx, oauth2.HTTPClient, provider.authHTTPClient)
+	}
 	var tokenSource oauth2.TokenSource
 	if key.VertexKeyConfig.AWSWorkloadIdentity.IsSet() {
-		ts, err := newAWSFederatedTokenSource(context.Background(), key.VertexKeyConfig.AWSWorkloadIdentity)
+		ts, err := newAWSFederatedTokenSource(authCtx, key.VertexKeyConfig.AWSWorkloadIdentity)
 		if err != nil {
 			return nil, err
 		}
@@ -243,12 +256,12 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 	} else if authCredentials.GetValue() == "" {
 		// GOOGLE_APPLICATION_CREDENTIALS may name a gcloud-generated AWS external_account JSON.
 		// Route it through the SDK-backed federation so IRSA / Pod Identity work under ADC too.
-		if ts, ok, err := awsFederatedTokenSourceFromADCFile(context.Background()); err != nil {
+		if ts, ok, err := awsFederatedTokenSourceFromADCFile(authCtx); err != nil {
 			return nil, err
 		} else if ok {
 			tokenSource = ts
 		} else {
-			creds, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
+			creds, err := google.FindDefaultCredentials(authCtx, cloudPlatformScope)
 			if err != nil {
 				return nil, fmt.Errorf("failed to find default credentials in environment: %w", err)
 			}
@@ -286,13 +299,13 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 
 		if credType == google.ExternalAccount && isAWSExternalAccountJSON(jsonData) {
 			// Google's built-in AWS credential source ignores IRSA / Pod Identity; use the SDK chain.
-			ts, err := newAWSFederatedTokenSourceFromJSON(context.Background(), jsonData)
+			ts, err := newAWSFederatedTokenSourceFromJSON(authCtx, jsonData)
 			if err != nil {
 				return nil, err
 			}
 			tokenSource = ts
 		} else {
-			conf, err := google.CredentialsFromJSONWithType(context.Background(), jsonData, credType, cloudPlatformScope)
+			conf, err := google.CredentialsFromJSONWithType(authCtx, jsonData, credType, cloudPlatformScope)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create credentials from auth credentials JSON: %w", err)
 			}
@@ -302,7 +315,7 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 
 	// Cache the token source. If another goroutine raced and stored first, use
 	// that one — both are equally valid, but sharing maximises token reuse.
-	actual, _ := vertexTokenSourcePool.LoadOrStore(clientKey, tokenSource)
+	actual, _ := provider.tokenSources.LoadOrStore(clientKey, tokenSource)
 	return actual.(oauth2.TokenSource), nil
 }
 
@@ -346,7 +359,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	pageToken := ""
 
 	// Getting oauth2 token
-	tokenSource, err := getAuthTokenSource(key)
+	tokenSource, err := provider.getAuthTokenSource(key)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating auth token source (api key auth not supported for list models)", err)
 	}
@@ -395,7 +408,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 			// Handle error response
 			if resp.StatusCode() != fasthttp.StatusOK {
 				if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-					removeVertexClient(key)
+					provider.removeVertexClient(key)
 				}
 
 				// Non-Google publishers may not be available in all regions;
@@ -526,7 +539,7 @@ func (provider *VertexProvider) fetchGCSObjectEncoded(ctx *schemas.BifrostContex
 	if bucket == "" || objectKey == "" {
 		return "", fmt.Errorf("invalid GCS URI %q: expected gs://bucket/object", providerUtils.RedactURLForError(rawURL))
 	}
-	authHeader, err := gcsGetAuthHeader(key)
+	authHeader, err := provider.gcsGetAuthHeader(key)
 	if err != nil {
 		return "", err
 	}
@@ -853,7 +866,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
 	} else {
 		// Getting oauth2 token
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
@@ -886,7 +899,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -1057,7 +1070,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		}
 
 		// Adding authorization header
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
@@ -1148,7 +1161,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 		// If no auth query, use OAuth2 token
 		if authQuery == "" {
-			tokenSource, err := getAuthTokenSource(key)
+			tokenSource, err := provider.getAuthTokenSource(key)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 			}
@@ -1198,7 +1211,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
 		} else {
 			// Getting oauth2 token
-			tokenSource, err := getAuthTokenSource(key)
+			tokenSource, err := provider.getAuthTokenSource(key)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 			}
@@ -1293,7 +1306,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		// Getting oauth2 token
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
@@ -1325,7 +1338,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			providerUtils.MaterializeStreamErrorBody(ctx, resp)
 			// Remove client from pool for authentication/authorization errors
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-				removeVertexClient(key)
+				provider.removeVertexClient(key)
 			}
 			return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -1452,7 +1465,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			url = fmt.Sprintf("%s?%s", url, authQuery)
 		} else {
 			// Getting oauth2 token
-			tokenSource, err := getAuthTokenSource(key)
+			tokenSource, err := provider.getAuthTokenSource(key)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 			}
@@ -1485,7 +1498,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			providerUtils.MaterializeStreamErrorBody(ctx, resp)
 			// Remove client from pool for authentication/authorization errors
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-				removeVertexClient(key)
+				provider.removeVertexClient(key)
 			}
 			return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -1580,7 +1593,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		}
 
 		// Adding authorization header
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
@@ -1684,7 +1697,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 		// If no auth query, use OAuth2 token
 		if authQuery == "" {
-			tokenSource, err := getAuthTokenSource(key)
+			tokenSource, err := provider.getAuthTokenSource(key)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 			}
@@ -1799,7 +1812,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	if authQuery != "" {
 		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
 	} else {
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
@@ -1833,7 +1846,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -1967,7 +1980,7 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	tokenSource, err := getAuthTokenSource(key)
+	tokenSource, err := provider.getAuthTokenSource(key)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 	}
@@ -1997,7 +2010,7 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 
 		errorMessage := parseDiscoveryEngineErrorMessage(resp.Body())
@@ -2200,7 +2213,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
 	} else {
 		// Getting oauth2 token
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
@@ -2233,7 +2246,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -2409,7 +2422,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
 	} else {
 		// Getting oauth2 token
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
@@ -2441,7 +2454,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -2582,7 +2595,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	if authQuery != "" {
 		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
 	} else {
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
@@ -2606,7 +2619,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -2703,7 +2716,7 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	if authQuery != "" {
 		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
 	} else {
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
@@ -2727,7 +2740,7 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
@@ -2816,7 +2829,7 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 			}
 			req.SetRequestURI(uri)
 		} else {
-			tokenSource, err := getAuthTokenSource(key)
+			tokenSource, err := provider.getAuthTokenSource(key)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 			}
@@ -3047,7 +3060,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		return nil, bodyErr
 	}
 
-	authHeader, authErr := gcsGetAuthHeader(key)
+	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
 	}
@@ -3076,7 +3089,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp, "batch create"), jsonData, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -3191,7 +3204,7 @@ func (provider *VertexProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 		params.Set("pageToken", *request.PageToken)
 	}
 
-	authHeader, authErr := gcsGetAuthHeader(key)
+	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
 		return nil, 0, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
 	}
@@ -3217,7 +3230,7 @@ func (provider *VertexProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, 0, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp, "batch list"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -3290,7 +3303,7 @@ func (provider *VertexProvider) vertexGetBatchJob(ctx *schemas.BifrostContext, k
 		return nil, nil, cfgErr
 	}
 
-	authHeader, authErr := gcsGetAuthHeader(key)
+	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
 		return nil, nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
 	}
@@ -3313,7 +3326,7 @@ func (provider *VertexProvider) vertexGetBatchJob(ctx *schemas.BifrostContext, k
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp, "batch retrieve"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -3352,7 +3365,7 @@ func (provider *VertexProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 		return nil, cfgErr
 	}
 
-	authHeader, authErr := gcsGetAuthHeader(key)
+	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
 	}
@@ -3377,7 +3390,7 @@ func (provider *VertexProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp, "batch cancel"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -3420,7 +3433,7 @@ func (provider *VertexProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 		return nil, cfgErr
 	}
 
-	authHeader, authErr := gcsGetAuthHeader(key)
+	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
 	}
@@ -3444,7 +3457,7 @@ func (provider *VertexProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexJobAPIError(resp, "batch delete"), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -3497,7 +3510,7 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
 	}
 
-	authHeader, authErr := gcsGetAuthHeader(key)
+	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
 	}
@@ -3747,14 +3760,14 @@ func gcsMetadataToFileObject(bucket string, obj gcsObjectMetadata) schemas.FileO
 	}
 }
 
-func gcsGetAuthHeader(key schemas.Key) (string, error) {
-	tokenSrc, err := getAuthTokenSource(key)
+func (provider *VertexProvider) gcsGetAuthHeader(key schemas.Key) (string, error) {
+	tokenSrc, err := provider.getAuthTokenSource(key)
 	if err != nil {
 		return "", fmt.Errorf("failed to get GCS auth token source: %w", err)
 	}
 	tok, err := tokenSrc.Token()
 	if err != nil {
-		removeVertexClient(key)
+		provider.removeVertexClient(key)
 		return "", fmt.Errorf("failed to acquire GCS access token: %w", err)
 	}
 	return "Bearer " + tok.AccessToken, nil
@@ -3799,7 +3812,7 @@ func (provider *VertexProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 		contentType = *request.ContentType
 	}
 
-	authHeader, authErr := gcsGetAuthHeader(key)
+	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
 	}
@@ -3885,7 +3898,7 @@ func (provider *VertexProvider) gcsFileUploadDirect(
 
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "upload"), latency)
 	}
@@ -3959,7 +3972,7 @@ func (provider *VertexProvider) gcsFileUploadResumable(
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "resumable session initiation"), latency)
 	}
@@ -4020,7 +4033,7 @@ func (provider *VertexProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 		}, nil
 	}
 
-	authHeader, authErr := gcsGetAuthHeader(key)
+	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
 	}
@@ -4057,7 +4070,7 @@ func (provider *VertexProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "list"), latency)
 	}
@@ -4116,7 +4129,7 @@ func (provider *VertexProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
 	}
 
-	authHeader, authErr := gcsGetAuthHeader(key)
+	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
 	}
@@ -4140,7 +4153,7 @@ func (provider *VertexProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "retrieve"), latency)
 	}
@@ -4203,7 +4216,7 @@ func (provider *VertexProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
 	}
 
-	authHeader, authErr := gcsGetAuthHeader(key)
+	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
 	}
@@ -4228,7 +4241,7 @@ func (provider *VertexProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 	// 204 = deleted; 404 = already gone — both succeed for an idempotent delete.
 	if resp.StatusCode() != fasthttp.StatusNoContent && resp.StatusCode() != fasthttp.StatusNotFound {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "delete"), latency)
 	}
@@ -4269,7 +4282,7 @@ func (provider *VertexProvider) fileContentByKey(ctx *schemas.BifrostContext, ke
 		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
 	}
 
-	authHeader, authErr := gcsGetAuthHeader(key)
+	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
 	}
@@ -4293,7 +4306,7 @@ func (provider *VertexProvider) fileContentByKey(ctx *schemas.BifrostContext, ke
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.SetErrorLatency(parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download"), latency)
 	}
@@ -4449,7 +4462,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	if authQuery != "" {
 		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
 	} else {
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
@@ -4481,7 +4494,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -4665,14 +4678,14 @@ func (provider *VertexProvider) Passthrough(
 			requestURL += "?" + authQuery
 		}
 	} else {
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
 		token, err := tokenSource.Token()
 		if err != nil {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 			return nil, providerUtils.NewBifrostOperationError("error getting token", err)
 		}
 		fasthttpReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
@@ -4711,7 +4724,7 @@ func (provider *VertexProvider) Passthrough(
 
 	// Remove client from pool for authentication/authorization errors
 	if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-		removeVertexClient(key)
+		provider.removeVertexClient(key)
 	}
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
@@ -4816,15 +4829,15 @@ func (provider *VertexProvider) PassthroughStream(
 			requestURL += "?" + authQuery
 		}
 	} else {
-		tokenSource, err := getAuthTokenSource(key)
+		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 			providerUtils.ReleaseStreamingResponse(ctx, resp)
 			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
 		token, err := tokenSource.Token()
 		if err != nil {
-			removeVertexClient(key)
+			provider.removeVertexClient(key)
 			providerUtils.ReleaseStreamingResponse(ctx, resp)
 			return nil, providerUtils.NewBifrostOperationError("error getting token", err)
 		}
@@ -4879,7 +4892,7 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-		removeVertexClient(key)
+		provider.removeVertexClient(key)
 	}
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
