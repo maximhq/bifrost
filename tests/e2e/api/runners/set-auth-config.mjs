@@ -25,6 +25,11 @@ async function request(method, path, body) {
   if (authHeader) {
     headers.Authorization = authHeader;
   }
+  // OSS setup lock: while dashboard auth is not active, every /api call needs the
+  // setup token. The server ignores it once auth is enabled.
+  if (setupToken) {
+    headers["X-Bifrost-Setup-Token"] = setupToken;
+  }
   const res = await fetch(`${baseURL}${path}`, {
     method,
     headers,
