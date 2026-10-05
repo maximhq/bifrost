@@ -117575,7 +117575,7 @@
             "properties": {
               "code": {
                 "type": "string",
-                "enum": ["upstream_error", "max_iterations", "timeout", "cancelled"]
+                "enum": ["upstream_error", "access_denied", "max_iterations", "timeout", "cancelled"]
               },
               "message": {
                 "type": "string"

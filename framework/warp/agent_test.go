@@ -211,6 +211,51 @@ func TestWarpAgentRunsToolThenAnswers(t *testing.T) {
 	require.Equal(t, 2, events[4].Iterations)
 }
 
+// A model call the deployment's own governance refused is not the provider
+// failing. Filed under upstream_error it read as an outage - "Warp's model could
+// not be reached" - and a signed-in user with no model access was told a
+// credential had been revoked, with nothing saying what to ask for.
+func TestWarpAgentNamesAGovernanceRefusal(t *testing.T) {
+	refused := func(decision string, kind schemas.ErrorType, reason string) *schemas.BifrostError {
+		return &schemas.BifrostError{
+			Type:        &decision,
+			Error:       &schemas.ErrorField{Message: reason},
+			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: kind},
+		}
+	}
+	run := func(err *schemas.BifrostError) Event {
+		events := collectEvents(t, newTestAgent(&scriptedModel{err: err}, &fakeLogReader{}, 8), context.Background())
+		last := events[len(events)-1]
+		require.Equal(t, EventError, last.Type)
+		return last
+	}
+
+	t.Run("no access for the person asking", func(t *testing.T) {
+		last := run(refused("access_not_found", schemas.ErrorTypePolicyAccessDenied, "access not found. The provided credential does not exist or has been revoked."))
+		require.Equal(t, ErrAccessDenied, last.Code)
+		require.Contains(t, last.Message, "no model access")
+		require.Contains(t, last.Message, "access profile")
+		require.Contains(t, last.Message, "access not found", "the deployment's own reason is kept for whoever has to fix it")
+	})
+
+	t.Run("any other policy refusal keeps its own reason", func(t *testing.T) {
+		for _, kind := range []schemas.ErrorType{
+			schemas.ErrorTypePolicyBudgetExceeded, schemas.ErrorTypePolicyRateLimited,
+			schemas.ErrorTypePolicyModelBlocked, schemas.ErrorTypePolicyProviderBlocked,
+		} {
+			last := run(refused("blocked", kind, "budget exceeded for team platform"))
+			require.Equal(t, ErrAccessDenied, last.Code, kind)
+			require.Contains(t, last.Message, "budget exceeded for team platform", kind)
+			require.NotContains(t, last.Message, "access profile", kind)
+		}
+	})
+
+	t.Run("a provider failure is still an upstream error", func(t *testing.T) {
+		last := run(&schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider exploded"}})
+		require.Equal(t, ErrUpstream, last.Code)
+	})
+}
+
 // An error frame is terminal. A client keyed on `done` would otherwise read a
 // failed request as a successful one with a short answer.
 func TestWarpAgentErrorFrameIsTerminal(t *testing.T) {
