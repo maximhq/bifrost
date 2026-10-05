@@ -3580,6 +3580,11 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if !passthroughInferenceRoute(cfg, string(ctx.Method()), path) {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "passthrough requires a supported inference endpoint and method", fasthttp.StatusForbidden))
+		return
+	}
+
 	body := ctx.Request.Body()
 	// Parse body once to get both model and stream flag.
 	contentType := string(ctx.Request.Header.ContentType())

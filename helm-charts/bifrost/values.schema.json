@@ -318,6 +318,65 @@
           "default": "split",
           "description": "Controls how config.json is reconciled with the database on startup. \"split\" (default) preserves existing merge behavior. \"config.json\" makes explicitly-present sections in the file authoritative — database-only rows for those sections are pruned on startup."
         },
+        "proxyConfig": {
+          "type": "object",
+          "description": "Global outbound proxy (the dashboard's proxy settings page) and which components use it. Renders into config.json's top-level proxy_config.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Turn the proxy on"
+            },
+            "type": {
+              "type": "string",
+              "enum": ["http"],
+              "default": "http",
+              "description": "Proxy type. Only http is supported."
+            },
+            "url": {
+              "type": "string",
+              "description": "Proxy URL (supports env.VAR_NAME). Required when enabled."
+            },
+            "username": {
+              "type": "string",
+              "description": "Username for proxy authentication (supports env.VAR_NAME)"
+            },
+            "password": {
+              "type": "string",
+              "description": "Password for proxy authentication (supports env.VAR_NAME)"
+            },
+            "noProxy": {
+              "type": "string",
+              "description": "Comma-separated hosts that bypass the proxy"
+            },
+            "timeout": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Connection timeout in seconds"
+            },
+            "skipTlsVerify": {
+              "type": "boolean",
+              "default": false,
+              "description": "Skip TLS certificate verification for the proxy"
+            },
+            "enableForScim": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enterprise: route SCIM directory sync and identity-provider requests through the proxy"
+            },
+            "enableForInference": {
+              "type": "boolean",
+              "default": false,
+              "description": "Route inference requests through the proxy"
+            },
+            "enableForApi": {
+              "type": "boolean",
+              "default": false,
+              "description": "Route API requests through the proxy"
+            }
+          },
+          "additionalProperties": false
+        },
         "encryptionKey": {
           "type": "string",
           "description": "Encryption key for sensitive data. If not set, encryption is disabled and data is stored in plaintext."
@@ -759,6 +818,49 @@
                   "minimum": 0,
                   "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools. 0 uses the built-in default of 16384.",
                   "default": 0
+                },
+                "codeModeLimits": {
+                  "type": "object",
+                  "description": "Limits on each code mode execution. Omit a field or set 0 for its default. Renders into mcp.tool_manager_config.code_mode_limits.",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxSourceBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum submitted code size in bytes. 0 uses the default of 65536."
+                    },
+                    "maxSteps": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum interpreter computation steps per execution. 0 uses the default of 1000000."
+                    },
+                    "maxMemoryBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Estimated allocation budget per execution in bytes. 0 uses the default of 67108864."
+                    },
+                    "maxLogBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum log output per execution in bytes, including newlines. 0 uses the default of 65536."
+                    },
+                    "maxToolCalls": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum nested MCP tool calls per execution. 0 uses the default of 64."
+                    },
+                    "maxValueBytes": {
+                      "type": "integer",
+                      "anyOf": [{ "const": 0 }, { "minimum": 1024 }],
+                      "description": "Size budget for each tool payload and converted result in bytes. Must be 0 (default of 1048576) or at least 1024."
+                    },
+                    "maxNestingDepth": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000,
+                      "description": "Maximum nesting depth of values crossing the tool boundary. 0 uses the default of 64."
+                    }
+                  }
                 }
               }
             },
@@ -1851,6 +1953,10 @@
                   },
                   "rate_limit_id": {
                     "type": "string"
+                  },
+                  "access_profile": {
+                    "type": "string",
+                    "description": "Enterprise: name of the access profile (declared under accessProfiles) this customer holds, in place of budgets and a rate limit of its own. Under source_of_truth split it applies when new or changed and dashboard changes are kept otherwise; under config.json it is enforced on every startup and an entry without it has its profile removed."
                   }
                 },
                 "required": ["id", "name"]
@@ -1878,6 +1984,10 @@
                   },
                   "business_unit_id": {
                     "type": "string"
+                  },
+                  "access_profile": {
+                    "type": "string",
+                    "description": "Enterprise: name of the access profile (declared under accessProfiles) this team holds, in place of budgets and a rate limit of its own. Under source_of_truth split it applies when new or changed and dashboard changes are kept otherwise; under config.json it is enforced on every startup and an entry without it has its profile removed."
                   },
                   "profile": {
                     "type": "object"
@@ -1918,6 +2028,10 @@
                   "claims": {
                     "type": "object"
                   },
+                  "access_profile": {
+                    "type": "string",
+                    "description": "Enterprise: name of the access profile (declared under accessProfiles) this business unit holds, in place of budgets and a rate limit of its own. Under source_of_truth split it applies when new or changed and dashboard changes are kept otherwise; under config.json it is enforced on every startup and an entry without it has its profile removed."
+                  },
                   "teamIds": {
                     "type": "array",
                     "items": {
@@ -1941,7 +2055,7 @@
                   },
                   "dac": {
                     "type": "string",
-                    "enum": ["own-data", "team-data", "all-data"],
+                    "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"],
                     "default": "all-data"
                   },
                   "entity_dac": {
@@ -1949,7 +2063,7 @@
                     "description": "Per-entity DAC overrides keyed by resource name. Each entry narrows or widens the role's global dac for that one entity; unlisted entities follow dac. Resources accepting an override as of this chart release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers, BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules, GuardrailsConfig, MCPGateway, VirtualMCPs, Projects. Names are not enumerated here so a resource added by a newer Bifrost works without a chart upgrade; an unrecognised name is logged and skipped at startup. Config is authoritative - the role's whole override set is replaced on each sync, and omitting entity_dac clears it.",
                     "additionalProperties": {
                       "type": "string",
-                      "enum": ["own-data", "team-data", "all-data"]
+                      "enum": ["own-data", "team-data", "business-unit-data", "customer-data", "all-data"]
                     }
                   },
                   "access_profile": {
@@ -2107,6 +2221,12 @@
                           "description": "Probability weight for this target (must be > 0, all weights must sum to 1)",
                           "exclusiveMinimum": 0,
                           "maximum": 1
+                        },
+                        "ttft_timeout_ms": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 300000,
+                          "description": "Time-to-first-token deadline in milliseconds for streaming requests routed to this target. A slow attempt is cut off and the next fallback runs; the last attempt never is. Omit to disable."
                         }
                       },
                       "required": ["weight"]
@@ -3014,6 +3134,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
                       "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -3099,6 +3223,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
                       "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -3173,6 +3301,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
@@ -3245,6 +3377,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
@@ -3332,6 +3468,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
@@ -3436,6 +3576,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
                       "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -3515,6 +3659,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
                       "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -8327,6 +8475,35 @@
         "required": ["attribute", "value", "accessProfile"],
         "additionalProperties": false
       }
+    },
+    "scim_attribute_project_mappings": {
+      "type": "array",
+      "description": "Attribute -> project mappings. Every matching rule applies: the user is added to each project it matches. Projects are never auto-created; a rule naming a missing project is dropped. Memberships added this way are removed when the rule stops matching; members added from the dashboard are kept.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "project": {
+            "type": "string",
+            "description": "Name of the project to add the user to on match"
+          }
+        },
+        "required": ["attribute", "value", "project"],
+        "additionalProperties": false
+      }
+    },
+    "scim_bulk_sync_interval": {
+      "type": "string",
+      "pattern": "^([0-9]+d|([0-9]+(\\.[0-9]+)?(h|m|s))+)$",
+      "default": "24h",
+      "description": "How often the directory reconcile lists the IdP's users through its admin API and deprovisions the ones it no longer returns, as whole days or h/m/s pairs (e.g. '12h', '1h30m', '7d'). Must be between 1h and 30d. Defaults to 24h. Inert when SCIM provisioning is enabled or the provider has no directory API access (e.g. Okta without apiToken)."
     },
     "scim_attribute_business_unit_mappings": {
       "type": "array",

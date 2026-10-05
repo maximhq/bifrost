@@ -102,6 +102,7 @@ type ClientConfig struct {
 	MCPAgentDepth                         int                                   `json:"mcp_agent_depth"`                             // The maximum depth for MCP agent mode tool execution
 	MCPMaxInstructionsPerClient           int                                   `json:"mcp_max_instructions_per_client"`             // Byte bound on one server's forwarded instructions; 0 is the default
 	MCPMaxInstructionsTotal               int                                   `json:"mcp_max_instructions_total"`                  // Byte bound on the whole forwarded aggregate; 0 is the default
+	MCPCodeModeLimits                     *schemas.MCPCodeModeLimits            `json:"mcp_code_mode_limits,omitempty"`              // Per-execution code mode limits; nil or zero fields use the defaults
 	MCPToolExecutionTimeout               int                                   `json:"mcp_tool_execution_timeout"`                  // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel               string                                `json:"mcp_code_mode_binding_level"`                 // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                                   `json:"mcp_tool_sync_interval"`                      // Global tool sync interval in minutes (default: 10, 0 = built-in default)
@@ -310,6 +311,16 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	// Only hash when present to avoid legacy config hash churn on upgrade.
+	if c.MCPCodeModeLimits != nil {
+		data, err := sonic.Marshal(c.MCPCodeModeLimits)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("mcpCodeModeLimits:"))
+		hash.Write(data)
+	}
+
+	// Only hash when present to avoid legacy config hash churn on upgrade.
 	if c.WebhookConfig != nil {
 		data, err := sonic.Marshal(c.WebhookConfig)
 		if err != nil {
@@ -506,6 +517,14 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 	}
 	// Only hash a non-default value, so a config written before this field existed keeps
 	// producing the same hash on upgrade.
+	if tm.CodeModeLimits != nil {
+		data, err := sonic.Marshal(tm.CodeModeLimits)
+		if err != nil {
+			return "", err
+		}
+		h.Write([]byte("toolMgrCodeModeLimits:"))
+		h.Write(data)
+	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
@@ -1302,6 +1321,11 @@ func GenerateCustomerHash(c tables.TableCustomer) (string, error) {
 		hash.Write([]byte("budgetID:" + id))
 	}
 
+	// Only when set, so a customer declaring none keeps the hash it had before the field existed.
+	if c.AccessProfile != "" {
+		hash.Write([]byte("accessProfile:" + c.AccessProfile))
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -1374,6 +1398,11 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 			return "", err
 		}
 		hash.Write([]byte("claims:" + string(data)))
+	}
+
+	// Only when set, so a team declaring none keeps the hash it had before the field existed.
+	if t.AccessProfile != "" {
+		hash.Write([]byte("accessProfile:" + t.AccessProfile))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
