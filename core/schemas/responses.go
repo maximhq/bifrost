@@ -260,8 +260,9 @@ type BifrostResponsesResponse struct {
 	Container            *ResponsesResponseContainer         `json:"container,omitempty"`         // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
 	Status               *string                             `json:"status,omitempty"`            // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
-	StopReason           *string                             `json:"stop_reason,omitempty"`  // Not in OpenAI's spec, but sent by other providers
-	StopDetails          *ResponsesStopDetails               `json:"stop_details,omitempty"` // Anthropic refusal detail; null unless stop_reason is "refusal"
+	StopReason           *string                             `json:"stop_reason,omitempty"`   // Not in OpenAI's spec, but sent by other providers
+	StopDetails          *ResponsesStopDetails               `json:"stop_details,omitempty"`  // Anthropic refusal detail; null unless stop_reason is "refusal"
+	StopSequence         *string                             `json:"stop_sequence,omitempty"` // Anthropic: the custom stop sequence that ended generation (StopReason is "stop")
 	Store                *bool                               `json:"store,omitempty"`
 	Temperature          *float64                            `json:"temperature,omitempty"`
 	Text                 *ResponsesTextConfig                `json:"text,omitempty"`
@@ -440,7 +441,7 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 
 	if resp.ServiceTier != nil {
 		switch *resp.ServiceTier {
-		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority, BifrostServiceTierUltrafast:
+		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority, BifrostServiceTierFast, BifrostServiceTierUltrafast:
 			result.ServiceTier = resp.ServiceTier
 		default:
 			result.ServiceTier = new(BifrostServiceTierAuto)
@@ -1629,6 +1630,14 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 
 	m.setToolArguments(aux.Arguments)
 
+	// Gemini-shaped histories can carry a reasoning item's summary under a
+	// "reasoning" wrapper instead of OpenAI's top-level field. Lift it so the text
+	// survives to the provider; a top-level summary always wins.
+	if m.Type != nil && *m.Type == ResponsesMessageTypeReasoning &&
+		(m.ResponsesReasoning == nil || m.ResponsesReasoning.Summary == nil) {
+		m.liftReasoningWrapper(data)
+	}
+
 	// The embedded ResponsesMCPListTools decode of `tools` drops the type
 	// discriminator, so capture the raw array and skip that lossy parse.
 	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
@@ -1644,6 +1653,53 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// liftReasoningWrapper reads a reasoning item's {"reasoning":{"summary":[...],
+// "encrypted_content":"..."}} wrapper into the embedded ResponsesReasoning. Plain
+// string summary entries become summary_text blocks; object entries decode as-is
+// and default their type to summary_text. Fields already set from the top-level
+// shape are left alone. No-op when the wrapper is absent or carries neither field.
+func (m *ResponsesMessage) liftReasoningWrapper(data []byte) {
+	wrapper := gjson.GetBytes(data, "reasoning")
+	if !wrapper.IsObject() {
+		return
+	}
+	summary := wrapper.Get("summary")
+	encrypted := wrapper.Get("encrypted_content")
+	if !summary.IsArray() && encrypted.Type != gjson.String {
+		return
+	}
+	reasoning := m.ResponsesReasoning
+	if reasoning == nil {
+		reasoning = &ResponsesReasoning{}
+	}
+	if summary.IsArray() && reasoning.Summary == nil {
+		entries := summary.Array()
+		reasoning.Summary = make([]ResponsesReasoningSummary, 0, len(entries))
+		for _, entry := range entries {
+			switch {
+			case entry.Type == gjson.String:
+				reasoning.Summary = append(reasoning.Summary, ResponsesReasoningSummary{
+					Type: ResponsesReasoningContentBlockTypeSummaryText,
+					Text: entry.String(),
+				})
+			case entry.IsObject():
+				var block ResponsesReasoningSummary
+				if err := Unmarshal([]byte(entry.Raw), &block); err != nil {
+					continue
+				}
+				if block.Type == "" {
+					block.Type = ResponsesReasoningContentBlockTypeSummaryText
+				}
+				reasoning.Summary = append(reasoning.Summary, block)
+			}
+		}
+	}
+	if encrypted.Type == gjson.String && reasoning.EncryptedContent == nil {
+		reasoning.EncryptedContent = Ptr(encrypted.String())
+	}
+	m.ResponsesReasoning = reasoning
 }
 
 // setToolArguments normalizes a raw tool-call `arguments` value and records it on
@@ -1894,6 +1950,19 @@ type ResponsesMessageContentBlock struct {
 
 	// PromptCacheBreakpoint marks an explicit prompt-cache breakpoint on this block (OpenAI gpt-5.6+).
 	PromptCacheBreakpoint *PromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
+
+	// GuardContent marks this text block for selective guardrail evaluation (Bedrock).
+	GuardContent *GuardContent `json:"guard_content,omitempty"`
+}
+
+// GuardContent scopes a guardrail to the text block it annotates. Bedrock Converse renders
+// the block as a guardContent entry and InvokeModel as an inline
+// <amazon-bedrock-guardrails-guardContent_{suffix}> span; once any block in a request is
+// marked, AWS evaluates only the marked blocks. Qualifiers are the AWS content qualifiers
+// ("grounding_source", "query") and are forwarded verbatim. Providers with no equivalent
+// never read the marker, so the block degrades to plain text on a cross-provider fallback.
+type GuardContent struct {
+	Qualifiers []string `json:"qualifiers,omitempty"`
 }
 
 type ResponsesOutputMessageContentCompaction struct {
@@ -2278,9 +2347,30 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 		output.ResponsesFunctionToolCallOutputBlocks = array
 		return nil
 	}
-	var computerToolCallOutput ResponsesComputerToolCallOutputData
-	if err := Unmarshal(data, &computerToolCallOutput); err == nil {
-		output.ResponsesComputerToolCallOutput = &computerToolCallOutput
+	// Only a computer screenshot decodes into the typed variant (OpenAI always sends
+	// type "computer_screenshot"; tolerate a typeless object that carries a file
+	// reference). Any other object - e.g. a Gemini-shaped function_call_output whose
+	// output is the tool's raw JSON result - is kept as its JSON text, which is what a
+	// string output would have carried and what OpenAI accepts. Decoding such an
+	// object as a screenshot used to put {"type":""} on the wire.
+	objectType := gjson.GetBytes(data, "type")
+	isScreenshot := objectType.String() == "computer_screenshot" ||
+		(!objectType.Exists() && (gjson.GetBytes(data, "image_url").Exists() || gjson.GetBytes(data, "file_id").Exists()))
+	if isScreenshot {
+		var computerToolCallOutput ResponsesComputerToolCallOutputData
+		if err := Unmarshal(data, &computerToolCallOutput); err == nil {
+			output.ResponsesComputerToolCallOutput = &computerToolCallOutput
+			return nil
+		}
+	}
+	var object map[string]interface{}
+	if err := Unmarshal(data, &object); err == nil && object != nil {
+		encoded, err := MarshalSorted(object)
+		if err != nil {
+			return fmt.Errorf("responses tool message output object could not be re-encoded: %w", err)
+		}
+		str := string(encoded)
+		output.ResponsesToolCallOutputStr = &str
 		return nil
 	}
 	return fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")

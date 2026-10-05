@@ -116,6 +116,45 @@ ClientConfig:
         caller can see. This rides on every MCP-bearing request that carries
         tools, so raising it raises per-request tokens. 0 uses the
         built-in default of 16384.
+    mcp_code_mode_limits:
+      type: object
+      description: >
+        Limits applied to each code mode (executeToolCode) execution. Omit the
+        object to keep the current limits; send {} to reset every limit to its
+        default. Any field omitted or set to 0 uses its default. There is no
+        limit on concurrent executions.
+      properties:
+        max_source_bytes:
+          type: integer
+          minimum: 0
+          description: Maximum submitted code size in bytes. 0 uses the default of 65536.
+        max_steps:
+          type: integer
+          minimum: 0
+          description: Maximum interpreter computation steps per execution. 0 uses the default of 1000000.
+        max_memory_bytes:
+          type: integer
+          minimum: 0
+          description: Estimated allocation budget per execution in bytes. 0 uses the default of 67108864.
+        max_log_bytes:
+          type: integer
+          minimum: 0
+          description: Maximum log output per execution in bytes, including newlines. 0 uses the default of 65536.
+        max_tool_calls:
+          type: integer
+          minimum: 0
+          description: Maximum nested MCP tool calls per execution. 0 uses the default of 64.
+        max_value_bytes:
+          type: integer
+          anyOf:
+            - const: 0
+            - minimum: 1024
+          description: Size budget for each tool payload and converted result in bytes. Must be 0 (default of 1048576) or at least 1024.
+        max_nesting_depth:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: Maximum nesting depth of values crossing the tool boundary. 0 uses the default of 64.
     required_headers:
       type: array
       items:
@@ -173,8 +212,11 @@ ClientConfig:
               additionalProperties: false
           description: >
             Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the
-            JWT iss claim. Required for multi-host deployments; single-host can omit it (falls
-            back to the request Host header). Supports env var syntax ("env.MY_VAR").
+            JWT iss claim. Required whenever mcp_server_auth_mode is 'both' or 'oauth'. A
+            config.json that enables one of those modes without it fails validation at startup;
+            a PUT /api/config that does the same is refused with HTTP 400. The issuer is never
+            derived from the request Host header while OAuth is enabled. Supports env var
+            syntax ("env.MY_VAR").
         auth_code_ttl:
           type: integer
           minimum: 1
@@ -186,6 +228,12 @@ ClientConfig:
           minimum: 1
           default: 600
           description: Lifetime of the issued JWT Bearer token in seconds (default 600).
+        allowed_redirect_uris:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: Exact administrator-approved remote callback URIs; remote callbacks are denied unless listed.
         disable_vk_identity:
           type: boolean
           default: false
@@ -251,6 +299,9 @@ ProxyConfig:
       enum: [http, socks5, tcp]
     url:
       type: string
+      description: >-
+        Proxy URL (http or https). Private and loopback hosts are accepted; link-local and
+        unspecified addresses are rejected.
     username:
       type: string
     password:
@@ -327,7 +378,20 @@ UpdateConfigRequest:
                 persisted or returned by GET /api/config. If the operator hasn't
                 configured a setup token, requests that would create the first
                 admin account are rejected until they do. Once an admin account
-                exists, this field is ignored.
+                exists it is also accepted, as an alternative to current_password,
+                when auth_config is changed while dashboard authentication is
+                disabled (see current_password).
+            current_password:
+              type: string
+              description: >-
+                The currently stored admin password. Required (unless a valid
+                setup_token is supplied) when an admin account exists, dashboard
+                authentication is disabled, and this request re-enables it or
+                changes admin_username / admin_password. Such requests reach the
+                API without any credential check, so one of the two proofs must be
+                presented or the request is refused with 403. Ignored when the
+                request is genuinely authenticated or when no admin account exists
+                yet. Never persisted or returned by GET /api/config.
   example:
     auth_config:
       admin_username: admin

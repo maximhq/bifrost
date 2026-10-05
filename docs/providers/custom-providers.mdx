@@ -245,6 +245,7 @@ Available operations:
 - **`transcription`**: Speech-to-text conversion
 - **`transcription_stream`**: Streaming speech-to-text
 - **`rerank`**: Document reranking via `/v1/rerank` (OpenAI-compatible base only)
+- **`decisions`**: Decision requests via `/v1/decisions`. A `typesafe` base serves them natively; other bases emulate them through the Responses API
 
 ### Base Provider Types
 
@@ -256,6 +257,7 @@ Custom providers can be built on these supported providers:
 - `cohere` - Cohere
 - `gemini` - Gemini
 - `replicate` - Replicate
+- `typesafe` - TypeSafe (decisions and model listing only; see [TypeSafe](/providers/supported-providers/typesafe#custom-typesafe-providers))
 
 ### Streaming Termination
 

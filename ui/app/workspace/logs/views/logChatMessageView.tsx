@@ -129,7 +129,7 @@ function ContentBlockView({ block }: { block: ContentBlock; index: number }) {
 	if (block.image_url) {
 		const src = block.image_url.url;
 		if (src) {
-			return <img src={src} alt="Attached image" className="max-w-full rounded border" />;
+			return <img src={src} alt="Attachment" className="max-w-full rounded border" />;
 		}
 	}
 

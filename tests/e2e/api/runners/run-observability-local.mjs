@@ -463,6 +463,14 @@ async function assertOtelReceived() {
 		"gen_ai.response.model",
 		"gen_ai.response.finish_reasons",
 		"stop",
+		// Stable OTel HTTP semconv on the root span (#7438). http.route is the matched
+		// route template, not the raw path.
+		"http.request.method",
+		"http.route",
+		"http.response.status_code",
+		"url.path",
+		"url.scheme",
+		"user_agent.original",
 	]);
 	// The plugin runs with disable_content_logging: true, so the input/output message content
 	// ("hello world") must NOT reach the collector. This asserts the privacy guarantee holds

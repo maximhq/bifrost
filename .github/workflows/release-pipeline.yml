@@ -1640,7 +1640,8 @@ jobs:
   # tests/config.json, executes the api-management newman collection.
   test-api-integrations:
     needs: [check-skip, detect-changes, build-gateway]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
+    # Provider-secret redaction spans core schemas, framework storage, and HTTP responses.
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && (needs.detect-changes.outputs.core-needs-release == 'true' || needs.detect-changes.outputs.framework-needs-release == 'true' || needs.detect-changes.outputs.bifrost-http-needs-release == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1766,6 +1767,8 @@ jobs:
           CI: "1"
           SKIP_GATEWAY_BUILD: "1"
           BIFROST_SETUP_TOKEN: bifrost-e2e-setup-token
+          # Synthetic, non-secret canary for every provider's API redaction tests.
+          BIFROST_SECRET_REDACTION_CANARY: synthetic-secretvar-harness-canary-0123456789
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

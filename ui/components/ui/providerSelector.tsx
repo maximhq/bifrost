@@ -76,6 +76,8 @@ interface ProviderSelectorBaseProps {
 	/** id for the trigger, so a form label and its error message can point at it. */
 	inputId?: string;
 	ariaLabelledBy?: string;
+	/** Accessible name for the trigger when no visible label points at it. */
+	ariaLabel?: string;
 	ariaDescribedBy?: string;
 	ariaInvalid?: boolean;
 	"data-testid"?: string;
@@ -141,6 +143,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 		renderValueLabel,
 		inputId,
 		ariaLabelledBy,
+		ariaLabel,
 		ariaDescribedBy,
 		ariaInvalid,
 	} = props;
@@ -352,6 +355,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 						disabled={disabled}
 						id={inputId}
 						aria-labelledby={ariaLabelledBy}
+						aria-label={ariaLabel}
 						aria-describedby={ariaDescribedBy}
 						aria-invalid={ariaInvalid}
 						data-testid={props["data-testid"] ?? "provider-selector-trigger"}
@@ -386,6 +390,13 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 												e.preventDefault();
 												e.stopPropagation();
 												toggle(value);
+											}}
+											onKeyDown={(e) => {
+												if (e.key === "Enter" || e.key === " ") {
+													e.preventDefault();
+													e.stopPropagation();
+													toggle(value);
+												}
 											}}
 										>
 											<XIcon className="size-3" />

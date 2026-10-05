@@ -207,6 +207,41 @@ export interface BifrostEmbedding {
 	embedding: string | number[] | number[][];
 }
 
+export interface EmbeddingMediaPart {
+	data?: string;
+	url?: string;
+	mime_type?: string;
+	filename?: string;
+}
+
+export interface EmbeddingContentPart {
+	type: "text" | "image" | "audio" | "file" | "video" | "tokens";
+	text?: string;
+	image?: EmbeddingMediaPart;
+	audio?: EmbeddingMediaPart;
+	file?: EmbeddingMediaPart;
+	video?: EmbeddingMediaPart;
+	video_config?: {
+		start_offset_sec?: number;
+		end_offset_sec?: number;
+		interval_sec?: number;
+	};
+	tokens?: number[];
+}
+
+export type EmbeddingContent = EmbeddingContentPart[];
+
+export interface EmbeddingInputItem {
+	content: EmbeddingContent;
+	params?: {
+		encoding_format?: string;
+		dimensions?: number;
+		task_type?: string;
+		title?: string;
+		auto_truncate?: boolean;
+	};
+}
+
 export interface RerankDocument {
 	text: string;
 	id?: string;
@@ -709,6 +744,8 @@ export interface LogEntry {
 	content_summary?: string;
 	output_message?: ChatMessage;
 	responses_output?: ResponsesMessage[];
+	// Each entry is either a bare EmbeddingContent or an item carrying its own params.
+	embedding_input?: (EmbeddingContent | EmbeddingInputItem)[];
 	embedding_output?: BifrostEmbedding[];
 	rerank_output?: RerankResult[];
 	ocr_input?: OCRDocument;
@@ -745,7 +782,7 @@ export interface LogEntry {
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
 	cost_breakdown?: CostBreakdown; // Per-category split (input/output/additional); present whenever cost is
 	// Served billing tier, denormalized onto the log row so cost recomputation can reprice
-	// at the rates the request was actually served at. OpenAI: "priority" / "flex" / "ultrafast" / "default".
+	// at the rates the request was actually served at. OpenAI: "priority" / "fast" / "flex" / "ultrafast" / "default".
 	service_tier?: string;
 	status: string; // "success", "error", "processing", or "cancelled"
 	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.

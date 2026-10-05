@@ -1393,3 +1393,56 @@ func Test_createBedrockInvokeRouteConfig_MarksAnthropicInvokeIngress(t *testing.
 		})
 	}
 }
+
+// Test_bedrockPreCallback_ReadsInvokeGuardrailHeaders pins the InvokeModel ingress half of
+// #7696's follow-up: the X-Amzn-Bedrock-Guardrail* request headers, the AWS-native way to
+// name a guardrail on InvokeModel, reach the canonical guardrailConfig extra param.
+func Test_bedrockPreCallback_ReadsInvokeGuardrailHeaders(t *testing.T) {
+	body := `{"anthropic_version":"bedrock-2023-05-31","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`
+	for _, tc := range []struct {
+		name  string
+		route RouteConfig
+	}{
+		{name: "invoke", route: createBedrockInvokeRouteConfig("/bedrock", &mockHandlerStore{})},
+		{name: "invoke-with-response-stream", route: createBedrockInvokeWithResponseStreamRouteConfig("/bedrock", &mockHandlerStore{})},
+	} {
+		t.Run(tc.name+"/headers present", func(t *testing.T) {
+			httpCtx := &fasthttp.RequestCtx{}
+			httpCtx.SetUserValue("modelId", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+			httpCtx.Request.Header.Set("X-Amzn-Bedrock-GuardrailIdentifier", "gr-header")
+			httpCtx.Request.Header.Set("X-Amzn-Bedrock-GuardrailVersion", "3")
+			httpCtx.Request.Header.Set("X-Amzn-Bedrock-Trace", "enabled")
+
+			req := &bedrock.BedrockInvokeRequest{}
+			require.NoError(t, sonic.Unmarshal([]byte(body), req))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ResponsesRequest)
+			require.NoError(t, tc.route.PreCallback(httpCtx, ctx, req))
+
+			bifrostReq, err := tc.route.RequestConverter(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostReq.ResponsesRequest)
+			require.NotNil(t, bifrostReq.ResponsesRequest.Params)
+			config, ok := bifrostReq.ResponsesRequest.Params.ExtraParams["guardrailConfig"].(map[string]interface{})
+			require.True(t, ok, "guardrail headers must reach the canonical guardrailConfig extra param: %v", bifrostReq.ResponsesRequest.Params.ExtraParams)
+			assert.Equal(t, "gr-header", config["guardrailIdentifier"])
+			assert.Equal(t, "3", config["guardrailVersion"])
+			assert.Equal(t, "enabled", config["trace"])
+		})
+		t.Run(tc.name+"/headers absent", func(t *testing.T) {
+			httpCtx := &fasthttp.RequestCtx{}
+			httpCtx.SetUserValue("modelId", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+			req := &bedrock.BedrockInvokeRequest{}
+			require.NoError(t, sonic.Unmarshal([]byte(body), req))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ResponsesRequest)
+			require.NoError(t, tc.route.PreCallback(httpCtx, ctx, req))
+			bifrostReq, err := tc.route.RequestConverter(ctx, req)
+			require.NoError(t, err)
+			if bifrostReq.ResponsesRequest.Params != nil {
+				_, has := bifrostReq.ResponsesRequest.Params.ExtraParams["guardrailConfig"]
+				assert.False(t, has, "no guardrail must be invented without headers")
+			}
+		})
+	}
+}

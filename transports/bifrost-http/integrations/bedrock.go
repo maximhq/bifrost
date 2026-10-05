@@ -219,9 +219,11 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 			requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
 			switch requestType {
 			case schemas.EmbeddingRequest:
-				return &schemas.BifrostRequest{
-					EmbeddingRequest: invokeReq.ToBifrostEmbeddingRequest(ctx),
-				}, nil
+				embReq, err := invokeReq.ToBifrostEmbeddingRequest(ctx)
+				if err != nil {
+					return nil, err
+				}
+				return &schemas.BifrostRequest{EmbeddingRequest: embReq}, nil
 
 			case schemas.ImageGenerationRequest:
 				return &schemas.BifrostRequest{
@@ -1216,6 +1218,13 @@ func bedrockPreCallback(_ lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifro
 			}
 		case *bedrock.BedrockInvokeRequest:
 			r.ModelID = fullModelID
+			// InvokeModel names its guardrail through request headers; Converse has no
+			// header form, so only this request type reads them.
+			r.ApplyGuardrailHeaders(
+				string(ctx.Request.Header.Peek(bedrock.GuardrailIdentifierHeader)),
+				string(ctx.Request.Header.Peek(bedrock.GuardrailVersionHeader)),
+				string(ctx.Request.Header.Peek(bedrock.GuardrailTraceHeader)),
+			)
 		default:
 			return errors.New("invalid request type for bedrock model extraction")
 		}

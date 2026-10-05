@@ -89,3 +89,76 @@ func TestChatParametersReasoningUnion(t *testing.T) {
 		}
 	})
 }
+
+// Azure OpenAI decorates a chat completion with a top-level prompt_filter_results
+// array and a per-choice content_filter_results object. Clients read them to tell
+// "filtered" from "empty", so a response must round-trip them untouched.
+func TestChatResponsePreservesAzureContentFilterAnnotations(t *testing.T) {
+	const upstream = `{
+		"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"gpt-4o",
+		"prompt_filter_results":[{"prompt_index":0,"content_filter_results":{"hate":{"filtered":false,"severity":"safe"}}}],
+		"choices":[{"index":0,"finish_reason":"stop",
+			"message":{"role":"assistant","content":"hello"},
+			"content_filter_results":{"violence":{"filtered":false,"severity":"safe"}}}],
+		"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+
+	var resp BifrostChatResponse
+	if err := Unmarshal([]byte(upstream), &resp); err != nil {
+		t.Fatalf("decode azure response: %v", err)
+	}
+	out, err := json.Marshal(&resp)
+	if err != nil {
+		t.Fatalf("encode response: %v", err)
+	}
+
+	var got struct {
+		PromptFilterResults []struct {
+			ContentFilterResults map[string]struct {
+				Severity string `json:"severity"`
+			} `json:"content_filter_results"`
+		} `json:"prompt_filter_results"`
+		Choices []struct {
+			ContentFilterResults map[string]struct {
+				Severity string `json:"severity"`
+			} `json:"content_filter_results"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("re-decode %s: %v", out, err)
+	}
+	if len(got.PromptFilterResults) != 1 || got.PromptFilterResults[0].ContentFilterResults["hate"].Severity != "safe" {
+		t.Fatalf("prompt_filter_results was dropped: %s", out)
+	}
+	if len(got.Choices) != 1 || got.Choices[0].ContentFilterResults["violence"].Severity != "safe" {
+		t.Fatalf("choice content_filter_results was dropped: %s", out)
+	}
+
+	t.Run("responses without annotations stay unchanged", func(t *testing.T) {
+		var plain BifrostChatResponse
+		if err := Unmarshal([]byte(`{"id":"c","object":"chat.completion","created":1,"model":"gpt-4o","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]}`), &plain); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		enc, err := json.Marshal(&plain)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		if strings.Contains(string(enc), "filter_results") {
+			t.Fatalf("annotation keys leaked into a response that had none: %s", enc)
+		}
+	})
+}
+
+// reasoning.mode ("standard" | "pro") is an OpenAI Responses-only knob that chat
+// callers send inside the reasoning object, next to effort.
+func TestChatParametersReasoningMode(t *testing.T) {
+	var cp ChatParameters
+	if err := Unmarshal([]byte(`{"reasoning":{"effort":"high","mode":"pro"}}`), &cp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cp.Reasoning == nil || cp.Reasoning.Mode == nil || *cp.Reasoning.Mode != "pro" {
+		t.Fatalf("reasoning.mode should decode, got %+v", cp.Reasoning)
+	}
+	if cp.Reasoning.Effort == nil || *cp.Reasoning.Effort != "high" {
+		t.Fatalf("reasoning.effort should decode alongside mode, got %+v", cp.Reasoning)
+	}
+}

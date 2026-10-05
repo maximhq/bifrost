@@ -54,7 +54,11 @@ function UsageLine({ current, max, format }: { current: number; max: number; for
 					{pct}%
 				</span>
 			</div>
-			<Progress value={Math.min(pct, 100)} className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", usageBarClass(pct, exhausted))} />
+			<Progress
+				aria-label="Usage"
+				value={Math.min(pct, 100)}
+				className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", usageBarClass(pct, exhausted))}
+			/>
 		</div>
 	);
 }

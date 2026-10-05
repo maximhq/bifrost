@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash"
-	"maps"
 	"math"
 	"sort"
 	"strconv"
@@ -77,6 +76,9 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
+	// Input-only presence information; never persisted or included in responses/hashes.
+	inferenceAuthProvided bool
+
 	DropExcessRequests                    bool                                  `json:"drop_excess_requests"`                       // Drop excess requests if the provider queue is full
 	InitialPoolSize                       int                                   `json:"initial_pool_size"`                          // The initial pool size for the bifrost client
 	PrometheusLabels                      []string                              `json:"prometheus_labels"`                          // The labels to be used for prometheus metrics
@@ -100,6 +102,7 @@ type ClientConfig struct {
 	MCPAgentDepth                         int                                   `json:"mcp_agent_depth"`                             // The maximum depth for MCP agent mode tool execution
 	MCPMaxInstructionsPerClient           int                                   `json:"mcp_max_instructions_per_client"`             // Byte bound on one server's forwarded instructions; 0 is the default
 	MCPMaxInstructionsTotal               int                                   `json:"mcp_max_instructions_total"`                  // Byte bound on the whole forwarded aggregate; 0 is the default
+	MCPCodeModeLimits                     *schemas.MCPCodeModeLimits            `json:"mcp_code_mode_limits,omitempty"`              // Per-execution code mode limits; nil or zero fields use the defaults
 	MCPToolExecutionTimeout               int                                   `json:"mcp_tool_execution_timeout"`                  // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel               string                                `json:"mcp_code_mode_binding_level"`                 // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                                   `json:"mcp_tool_sync_interval"`                      // Global tool sync interval in minutes (default: 10, 0 = built-in default)
@@ -141,12 +144,23 @@ func (c *ClientConfig) UnmarshalJSON(data []byte) error {
 			AzureDeepseek:          true,
 		},
 	}
-	if err := sonic.Unmarshal(data, &alias); err != nil {
+	input := struct {
+		*ClientConfigAlias
+		EnforceAuthOnInference *bool `json:"enforce_auth_on_inference"`
+	}{ClientConfigAlias: &alias}
+	if err := sonic.Unmarshal(data, &input); err != nil {
 		return err
 	}
 	*c = ClientConfig(alias)
+	c.inferenceAuthProvided = input.EnforceAuthOnInference != nil
+	if input.EnforceAuthOnInference != nil {
+		c.EnforceAuthOnInference = *input.EnforceAuthOnInference
+	}
 	return nil
 }
+
+// HasInferenceAuthSetting distinguishes an explicit JSON opt-out from omission.
+func (c *ClientConfig) HasInferenceAuthSetting() bool { return c.inferenceAuthProvided }
 
 // GenerateClientConfigHash generates a SHA256 hash of the client configuration.
 // This is used to detect changes between config.json and database config.
@@ -294,6 +308,16 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.DumpErrorsInConsoleLogs {
 		hash.Write([]byte("dumpErrorsInConsoleLogs:true"))
+	}
+
+	// Only hash when present to avoid legacy config hash churn on upgrade.
+	if c.MCPCodeModeLimits != nil {
+		data, err := sonic.Marshal(c.MCPCodeModeLimits)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("mcpCodeModeLimits:"))
+		hash.Write(data)
 	}
 
 	// Only hash when present to avoid legacy config hash churn on upgrade.
@@ -493,6 +517,14 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 	}
 	// Only hash a non-default value, so a config written before this field existed keeps
 	// producing the same hash on upgrade.
+	if tm.CodeModeLimits != nil {
+		data, err := sonic.Marshal(tm.CodeModeLimits)
+		if err != nil {
+			return "", err
+		}
+		h.Write([]byte("toolMgrCodeModeLimits:"))
+		h.Write(data)
+	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
@@ -572,7 +604,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].Enabled = &enabled
 		}
 		if key.Aliases != nil {
-			redactedConfig.Keys[i].Aliases = maps.Clone(key.Aliases)
+			redactedConfig.Keys[i].Aliases = make(schemas.KeyAliases, len(key.Aliases))
+			for name, alias := range key.Aliases {
+				redactedConfig.Keys[i].Aliases[name] = alias.Redacted()
+			}
 		}
 		redactedConfig.Keys[i].Value = *key.Value.Redacted()
 		// Add back use for batch api
@@ -627,6 +662,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
 			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
 			vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
+			vertexConfig.AWSWorkloadIdentity = key.VertexKeyConfig.AWSWorkloadIdentity.Redacted()
 			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
 		}
 
@@ -657,18 +693,15 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.BatchRoleARN != nil {
 				bedrockConfig.BatchRoleARN = key.BedrockKeyConfig.BatchRoleARN.Redacted()
 			}
-			// Mantle project ID is an identifier, not a credential — surface it in plaintext.
+			// Preserve literal identifiers, but mask resolved secret references.
 			if key.BedrockKeyConfig.ProjectID != nil {
-				bedrockConfig.ProjectID = key.BedrockKeyConfig.ProjectID
+				bedrockConfig.ProjectID = key.BedrockKeyConfig.ProjectID.RedactedIfSecret()
 			}
 			// Add back s3 config
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
 			}
-			// VPC endpoint hosts are network addresses, not credentials — surface them in plaintext.
-			if key.BedrockKeyConfig.Endpoints != nil {
-				bedrockConfig.Endpoints = key.BedrockKeyConfig.Endpoints
-			}
+			bedrockConfig.Endpoints = key.BedrockKeyConfig.Endpoints.Redacted()
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
 		}
 
@@ -693,14 +726,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockMantleKeyConfig.RoleSessionName != nil {
 				mantleConfig.RoleSessionName = key.BedrockMantleKeyConfig.RoleSessionName.Redacted()
 			}
-			// Project ID is an identifier, not a credential — surface it in plaintext.
+			// Preserve literal identifiers, but mask resolved secret references.
 			if key.BedrockMantleKeyConfig.ProjectID != nil {
-				mantleConfig.ProjectID = key.BedrockMantleKeyConfig.ProjectID
+				mantleConfig.ProjectID = key.BedrockMantleKeyConfig.ProjectID.RedactedIfSecret()
 			}
-			// VPC endpoint hosts are network addresses, not credentials — surface them in plaintext.
-			if key.BedrockMantleKeyConfig.Endpoints != nil {
-				mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints
-			}
+			mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints.Redacted()
 			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
 		}
 

@@ -602,7 +602,7 @@
               "properties": {
                 "issuerUrl": {
                   "type": "string",
-                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required for multi-host deployments. Supports env var syntax: \"env.MY_VAR\"."
+                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required when mcpServerAuthMode is 'both' or 'oauth': the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
                 },
                 "authCodeTtl": {
                   "type": "integer",
@@ -759,6 +759,49 @@
                   "minimum": 0,
                   "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools. 0 uses the built-in default of 16384.",
                   "default": 0
+                },
+                "codeModeLimits": {
+                  "type": "object",
+                  "description": "Limits on each code mode execution. Omit a field or set 0 for its default. Renders into mcp.tool_manager_config.code_mode_limits.",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxSourceBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum submitted code size in bytes. 0 uses the default of 65536."
+                    },
+                    "maxSteps": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum interpreter computation steps per execution. 0 uses the default of 1000000."
+                    },
+                    "maxMemoryBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Estimated allocation budget per execution in bytes. 0 uses the default of 67108864."
+                    },
+                    "maxLogBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum log output per execution in bytes, including newlines. 0 uses the default of 65536."
+                    },
+                    "maxToolCalls": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum nested MCP tool calls per execution. 0 uses the default of 64."
+                    },
+                    "maxValueBytes": {
+                      "type": "integer",
+                      "anyOf": [{ "const": 0 }, { "minimum": 1024 }],
+                      "description": "Size budget for each tool payload and converted result in bytes. Must be 0 (default of 1048576) or at least 1024."
+                    },
+                    "maxNestingDepth": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000,
+                      "description": "Maximum nesting depth of values crossing the tool boundary. 0 uses the default of 64."
+                    }
+                  }
                 }
               }
             },
@@ -3014,6 +3057,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
                       "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -3099,6 +3146,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
                       "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -3173,6 +3224,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
@@ -3245,6 +3300,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
@@ -3332,6 +3391,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
@@ -3436,6 +3499,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
                       "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -3515,6 +3582,10 @@
                       "attributeAccessProfileMappings": {
                         "$ref": "#/$defs/scim_attribute_access_profile_mappings"
                       },
+                      "attributeProjectMappings": {
+                        "$ref": "#/$defs/scim_attribute_project_mappings"
+                      },
+                      "bulkSyncInterval": { "$ref": "#/$defs/scim_bulk_sync_interval" },
                       "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
                       "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
                       "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -6380,10 +6451,50 @@
               "type": "boolean",
               "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
               "default": false
+            },
+            "aws_workload_identity": {
+              "type": "object",
+              "description": "GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity, ECS task role, EC2 instance profile, AWS_* env vars). Takes precedence over auth_credentials; the two must not be combined.",
+              "properties": {
+                "audience": {
+                  "type": "string",
+                  "description": "Workload Identity Pool provider resource name, e.g. //iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID (can use env. prefix)"
+                },
+                "service_account_email": {
+                  "type": "string",
+                  "description": "Service account to impersonate after federation. Omit to use the federated principal directly (can use env. prefix)"
+                },
+                "token_lifetime_seconds": {
+                  "type": "integer",
+                  "minimum": 600,
+                  "maximum": 43200,
+                  "description": "Lifetime of the impersonated service-account token in seconds. Only used with service_account_email. Default 3600. Lifetimes above 3600 require the target service account to be allowed by the organization policy constraint constraints/iam.allowServiceAccountCredentialLifetimeExtension; otherwise token generation fails."
+                },
+                "aws_region": {
+                  "type": "string",
+                  "description": "AWS region used to sign the STS GetCallerIdentity request. Defaults to AWS_REGION / AWS_DEFAULT_REGION, then instance metadata (can use env. prefix)"
+                },
+                "aws_role_arn": {
+                  "type": "string",
+                  "description": "Optional IAM role to assume with the workload's credentials before the GCP exchange (can use env. prefix)"
+                }
+              },
+              "required": ["audience"],
+              "additionalProperties": false
             }
           },
           "required": ["project_id", "region"],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "if": {
+            "required": ["aws_workload_identity"]
+          },
+          "then": {
+            "properties": {
+              "auth_credentials": {
+                "maxLength": 0
+              }
+            }
+          }
         },
         "bedrock_key_config": {
           "type": "object",
@@ -7626,9 +7737,49 @@
                     "type": "boolean",
                     "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
                     "default": false
+                  },
+                  "aws_workload_identity": {
+                    "type": "object",
+                    "description": "GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity, ECS task role, EC2 instance profile, AWS_* env vars). Takes precedence over auth_credentials; the two must not be combined.",
+                    "properties": {
+                      "audience": {
+                        "type": "string",
+                        "description": "Workload Identity Pool provider resource name, e.g. //iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID (can use env. prefix)"
+                      },
+                      "service_account_email": {
+                        "type": "string",
+                        "description": "Service account to impersonate after federation. Omit to use the federated principal directly (can use env. prefix)"
+                      },
+                      "token_lifetime_seconds": {
+                        "type": "integer",
+                        "minimum": 600,
+                        "maximum": 43200,
+                        "description": "Lifetime of the impersonated service-account token in seconds. Only used with service_account_email. Default 3600. Lifetimes above 3600 require the target service account to be allowed by the organization policy constraint constraints/iam.allowServiceAccountCredentialLifetimeExtension; otherwise token generation fails."
+                      },
+                      "aws_region": {
+                        "type": "string",
+                        "description": "AWS region used to sign the STS GetCallerIdentity request. Defaults to AWS_REGION / AWS_DEFAULT_REGION, then instance metadata (can use env. prefix)"
+                      },
+                      "aws_role_arn": {
+                        "type": "string",
+                        "description": "Optional IAM role to assume with the workload's credentials before the GCP exchange (can use env. prefix)"
+                      }
+                    },
+                    "required": ["audience"],
+                    "additionalProperties": false
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "if": {
+                  "required": ["aws_workload_identity"]
+                },
+                "then": {
+                  "properties": {
+                    "auth_credentials": {
+                      "maxLength": 0
+                    }
+                  }
+                }
               },
               "bedrock_key_config": {
                 "type": "object",
@@ -8247,6 +8398,35 @@
         "required": ["attribute", "value", "accessProfile"],
         "additionalProperties": false
       }
+    },
+    "scim_attribute_project_mappings": {
+      "type": "array",
+      "description": "Attribute -> project mappings. Every matching rule applies: the user is added to each project it matches. Projects are never auto-created; a rule naming a missing project is dropped. Memberships added this way are removed when the rule stops matching; members added from the dashboard are kept.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "project": {
+            "type": "string",
+            "description": "Name of the project to add the user to on match"
+          }
+        },
+        "required": ["attribute", "value", "project"],
+        "additionalProperties": false
+      }
+    },
+    "scim_bulk_sync_interval": {
+      "type": "string",
+      "pattern": "^([0-9]+d|([0-9]+(\\.[0-9]+)?(h|m|s))+)$",
+      "default": "24h",
+      "description": "How often the directory reconcile lists the IdP's users through its admin API and deprovisions the ones it no longer returns, as whole days or h/m/s pairs (e.g. '12h', '1h30m', '7d'). Must be between 1h and 30d. Defaults to 24h. Inert when SCIM provisioning is enabled or the provider has no directory API access (e.g. Okta without apiToken)."
     },
     "scim_attribute_business_unit_mappings": {
       "type": "array",

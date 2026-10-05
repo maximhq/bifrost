@@ -7,7 +7,7 @@ import { SecretVar } from "./schemas";
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export const BaseProviderNames = ["openai", "anthropic", "cohere", "gemini", "bedrock", "replicate", "fireworks"] as const;
+export const BaseProviderNames = ["openai", "anthropic", "cohere", "gemini", "bedrock", "replicate", "fireworks", "typesafe"] as const;
 
 export type BaseProvider = (typeof BaseProviderNames)[number];
 
@@ -96,6 +96,16 @@ export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	scopes: [],
 } as const satisfies Required<AzureKeyConfig>;
 
+// VertexAWSWorkloadIdentityConfig matching Go's schemas.VertexAWSWorkloadIdentityConfig:
+// GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity, ...).
+export interface VertexAWSWorkloadIdentityConfig {
+	audience: SecretVar;
+	service_account_email?: SecretVar;
+	token_lifetime_seconds?: number;
+	aws_region?: SecretVar;
+	aws_role_arn?: SecretVar;
+}
+
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
 export interface VertexKeyConfig {
 	project_id: SecretVar;
@@ -103,15 +113,27 @@ export interface VertexKeyConfig {
 	region: SecretVar;
 	auth_credentials?: SecretVar;
 	force_single_region?: boolean;
+	aws_workload_identity?: VertexAWSWorkloadIdentityConfig;
 }
 
+// Seed for the "Workload Identity (AWS)" tab. The lifetime is left unset so the server default
+// (3600s) applies unless the user types one.
+export const DefaultVertexAWSWorkloadIdentityConfig: VertexAWSWorkloadIdentityConfig = {
+	audience: { value: "", ref: "" },
+	service_account_email: { value: "", ref: "" },
+	aws_region: { value: "", ref: "" },
+	aws_role_arn: { value: "", ref: "" },
+} as const satisfies VertexAWSWorkloadIdentityConfig;
+
+// aws_workload_identity is deliberately absent here: an empty block would otherwise be sent to
+// the API on every save. The tab seeds it from DefaultVertexAWSWorkloadIdentityConfig on demand.
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	project_id: { value: "", ref: "" },
 	project_number: { value: "", ref: "" },
 	region: { value: "", ref: "" },
 	auth_credentials: { value: "", ref: "" },
 	force_single_region: false,
-} as const satisfies Required<VertexKeyConfig>;
+} as const satisfies Required<Omit<VertexKeyConfig, "aws_workload_identity">>;
 
 export interface S3BucketConfig {
 	bucket_name: string;
@@ -360,6 +382,7 @@ export type RequestType =
 	| "responses_input_items"
 	| "embedding"
 	| "rerank"
+	| "decisions"
 	| "speech"
 	| "speech_stream"
 	| "transcription"
@@ -431,6 +454,7 @@ export interface AllowedRequests {
 	list_models: boolean;
 	model_retrieve?: boolean;
 	rerank: boolean;
+	decisions?: boolean;
 	video_generation: boolean;
 	video_edit: boolean;
 	video_retrieve: boolean;
@@ -582,10 +606,15 @@ export interface AuthConfig {
 	admin_username: SecretVar;
 	admin_password: SecretVar;
 	is_enabled: boolean;
-	/** Write-only: required only when this PUT request creates the very first admin account
-	 *  (no admin account exists yet). Provided by the operator via setup_token in config.json
-	 *  or the BIFROST_SETUP_TOKEN env var. Never persisted or returned by GET /api/config. */
+	/** Write-only: the operator-configured setup token (setup_token in config.json or the
+	 *  BIFROST_SETUP_TOKEN env var). Required when this PUT request creates the very first
+	 *  admin account, and also accepted instead of current_password to confirm a change made
+	 *  while dashboard auth is disabled. Never persisted or returned by GET /api/config. */
 	setup_token?: string;
+	/** Write-only: the stored admin password. Required (unless setup_token is sent) to re-enable
+	 *  dashboard auth or change the admin credentials while auth is disabled, because that request
+	 *  reaches the server without any credential check. Never persisted or returned. */
+	current_password?: string;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)
@@ -673,6 +702,17 @@ export interface CompatConfig {
 	azure_deepseek: boolean;
 }
 
+// Per-execution code mode limits; an omitted or 0 field uses the server default.
+export interface MCPCodeModeLimits {
+	max_source_bytes?: number;
+	max_steps?: number;
+	max_memory_bytes?: number;
+	max_log_bytes?: number;
+	max_tool_calls?: number;
+	max_value_bytes?: number;
+	max_nesting_depth?: number;
+}
+
 // Core Bifrost configuration types
 // How far an upstream MCP server's initialize `instructions` travel: dropped, forwarded on
 // the /mcp gateway handshake, or additionally injected into LLM requests.
@@ -706,6 +746,7 @@ export interface CoreConfig {
 	mcp_disable_auto_tool_inject: boolean;
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;
+	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
 	async_job_result_ttl: number;
 	required_headers: string[];
@@ -725,6 +766,7 @@ export interface CoreConfig {
 		issuer_url?: SecretVar;
 		auth_code_ttl?: number;
 		access_token_ttl?: number;
+		allowed_redirect_uris?: string[];
 		disable_vk_identity?: boolean;
 	};
 }

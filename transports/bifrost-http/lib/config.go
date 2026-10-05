@@ -24,6 +24,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -593,6 +594,9 @@ type Config struct {
 	GovernanceConfig *configstore.GovernanceConfig
 	FrameworkConfig  *framework.FrameworkConfig
 	ProxyConfig      *configstoreTables.GlobalProxyConfig
+	// HTTPClientFactory hands out outbound clients that honour ProxyConfig per purpose
+	// and follow its changes live (see network.HTTPClientFactory).
+	HTTPClientFactory *network.HTTPClientFactory
 
 	// SetupToken is the resolved operator-provisioned bootstrap secret (see
 	// ConfigData.SetupToken / resolveSetupToken). Empty when the operator hasn't
@@ -1007,7 +1011,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		return nil, err
 	}
 	// 4. Client config (store → file → defaults)
-	loadClientConfig(ctx, config, &configData)
+	if err := loadClientConfig(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	// Reject an out-of-range client config (e.g. auth_code_ttl above the cap)
 	// loudly at startup instead of silently correcting it, so in-memory, core,
 	// and DB state cannot diverge.
@@ -1015,6 +1021,14 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		return nil, err
 	}
 	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
+	// 4a. Global proxy (store only). Loaded before providers so the first
+	// GetConfigForProvider already sees it for providers that inherit it.
+	loadGlobalProxyConfig(ctx, config)
+	// Outbound clients for non-inference traffic (webhooks, skills, plugin downloads,
+	// MCP, OAuth, catalog sync, telemetry), built now so everything constructed below
+	// can take it. Registered as the process default for call sites without a handle.
+	config.HTTPClientFactory = network.NewHTTPClientFactory(config.ProxyConfig.ToNetwork(), logger)
+	network.SetDefaultHTTPClientFactory(config.HTTPClientFactory)
 	// 5. Providers (store → file → auto-detect)
 	if err := loadProviders(ctx, config, &configData); err != nil {
 		return nil, err
@@ -1026,7 +1040,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 8. Governance config
 	loadGovernanceConfig(ctx, config, &configData)
 	// 9. Auth config
-	loadAuthConfig(ctx, config, &configData)
+	if err := loadAuthConfig(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	// 10. Plugins
 	loadPlugins(ctx, config, &configData)
 	// 11. Skills registry (after plugins, before framework)
@@ -1289,6 +1305,21 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	} else if cd > configstore.MaxVKRotationCooldown {
 		return fmt.Errorf("vk_rotation_cooldown %s exceeds the maximum of %s (30 days)", cd, configstore.MaxVKRotationCooldown)
 	}
+	// When OAuth discovery is enabled, every issuer reference (the discovery
+	// documents' issuer/token_endpoint/jwks_uri, the authorize redirect, JWT
+	// iss/aud) must come from a fixed, operator-set value rather than the
+	// per-request Host header, which is reachable pre-auth via the always-public
+	// /.well-known/ routes. Same fail-fast-at-load philosophy as the auth_code_ttl
+	// check above: a config.json or pre-existing DB row that predates this
+	// requirement must not silently run with a Host-derived issuer.
+	if cc.IsMCPOAuthDiscoveryEnabled() {
+		oc := cc.OAuth2ServerConfig
+		// A reference ("env.X") counts as set even when it resolves to nothing,
+		// so the resolved value is checked too; the error never echoes it.
+		if oc == nil || !oc.IssuerURL.IsSet() || oc.IssuerURL.GetValue() == "" {
+			return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
+		}
+	}
 	return nil
 }
 
@@ -1311,13 +1342,13 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 // loadClientConfig loads and merges client config from file with store using hash-based reconciliation.
 // The hash covers both the client section and mcp.tool_manager_config so that UI changes to either
 // survive restarts when the file is unchanged.
-func loadClientConfig(ctx context.Context, config *Config, configData *ConfigData) {
+func loadClientConfig(ctx context.Context, config *Config, configData *ConfigData) error {
 	var clientConfig *configstore.ClientConfig
 	var err error
 	if config.ConfigStore != nil {
 		clientConfig, err = config.ConfigStore.GetClientConfig(ctx)
-		if err != nil {
-			logger.Warn("failed to get client config from store: %v", err)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			return fmt.Errorf("failed to get client config from store: %w", err)
 		}
 	}
 
@@ -1325,6 +1356,76 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	var toolManagerFromFile *schemas.MCPToolManagerConfig
 	if configData.MCP != nil {
 		toolManagerFromFile = configData.MCP.ToolManagerConfig
+	}
+
+	fileAuth := configData.AuthConfig
+	if configData.Governance != nil && configData.Governance.AuthConfig != nil {
+		fileAuth = configData.Governance.AuthConfig
+	}
+	firstAdmin := false
+	// File-only deployments have no persisted auth to compare against, so first-admin
+	// detection (and the inference-auth default) needs a store. loadAuthConfig keeps
+	// the existing warn-and-continue behavior for them.
+	if fileAuth != nil && fileAuth.IsEnabled && config.ConfigStore != nil {
+		var existingAuth *configstore.AuthConfig
+		existingAuth, err = config.ConfigStore.GetAuthConfig(ctx)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			return fmt.Errorf("failed to get auth config from store: %w", err)
+		}
+		firstAdmin = existingAuth == nil
+		if firstAdmin && (fileAuth.AdminUserName == nil || fileAuth.AdminUserName.GetValue() == "" ||
+			fileAuth.AdminPassword == nil || fileAuth.AdminPassword.GetValue() == "") {
+			return fmt.Errorf("auth username and password must be provided for initial admin setup")
+		}
+		// Check hashability before saving client settings. loadAuthConfig accepts
+		// this prepared hash, so initial setup does not hash the password twice.
+		if firstAdmin && !isBcryptHash(fileAuth.AdminPassword.GetValue()) {
+			hashed, hashErr := encrypt.Hash(fileAuth.AdminPassword.GetValue())
+			if hashErr != nil {
+				return fmt.Errorf("invalid initial admin password: %w", hashErr)
+			}
+			fileAuth.AdminPassword = preserveSecretVar(fileAuth.AdminPassword, hashed)
+		}
+	}
+
+	fileInferenceAuthProvided := configData.Client != nil && configData.Client.HasInferenceAuthSetting()
+	if configData.Client == nil && firstAdmin {
+		if clientConfig != nil {
+			copied := *clientConfig
+			configData.Client = &copied
+		} else {
+			configData.Client = new(DefaultClientConfig)
+		}
+	}
+	// Hash file input before resolving an omitted setting against the database.
+	// Mark new secure defaults so adding explicit false is a detectable file change,
+	// even though both decode to the same boolean. Preserve legacy hashes on upgrade.
+	var fileHash, baseHash string
+	if configData.Client != nil {
+		fileHash, err = configData.Client.GenerateClientConfigHashWithToolManager(toolManagerFromFile)
+		if err != nil {
+			return fmt.Errorf("failed to hash client config: %w", err)
+		}
+		baseHash, err = configData.Client.GenerateClientConfigHash()
+		if err != nil {
+			return fmt.Errorf("failed to hash client config: %w", err)
+		}
+		const defaultMarker = ":inference-auth-default"
+		if !fileInferenceAuthProvided && (firstAdmin ||
+			(clientConfig != nil && strings.HasSuffix(clientConfig.ConfigHash, defaultMarker))) {
+			fileHash += defaultMarker
+		}
+	}
+	if configData.Client != nil && !fileInferenceAuthProvided {
+		if firstAdmin {
+			configData.Client.EnforceAuthOnInference = true
+		} else if clientConfig != nil {
+			configData.Client.EnforceAuthOnInference = clientConfig.EnforceAuthOnInference
+		}
+	}
+	if configData.Client != nil {
+		configData.Client.EnforceGovernanceHeader = configData.Client.EnforceAuthOnInference
+		configData.Client.EnforceSCIMAuth = configData.Client.EnforceAuthOnInference
 	}
 
 	// Case 1: No config in DB - use file config (or defaults)
@@ -1335,12 +1436,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 			config.ClientConfig = configData.Client
 			applyClientConfigDefaults(config.ClientConfig)
 			applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
-			fileHash, hashErr := configData.Client.GenerateClientConfigHashWithToolManager(toolManagerFromFile)
-			if hashErr != nil {
-				logger.Warn("failed to generate client config hash: %v", hashErr)
-			} else {
-				config.ClientConfig.ConfigHash = fileHash
-			}
+			config.ClientConfig.ConfigHash = fileHash
 		} else {
 			config.ClientConfig = new(DefaultClientConfig)
 			applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
@@ -1354,10 +1450,10 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		if config.ConfigStore != nil {
 			logger.Debug("updating client config in store")
 			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
-				logger.Warn("failed to update client config: %v", err)
+				return fmt.Errorf("failed to update client config: %w", err)
 			}
 		}
-		return
+		return nil
 	}
 	// Case 2: Config exists in DB
 	config.ClientConfig = clientConfig
@@ -1365,24 +1461,19 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	// Case 2a: No file config - use DB config as-is
 	if configData.Client == nil {
 		logger.Debug("no client config in file, using DB config")
-		return
+		return nil
 	}
 	// Case 2b: Both DB and file config exist - use hash-based reconciliation.
 	// The hash covers both the client section and mcp.tool_manager_config so a change
 	// in either section triggers a file-wins sync.
-	fileHash, hashErr := configData.Client.GenerateClientConfigHashWithToolManager(toolManagerFromFile)
-	if hashErr != nil {
-		logger.Warn("failed to generate client config hash from file: %v", hashErr)
-		return
-	}
 	// When config.json owns this section, the file always wins regardless of the
 	// stored hash: UI/API edits do not bump ConfigHash, so a hash match cannot prove
 	// the DB row is unchanged. Forcing the sync reverts UI drift back to file values.
 	forceClientSync := configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("client")
-	if !forceClientSync && clientConfig.ConfigHash == fileHash {
+	if !firstAdmin && !forceClientSync && clientConfig.ConfigHash == fileHash {
 		// Hash matches - keep DB config (preserves UI changes to both client and tool manager settings)
 		logger.Debug("client config hash matches, keeping DB config")
-	} else if baseHash, baseErr := configData.Client.GenerateClientConfigHash(); !forceClientSync && baseErr == nil &&
+	} else if !firstAdmin && !forceClientSync &&
 		clientConfig.ConfigHash == baseHash && toolManagerFromFile != nil {
 		// Legacy hash match (pre-upgrade): the stored hash covers only the client section and
 		// matches the file, meaning the client section is unchanged. Only apply the tool manager
@@ -1392,7 +1483,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		config.ClientConfig.ConfigHash = fileHash
 		if config.ConfigStore != nil {
 			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
-				logger.Warn("failed to update client config: %v", err)
+				return fmt.Errorf("failed to update client config: %w", err)
 			}
 		}
 	} else {
@@ -1406,10 +1497,11 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		if config.ConfigStore != nil {
 			logger.Debug("updating client config in store from file")
 			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
-				logger.Warn("failed to update client config: %v", err)
+				return fmt.Errorf("failed to update client config: %w", err)
 			}
 		}
 	}
+	return nil
 }
 
 // applyToolManagerToClientConfig copies tool manager settings from the file into ClientConfig.
@@ -1438,6 +1530,11 @@ func applyToolManagerToClientConfig(cc *configstore.ClientConfig, tm *schemas.MC
 	cc.MCPDisableAutoToolInject = tm.DisableAutoToolInject
 	cc.MCPMaxInstructionsPerClient = tm.MaxInstructionsPerClient
 	cc.MCPMaxInstructionsTotal = tm.MaxInstructionsTotal
+	// client_config.mcp_code_mode_limits is a first-class setting, so an omitted
+	// tool_manager_config.code_mode_limits keeps it instead of resetting it.
+	if tm.CodeModeLimits != nil {
+		cc.MCPCodeModeLimits = tm.CodeModeLimits
+	}
 }
 
 // loadProviders loads and merges providers from file with store using hash reconciliation
@@ -2014,6 +2111,11 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 	if fileClient.NeedsSessionStickiness == nil {
 		fileClient.NeedsSessionStickiness = existing.NeedsSessionStickiness
 	}
+
+	// A stored require_public_target records that the client was registered
+	// with no credential check; a file entry that omits it must not lift the
+	// dial-time restriction. Declaring it true in the file is honored.
+	fileClient.RequirePublicTarget = fileClient.RequirePublicTarget || existing.RequirePublicTarget
 	return changed
 }
 
@@ -2243,6 +2345,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.DiscoveredInstructions = clientConfig.DiscoveredInstructions
 	row.PendingOAuthConfig = clientConfig.PendingOAuthConfig
 	row.NeedsSessionStickiness = clientConfig.NeedsSessionStickiness
+	row.RequirePublicTarget = clientConfig.RequirePublicTarget
 }
 
 // mergeMCPConfig merges MCP config from file with store
@@ -2362,6 +2465,7 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 	mcpCfg.ToolManagerConfig.DisableAutoToolInject = config.ClientConfig.MCPDisableAutoToolInject
 	mcpCfg.ToolManagerConfig.MaxInstructionsPerClient = config.ClientConfig.MCPMaxInstructionsPerClient
 	mcpCfg.ToolManagerConfig.MaxInstructionsTotal = config.ClientConfig.MCPMaxInstructionsTotal
+	mcpCfg.ToolManagerConfig.CodeModeLimits = config.ClientConfig.MCPCodeModeLimits
 
 	// ToolSyncInterval is declared under the file's mcp section rather than
 	// client_config, so it sits outside the hash-driven client config load and
@@ -2469,6 +2573,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
 		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
+		RequirePublicTarget:       clientConfig.RequirePublicTarget,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
 		ToolPricing:               clientConfig.ToolPricing,
@@ -4647,10 +4752,10 @@ func preserveSecretVar(source *schemas.SecretVar, value string) *schemas.SecretV
 
 // loadAuthConfig loads auth config from file.
 // File config (configData) always takes precedence over DB config.
-func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData) {
+func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData) error {
 	hasFileConfig := configData != nil && (configData.AuthConfig != nil || (configData.Governance != nil && configData.Governance.AuthConfig != nil))
 	if !hasFileConfig && (config.GovernanceConfig == nil || config.GovernanceConfig.AuthConfig == nil) {
-		return
+		return nil
 	}
 	// Ensure GovernanceConfig is initialized
 	if config.GovernanceConfig == nil {
@@ -4661,20 +4766,19 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 		if hasFileConfig {
 			config.GovernanceConfig.AuthConfig = configData.AuthConfig
 		}
-		return
+		return nil
 	}
 	// Load existing auth config from DB
 	dbAuthConfig, err := config.ConfigStore.GetAuthConfig(ctx)
-	if err != nil {
-		logger.Warn("failed to get auth config from store: %v", err)
-		return
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+		return fmt.Errorf("failed to get auth config from store: %w", err)
 	}
 	// If no file config, use DB config and return (no write needed)
 	if !hasFileConfig {
 		if dbAuthConfig != nil {
 			config.GovernanceConfig.AuthConfig = dbAuthConfig
 		}
-		return
+		return nil
 	}
 	var authConfig *configstore.AuthConfig
 	if configData.Governance != nil && configData.Governance.AuthConfig != nil {
@@ -4683,7 +4787,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 		authConfig = configData.AuthConfig
 	}
 	if authConfig == nil {
-		return
+		return nil
 	}
 	// Fail-closed: if env/vault reference is unresolved, don't persist empty credentials.
 	if authConfig.AdminUserName != nil && authConfig.AdminUserName.GetValue() == "" && authConfig.AdminUserName.IsFromSecret() {
@@ -4694,7 +4798,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	}
 	if authConfig.AdminPassword == nil || authConfig.AdminUserName == nil {
 		logger.Warn("auth config is missing admin_username or admin_password, skipping auth config processing")
-		return
+		return nil
 	}
 	filePassword := authConfig.AdminPassword.GetValue()
 	// If DB already matches file config, skip hashing and DB write
@@ -4716,12 +4820,12 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 				AdminPassword: preserveSecretVar(authConfig.AdminPassword, dbAuthConfig.AdminPassword.GetValue()),
 				IsEnabled:     authConfig.IsEnabled,
 			}
-			return
+			return nil
 		}
 		if !passwordMatch {
 			// Here we nuke all sessions
 			if err := config.ConfigStore.FlushSessions(ctx); err != nil {
-				logger.Warn("failed to flush sessions: %v", err)
+				return fmt.Errorf("failed to flush sessions: %w", err)
 			}
 		}
 	}
@@ -4731,12 +4835,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 		var err error
 		hashedPassword, err = encrypt.Hash(hashedPassword)
 		if err != nil {
-			logger.Warn("failed to hash auth password: %v", err)
-			// Fall back to DB config if available rather than leaving AuthConfig unset
-			if dbAuthConfig != nil {
-				config.GovernanceConfig.AuthConfig = dbAuthConfig
-			}
-			return
+			return fmt.Errorf("failed to hash auth password: %w", err)
 		}
 	}
 	// Build auth config with hashed password but preserve env var references
@@ -4747,8 +4846,9 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	}
 	// Persist to config store
 	if err := config.ConfigStore.UpdateAuthConfig(ctx, config.GovernanceConfig.AuthConfig); err != nil {
-		logger.Warn("failed to update auth config: %v", err)
+		return fmt.Errorf("failed to update auth config: %w", err)
 	}
+	return nil
 }
 
 // loadPlugins loads and merges plugins from file
@@ -5799,6 +5899,59 @@ func (c *Config) GetRawConfigString() string {
 //   - Thread-safe with read locks for concurrent access
 //
 // Returns a copy of the configuration to prevent external modifications.
+// loadGlobalProxyConfig reads the global proxy from the config store. A read
+// failure is logged and leaves the proxy unset rather than failing startup, the
+// same as before the global proxy reached inference.
+func loadGlobalProxyConfig(ctx context.Context, config *Config) {
+	if config.ConfigStore == nil {
+		return
+	}
+	proxyConfig, err := config.ConfigStore.GetProxyConfig(ctx)
+	if err != nil {
+		logger.Warn("failed to load global proxy config: %v", err)
+		return
+	}
+	config.ProxyConfig = proxyConfig
+}
+
+// GetGlobalProxyConfig returns the global proxy configuration, or nil when none is set.
+func (c *Config) GetGlobalProxyConfig() *configstoreTables.GlobalProxyConfig {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ProxyConfig
+}
+
+// SetGlobalProxyConfig stores the global proxy and rebuilds every provider that has
+// no proxy_config of its own, so their clients pick up (or drop) the inherited proxy
+// without a restart. Providers with their own proxy are untouched: theirs always wins.
+func (c *Config) SetGlobalProxyConfig(proxyConfig *configstoreTables.GlobalProxyConfig) error {
+	c.Mu.Lock()
+	c.ProxyConfig = proxyConfig
+	var inheriting []schemas.ModelProvider
+	for provider, providerConfig := range c.Providers {
+		if !hasOwnProxy(providerConfig.ProxyConfig) {
+			inheriting = append(inheriting, provider)
+		}
+	}
+	client := c.client
+	// Release before UpdateProvider: it calls GetConfigForProvider, which takes RLock.
+	c.Mu.Unlock()
+
+	if client == nil {
+		return nil
+	}
+	var errs []error
+	for _, provider := range inheriting {
+		if err := client.UpdateProvider(provider); err != nil {
+			errs = append(errs, fmt.Errorf("provider %s: %w", provider, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to apply global proxy to providers: %w", errors.Join(errs...))
+	}
+	return nil
+}
+
 func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configstore.ProviderConfig, error) {
 	c.Mu.RLock()
 	defer c.Mu.RUnlock()
@@ -7103,6 +7256,7 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				// The region is a public identifier, not a credential — surface it in plaintext.
 				cfg.Region = *cfg.Region.RedactedIfSecret()
 				cfg.AuthCredentials = *cfg.AuthCredentials.Redacted()
+				cfg.AWSWorkloadIdentity = cfg.AWSWorkloadIdentity.Redacted()
 				configStoreKey.VertexKeyConfig = &cfg
 			}
 			if key.ReplicateKeyConfig != nil {
@@ -7313,6 +7467,8 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].NeedsSessionStickiness = updatedConfig.NeedsSessionStickiness
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
 	c.MCPConfig.ClientConfigs[configIndex].ToolExecutionTimeout = updatedConfig.ToolExecutionTimeout
+	c.MCPConfig.ClientConfigs[configIndex].MaxInstructionsLength = updatedConfig.MaxInstructionsLength
+	c.MCPConfig.ClientConfigs[configIndex].TLSConfig = updatedConfig.TLSConfig
 	c.MCPConfig.ClientConfigs[configIndex].AllowByDefault = updatedConfig.AllowByDefault
 	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
 	c.MCPConfig.ClientConfigs[configIndex].PerUserHeaderKeys = updatedConfig.PerUserHeaderKeys

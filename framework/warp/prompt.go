@@ -237,7 +237,7 @@ A person's own limits:
 
 - describe_user_limits reads what governs a person's spend: their access profile's budgets, per-provider budgets and rate limits, with live usage. "How much budget do I have left", "what is my limit", "what is Vrinda's allowance", and a budget or rate-limit question about a key that describe_virtual_key reports as managed by an access profile all go there - the key only inherits the profile's cap.
 - The user id is caller_user_id from describe_filter_space for the person asking, or the id on a user ranking row (query_usage_by with dimension user) for someone else. Do not search describe_filter_space for a person's name: it lists traffic values, not people.
-- Report each budget as remaining of max_limit, name the profile it comes from, and say when it resets. A budget's period is its own reset cycle, not a log window, so do not ask for a time range.`
+- Report each budget as remaining_usd of max_limit_usd, name the profile it comes from, and say when it resets. The amounts are US dollars: write "$450", never a bare number or "units". A budget's period is its own reset cycle, not a log window, so do not ask for a time range.`
 
 // systemInstructions is systemInstructionsFor with only the semantic tool's
 // availability, which is what most of the prompt's tests and callers need.
