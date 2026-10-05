@@ -309,6 +309,7 @@ export function UserMessageView({
 					/>
 				) : (
 					<div
+						role="presentation"
 						className={!disabled ? "cursor-text" : undefined}
 						onClick={(e) => {
 							if (disabled || editMode) return;

@@ -249,3 +249,40 @@ func TestFailureClass_Policy(t *testing.T) {
 		}
 	}
 }
+
+// TestFailureClass_CoversAllModels pins which classes cover every model on the key: a rejected
+// credential and an exhausted account do; the other per-key classes bind the key only for the
+// model that was refused, and the rest bind nothing. It also pins the classifier outputs a
+// consumer relies on: OpenAI's insufficient_quota, which names itself only in the code and type,
+// is quota, and a per-model quota is a rate limit.
+func TestFailureClass_CoversAllModels(t *testing.T) {
+	for _, c := range []schemas.FailureClass{schemas.FailureClassCredential, schemas.FailureClassQuota} {
+		if !c.CoversAllModels() {
+			t.Errorf("%s should cover every model on the key", c)
+		}
+	}
+	for _, c := range []schemas.FailureClass{
+		schemas.FailureClassModelAccess, schemas.FailureClassModelGone, schemas.FailureClassRegionBlocked, schemas.FailureClassRateLimit,
+		schemas.FailureClassTransient, schemas.FailureClassCallerFault, schemas.FailureClassUnknown, "",
+	} {
+		if c.CoversAllModels() {
+			t.Errorf("%q should not cover every model on the key", c)
+		}
+	}
+
+	status := 429
+	quota := "insufficient_quota"
+	outOfCredit := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{
+		Message: "You exceeded your current quota, please check your plan and billing details.", Type: &quota, Code: &quota,
+	}}
+	if got := ClassifyFailure(outOfCredit); !got.CoversAllModels() {
+		t.Errorf("OpenAI's insufficient_quota classified as %q, which does not cover the key", got)
+	}
+	exhausted := "RESOURCE_EXHAUSTED"
+	perModel := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{
+		Message: "Quota exceeded for aiplatform.googleapis.com/generate_requests_per_model_per_day with base model: gemini-2.5-pro.", Type: &exhausted,
+	}}
+	if got := ClassifyFailure(perModel); got != schemas.FailureClassRateLimit || got.CoversAllModels() {
+		t.Errorf("a per-model quota classified as %q, want a rate limit that does not cover the key", got)
+	}
+}

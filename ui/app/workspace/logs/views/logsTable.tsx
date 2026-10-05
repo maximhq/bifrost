@@ -177,7 +177,7 @@ export function LogsDataTable({
 	return (
 		<div className="flex h-full flex-col gap-2">
 			<div className="min-h-0 flex-1 overflow-hidden rounded-sm border">
-				<Table containerClassName="h-full overflow-auto">
+				<Table containerClassName="@container/logs-table h-full overflow-auto">
 					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]")}>
 						{table.getHeaderGroups().map((headerGroup) => (
 							<tr
@@ -207,7 +207,12 @@ export function LogsDataTable({
 					<TableBody>
 						<TableRow className="hover:bg-transparent">
 							<TableCell colSpan={columns.length} className="h-12 text-center">
-								<div className="text-muted-foreground flex items-center justify-center gap-2 text-sm">
+								{/* The row spans the whole scrollable table, so centring within it lands
+								    off to the right; sticking to the visible width keeps it in view. */}
+								<div
+									className="text-muted-foreground sticky left-4 flex w-[calc(100cqw-2rem)] items-center justify-center gap-2 text-sm"
+									data-testid="logs-table-status-row"
+								>
 									{loading ? (
 										<>
 											<RefreshCw className="h-4 w-4 animate-spin" />
@@ -324,6 +329,7 @@ export function LogsDataTable({
 							disableSearch
 							hideClear
 							className="h-7 w-fit gap-1 text-xs"
+							aria-label="Rows per page"
 							data-testid="page-size-select"
 						/>
 					</div>

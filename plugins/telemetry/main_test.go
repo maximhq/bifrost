@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -766,4 +767,59 @@ func TestProviderKeyUpSkipsModelAndRegionFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Metrics built their label sets by appending to one shared slice, so a spliced name
+// (is_success etc.) got overwritten by a custom label and Gather failed with a
+// duplicate. Needs both user_labels_enabled and custom labels to reproduce.
+func TestLabelSetsAreNotAliased(t *testing.T) {
+	log := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	for _, tc := range []struct {
+		name       string
+		userLabels bool
+		custom     []string
+	}{
+		{"both on", true, []string{"user-email"}},
+		{"custom only", false, []string{"user-email"}},
+		{"user labels only", true, nil},
+		{"neither", false, nil},
+		{"several custom", true, []string{"user-email", "tenant", "region"}},
+		{"many custom", true, manyLabels(50)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{CustomLabels: tc.custom}
+			if tc.userLabels {
+				cfg.UserLabelsEnabled = boolPtr(true)
+			}
+			p, err := Init(cfg, nil, log)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			defer p.Cleanup()
+
+			// The spliced metric is the one that aliased; assert its set directly.
+			want := append(append([]string{}, p.defaultBifrostLabels...), "is_success")
+			want = append(want, p.customLabels...)
+			seen := map[string]bool{}
+			for _, l := range want {
+				if seen[l] {
+					t.Errorf("duplicate label %q in set of %d", l, len(want))
+				}
+				seen[l] = true
+			}
+
+			p.UpstreamLatencySeconds.WithLabelValues(make([]string, len(want))...).Observe(1)
+			if _, err := p.GetMetricsGatherer().Gather(); err != nil {
+				t.Fatalf("Gather failed (/metrics would 500): %v", err)
+			}
+		})
+	}
+}
+
+func manyLabels(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = "custom_" + strconv.Itoa(i)
+	}
+	return out
 }

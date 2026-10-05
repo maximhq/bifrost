@@ -61,7 +61,7 @@ type SearchFilters struct {
 	VirtualKeyIDs        []string   `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs       []string   `json:"routing_rule_ids,omitempty"`
 	ComplexityTiers      []string   `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, jev, llm, session, skipped)
 	SessionID            string     `json:"session_id,omitempty"`            // Exact Bifrost session ID used for key stickiness and request correlation
 	TeamIDs              []string   `json:"team_ids,omitempty"`
 	CustomerIDs          []string   `json:"customer_ids,omitempty"`
@@ -133,6 +133,22 @@ type PaginationOptions struct {
 	SortBy     string `json:"sort_by"`     // "timestamp", "latency", "tokens", "cost"
 	Order      string `json:"order"`       // "asc", "desc"
 	TotalCount int64  `json:"total_count"` // Total number of items matching the query
+	// SkipCount skips the total count entirely; TotalCount is left at zero. For
+	// callers that page through a window and never read the total. Honoured by
+	// SearchLogs, SearchLogsForBilling and SearchMCPToolLogs.
+	SkipCount bool `json:"-"`
+	// AfterTimestamp and AfterID form a keyset cursor for SortBy "timestamp": only
+	// rows strictly after (AfterTimestamp, AfterID) in the requested order are
+	// returned. Both must be set; AfterID alone is ignored. Honoured by SearchLogs
+	// and SearchLogsForBilling only: SearchMCPToolLogs ignores the cursor and
+	// pages by Offset, ordered by timestamp alone as before.
+	AfterTimestamp *time.Time `json:"-"`
+	AfterID        string     `json:"-"`
+	// OmitBillingPayloads makes SearchLogsForBilling return NULL for the modality
+	// payload columns, so a large page carries only scalar pricing inputs. Rows
+	// whose object type needs a payload (BillingPayloadRequired) must be re-read
+	// individually before pricing.
+	OmitBillingPayloads bool `json:"-"`
 }
 
 // SearchResult represents the result of a log search
@@ -217,7 +233,7 @@ type Log struct {
 	ID                      string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	IncNumber               *int64    `gorm:"column:inc_number" json:"inc_number,omitempty"`
 	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
-	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;index:idx_logs_session_id_timestamp,priority:2;not null" json:"timestamp"`
+	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;index:idx_logs_session_id_timestamp,priority:2;index:idx_logs_vk_ts,priority:2;index:idx_logs_user_ts,priority:2;index:idx_logs_team_ts,priority:2;not null;index:idx_logs_selected_key_ts,priority:2;index:idx_logs_routing_rule_ts,priority:2;index:idx_logs_customer_ts,priority:2;index:idx_logs_business_unit_ts,priority:2;index:idx_logs_project_ts,priority:2" json:"timestamp"`
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
 	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
 	Model                   string    `gorm:"type:varchar(255);index;not null" json:"model"`
@@ -228,31 +244,31 @@ type Log struct {
 	ServedModel             *string   `gorm:"type:varchar(255)" json:"served_model,omitempty"` // Model the provider named on the response body when it differs from Model
 	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
-	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
+	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_ts,priority:1" json:"selected_key_id"` // (selected_key_id, timestamp) composite; replaces idx_logs_selected_key_id
 	SelectedKeyName         string    `gorm:"type:varchar(255)" json:"selected_key_name"`
-	AttemptTrail            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.KeyAttemptRecord
-	VirtualKeyID            *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
+	AttemptTrail            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.KeyAttemptRecord
+	VirtualKeyID            *string   `gorm:"type:varchar(255);index:idx_logs_vk_ts,priority:1" json:"virtual_key_id"` // (virtual_key_id, timestamp) composite serves owner-filtered lists newest-first and every equality lookup on virtual_key_id
 	VirtualKeyName          *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
-	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
-	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`              // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
-	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
+	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"`                             // Comma-separated routing engines
+	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`                                          // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
+	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_ts,priority:1" json:"routing_rule_id"` // (routing_rule_id, timestamp) composite; replaces idx_logs_routing_rule_id
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
 	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
-	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "jev", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
 	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                                                                        // Raw complexity score behind the tier; unindexed (detail-view only)
 	SessionID               *string   `gorm:"type:varchar(255);index:idx_logs_session_id,where:session_id IS NOT NULL;index:idx_logs_session_id_timestamp,priority:1,where:session_id IS NOT NULL" json:"session_id,omitempty"` // Raw opaque session identity resolved at ingress for key stickiness and log correlation
 	SelectedPromptName      *string   `gorm:"type:varchar(255)" json:"selected_prompt_name"`
 	SelectedPromptVersion   *string   `gorm:"type:varchar(64)" json:"selected_prompt_version"`
 	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
-	UserID                  *string   `gorm:"type:varchar(255);index:idx_logs_user_id" json:"user_id"`
+	UserID                  *string   `gorm:"type:varchar(255);index:idx_logs_user_ts,priority:1" json:"user_id"` // (user_id, timestamp) composite; replaces the single-column idx_logs_user_id
 	UserName                *string   `gorm:"type:varchar(255)" json:"user_name"`
-	TeamID                  *string   `gorm:"type:varchar(255);index:idx_logs_team_id" json:"team_id"`
+	TeamID                  *string   `gorm:"type:varchar(255);index:idx_logs_team_ts,priority:1" json:"team_id"` // (team_id, timestamp) composite; replaces the single-column idx_logs_team_id
 	TeamName                *string   `gorm:"type:varchar(255)" json:"team_name"`
-	CustomerID              *string   `gorm:"type:varchar(255);index:idx_logs_customer_id" json:"customer_id"`
+	CustomerID              *string   `gorm:"type:varchar(255);index:idx_logs_customer_ts,priority:1" json:"customer_id"` // (customer_id, timestamp) composite; replaces idx_logs_customer_id
 	CustomerName            *string   `gorm:"type:varchar(255)" json:"customer_name"`
-	BusinessUnitID          *string   `gorm:"type:varchar(255);index:idx_logs_business_unit_id" json:"business_unit_id"`
+	BusinessUnitID          *string   `gorm:"type:varchar(255);index:idx_logs_business_unit_ts,priority:1" json:"business_unit_id"` // (business_unit_id, timestamp) composite; replaces idx_logs_business_unit_id
 	BusinessUnitName        *string   `gorm:"type:varchar(255)" json:"business_unit_name"`
-	ProjectID               *string   `gorm:"type:varchar(255);index:idx_logs_project_id" json:"project_id"`
+	ProjectID               *string   `gorm:"type:varchar(255);index:idx_logs_project_ts,priority:1" json:"project_id"` // (project_id, timestamp) composite; replaces idx_logs_project_id
 	ProjectName             *string   `gorm:"type:varchar(255)" json:"project_name"`
 	TeamIDs                 *string   `gorm:"type:text" json:"-"`
 	TeamNames               *string   `gorm:"type:text" json:"-"`
@@ -266,6 +282,7 @@ type Log struct {
 	ResponsesInputHistory   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ResponsesMessage
 	OutputMessage           string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ChatMessage
 	ResponsesOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ResponsesMessage
+	EmbeddingInput          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.EmbeddingInputItem
 	EmbeddingOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized [][]float32
 	RerankOutput            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.RerankResult
 	OCROutput               string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostOCRResponse
@@ -383,7 +400,7 @@ type Log struct {
 	// and content-hidden rows.
 	VideoDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDebug
 
-	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier, e.g. "priority", "flex", "ultrafast", or "default"
+	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier, e.g. "priority", "fast", "flex", "ultrafast", or "default"
 	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
 	InferenceGeo *string `gorm:"type:varchar(32)" json:"inference_geo,omitempty"` // Anthropic data residency, e.g. "us"
 
@@ -396,6 +413,7 @@ type Log struct {
 	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
 	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
 	ResponsesOutputParsed       []schemas.ResponsesMessage              `gorm:"-" json:"responses_output,omitempty"`
+	EmbeddingInputParsed        []schemas.EmbeddingInputItem            `gorm:"-" json:"embedding_input,omitempty"`
 	EmbeddingOutputParsed       []schemas.EmbeddingData                 `gorm:"-" json:"embedding_output,omitempty"`
 	RerankOutputParsed          []schemas.RerankResult                  `gorm:"-" json:"rerank_output,omitempty"`
 	OCROutputParsed             *schemas.BifrostOCRResponse             `gorm:"-" json:"ocr_output,omitempty"`
@@ -590,6 +608,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if l.EmbeddingInputParsed != nil {
+		if data, err := sonic.Marshal(l.EmbeddingInputParsed); err != nil {
+			return err
+		} else {
+			l.EmbeddingInput = string(data)
+		}
+	}
+
 	if l.EmbeddingOutputParsed != nil {
 		if data, err := sonic.Marshal(l.EmbeddingOutputParsed); err != nil {
 			return err
@@ -775,7 +801,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TokenUsageParsed != nil {
-		if data, err := sonic.Marshal(l.TokenUsageParsed); err != nil {
+		if data, err := sonic.Marshal(serializeTokenUsage(l.TokenUsageParsed)); err != nil {
 			return err
 		} else {
 			l.TokenUsage = string(data)
@@ -989,6 +1015,12 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
+	if l.EmbeddingInput != "" {
+		if err := sonic.Unmarshal([]byte(l.EmbeddingInput), &l.EmbeddingInputParsed); err != nil {
+			l.EmbeddingInputParsed = nil
+		}
+	}
+
 	if l.EmbeddingOutput != "" {
 		if err := sonic.Unmarshal([]byte(l.EmbeddingOutput), &l.EmbeddingOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
@@ -1047,6 +1079,10 @@ func (l *Log) DeserializeFields() error {
 			// Without clearing the flag the row would stay marked degraded and
 			// billing would skip a row it can now price correctly.
 			l.usageRebuiltFromColumns = false
+			// Logs stores web search count in num_search_queries (legacy behaviour), we map it to tool_usage so that repricing bills it.
+			if u := l.TokenUsageParsed; u != nil && u.CompletionTokensDetails != nil && u.CompletionTokensDetails.NumSearchQueries != nil && *u.CompletionTokensDetails.NumSearchQueries > 0 {
+				u.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}}
+			}
 		}
 	}
 
@@ -1412,13 +1448,13 @@ type MCPToolLog struct {
 	ID             string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	RequestID      string    `gorm:"type:varchar(255);column:request_id;index:idx_mcp_logs_request_id" json:"request_id,omitempty"`             // The original request ID from context
 	LLMRequestID   *string   `gorm:"type:varchar(255);column:llm_request_id;index:idx_mcp_logs_llm_request_id" json:"llm_request_id,omitempty"` // Links to the LLM request that triggered this tool call
-	Timestamp      time.Time `gorm:"index;not null" json:"timestamp"`
+	Timestamp      time.Time `gorm:"index;index:idx_mcp_logs_vk_ts,priority:2;index:idx_mcp_logs_user_ts,priority:2;index:idx_mcp_logs_team_ts,priority:2;not null" json:"timestamp"`
 	ToolName       string    `gorm:"type:varchar(255);index:idx_mcp_logs_tool_name;not null" json:"tool_name"`
 	ServerLabel    string    `gorm:"type:varchar(255);index:idx_mcp_logs_server_label" json:"server_label,omitempty"` // MCP server that provided the tool
-	VirtualKeyID   *string   `gorm:"type:varchar(255);index:idx_mcp_logs_virtual_key_id" json:"virtual_key_id"`
+	VirtualKeyID   *string   `gorm:"type:varchar(255);index:idx_mcp_logs_vk_ts,priority:1" json:"virtual_key_id"`     // (virtual_key_id, timestamp) composite; replaces idx_mcp_logs_virtual_key_id
 	VirtualKeyName *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
-	UserID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_user_id" json:"user_id"`
-	TeamID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_team_id" json:"team_id"`
+	UserID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_user_ts,priority:1" json:"user_id"` // (user_id, timestamp) composite; replaces idx_mcp_logs_user_id
+	TeamID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_team_ts,priority:1" json:"team_id"` // (team_id, timestamp) composite; replaces idx_mcp_logs_team_id
 	CustomerID     *string   `gorm:"type:varchar(255);index:idx_mcp_logs_customer_id" json:"customer_id"`
 	BusinessUnitID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_business_unit_id" json:"business_unit_id"`
 	ProjectID      *string   `gorm:"type:varchar(255);index:idx_mcp_logs_project_id" json:"project_id"`
@@ -1904,6 +1940,15 @@ type MCPToolLogStats struct {
 // BuildContentSummary creates a searchable text summary
 func (l *Log) BuildContentSummary() string {
 	var parts []string
+
+	// Add embedding input text parts
+	for _, item := range l.EmbeddingInputParsed {
+		for _, part := range item.Content {
+			if part.Type == schemas.EmbeddingContentPartTypeText && part.Text != nil && *part.Text != "" {
+				parts = append(parts, *part.Text)
+			}
+		}
+	}
 
 	// Add input messages
 	for _, msg := range l.InputHistoryParsed {
@@ -2436,6 +2481,12 @@ type UserRankingEntry struct {
 	TotalCost     float64 `json:"total_cost"`
 }
 
+// UserSpendEntry is one user's total cost inside a window.
+type UserSpendEntry struct {
+	UserID    string  `json:"user_id"`
+	TotalCost float64 `json:"total_cost"`
+}
+
 // UserRankingTrend represents the percentage change compared to the previous period.
 // TokensTrend and CostTrend follow ModelRankingTrend's nil convention.
 type UserRankingTrend struct {
@@ -2654,4 +2705,24 @@ type NodeUsageAggregate struct {
 	MaxTimestamp      time.Time          `json:"max_timestamp"`       // highest log timestamp included in the aggregate
 	MaxLogID          string             `json:"max_log_id"`          // log ID tiebreaker for MaxTimestamp
 	NextCursor        NodeUsageCursor    `json:"next_cursor"`         // stable cursor for the next incremental query
+}
+
+// serializeTokenUsage converts the new tool_usage block back to completion_tokens_details.num_search_queries
+// field (which is how existing logs store it)
+func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
+	if u.ToolUsage == nil {
+		return u
+	}
+	stored := *u
+	stored.ToolUsage = nil
+	if ws := u.ToolUsage.WebSearch; ws != nil && ws.NumRequests > 0 {
+		details := schemas.ChatCompletionTokensDetails{}
+		if u.CompletionTokensDetails != nil {
+			details = *u.CompletionTokensDetails
+		}
+		n := ws.NumRequests
+		details.NumSearchQueries = &n
+		stored.CompletionTokensDetails = &details
+	}
+	return &stored
 }

@@ -3,11 +3,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
-import { getErrorMessage, useGetOAuth2ConsentFlowQuery, useIsAuthEnabledQuery, useSubmitOAuth2ConsentFlowMutation } from "@/lib/store";
-import { getActiveTempToken, setActiveTempToken, setSuppressGlobal401 } from "@/lib/store/apis/tempToken";
+import { getErrorCode, getErrorMessage, useGetOAuth2ConsentFlowQuery, useIsAuthEnabledQuery, useSubmitOAuth2ConsentFlowMutation } from "@/lib/store";
+import { getActiveTempToken } from "@/lib/store/apis/tempToken";
 import { Fingerprint, KeyRound, Loader2, LogIn, ShieldCheck, UserRound } from "lucide-react";
 import { useQueryState } from "nuqs";
 import React, { useEffect, useMemo, useState } from "react";
+
+// Mirrors handlers.TempTokenRejectedCode: a presented token was refused.
+const TEMP_TOKEN_REJECTED_CODE = "temp_token_rejected";
 
 export default function OAuth2ConsentPage() {
 	const [flowId] = useQueryState("flow");
@@ -48,38 +51,17 @@ function ConsentView({ flowId }: { flowId: string }) {
 	const [vkValue, setVkValue] = useState("");
 	const [selectedMode, setSelectedMode] = useState<"vk" | "session" | "user" | null>(null);
 
-	// Restore a temp token persisted across a login round-trip BEFORE sampling
-	// usingTempToken, so returning to consent after cancelling login (where the
-	// module-level token was already cleared) still surfaces the sign-in path.
-	const [usingTempToken] = useState(() => {
-		if (typeof sessionStorage !== "undefined") {
-			const stored = sessionStorage.getItem(`oauth2_consent_token_${flowId}`);
-			if (stored && !getActiveTempToken()) {
-				setActiveTempToken(stored);
-				setSuppressGlobal401(true);
-				sessionStorage.removeItem(`oauth2_consent_token_${flowId}`);
-			}
-		}
-		return getActiveTempToken() !== null;
-	});
+	// TempTokenScope installs the token during its own render, so any
+	// sessionStorage restore has already happened by now.
+	const [usingTempToken] = useState(() => getActiveTempToken() !== null);
 
 	const loginHref = useMemo(() => {
 		const returnPath = `/oauth/consent?flow=${encodeURIComponent(flowId)}`;
 		return `/login?goto=${encodeURIComponent(returnPath)}`;
 	}, [flowId]);
 
-	// Persist the active temp token so it can be restored after a login round-trip.
-	// Kept in an effect (not the memo above) so it runs exactly once per flowId —
-	// memo computations are not guaranteed to run in React 18 concurrent mode.
-	useEffect(() => {
-		if (typeof sessionStorage === "undefined") return;
-		const currentToken = getActiveTempToken();
-		if (currentToken) {
-			sessionStorage.setItem(`oauth2_consent_token_${flowId}`, currentToken);
-		}
-	}, [flowId]);
-
-	const showLoginOption = usingTempToken && authState?.is_auth_enabled === true && authState.has_valid_token === false;
+	const signedOut = authState?.is_auth_enabled === true && authState.has_valid_token === false;
+	const showLoginOption = usingTempToken && signedOut;
 
 	const handleSubmit = async (mode: "vk" | "session" | "user") => {
 		setSelectedMode(mode);
@@ -109,7 +91,14 @@ function ConsentView({ flowId }: { flowId: string }) {
 
 	if (isError || !flow) {
 		const status = (error as { status?: number } | undefined)?.status;
-		if (status === 401) return <InvalidLinkView />;
+		if (status === 401) {
+			// A rejected token is the only 401 that means the link is finished.
+			// Anything else is fixed by having a session — go get one.
+			if (getErrorCode(error) !== TEMP_TOKEN_REJECTED_CODE && signedOut) {
+				return <RedirectToSignIn loginHref={loginHref} />;
+			}
+			return <InvalidLinkView />;
+		}
 		return (
 			<Shell>
 				<div className="text-center">
@@ -314,6 +303,32 @@ function Shell({ children }: { children: React.ReactNode }) {
 		<div className="mx-auto flex min-h-screen w-full items-center justify-center p-4 sm:p-6">
 			<div className="bg-card w-full max-w-md rounded-sm border p-6 shadow-sm sm:p-8">{children}</div>
 		</div>
+	);
+}
+
+// Bounces a signed-out visitor through /login and back via ?goto= (SSO stashes
+// it across the IdP hop). The card covers a blocked redirect.
+function RedirectToSignIn({ loginHref }: { loginHref: string }) {
+	useEffect(() => {
+		// replace(), so Back from /login doesn't re-enter the redirect.
+		window.location.replace(loginHref);
+	}, [loginHref]);
+
+	return (
+		<Shell>
+			<div className="text-center">
+				<h1 className="text-xl font-semibold tracking-tight">Sign in to continue</h1>
+				<p className="text-muted-foreground mt-2 text-sm">
+					This authorization needs a signed-in Bifrost account. Taking you to sign in — you'll come straight back here.
+				</p>
+				<Button asChild className="mt-6 w-full">
+					<a href={loginHref} data-testid="oauth-consent-signin-required-link">
+						<LogIn className="mr-2 size-4" />
+						Sign in to Bifrost
+					</a>
+				</Button>
+			</div>
+		</Shell>
 	);
 }
 

@@ -91,6 +91,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `enforce_auth_on_inference` | boolean | `false` | Require a virtual key on every `/v1/*` request |
 | `allowed_origins` | array | `["*"]` | CORS allowed origins |
 | `allow_direct_keys` | boolean | `false` | Let callers bypass the key pool with `x-bf-direct-key: true` + a raw provider key |
+| `delete_expired_virtual_keys` | boolean | `false` | Daily cleanup job deletes expired virtual keys; a key's `delete_after_expire` overrides it |
 | `max_request_body_size_mb` | integer | `100` | Maximum request body in MB |
 | `whitelisted_routes` | array | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array | `[]` | Additional headers permitted for CORS/WebSocket |
@@ -395,6 +396,7 @@ Common fields on each `client_configs` entry:
 | `is_code_mode_client` | boolean | Wrap tools as Python code-mode helpers instead of raw tool calls |
 | `needs_session_stickiness` | boolean | HTTP-only, and only meaningful for `oauth`/`headers`/`none` (per-user auth types are always per-call). `true` holds one persistent upstream connection reused for every tool call; `false`/omitted (default) dials fresh per tool call. Cannot be `false` for `connection_type` `"sse"`/`"stdio"` — both are always sticky. See [Session Stickiness](/mcp/connecting-to-servers#session-stickiness-http-only). |
 | `is_ping_available` | boolean | Default `true`. Whether the MCP server supports a lightweight ping for health checks; `false` falls back to a full `listTools` call instead. |
+| `require_public_target` | boolean | Server-managed, default `false`. Set to `true` when the client was registered over the management API without an admin credential check; every connection to the MCP server (initial, reconnect, per-call) must then resolve to a public address. Once stored as `true` it is never cleared by the API or by config.json reconciliation; declaring it `true` here is honored. |
 | `tool_sync_interval` | string \| integer | Per-client tool-list sync interval as a Go duration string in whole seconds (for example `"5m"` or `"90s"`), or a legacy non-negative integer in nanoseconds that is a whole number of seconds. `"0s"`/omitted falls back to the global `mcp.tool_sync_interval`. |
 | `tool_execution_timeout` | integer | Per-client tool execution timeout in seconds. `0`/omitted falls back to the global `client.mcp_tool_execution_timeout`. |
 | `allow_by_default` | boolean | When `true`, any caller can use this client without an explicit assignment, with all tools allowed. An explicit assignment for a caller takes precedence for that caller, including an empty tool list. |

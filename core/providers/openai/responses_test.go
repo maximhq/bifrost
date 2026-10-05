@@ -963,15 +963,17 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 					}
 				}
 
-				// Verify that original message fields are preserved
+				// Verify that original message fields are preserved.
+				// Note: Status is stripped by the sanitizer for all item types,
+				// including message types, since OpenAI rejects status on input.
 				if tt.message.ID != nil && (resultMsg.ID == nil || *resultMsg.ID != *tt.message.ID) {
 					t.Errorf("Expected ID to be preserved")
 				}
 				if tt.message.Type != nil && (resultMsg.Type == nil || *resultMsg.Type != *tt.message.Type) {
 					t.Errorf("Expected Type to be preserved")
 				}
-				if tt.message.Status != nil && (resultMsg.Status == nil || *resultMsg.Status != *tt.message.Status) {
-					t.Errorf("Expected Status to be preserved")
+				if resultMsg.Status != nil {
+					t.Errorf("Expected Status to be stripped (OpenAI rejects status on input)")
 				}
 			} else {
 				// For other cases, verify message is preserved as-is
@@ -2556,6 +2558,116 @@ func TestToOpenAIResponsesRequest_StripsThoughtSignatureFromCallID(t *testing.T)
 	}
 }
 
+// TestToOpenAIResponsesRequest_DropsForeignFunctionCallItemID verifies that a
+// replayed function_call item whose id does not begin with "fc" (e.g. Gemini
+// streaming reuses the "<id>_ts_<sig>" call id as the item id) has its id dropped
+// on the wire while call_id is left untouched, so the function_call_output still
+// pairs with its call and the caller's history is not mutated.
+func TestToOpenAIResponsesRequest_DropsForeignFunctionCallItemID(t *testing.T) {
+	longSig := strings.Repeat("A", 100)
+	cases := []struct {
+		name       string
+		itemID     *string
+		callID     string
+		wantID     *string // nil means the id key must be absent on the wire
+		wantCallID string
+	}{
+		{name: "gemini _ts_ item id dropped, call_id kept", itemID: schemas.Ptr("call_abc_ts_QUJD"), callID: "call_abc_ts_QUJD", wantID: nil, wantCallID: "call_abc_ts_QUJD"},
+		{name: "plain call_ item id dropped", itemID: schemas.Ptr("call_abc"), callID: "call_abc", wantID: nil, wantCallID: "call_abc"},
+		{name: "fc_ item id preserved", itemID: schemas.Ptr("fc_abc"), callID: "call_abc", wantID: schemas.Ptr("fc_abc"), wantCallID: "call_abc"},
+		{name: "nil item id stays absent", itemID: nil, callID: "call_abc", wantID: nil, wantCallID: "call_abc"},
+		{name: "long _ts_ id: item id dropped and call_id stripped", itemID: schemas.Ptr("call_abc_ts_" + longSig), callID: "call_abc_ts_" + longSig, wantID: nil, wantCallID: "call_abc"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var origID *string
+			if tc.itemID != nil {
+				origID = schemas.Ptr(*tc.itemID)
+			}
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o",
+				Input: []schemas.ResponsesMessage{
+					{
+						Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather?")},
+					},
+					{
+						ID:   origID,
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr(tc.callID),
+							Name:      schemas.Ptr("get_weather"),
+							Arguments: schemas.Ptr(`{"city":"SF"}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr(tc.callID),
+							Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("22C")},
+						},
+					},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			converted := ToOpenAIResponsesRequest(ctx, req)
+			if converted == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+			wire, err := sonic.Marshal(converted)
+			if err != nil {
+				t.Fatalf("marshal wire request: %v", err)
+			}
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			if err := sonic.Unmarshal(wire, &payload); err != nil {
+				t.Fatalf("unmarshal wire request: %v", err)
+			}
+			if len(payload.Input) != 3 {
+				t.Fatalf("wire input length: got %d, want 3", len(payload.Input))
+			}
+
+			functionCall := payload.Input[1]
+			rawID, hasID := functionCall["id"]
+			if tc.wantID == nil {
+				if hasID {
+					t.Errorf("function_call id must be absent on the wire, got %s", rawID)
+				}
+			} else {
+				var gotID string
+				if err := sonic.Unmarshal(rawID, &gotID); err != nil || gotID != *tc.wantID {
+					t.Errorf("function_call id: got %q, want %q (err=%v)", gotID, *tc.wantID, err)
+				}
+			}
+			var gotCallID string
+			if err := sonic.Unmarshal(functionCall["call_id"], &gotCallID); err != nil || gotCallID != tc.wantCallID {
+				t.Errorf("function_call call_id: got %q, want %q (err=%v)", gotCallID, tc.wantCallID, err)
+			}
+			var gotOutputCallID string
+			if err := sonic.Unmarshal(payload.Input[2]["call_id"], &gotOutputCallID); err != nil || gotOutputCallID != gotCallID {
+				t.Errorf("function_call_output call_id %q must match function_call call_id %q (err=%v)", gotOutputCallID, gotCallID, err)
+			}
+
+			// The caller's history is shared with plugins and the fallback chain.
+			switch {
+			case tc.itemID == nil && req.Input[1].ID != nil:
+				t.Error("original function_call id was set")
+			case tc.itemID != nil && (req.Input[1].ID == nil || *req.Input[1].ID != *tc.itemID):
+				t.Error("original function_call id was mutated")
+			}
+			if *req.Input[1].ResponsesToolMessage.CallID != tc.callID {
+				t.Error("original function_call call_id was mutated")
+			}
+		})
+	}
+}
+
 func TestToOpenAIResponsesRequest_OmitsRoleFromNonMessageInputItems(t *testing.T) {
 	assistant := schemas.ResponsesInputMessageRoleAssistant
 	user := schemas.ResponsesInputMessageRoleUser
@@ -2627,6 +2739,413 @@ func TestToOpenAIResponsesRequest_OmitsRoleFromNonMessageInputItems(t *testing.T
 	}
 	if req.Input[0].Role == nil || req.Input[1].Role == nil {
 		t.Error("original input roles were mutated")
+	}
+}
+
+// TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput verifies that
+// Gemini-streamed item fields (status, IDs, signatures, content-block shapes) are
+// stripped when converting to OpenAI input. All items are value copies; the caller's
+// input is never mutated. Each case documents which field and item type is stripped.
+func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testing.T) {
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	user := schemas.ResponsesInputMessageRoleUser
+	messageType := schemas.ResponsesMessageTypeMessage
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	functionCallOutputType := schemas.ResponsesMessageTypeFunctionCallOutput
+	webSearchCallType := schemas.ResponsesMessageTypeWebSearchCall
+
+	cases := []struct {
+		name        string
+		input       schemas.ResponsesMessage
+		wantWire    func(t *testing.T, item map[string]json.RawMessage)
+		origMutable bool // if true, assert original input still has the field
+	}{
+		{
+			name: "status stripped from message",
+			input: schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &user,
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if _, ok := item["status"]; ok {
+					t.Error("status present in wire request")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "status stripped from reasoning",
+			input: schemas.ResponsesMessage{
+				Type:   &reasoningType,
+				Status: schemas.Ptr("in_progress"),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary: []schemas.ResponsesReasoningSummary{
+						{Text: "thinking"},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if _, ok := item["status"]; ok {
+					t.Error("status present in wire request")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "reasoning item ID stripped (non-rs_ prefix)",
+			input: schemas.ResponsesMessage{
+				Type:   &reasoningType,
+				ID:     schemas.Ptr("msg_abc123_reasoning_0"),
+				Status: schemas.Ptr("completed"),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary: []schemas.ResponsesReasoningSummary{
+						{Text: "thinking"},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if _, ok := item["id"]; ok {
+					t.Error("id present in wire request for reasoning item")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "native reasoning ID preserved (rs_ prefix)",
+			input: schemas.ResponsesMessage{
+				Type:   &reasoningType,
+				ID:     schemas.Ptr("rs_abc123"),
+				Status: schemas.Ptr("completed"),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary: []schemas.ResponsesReasoningSummary{
+						{Text: "native thinking"},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				// rs_ IDs should be preserved for native replay
+				if _, ok := item["id"]; !ok {
+					t.Error("rs_ id should be preserved in wire request for reasoning item")
+				}
+				var id string
+				if err := sonic.Unmarshal(item["id"], &id); err != nil {
+					t.Fatalf("unmarshal id: %v", err)
+				}
+				if id != "rs_abc123" {
+					t.Errorf("expected id rs_abc123, got %q", id)
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "function_call_output ID and Name stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &functionCallOutputType,
+				Role:   &user,
+				ID:     schemas.Ptr("func_resp_abc123"),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_123"),
+					Name:   schemas.Ptr("get_weather"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: schemas.Ptr(`{"temperature": 72}`),
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if _, ok := item["id"]; ok {
+					t.Error("id present in wire request for function_call_output")
+				}
+				if _, ok := item["name"]; ok {
+					t.Error("name present in wire request for function_call_output")
+				}
+				if _, ok := item["status"]; ok {
+					t.Error("status present in wire request for function_call_output")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "web_search_call ID and status stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("msg_abc_ws_0"),
+				Status: schemas.Ptr("in_progress"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ws_123"),
+					Name:   schemas.Ptr("web_search"),
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if _, ok := item["id"]; ok {
+					t.Error("id present in wire request for web_search_call")
+				}
+				if _, ok := item["status"]; ok {
+					t.Error("status present in wire request for web_search_call")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "signature stripped from content blocks",
+			input: schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type:      schemas.ResponsesOutputMessageContentTypeText,
+							Text:      schemas.Ptr("hello"),
+							Signature: schemas.Ptr("base64encodedSig"),
+						},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				// Content is marshaled as a direct array of blocks
+				var blocks []map[string]json.RawMessage
+				if err := sonic.Unmarshal(item["content"], &blocks); err != nil {
+					t.Fatalf("unmarshal content: %v", err)
+				}
+				if len(blocks) > 0 {
+					if _, ok := blocks[0]["signature"]; ok {
+						t.Error("signature present in content block")
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "signature stripping does not mutate caller's content blocks",
+			input: schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type:      schemas.ResponsesOutputMessageContentTypeText,
+							Text:      schemas.Ptr("thinking"),
+							Signature: schemas.Ptr("sig_abc123"),
+						},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				var blocks []map[string]json.RawMessage
+				if err := sonic.Unmarshal(item["content"], &blocks); err != nil {
+					t.Fatalf("unmarshal content: %v", err)
+				}
+				if len(blocks) > 0 && blocks[0] != nil {
+					if _, ok := blocks[0]["signature"]; ok {
+						t.Error("signature present in wire content block")
+					}
+				}
+			},
+			origMutable: false,
+		},
+		{
+			// OpenAI's web_search_call input item carries only id, status and action;
+			// Gemini-shaped history adds call_id and name, which OpenAI rejects with
+			// "Unknown parameter: input[N].call_id". Live OpenAI accepts the bare item.
+			name: "web_search_call call_id and name stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("msg_abc_ws_0"),
+				Status: schemas.Ptr("in_progress"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ws_123"),
+					Name:   schemas.Ptr("web_search"),
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status", "call_id", "name"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// arguments is a required string on function_call; a call with no
+			// arguments (nil or "") must be sent as "{}" or OpenAI returns
+			// "Missing required parameter: input[N].arguments".
+			name: "function_call without arguments gets {}",
+			input: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_123"),
+					Name:   schemas.Ptr("get_weather"),
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				var args string
+				if err := sonic.Unmarshal(item["arguments"], &args); err != nil || args != "{}" {
+					t.Errorf("function_call arguments = %s, want \"{}\" (err=%v)", item["arguments"], err)
+				}
+			},
+			origMutable: true,
+		},
+		{
+			name: "function_call with empty-string arguments gets {}",
+			input: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("call_123"),
+					Name:      schemas.Ptr("get_weather"),
+					Arguments: schemas.Ptr(""),
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				var args string
+				if err := sonic.Unmarshal(item["arguments"], &args); err != nil || args != "{}" {
+					t.Errorf("function_call arguments = %s, want \"{}\" (err=%v)", item["arguments"], err)
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// A bare "text" content block (Anthropic/Gemini spelling) is not an
+			// OpenAI content part; assistant history must be output_text.
+			name: "bare text block retagged output_text on assistant message",
+			input: schemas.ResponsesMessage{
+				Type: &messageType,
+				Role: &assistant,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesMessageContentBlockType("text"), Text: schemas.Ptr("This is a response"), Signature: schemas.Ptr("sig")},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				var blocks []map[string]json.RawMessage
+				if err := sonic.Unmarshal(item["content"], &blocks); err != nil || len(blocks) != 1 {
+					t.Fatalf("unmarshal content: %v (%s)", err, item["content"])
+				}
+				var typ string
+				if err := sonic.Unmarshal(blocks[0]["type"], &typ); err != nil || typ != "output_text" {
+					t.Errorf("assistant text block type = %s, want output_text", blocks[0]["type"])
+				}
+				if _, ok := blocks[0]["signature"]; ok {
+					t.Error("signature present in content block")
+				}
+			},
+			origMutable: false,
+		},
+		{
+			name: "bare text block retagged input_text on user message",
+			input: schemas.ResponsesMessage{
+				Type: &messageType,
+				Role: &user,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesMessageContentBlockType("text"), Text: schemas.Ptr("hello")},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				var blocks []map[string]json.RawMessage
+				if err := sonic.Unmarshal(item["content"], &blocks); err != nil || len(blocks) != 1 {
+					t.Fatalf("unmarshal content: %v (%s)", err, item["content"])
+				}
+				var typ string
+				if err := sonic.Unmarshal(blocks[0]["type"], &typ); err != nil || typ != "input_text" {
+					t.Errorf("user text block type = %s, want input_text", blocks[0]["type"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// summary is a required array on reasoning items. A reasoning item that
+			// reaches the converter with no summary (e.g. a foreign wrapper shape the
+			// schema could not map) must still carry "summary": [] on the wire; live
+			// OpenAI accepts that, and rejects the item without the field.
+			name: "reasoning item without summary emits summary []",
+			input: schemas.ResponsesMessage{
+				Type: &reasoningType,
+				ID:   schemas.Ptr("msg_abc123_reasoning_0"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				raw, ok := item["summary"]
+				if !ok {
+					t.Fatalf("summary missing from reasoning item: %v", item)
+				}
+				var summary []json.RawMessage
+				if err := sonic.Unmarshal(raw, &summary); err != nil || summary == nil || len(summary) != 0 {
+					t.Errorf("summary = %s, want []", raw)
+				}
+				if _, ok := item["id"]; ok {
+					t.Error("non-rs_ id present in wire request for reasoning item")
+				}
+			},
+			origMutable: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Store original pointers to verify immutability
+			origStatus := tc.input.Status
+			origID := tc.input.ID
+
+			req := &schemas.BifrostResponsesRequest{
+				Model: "gpt-4o",
+				Input: []schemas.ResponsesMessage{tc.input},
+			}
+
+			converted := ToOpenAIResponsesRequest(nil, req)
+			if converted == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+
+			wire, err := sonic.Marshal(converted)
+			if err != nil {
+				t.Fatalf("marshal wire request: %v", err)
+			}
+
+			var payload struct {
+				Input []json.RawMessage `json:"input"`
+			}
+			if err := sonic.Unmarshal(wire, &payload); err != nil {
+				t.Fatalf("unmarshal wire request: %v", err)
+			}
+
+			if len(payload.Input) == 0 {
+				t.Fatal("no input items in converted request")
+			}
+
+			var item map[string]json.RawMessage
+			if err := sonic.Unmarshal(payload.Input[0], &item); err != nil {
+				t.Fatalf("unmarshal input item: %v", err)
+			}
+
+			tc.wantWire(t, item)
+
+			// Verify caller's input is unmutated
+			if tc.origMutable {
+				if tc.input.Status != origStatus {
+					t.Error("original input status was mutated")
+				}
+				if tc.input.ID != origID {
+					t.Error("original input ID was mutated")
+				}
+			} else {
+				// origMutable: false means we should NOT have mutated content blocks
+				if tc.input.Content != nil && len(tc.input.Content.ContentBlocks) > 0 {
+					for _, block := range tc.input.Content.ContentBlocks {
+						if block.Signature == nil {
+							t.Error("original content block signature was mutated (should not be nil)")
+						}
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -3578,5 +4097,90 @@ func TestToOpenAIResponsesRequest_ForwardsComputerTool(t *testing.T) {
 	}
 	if result.Tools[0].ResponsesToolComputerUsePreview != nil {
 		t.Fatal("expected no computer_use_preview fields on the bare computer tool")
+	}
+}
+
+// TestToOpenAIResponsesRequest_EffortOnlySystemItemSkipped: the Anthropic per-message
+// effort override (role:"system", content:[], output_config.effort) has no OpenAI
+// equivalent. Once Bifrost carries it on the neutral request, the OpenAI-shaped egress
+// (and every provider delegating to it) must drop the item instead of forwarding an
+// empty-content system message with an unknown output_config key.
+func TestToOpenAIResponsesRequest_EffortOnlySystemItemSkipped(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"Say hello."},
+		{"type":"message","role":"system","content":[],"output_config":{"effort":"low"}}
+	]`), &input))
+
+	result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5",
+		Input:    input,
+	})
+	require.NotNil(t, result)
+
+	raw, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1,
+		"effort-only system item reached the OpenAI wire: %s", raw)
+	require.NotContains(t, string(raw), "output_config",
+		"per-message output_config leaked onto the OpenAI wire: %s", raw)
+}
+
+// TestToOpenAIResponsesRequest_SanitizesGeminiShapedHarnessBodies decodes the exact
+// request bodies of provider-harness cases 124-127 ("OpenAI Responses strips ...")
+// and pins the wire shape that live OpenAI (gpt-4o) accepted with HTTP 200 for each.
+// These bodies are Gemini-shaped histories replayed to OpenAI: non-rs_ ids, status,
+// signatures, a "reasoning" wrapper, call_id/name on web_search_call, a function_call
+// without arguments, an object function_call_output and bare "text" blocks.
+func TestToOpenAIResponsesRequest_SanitizesGeminiShapedHarnessBodies(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		wantInput string
+	}{
+		{
+			name: "124 reasoning item ID stripped",
+			body: `{"model":"gpt-4o","input":[{"type":"reasoning","id":"msg_abc123_reasoning_0","reasoning":{"summary":["thinking about this"]}},{"type":"message","role":"user","content":"continue"}],"max_output_tokens":100}`,
+			wantInput: `[{"type":"reasoning","summary":[{"type":"summary_text","text":"thinking about this"}]},` +
+				`{"type":"message","role":"user","content":"continue"}]`,
+		},
+		{
+			name: "125 function_call_output ID and Name stripped",
+			body: `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"get weather"},{"type":"function_call","call_id":"call_123","name":"get_weather"},{"type":"function_call_output","id":"func_resp_abc","name":"get_weather","call_id":"call_123","output":{"temperature":72}}],"max_output_tokens":100}`,
+			wantInput: `[{"type":"message","role":"user","content":"get weather"},` +
+				`{"type":"function_call","call_id":"call_123","name":"get_weather","arguments":"{}"},` +
+				`{"type":"function_call_output","call_id":"call_123","output":"{\"temperature\":72}"}]`,
+		},
+		{
+			name: "126 signature stripped from content blocks",
+			body: `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"what is in this text"},{"type":"message","role":"assistant","content":[{"type":"text","text":"This is a response","signature":"base64encodedSignature"}]}],"max_output_tokens":100}`,
+			wantInput: `[{"type":"message","role":"user","content":"what is in this text"},` +
+				`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"This is a response"}]}]`,
+		},
+		{
+			name:      "127 web_search_call ID and status stripped",
+			body:      `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"search web"},{"type":"web_search_call","id":"msg_abc_ws_0","call_id":"ws_123","name":"web_search","status":"in_progress"}],"max_output_tokens":100}`,
+			wantInput: `[{"type":"message","role":"user","content":"search web"},{"type":"web_search_call"}]`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var req schemas.BifrostResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(tc.body), &req))
+			req.Provider = schemas.OpenAI
+
+			converted := ToOpenAIResponsesRequest(nil, &req)
+			require.NotNil(t, converted)
+			wire, err := sonic.Marshal(converted)
+			require.NoError(t, err)
+
+			var payload struct {
+				Input json.RawMessage `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+			require.JSONEq(t, tc.wantInput, string(payload.Input), "wire input for %s: %s", tc.name, payload.Input)
+		})
 	}
 }

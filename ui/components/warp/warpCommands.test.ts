@@ -7,8 +7,6 @@ describe("isWarpCommandQuery", () => {
 		expect(isWarpCommandQuery("/cle")).toBe(true);
 	});
 
-	// Someone asking about a route is not reaching for a command, and popping a
-	// menu over their question mid-sentence is worse than having no commands.
 	it("stays shut for a slash inside a question", () => {
 		expect(isWarpCommandQuery("what is the p99 for /v1/chat/completions?")).toBe(false);
 		expect(isWarpCommandQuery("/clear the logs table")).toBe(false);
@@ -33,8 +31,6 @@ describe("resolveWarpCommand", () => {
 		expect(resolveWarpCommand("  /CLEAR  ")?.id).toBe("clear");
 	});
 
-	// Treating this as a command would silently discard the rest of what was
-	// written, which is worse than not offering the shortcut at all.
 	it("does not resolve a command with trailing text", () => {
 		expect(resolveWarpCommand("/clear the logs table")).toBeNull();
 	});

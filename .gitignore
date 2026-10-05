@@ -87,6 +87,7 @@ node_modules/
 # Test results
 test-results/
 playwright-report/
+a11y-report/
 blob-report/
 
 # Screenshots and videos

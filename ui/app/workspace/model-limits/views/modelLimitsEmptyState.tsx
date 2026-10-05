@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { DisabledReason } from "@/components/ui/disabledReason";
+import { actionDisabledReason } from "@/lib/utils/governance";
 import { Wallet } from "lucide-react";
 import { ArrowUpRight } from "lucide-react";
 
@@ -31,9 +33,11 @@ export function ModelLimitsEmptyState({ onAddClick, canCreate = true }: ModelLim
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button aria-label="Add your first limit" onClick={onAddClick} disabled={!canCreate} data-testid="model-limits-button-create">
-						Add Limit
-					</Button>
+					<DisabledReason reason={actionDisabledReason(canCreate, "create", "model limits")}>
+						<Button aria-label="Add your first limit" onClick={onAddClick} disabled={!canCreate} data-testid="model-limits-button-create">
+							Add Limit
+						</Button>
+					</DisabledReason>
 				</div>
 			</div>
 		</div>

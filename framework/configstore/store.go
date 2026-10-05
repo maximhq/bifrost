@@ -312,10 +312,10 @@ type ConfigStore interface {
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	// UpdateMCPClientTools is a targeted column update for
-	// discovered_tools_json/tool_name_mapping_json only — safe to call from
-	// a periodic background tool-sync without racing a concurrent full
-	// UpdateMCPClientConfig call over unrelated fields.
-	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error
+	// discovered_tools_json/tool_name_mapping_json/discovered_instructions only —
+	// safe to call from a periodic background tool-sync without racing a concurrent
+	// full UpdateMCPClientConfig call over unrelated fields.
+	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// MCP library catalog (synced + org-custom)
@@ -367,6 +367,12 @@ type ConfigStore interface {
 	// Governance config CRUD
 	GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error)
 	GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error)
+	// ListExpiredVirtualKeysForDeletion returns keys whose expiry has passed and whose
+	// delete_after_expire is true, or unset when includeUnset is true.
+	ListExpiredVirtualKeysForDeletion(ctx context.Context, now time.Time, includeUnset bool) ([]tables.TableVirtualKey, error)
+	// DeleteExpiredVirtualKey deletes the key only if it is still expired and eligible
+	// under the row lock, returning the deleted row, or nil when it no longer qualifies.
+	DeleteExpiredVirtualKey(ctx context.Context, id string, now time.Time, includeUnset bool) (*tables.TableVirtualKey, error)
 	GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) // leave ids empty to get all
 	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)
@@ -477,7 +483,7 @@ type ConfigStore interface {
 
 	// Model config CRUD
 	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
-	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error)
+	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, tx ...*gorm.DB) ([]tables.TableModelConfig, error)
 	GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
 	GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error)
 	GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error)
@@ -972,11 +978,15 @@ type ConfigStore interface {
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
 	// Batch jobs - mutable coordination state for delayed batch accounting
 	UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error
 	GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error)
+	// GetProviderJobsByIDs returns the provider jobs among the given stable ids
+	// that exist; ids with no row are simply absent from the result.
+	GetProviderJobsByIDs(ctx context.Context, jobIDs []string) ([]*tables.TableProviderJob, error)
 	ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error)
 	ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
 	MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
@@ -1070,6 +1080,11 @@ type ConfigStore interface {
 	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error
 	// RevokeOAuth2RefreshTokensByMode revokes all active tokens for a given mode.
 	RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error
+	// RevokeOAuth2GrantsBySubject revokes, in one transaction, every grant bound to
+	// one identity (bf_mode + bf_sub): its consented but not yet exchanged
+	// authorization codes and its active refresh tokens. Used when a virtual key
+	// rotates; pass tx to commit it together with the key update.
+	RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error
 	// SweepOAuth2RefreshTokens deletes revoked tokens older than the given duration.
 	SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error)
 	// SweepOrphanedOAuth2Clients deletes registered clients that back no refresh

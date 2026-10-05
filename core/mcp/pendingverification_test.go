@@ -477,7 +477,7 @@ func TestSetClientTools_RecordsTheVerificationOnTheConfig(t *testing.T) {
 			m.mu.Unlock()
 
 			// What the verify handlers do once the admin's credential checks out.
-			m.SetClientTools(config.ID, tc.tools, map[string]string{"lookup": "lookup"})
+			m.SetClientTools(config.ID, tc.tools, map[string]string{"lookup": "lookup"}, "")
 
 			m.mu.RLock()
 			recorded := m.clientMap[config.ID].ExecutionConfig

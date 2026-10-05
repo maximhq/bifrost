@@ -546,6 +546,12 @@ func (h *HybridLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, 
 	return h.inner.DeleteLogsBatch(ctx, cutoff, batchSize)
 }
 
+// DeleteMCPToolLogsBatch deletes old MCP tool log rows in batches. Like
+// DeleteLogsBatch, object-store entries are left to the bucket lifecycle policy.
+func (h *HybridLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return h.inner.DeleteMCPToolLogsBatch(ctx, cutoff, batchSize)
+}
+
 // Close shuts the store down cleanly: marks the store closed (so further
 // enqueues are dropped), closes the upload queue, waits for workers to drain
 // any in-flight uploads, then closes the object store and the inner store.
@@ -951,6 +957,12 @@ func (h *HybridLogStore) GetModelRankings(ctx context.Context, filters SearchFil
 // aggregates per user for the matching log rows.
 func (h *HybridLogStore) GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error) {
 	return h.inner.GetUserRankings(ctx, filters)
+}
+
+// GetUserSpend delegates to the inner store and returns each user's total cost in
+// the filter window.
+func (h *HybridLogStore) GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error) {
+	return h.inner.GetUserSpend(ctx, filters)
 }
 
 func (h *HybridLogStore) GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {

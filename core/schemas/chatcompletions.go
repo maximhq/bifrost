@@ -34,19 +34,20 @@ func (cr *BifrostChatRequest) GetExtraParams() map[string]interface{} {
 
 // BifrostChatResponse represents the complete result from a chat completion request.
 type BifrostChatResponse struct {
-	ID                string                     `json:"id"`
-	Choices           []BifrostResponseChoice    `json:"choices"`
-	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
-	Model             string                     `json:"model"`
-	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
-	ServiceTier       *BifrostServiceTier        `json:"service_tier,omitempty"`
-	Speed             *string                    `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
-	InferenceGeo      *string                    `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
-	Diagnostics       *CacheDiagnostics          `json:"diagnostics,omitempty"`   // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
-	SystemFingerprint string                     `json:"system_fingerprint"`
-	Usage             *BifrostLLMUsage           `json:"usage"`
-	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
-	ExtraParams       map[string]interface{}     `json:"-"`
+	ID                  string                     `json:"id"`
+	Choices             []BifrostResponseChoice    `json:"choices"`
+	Created             int                        `json:"created"` // The Unix timestamp (in seconds).
+	Model               string                     `json:"model"`
+	Object              string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	ServiceTier         *BifrostServiceTier        `json:"service_tier,omitempty"`
+	Speed               *string                    `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	InferenceGeo        *string                    `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
+	Diagnostics         *CacheDiagnostics          `json:"diagnostics,omitempty"`   // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
+	SystemFingerprint   string                     `json:"system_fingerprint"`
+	PromptFilterResults json.RawMessage            `json:"prompt_filter_results,omitempty"` // Azure content-filter annotations for the prompt, passed through untouched
+	Usage               *BifrostLLMUsage           `json:"usage"`
+	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraParams         map[string]interface{}     `json:"-"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
@@ -271,15 +272,25 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 
 	// Now aux.Reasoning (from Alias) and aux.ReasoningEffort are filled
 
-	// Validate that specific fields don't conflict
-	if aux.ReasoningEffort != nil && aux.Reasoning != nil && aux.Reasoning.Effort != nil {
-		return fmt.Errorf("both reasoning_effort and reasoning.effort cannot be present at the same time")
+	// Clients that mirror the same reasoning directive in both spellings (the
+	// flat reasoning_* shorthand and the equivalent reasoning object field)
+	// are accepted as long as the two agree; the value canonicalizes to the
+	// object form in the merge below. Only contradictory values stay an error,
+	// which keeps the union invariant's protective intent: a request that asks
+	// for two different efforts is still rejected instead of silently picking
+	// a winner. Clients known to send both spellings include ai-sdk-based
+	// agents that emit every vendor dialect at once.
+	if aux.ReasoningEffort != nil && aux.Reasoning != nil && aux.Reasoning.Effort != nil &&
+		*aux.ReasoningEffort != *aux.Reasoning.Effort {
+		return fmt.Errorf("reasoning_effort (%q) conflicts with reasoning.effort (%q)", *aux.ReasoningEffort, *aux.Reasoning.Effort)
 	}
-	if aux.ReasoningMaxTokens != nil && aux.Reasoning != nil && aux.Reasoning.MaxTokens != nil {
-		return fmt.Errorf("both reasoning_max_tokens and reasoning.max_tokens cannot be present at the same time")
+	if aux.ReasoningMaxTokens != nil && aux.Reasoning != nil && aux.Reasoning.MaxTokens != nil &&
+		*aux.ReasoningMaxTokens != *aux.Reasoning.MaxTokens {
+		return fmt.Errorf("reasoning_max_tokens (%d) conflicts with reasoning.max_tokens (%d)", *aux.ReasoningMaxTokens, *aux.Reasoning.MaxTokens)
 	}
-	if aux.ReasoningDisplay != nil && aux.Reasoning != nil && aux.Reasoning.Display != nil {
-		return fmt.Errorf("both reasoning_display and reasoning.display cannot be present at the same time")
+	if aux.ReasoningDisplay != nil && aux.Reasoning != nil && aux.Reasoning.Display != nil &&
+		*aux.ReasoningDisplay != *aux.Reasoning.Display {
+		return fmt.Errorf("reasoning_display (%q) conflicts with reasoning.display (%q)", *aux.ReasoningDisplay, *aux.Reasoning.Display)
 	}
 
 	if aux.ReasoningEffort != nil || aux.ReasoningMaxTokens != nil || aux.ReasoningDisplay != nil {
@@ -331,6 +342,7 @@ type ChatReasoning struct {
 	Effort    *string `json:"effort,omitempty"`     // "none" |  "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
 	MaxTokens *int    `json:"max_tokens,omitempty"` // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 	Display   *string `json:"display,omitempty"`    // Anthropic thinking.display: "summarized" | "omitted" (requires model support for adaptive thinking)
+	Type      *string `json:"type,omitempty"`       // Anthropic thinking.type: "between_tools" (no up-front thinking); independent of effort
 }
 
 // ChatPrediction represents predicted output content for the model to reference (OpenAI only).
@@ -1314,6 +1326,9 @@ type ChatContentBlock struct {
 	// CachePoint is a Bedrock-specific field for standalone cache point blocks
 	// When present without other content, this indicates a cache point marker
 	CachePoint *CachePoint `json:"cachePoint,omitempty"`
+
+	// GuardContent marks this text or image block for selective guardrail evaluation (Bedrock).
+	GuardContent *GuardContent `json:"guard_content,omitempty"`
 }
 
 // UnmarshalJSON normalizes Anthropic-style document content blocks
@@ -1745,9 +1760,10 @@ type ChatAudioMessageAudio struct {
 // IMPORTANT: Only one of TextCompletionResponseChoice, NonStreamResponseChoice or StreamResponseChoice
 // should be non-nil at a time.
 type BifrostResponseChoice struct {
-	Index        int              `json:"index"`
-	FinishReason *string          `json:"finish_reason"`
-	LogProbs     *BifrostLogProbs `json:"logprobs"`
+	Index                int              `json:"index"`
+	FinishReason         *string          `json:"finish_reason"`
+	LogProbs             *BifrostLogProbs `json:"logprobs"`
+	ContentFilterResults json.RawMessage  `json:"content_filter_results,omitempty"` // Azure content-filter annotations for this choice, passed through untouched
 
 	*TextCompletionResponseChoice
 	*ChatNonStreamResponseChoice
@@ -1775,6 +1791,10 @@ const (
 	BifrostServiceTierPriority    BifrostServiceTier = "priority"
 	BifrostServiceTierUltrafast   BifrostServiceTier = "ultrafast"
 	BifrostServiceTierProvisioned BifrostServiceTier = "provisioned"
+	// BifrostServiceTierFast is OpenAI Fast mode, the Priority tier renamed on
+	// 2026-07-30. OpenAI accepts "priority" and "fast" interchangeably and bills
+	// both at the same rates, so the two values share the priority pricing columns.
+	BifrostServiceTierFast BifrostServiceTier = "fast"
 )
 
 type BifrostReasoningDetailsType string
@@ -1936,6 +1956,7 @@ type BifrostLLMUsage struct {
 	// bills as several. Distinct from ChatCompletionTokensDetails.NumSearchQueries, which
 	// counts web-search calls made during a chat turn.
 	SearchUnits *int         `json:"search_units,omitempty"`
+	ToolUsage   *ToolUsage   `json:"tool_usage,omitempty"`
 	Cost        *BifrostCost `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
@@ -2032,6 +2053,7 @@ type ChatCompletionTokensDetails struct {
 	AcceptedPredictionTokens int  `json:"accepted_prediction_tokens,omitempty"`
 	AudioTokens              int  `json:"audio_tokens,omitempty"`
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
+	// Deprecated: use BifrostLLMUsage.ToolUsage.WebSearch. Populated, will be removed in 3.0.0.
 	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
 	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
 	ImageTokens              *int `json:"image_tokens,omitempty"`
@@ -2118,9 +2140,50 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 		merged.CompletionTokensDetails.ImageTokens = sumOptionalInts(baseDetails.ImageTokens, addDetails.ImageTokens)
 	}
 
+	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
 	merged.Cost = base.Cost.Add(add.Cost)
 
 	return merged
+}
+
+type ToolUsage struct {
+	WebSearch *WebSearchToolUsage `json:"web_search,omitempty"`
+}
+
+// WebSearchToolUsage counts billable web search calls.
+type WebSearchToolUsage struct {
+	NumRequests int `json:"num_requests"`
+}
+
+// Add returns the per-tool sum of t and o; nil when both are nil.
+func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
+	if t == nil && o == nil {
+		return nil
+	}
+	sum := &ToolUsage{}
+	if t != nil && t.WebSearch != nil {
+		sum.WebSearch = &WebSearchToolUsage{NumRequests: t.WebSearch.NumRequests}
+	}
+	if o != nil && o.WebSearch != nil {
+		if sum.WebSearch == nil {
+			sum.WebSearch = &WebSearchToolUsage{}
+		}
+		sum.WebSearch.NumRequests += o.WebSearch.NumRequests
+	}
+	return sum
+}
+
+// DeepCopy returns an owned copy of t.
+func (t *ToolUsage) DeepCopy() *ToolUsage {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	if t.WebSearch != nil {
+		ws := *t.WebSearch
+		c.WebSearch = &ws
+	}
+	return &c
 }
 
 func cachedWriteTokens5m(details *ChatPromptTokensDetails) int {
@@ -2447,6 +2510,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		su := *u.SearchUnits
 		c.SearchUnits = &su
 	}
+	c.ToolUsage = u.ToolUsage.DeepCopy()
 	c.Cost = u.Cost.DeepCopy()
 	if u.CostInUsdTicks != nil {
 		t := *u.CostInUsdTicks

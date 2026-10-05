@@ -4,6 +4,7 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -675,12 +676,24 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 		if usage.OutputTokensDetails.NumSearchQueries == nil || n > *usage.OutputTokensDetails.NumSearchQueries {
 			usage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(n)
 		}
+		if usage.ToolUsage == nil {
+			usage.ToolUsage = &schemas.ToolUsage{}
+		}
+		if usage.ToolUsage.WebSearch == nil || n > usage.ToolUsage.WebSearch.NumRequests {
+			usage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
+		}
 		if billedUsage != nil {
 			if billedUsage.CompletionTokensDetails == nil {
 				billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 			}
 			if billedUsage.CompletionTokensDetails.NumSearchQueries == nil || n > *billedUsage.CompletionTokensDetails.NumSearchQueries {
 				billedUsage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(n)
+			}
+			if billedUsage.ToolUsage == nil {
+				billedUsage.ToolUsage = &schemas.ToolUsage{}
+			}
+			if billedUsage.ToolUsage.WebSearch == nil || n > billedUsage.ToolUsage.WebSearch.NumRequests {
+				billedUsage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
 			}
 		}
 	}
@@ -1056,6 +1069,12 @@ func HandleAnthropicChatCompletionStreaming(
 					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.CompletionTokensDetails.NumSearchQueries == nil || n > *usage.CompletionTokensDetails.NumSearchQueries {
 						usage.CompletionTokensDetails.NumSearchQueries = &n
 					}
+					if usage.ToolUsage == nil {
+						usage.ToolUsage = &schemas.ToolUsage{}
+					}
+					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.ToolUsage.WebSearch == nil || n > usage.ToolUsage.WebSearch.NumRequests {
+						usage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
+					}
 				}
 				// Extended-thinking tokens. Max-merged like the other counters because usage
 				// arrives split across message_start and message_delta; the value is a
@@ -1379,6 +1398,11 @@ func HandleAnthropicResponsesRequest(
 		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
 	}
 
+	if config.Provider == schemas.Bedrock {
+		action, trace := bedrockInvokeGuardrailOutcome(responseBody)
+		setBedrockInvokeGuardrailOutcome(bifrostResponse, action, trace)
+	}
+
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
@@ -1651,6 +1675,12 @@ func HandleAnthropicResponsesStream(
 		// here rather than stamped in the converter: the per-chunk loop below replaces
 		// ExtraFields wholesale, so anything the converter puts there is discarded.
 		var servedFallbackModel *string
+		// Native InvokeModelWithResponseStream reports the guardrail outcome on its final event
+		// as top-level amazon-bedrock-* fields AnthropicStreamEvent cannot hold; latched here and
+		// stamped on the terminal response. Gated on the marker rather than the provider name so
+		// a custom provider aliasing Bedrock behaves the same.
+		var invokeGuardrailAction string
+		var invokeGuardrailTrace json.RawMessage
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1676,6 +1706,11 @@ func HandleAnthropicResponsesStream(
 			eventData := string(eventDataBytes)
 			if eventType == "" || eventData == "" {
 				continue
+			}
+			if bytes.Contains(eventDataBytes, []byte(`"amazon-bedrock-`)) {
+				if action, trace := bedrockInvokeGuardrailOutcome(eventDataBytes); action != "" || len(trace) > 0 {
+					invokeGuardrailAction, invokeGuardrailTrace = action, trace
+				}
 			}
 			var event AnthropicStreamEvent
 			parseStart := time.Now()
@@ -1800,6 +1835,7 @@ func HandleAnthropicResponsesStream(
 							usage.InputTokens = usage.InputTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
 							usage.TotalTokens = usage.TotalTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
 						}
+						setBedrockInvokeGuardrailOutcome(response.Response, invokeGuardrailAction, invokeGuardrailTrace)
 						response.Response.Usage = usage
 						if servedServiceTier != nil {
 							response.Response.ServiceTier = servedServiceTier
@@ -3041,6 +3077,11 @@ func HandleAnthropicCountTokensRequest(
 	return response, nil
 }
 
+// ModelRetrieve is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
+}
+
 // Compaction is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
@@ -3135,9 +3176,9 @@ func (provider *AnthropicProvider) Passthrough(
 		return nil, err
 	}
 
-	url := provider.networkConfig.BaseURL + req.Path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
+	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL, req.Path, req.RawQuery)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
@@ -3207,9 +3248,9 @@ func (provider *AnthropicProvider) PassthroughStream(
 		return nil, err
 	}
 
-	url := provider.networkConfig.BaseURL + req.Path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
+	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL, req.Path, req.RawQuery)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
 
 	startTime := time.Now()
@@ -3239,7 +3280,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 	fasthttpReq.SetBody(req.Body)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
+	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

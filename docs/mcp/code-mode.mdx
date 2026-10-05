@@ -290,6 +290,10 @@ mcpConfig := &schemas.MCPConfig{
 
 When Code Mode clients are connected, Bifrost automatically adds four meta-tools to every request:
 
+<Note>
+When the request carries a virtual key, `listToolFiles`, `readToolFile`, and `getToolDocs` only show the tools that key is allowed to execute (its MCP `tools_to_execute` grant), on every route including `POST /v1/mcp/tool/execute`. A tool the key does not grant does not appear in discovery; grant it on the key to make it visible. Requests without a virtual key see every code mode tool, as before.
+</Note>
+
 ### 1. listToolFiles
 
 Lists all available virtual `.pyi` stub files for connected code mode servers.

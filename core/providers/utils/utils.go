@@ -538,7 +538,26 @@ func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
 // client.Do covers headers only, so the returned body is wrapped to time the
 // reads that drain it. Streamed responses consumed through NewIdleTimeoutReader
 // are unwrapped there — the idle reader does its own per-chunk timing.
+//
+// A stream attempt with a first-token deadline (AttemptAbort on the context)
+// runs on a child context that the abort cancels, so a missed deadline ends
+// both the header wait and the body read without cancelling the request.
 func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	if abort := AttemptAbortFromContext(req.Context()); abort != nil {
+		if abort.Fired() {
+			return nil, ErrStreamFirstTokenTimeout
+		}
+		attemptCtx, cancel := context.WithCancelCause(req.Context())
+		go func() {
+			select {
+			case <-abort.Done():
+				cancel(ErrStreamFirstTokenTimeout)
+			case <-abort.Stopped():
+			case <-attemptCtx.Done():
+			}
+		}()
+		req = req.WithContext(attemptCtx)
+	}
 	startTime := time.Now()
 	resp, err := client.Do(req)
 	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
@@ -1042,6 +1061,29 @@ func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]stri
 	return headers
 }
 
+// ExtractPassthroughProviderResponseHeadersFromHTTP is the net/http twin of
+// ExtractPassthroughProviderResponseHeaders: a passthrough caller decodes the body by the upstream
+// Content-Type, so it is kept even though the generic provider-header filter drops it.
+func ExtractPassthroughProviderResponseHeadersFromHTTP(resp *http.Response) map[string]string {
+	if resp == nil {
+		return nil
+	}
+	headers := make(map[string]string)
+	for k, values := range resp.Header {
+		kLower := strings.ToLower(k)
+		if shouldFilterProviderResponseHeader(kLower) && kLower != "content-type" {
+			continue
+		}
+		if len(values) > 0 {
+			headers[k] = strings.Join(values, ", ")
+		}
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
 // SetExtraHeaders sets additional headers from NetworkConfig to the fasthttp request.
 // This allows users to configure custom headers for their provider requests.
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
@@ -1222,12 +1264,62 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
+// passthroughPathDelimiters restores the bytes a client sent for a decoded passthrough path
+// before it is joined onto the base URL: a literal % can only have arrived as %25 and is
+// re-encoded first (the replacer is single-pass, so the %3F/%23 it emits are not touched),
+// and ? and # would otherwise end the path as a query or fragment.
+var passthroughPathDelimiters = strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23")
+
+// BuildPassthroughURL joins a provider base URL with a caller-supplied passthrough path and
+// raw query, and refuses any combination whose resolved authority differs from the base URL.
+// The path arrives percent-decoded from the transport and is sent on as received, except
+// that %, ? and # are re-encoded (see passthroughPathDelimiters) so the upstream sees the
+// bytes the client sent; nothing is cleaned or normalised. It must already be a rooted path:
+// empty, or starting with exactly one "/". A remainder such as "@host/x" or "//host/x"
+// appended to a bare origin would otherwise turn the base host into userinfo or a
+// scheme-relative authority and send the operator's credential to a caller-chosen host. The
+// transport validates the path before dispatch; this is the last check before the dial.
+func BuildPassthroughURL(baseURL, path, rawQuery string) (string, error) {
+	base := strings.TrimRight(baseURL, "/")
+	baseParsed, err := url.Parse(base)
+	if err != nil || baseParsed.Scheme == "" || baseParsed.Host == "" {
+		return "", fmt.Errorf("invalid provider base url %q", baseURL)
+	}
+	if path != "" && (!strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//")) {
+		return "", fmt.Errorf("invalid passthrough path %q: must be a rooted path", path)
+	}
+	// The transport hands over the decoded path, so a client's %25, %3F or %23 arrives as a
+	// literal %, ? or #. Joined as-is the upstream would decode % once more or see the path
+	// end at the ? or #; re-encode them so the path stays exactly what was sent. The real
+	// query arrives separately in rawQuery.
+	path = passthroughPathDelimiters.Replace(path)
+	full := base + path
+	if rawQuery != "" {
+		full += "?" + rawQuery
+	}
+	resolved, err := url.Parse(full)
+	if err != nil {
+		return "", fmt.Errorf("invalid passthrough url: %w", err)
+	}
+	if resolved.Scheme != baseParsed.Scheme || resolved.Host != baseParsed.Host || resolved.User.String() != baseParsed.User.String() {
+		return "", fmt.Errorf("passthrough url does not stay on provider host %q", baseParsed.Host)
+	}
+	return full, nil
+}
+
 // GetPathFromContext gets the path from the context, if it exists, otherwise returns the default path.
 func GetPathFromContext(ctx context.Context, defaultPath string) string {
 	if pathInContext, ok := ctx.Value(schemas.BifrostContextKeyURLPath).(string); ok {
 		return pathInContext
 	}
 	return defaultPath
+}
+
+// IsAbsoluteRequestURL reports whether a request-path override is a full URL (scheme and host)
+// that GetRequestPath sends requests to directly, rather than a path on the provider's base URL.
+func IsAbsoluteRequestURL(s string) bool {
+	u, err := url.Parse(strings.TrimSpace(s))
+	return err == nil && u != nil && u.IsAbs() && u.Host != ""
 }
 
 // GetRequestPath gets the request path from the context, if it exists, checking for path overrides in the custom provider config.
@@ -1252,7 +1344,7 @@ func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfi
 			}
 
 			// Treat absolute URLs with scheme+host as full URLs.
-			if u, err := url.Parse(override); err == nil && u != nil && u.IsAbs() && u.Host != "" {
+			if IsAbsoluteRequestURL(override) {
 				return override, true
 			}
 
@@ -3263,40 +3355,56 @@ func SetupStreamCancellation(ctx *schemas.BifrostContext, bodyStream io.Reader, 
 				logger.Debug("recovered panic in stream cancellation closeBodyStream: %v", rec)
 			}
 		}()
-		select {
-		case <-ctx.Done():
-			// Claim the close so only one owner (this goroutine, the idle-timeout
-			// timer, or ReleaseStreamingResponse) drives it. The claim orders the
-			// close against ReleaseStreamingResponse's drain; fasthttp itself is
-			// idempotent here (clientStreamBody.CloseWithError is guarded by a
-			// sync.Once), so a lost race is no longer destructive.
-			if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
-				return
-			}
-			// Closing here interrupts a read that is still in flight. That is safe
-			// only on a fasthttp carrying upstream commit fb3b29e ("wait for
-			// streaming reads before releasing pooled resources", #2353), where
-			// clientStreamBody interrupts the connection and then waits on its
-			// readLock before returning the *requestStream and the connection's
-			// *bufio.Reader to their pools.
-			//
-			// On fasthttp v1.71.0 through v1.73.0 this close pooled both objects
-			// underneath an active reader, so a later request acquired an aliased
-			// object and read another request's bytes. That is maximhq/bifrost#6143,
-			// and TestStreamCloseUnderActiveReaderIsSafe is the guard: it fails
-			// under -race on any fasthttp without that fix.
-			closeBodyStream(bodyStream, ctx.Err())
-		case <-done:
-			// The streaming goroutine reached its defer chain and ctx is also
-			// cancelled. Claim and close so ReleaseStreamingResponse does not drain
-			// a body nobody wants, and so a half-read connection is closed rather
-			// than returned to the idle pool.
-			if ctx.Err() != nil {
+		abort := AttemptAbortFromContext(ctx)
+		abortDone, abortStopped := abort.Done(), abort.Stopped()
+		for {
+			select {
+			case <-abortDone:
+				// The attempt missed its first-token deadline. The request itself is
+				// still live (a fallback follows), so close only this attempt's body.
 				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 					return
 				}
+				closeBodyStream(bodyStream, ErrStreamFirstTokenTimeout)
+			case <-abortStopped:
+				// The attempt produced output; keep watching ctx only.
+				abortDone, abortStopped = nil, nil
+				continue
+			case <-ctx.Done():
+				// Claim the close so only one owner (this goroutine, the idle-timeout
+				// timer, or ReleaseStreamingResponse) drives it. The claim orders the
+				// close against ReleaseStreamingResponse's drain; fasthttp itself is
+				// idempotent here (clientStreamBody.CloseWithError is guarded by a
+				// sync.Once), so a lost race is no longer destructive.
+				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
+					return
+				}
+				// Closing here interrupts a read that is still in flight. That is safe
+				// only on a fasthttp carrying upstream commit fb3b29e ("wait for
+				// streaming reads before releasing pooled resources", #2353), where
+				// clientStreamBody interrupts the connection and then waits on its
+				// readLock before returning the *requestStream and the connection's
+				// *bufio.Reader to their pools.
+				//
+				// On fasthttp v1.71.0 through v1.73.0 this close pooled both objects
+				// underneath an active reader, so a later request acquired an aliased
+				// object and read another request's bytes. That is maximhq/bifrost#6143,
+				// and TestStreamCloseUnderActiveReaderIsSafe is the guard: it fails
+				// under -race on any fasthttp without that fix.
 				closeBodyStream(bodyStream, ctx.Err())
+			case <-done:
+				// The streaming goroutine reached its defer chain and ctx is also
+				// cancelled. Claim and close so ReleaseStreamingResponse does not drain
+				// a body nobody wants, and so a half-read connection is closed rather
+				// than returned to the idle pool.
+				if ctx.Err() != nil {
+					if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
+						return
+					}
+					closeBodyStream(bodyStream, ctx.Err())
+				}
 			}
+			return
 		}
 	}()
 	return func() {
@@ -4384,14 +4492,8 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 		}
 	}
 
-	// End span with appropriate status
+	// Error attributes are stamped by PopulateLLMResponseAttributes above.
 	if err != nil {
-		if err.Error != nil {
-			tracer.SetAttribute(handle, "error", err.Error.Message)
-		}
-		if err.StatusCode != nil {
-			tracer.SetAttribute(handle, "status_code", *err.StatusCode)
-		}
 		tracer.EndSpan(handle, schemas.SpanStatusError, "streaming request failed")
 	} else {
 		tracer.EndSpan(handle, schemas.SpanStatusOk, "")

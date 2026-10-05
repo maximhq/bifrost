@@ -42,6 +42,7 @@ interface StoredOtelProfile {
 	export_timeout?: number;
 	request_headers?: string[];
 	disable_content_logging?: boolean;
+	export_raw_payloads?: boolean;
 	group_traces_by_session?: boolean;
 	disable_root_span_content?: boolean;
 }
@@ -111,6 +112,7 @@ const emptyProfile = (): ProfileForm => ({
 	export_timeout: 5,
 	request_headers: [],
 	disable_content_logging: false,
+	export_raw_payloads: false,
 	group_traces_by_session: false,
 	disable_root_span_content: false,
 });
@@ -135,6 +137,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	export_timeout: p?.export_timeout ?? 5,
 	request_headers: p?.request_headers ?? [],
 	disable_content_logging: p?.disable_content_logging ?? false,
+	export_raw_payloads: p?.export_raw_payloads ?? false,
 	group_traces_by_session: p?.group_traces_by_session ?? false,
 	disable_root_span_content: p?.disable_root_span_content ?? false,
 });
@@ -710,6 +713,29 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 														onCheckedChange={field.onChange}
 														disabled={!hasOtelAccess}
 														data-testid={`otel-profile-${index}-disable-content-logging-toggle`}
+													/>
+												</FormControl>
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name={`${base}.export_raw_payloads`}
+										render={({ field }) => (
+											<FormItem className="flex flex-row items-center justify-between">
+												<div className="space-y-0.5">
+													<FormLabel className="text-base">Export Raw Payloads</FormLabel>
+													<FormDescription>
+														Attach the raw provider request and response bodies to exported spans. Requires raw request/response storage
+														to be enabled on the provider.
+													</FormDescription>
+												</div>
+												<FormControl>
+													<Switch
+														checked={field.value}
+														onCheckedChange={field.onChange}
+														disabled={!hasOtelAccess || !tracesEnabled || form.watch(`${base}.disable_content_logging`)}
+														data-testid={`otel-profile-${index}-export-raw-payloads-toggle`}
 													/>
 												</FormControl>
 											</FormItem>

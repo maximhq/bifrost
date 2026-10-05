@@ -51,8 +51,45 @@ func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (conte
 			base = context.WithValue(base, key, value)
 		}
 	}
+	base = warp.WithGrant(base, warpGrantSettler(ctx))
 	snapshot, cancel := context.WithTimeout(base, timeout)
 	return snapshot, cancel, nil
+}
+
+// warpGrantSettler returns how to settle who the dashboard request is, once for
+// each of Warp's model calls (see warp.WithGrant).
+//
+// It reads exactly what lib.ConvertToBifrostContext would for an inference
+// request - the user the auth middleware resolved, the credential it recorded,
+// a header virtual key - and settles it the same way, so governance sees the
+// user who asked. The values are read now, because the settler runs after
+// fasthttp has recycled the RequestCtx; each grant is built on a background
+// context, since it outlives the request and only the values are wanted.
+func warpGrantSettler(ctx *fasthttp.RequestCtx) func() schemas.Grant {
+	values := map[any]any{}
+	for _, key := range []any{
+		schemas.BifrostContextKeyUserID,
+		schemas.BifrostContextKeyUserName,
+		schemas.BifrostContextKeyUserEmail,
+		schemas.BifrostContextKeyAuthCredential,
+	} {
+		if value := ctx.UserValue(key); value != nil {
+			values[key] = value
+		}
+	}
+	// The virtual key is a header, never a user value.
+	if virtualKey := virtualKeyFromHeaders(ctx); virtualKey != "" {
+		values[schemas.BifrostContextKeyVirtualKey] = virtualKey
+	}
+	return func() schemas.Grant {
+		settle := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer settle.Cancel()
+		for key, value := range values {
+			settle.SetValue(key, value)
+		}
+		lib.SettleIdentity(settle)
+		return settle.Grant()
+	}
 }
 
 // chat is the agent endpoint.
@@ -96,7 +133,7 @@ func (h *WarpHandler) chat(ctx *fasthttp.RequestCtx) {
 	case errors.Is(err, warp.ErrConversationTooLong):
 		SendError(ctx, fasthttp.StatusRequestEntityTooLarge, "Conversation is too long. Start a new chat.")
 		return
-	case errors.Is(err, warp.ErrEmptyConversation), errors.Is(err, warp.ErrBadRole), errors.Is(err, warp.ErrEmptyFinalTurn), errors.Is(err, warp.ErrBadConversationID):
+	case errors.Is(err, warp.ErrEmptyConversation), errors.Is(err, warp.ErrBadRole), errors.Is(err, warp.ErrEmptyFinalTurn), errors.Is(err, warp.ErrBadConversationID), errors.Is(err, warp.ErrModelNotAvailable):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	case err != nil:

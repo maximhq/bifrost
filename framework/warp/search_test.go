@@ -81,7 +81,7 @@ func TestSemanticSearchHydratesScopedLogsAndPreservesVectorOrder(t *testing.T) {
 	require.Equal(t, "visible", result.Rows[0].ID)
 	require.Equal(t, scoreVisible, result.Rows[0].Score)
 	require.Contains(t, result.Rows[0].Content, visibleContent)
-	require.Equal(t, 0.8, vectors.threshold)
+	require.Equal(t, schemas.WarpDefaultSemanticSearchThreshold, vectors.threshold)
 	require.Equal(t, int64(50), vectors.limit)
 	require.Contains(t, vectors.queries, vectorstore.Query{Field: "warp_log", Operator: vectorstore.QueryOperatorEqual, Value: true})
 	require.Contains(t, vectors.queries, vectorstore.Query{Field: "user_id", Operator: vectorstore.QueryOperatorEqual, Value: userID})
@@ -289,5 +289,25 @@ func TestSemanticSearchToolHintsWhenNothingMatches(t *testing.T) {
 	require.Equal(t, 0, response["returned"])
 	hint, _ := response["hint"].(string)
 	require.Contains(t, hint, "threshold")
-	require.Contains(t, hint, "Do not fall back to count_logs or query_logs")
+	require.Contains(t, hint, "do not fall back to count_logs or query_logs")
+	// A survey question ("what kinds of tasks was Rohan doing") has no meaning
+	// to embed, so an empty result is the expected outcome of the wrong first
+	// step, not a finding. Forbidding the fallback outright here had Warp tell
+	// a person with 42k requests in the window that nothing matched.
+	require.Contains(t, hint, "survey question")
+	require.Contains(t, hint, "query_logs using include_content and limit 25")
+	require.Contains(t, hint, "not representative of the entire traffic")
+}
+
+// The default threshold is a Weaviate certainty, (1 + cosine) / 2. At 0.80 it
+// cut off real matches: with text-embedding-3-small, "Has anyone had trouble
+// resetting their account password recently?" scored 0.738 against a logged
+// "I can't reset my account password, the reset email never arrives", so the
+// search came back empty and Warp reported that nobody had asked. Question-to-
+// conversation matches sit well below near-duplicate scores, and the default
+// has to admit them.
+func TestWarpDefaultSemanticThresholdAdmitsAQuestionToConversationMatch(t *testing.T) {
+	const measuredMatch = 0.738
+	require.LessOrEqual(t, (&schemas.WarpConfig{}).EffectiveSemanticSearchThreshold(), measuredMatch)
+	require.Equal(t, 0.70, schemas.WarpDefaultSemanticSearchThreshold)
 }
