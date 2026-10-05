@@ -435,3 +435,24 @@ func TestProviderConfig_Redacted_MasksSecretBackedIdentifiers(t *testing.T) {
 			"env var reference %q missing from redacted JSON output", ref)
 	}
 }
+
+// TestProviderConfig_InjectedToolsSurvivesRedactionAndHash covers the two copies of
+// ProviderConfig that are built field by field: Redacted (GET responses) and
+// GenerateConfigHash (config.json vs DB drift detection).
+func TestProviderConfig_InjectedToolsSurvivesRedactionAndHash(t *testing.T) {
+	cfg := ProviderConfig{InjectedTools: &schemas.InjectedToolsConfig{
+		WebSearch: &schemas.InjectedToolRef{MCPClientName: "tavily", ToolName: "search"},
+	}}
+	assert.Equal(t, cfg.InjectedTools, cfg.Redacted().InjectedTools)
+
+	withTool, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	without, err := (&ProviderConfig{}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, without, withTool)
+
+	cfg.InjectedTools.WebSearch.ToolName = "web_search"
+	changed, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, withTool, changed)
+}
