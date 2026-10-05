@@ -1,12 +1,33 @@
 package handlers
 
 import (
+	"net/url"
+	"slices"
 	"strings"
 
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// oauth2RedirectAllowed applies the current operator policy on every flow step,
+// including clients and pending flows created before a policy change.
+func oauth2RedirectAllowed(store *lib.Config, candidate string) bool {
+	if !isAllowedRedirectScheme(candidate) {
+		return false
+	}
+	u, _ := url.Parse(candidate)
+	if (u.Scheme == "http" || u.Scheme == "https") && isLoopbackRedirectHost(u.Hostname()) {
+		return true
+	}
+	if u.Scheme == "cursor" && u.Host == "anysphere.cursor-mcp" {
+		return true
+	}
+	store.Mu.RLock()
+	defer store.Mu.RUnlock()
+	cfg := store.ClientConfig.OAuth2ServerConfig
+	return cfg != nil && slices.Contains(cfg.AllowedRedirectURIs, candidate)
+}
 
 // oauth2IssuerURL resolves the effective AS issuer URL for a request. It is
 // the explicitly configured IssuerURL whenever one is set. With MCP OAuth
