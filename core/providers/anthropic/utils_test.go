@@ -4154,6 +4154,32 @@ func TestRemapRawToolVersionsForProvider_AllocationScaling(t *testing.T) {
 	})
 }
 
+// TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling covers the
+// passthrough eager_input_streaming default, which marks every custom tool in
+// the request. Claude Code sends 50+ of them on Vertex and Bedrock.
+func TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(tools int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-4-8","tools":[`)
+		for i := range tools {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// A custom tool with no eager_input_streaming, so every tool in the
+			// array triggers a write.
+			fmt.Fprintf(&b, `{"name":"tool_%d","input_schema":{"type":"object"},"description":"`, i)
+			b.WriteString(strings.Repeat("d", 400))
+			b.WriteString(`"}`)
+		}
+		b.WriteString(`],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		if _, err := ApplyDefaultEagerInputStreamingToRawBody(body, schemas.Vertex, "claude-opus-4-8"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 // TestStripUnsupportedFieldsFromRawBody_AllocationScaling covers the system-block
 // cache_control scope strip, whose loop walks every system block in the request.
 func TestStripUnsupportedFieldsFromRawBody_AllocationScaling(t *testing.T) {
