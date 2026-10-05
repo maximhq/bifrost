@@ -759,6 +759,49 @@
                   "minimum": 0,
                   "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools. 0 uses the built-in default of 16384.",
                   "default": 0
+                },
+                "codeModeLimits": {
+                  "type": "object",
+                  "description": "Limits on each code mode execution. Omit a field or set 0 for its default. Renders into mcp.tool_manager_config.code_mode_limits.",
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxSourceBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum submitted code size in bytes. 0 uses the default of 65536."
+                    },
+                    "maxSteps": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum interpreter computation steps per execution. 0 uses the default of 1000000."
+                    },
+                    "maxMemoryBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Estimated allocation budget per execution in bytes. 0 uses the default of 67108864."
+                    },
+                    "maxLogBytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum log output per execution in bytes, including newlines. 0 uses the default of 65536."
+                    },
+                    "maxToolCalls": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Maximum nested MCP tool calls per execution. 0 uses the default of 64."
+                    },
+                    "maxValueBytes": {
+                      "type": "integer",
+                      "anyOf": [{ "const": 0 }, { "minimum": 1024 }],
+                      "description": "Size budget for each tool payload and converted result in bytes. Must be 0 (default of 1048576) or at least 1024."
+                    },
+                    "maxNestingDepth": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000,
+                      "description": "Maximum nesting depth of values crossing the tool boundary. 0 uses the default of 64."
+                    }
+                  }
                 }
               }
             },
