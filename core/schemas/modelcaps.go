@@ -460,6 +460,16 @@ func (c ModelCaps) SupportsMidConversationSystem(fallback bool) bool {
 	return fallback
 }
 
+// SupportsMidConvOutputConfig reports whether the pair accepts output_config.effort
+// on a role:"system" message inside messages (per-message effort). The record is keyed per
+// (provider, model), so it decides for both the provider and the model when set.
+func (c ModelCaps) SupportsMidConvOutputConfig(fallback bool) bool {
+	if c.record != nil && c.record.SupportsMidConvOutputConfig != nil {
+		return *c.record.SupportsMidConvOutputConfig
+	}
+	return fallback
+}
+
 // SupportsMCP reports whether the model accepts MCP connector servers.
 func (c ModelCaps) SupportsMCP(fallback bool) bool {
 	if c.record != nil && c.record.SupportsMCP != nil {

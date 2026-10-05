@@ -1483,6 +1483,10 @@ type ResponsesMessage struct {
 	Role    *ResponsesMessageRoleType `json:"role,omitempty"`
 	Content *ResponsesMessageContent  `json:"content,omitempty"`
 
+	// OutputConfig carries a per-message effort override on a system item (Anthropic's
+	// mid-conversation output_config); providers without the concept drop it.
+	OutputConfig *ResponsesMessageOutputConfig `json:"output_config,omitempty"`
+
 	// Author and Recipient are required on multi-agent collab_tool_call items.
 	// Preserved as raw JSON to survive bifrost round-trip without schema coupling.
 	Author    json.RawMessage `json:"author,omitempty"`
@@ -1754,6 +1758,35 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	}
 
 	return MarshalSorted(aux)
+}
+
+// ResponsesMessageOutputConfig is the per-message generation override a system item can
+// carry. It mirrors Anthropic's mid-conversation output_config (beta
+// mid-conversation-output-config-2026-07-01): a role:"system" item with empty content and
+// an effort changes the effort level from that point on without invalidating the cached
+// prefix. Effort uses the same vocabulary as ResponsesParametersReasoning.Effort. Only
+// providers with a native equivalent forward it; the rest drop the item fail-soft.
+type ResponsesMessageOutputConfig struct {
+	Effort *string `json:"effort,omitempty"` // "low" | "medium" | "high" | "xhigh" | "max"
+}
+
+// IsEffortOnlySystemItem reports whether m is a system or developer item that exists solely
+// to carry a per-message effort override: it has an OutputConfig and no content. Providers
+// without a native equivalent drop such an item rather than forwarding an empty system turn.
+func (m *ResponsesMessage) IsEffortOnlySystemItem() bool {
+	if m == nil || m.OutputConfig == nil || m.Role == nil {
+		return false
+	}
+	if *m.Role != ResponsesInputMessageRoleSystem && *m.Role != ResponsesInputMessageRoleDeveloper {
+		return false
+	}
+	if m.Content == nil {
+		return true
+	}
+	if m.Content.ContentStr != nil && *m.Content.ContentStr != "" {
+		return false
+	}
+	return len(m.Content.ContentBlocks) == 0
 }
 
 type ResponsesMessageRoleType string
