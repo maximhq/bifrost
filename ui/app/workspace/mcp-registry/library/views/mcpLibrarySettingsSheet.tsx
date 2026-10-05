@@ -12,15 +12,15 @@ import { z } from "zod";
 import { toIntervalHours } from "./mcpLibrarySettingsSheet.utils";
 
 const mcpLibrarySettingsSchema = z.object({
-	// file:// is accepted so air-gapped deployments can point the catalog at a
-	// local file that ships with the image or volume, matching how the pricing
-	// datasheet URLs are handled in modelSettingsView.
+	// file:// is a config.json-only value for air-gapped deployments; the API
+	// rejects it, so the form does too, matching the pricing datasheet URLs in
+	// modelSettingsView.
 	mcp_library_url: z
 		.string()
 		.trim()
 		.refine(
-			(value) => value === "" || value.startsWith("http://") || value.startsWith("https://") || value.startsWith("file://"),
-			"URL must start with http://, https://, or file://",
+			(value) => value === "" || value.startsWith("http://") || value.startsWith("https://"),
+			"URL must start with http:// or https:// (file:// URLs can only be set in config.json)",
 		),
 	// 0 disables background syncing entirely. Force Sync Now still works.
 	// Anything else has to be at least an hour: transports/config.schema.json
@@ -121,8 +121,8 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 							<div className="space-y-0.5">
 								<Label htmlFor="mcp-library-url">Library Sync URL</Label>
 								<p className="text-muted-foreground text-sm">
-									URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. Use a <code>file://</code> URL to load
-									the catalog from local disk in air-gapped deployments.
+									URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. For air-gapped deployments, set a{" "}
+									<code>file://</code> URL in <code>config.json</code>.
 								</p>
 							</div>
 							<Input

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -19,6 +20,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -302,6 +304,437 @@ func TestUpdateProxyConfig_InterceptionGuardWhenAuthBypassed(t *testing.T) {
 			} else {
 				require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
 				assert.Equal(t, 30, stored.Timeout)
+			}
+		})
+	}
+}
+
+
+// newDatasheetServer serves an empty JSON datasheet on loopback.
+func newDatasheetServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestCheckURLAccessibility_RejectsFileURLs: file:// datasheet and catalog
+// URLs are an operator feature of config.json (air-gapped deployments) and are
+// refused when they arrive over the HTTP API, whatever the path points at.
+func TestCheckURLAccessibility_RejectsFileURLs(t *testing.T) {
+	for _, raw := range []string{"file:///etc/hostname", "file://./pricing.json", "file:pricing.json", "FILE:///etc/hostname"} {
+		err := checkURLAccessibility(raw)
+		require.Error(t, err, raw)
+		assert.Contains(t, err.Error(), "config.json", raw)
+	}
+}
+
+// TestCheckURLAccessibility_RefusesRedirectToLinkLocal: the entry host is a
+// reachable loopback server whose 302 points at the cloud metadata address.
+// The hop must be refused, and the caller-facing error must not name the
+// target or carry the transport detail.
+func TestCheckURLAccessibility_RefusesRedirectToLinkLocal(t *testing.T) {
+	SetLogger(&mockLogger{})
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	err := checkURLAccessibility(redirect.URL)
+	require.Error(t, err)
+	assert.Equal(t, "url is not reachable", err.Error())
+}
+
+// TestCheckURLAccessibility_DoesNotReflectTransportErrors: a non-HTTP service
+// greets with a banner that net/http folds into its parse error. That detail
+// is for the debug log, never for the response body.
+func TestCheckURLAccessibility_DoesNotReflectTransportErrors(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Write([]byte("SSH-2.0-OpenSSH_9.6 Ubuntu-3ubuntu0.1\r\n"))
+			conn.Close()
+		}
+	}()
+
+	err = checkURLAccessibility("http://" + ln.Addr().String() + "/")
+	require.Error(t, err)
+	assert.Equal(t, "url is not reachable", err.Error())
+	assert.NotContains(t, strings.ToLower(err.Error()), "openssh")
+
+	// A refused port reads the same as a banner: no open/closed oracle.
+	ln.Close()
+	err = checkURLAccessibility("http://" + ln.Addr().String() + "/")
+	require.Error(t, err)
+	assert.Equal(t, "url is not reachable", err.Error())
+}
+
+// TestUpdateConfig_RejectsOAuthModeWithoutIssuerURL pins the HTTP side of the issuer_url
+// rule the OpenAPI description states: enabling issuance over PUT /api/config without a
+// pinned issuer is refused with 400 and names the field. The startup side (a config.json
+// doing the same fails validation at boot) is pinned by
+// TestLoadConfig_OAuthDiscoveryWithoutIssuerURLFailsBoot in lib.
+func TestUpdateConfig_RejectsOAuthModeWithoutIssuerURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	// The shared fixture pins an issuer so the issuance tests clear this rule; this test is
+	// about the rule itself, so start from a headers-mode config with no issuer stored.
+	cfg.ClientConfig.OAuth2ServerConfig = nil
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	for _, mode := range []string{"both", "oauth"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"mcp_server_auth_mode":"` + mode + `"}}`)
+			h.updateConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), "issuer_url")
+		})
+	}
+}
+
+// TestUpdateConfig_RejectsFileURLsOverAPI pins the API-side rule for all three
+// catalog URLs: PUT /api/config answers 400 and persists nothing.
+func TestUpdateConfig_RejectsFileURLsOverAPI(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	for _, field := range []string{"pricing_url", "model_parameters_url", "mcp_library_url"} {
+		t.Run(field, func(t *testing.T) {
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"` + field + `":"file:///etc/hostname"}}`)
+			h.updateConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), "config.json")
+		})
+	}
+	persisted, err := store.GetFrameworkConfig(bgCtx())
+	require.NoError(t, err)
+	if persisted != nil {
+		for _, got := range []*string{persisted.PricingURL, persisted.ModelParametersURL, persisted.MCPLibraryURL} {
+			if got != nil {
+				assert.NotContains(t, *got, "file://")
+			}
+		}
+	}
+}
+
+// debugCaptureLogger records Debug lines so a test can assert what a check
+// writes to the log, not only what it returns.
+type debugCaptureLogger struct {
+	mockLogger
+	debug []string
+}
+
+func (l *debugCaptureLogger) Debug(format string, args ...any) {
+	l.debug = append(l.debug, fmt.Sprintf(format, args...))
+}
+
+// TestCheckURLAccessibility_NonOKLogsHostOnly: a non-200 answer is logged for
+// diagnosis, but like the transport-error branch above it the line names only
+// the host. The configured URL can carry userinfo or a query-string secret and
+// neither may reach the log.
+func TestCheckURLAccessibility_NonOKLogsHostOnly(t *testing.T) {
+	prevDial := checkURLAccessibilityDialContext
+	checkURLAccessibilityDialContext = (&net.Dialer{}).DialContext
+	t.Cleanup(func() { checkURLAccessibilityDialContext = prevDial })
+	log := &debugCaptureLogger{}
+	SetLogger(log)
+	t.Cleanup(func() { SetLogger(&mockLogger{}) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	raw := strings.Replace(srv.URL, "http://", "http://user:s3cretpass@", 1) + "/pricing.json?token=querysecret"
+
+	err := checkURLAccessibility(raw)
+	require.Error(t, err)
+	assert.Equal(t, "url is not reachable", err.Error())
+
+	joined := strings.Join(log.debug, "\n")
+	require.Contains(t, joined, "returned HTTP 503", "the non-200 outcome is still logged")
+	assert.NotContains(t, joined, "s3cretpass", "userinfo must not be logged")
+	assert.NotContains(t, joined, "querysecret", "query string must not be logged")
+	assert.NotContains(t, joined, "user:", "userinfo must not be logged")
+}
+
+// TestUpdateProxyConfig_RejectsLinkLocalURL pins that the global proxy URL is held to the
+// same destination rule as a provider base URL. Every proxied request carries its provider
+// credentials to this host, so an address that can never be a legitimate egress proxy
+// (link-local such as the cloud metadata endpoint, or unspecified) is refused even for a
+// genuinely authenticated admin. Private and loopback hosts stay allowed: a self-hosted
+// proxy on the local network is the normal setup.
+func TestUpdateProxyConfig_RejectsLinkLocalURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+	cases := []struct {
+		name       string
+		url        string
+		wantStatus int
+	}{
+		{name: "link-local metadata endpoint", url: "http://169.254.169.254:80", wantStatus: fasthttp.StatusBadRequest},
+		{name: "unspecified address", url: "http://0.0.0.0:3128", wantStatus: fasthttp.StatusBadRequest},
+		{name: "private network proxy", url: "http://10.0.0.5:3128", wantStatus: fasthttp.StatusOK},
+		{name: "loopback proxy", url: "http://127.0.0.1:3128", wantStatus: fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+			ctx := newTestRequestCtx(`{"enabled":true,"type":"http","url":"` + tc.url + `","timeout":0}`)
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+
+			h.updateProxyConfig(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+			stored, err := store.GetProxyConfig(context.Background())
+			if tc.wantStatus == fasthttp.StatusOK {
+				require.NoError(t, err)
+				assert.Equal(t, tc.url, stored.URL)
+				return
+			}
+			if err != nil {
+				require.ErrorIs(t, err, configstore.ErrNotFound)
+				return
+			}
+			if stored != nil {
+				assert.Empty(t, stored.URL, "a rejected proxy URL must not be persisted")
+			}
+		})
+	}
+}
+
+// TestUpdateProxyConfig_UnchangedURLDoesNotNeedDNS: the destination check resolves the
+// proxy hostname, so it must run only when the destination is new (URL changed, or the
+// proxy goes from disabled to enabled). An edit that keeps the stored URL and changes an
+// unrelated field must not fail because DNS is unavailable at that moment.
+func TestUpdateProxyConfig_UnchangedURLDoesNotNeedDNS(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const storedURL = "http://proxy.invalid:3128" // .invalid never resolves (RFC 2606)
+	cases := []struct {
+		name          string
+		storedEnabled bool
+		body          string
+		wantStatus    int
+		wantTimeout   int
+	}{
+		{name: "same url, timeout edit", storedEnabled: true, body: `{"enabled":true,"type":"http","url":"` + storedURL + `","timeout":30}`, wantStatus: fasthttp.StatusOK, wantTimeout: 30},
+		{name: "changed url still validated", storedEnabled: true, body: `{"enabled":true,"type":"http","url":"http://other.invalid:3128","timeout":30}`, wantStatus: fasthttp.StatusBadRequest, wantTimeout: 10},
+		{name: "disabled to enabled still validated", storedEnabled: false, body: `{"enabled":true,"type":"http","url":"` + storedURL + `","timeout":30}`, wantStatus: fasthttp.StatusBadRequest, wantTimeout: 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			require.NoError(t, store.UpdateProxyConfig(context.Background(), &configtables.GlobalProxyConfig{
+				Enabled: tc.storedEnabled, Type: "http", URL: storedURL, Timeout: 10,
+			}))
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			h.updateProxyConfig(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+			stored, err := store.GetProxyConfig(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, storedURL, stored.URL)
+			assert.Equal(t, tc.wantTimeout, stored.Timeout)
+		})
+	}
+}
+
+// authConfigTestManager persists auth config to the real store and matches setup tokens
+// against one fixed value, so updateConfig's credential gates can be exercised end to end.
+type authConfigTestManager struct {
+	stubConfigManager
+	store      configstore.ConfigStore
+	setupToken string
+}
+
+func (m authConfigTestManager) UpdateAuthConfig(ctx context.Context, c *configstore.AuthConfig) error {
+	return m.store.UpdateAuthConfig(ctx, c)
+}
+
+func (m authConfigTestManager) ValidateSetupToken(token string) bool {
+	return m.setupToken != "" && token == m.setupToken
+}
+
+func (m authConfigTestManager) ValidateConfiguredSetupToken(token string) bool {
+	return m.setupToken != "" && token == m.setupToken
+}
+
+// TestUpdateConfig_StoredCredentialsRequireProofWhenAuthBypassed pins that an admin account
+// which exists but has dashboard auth switched off cannot be taken over through the open
+// management API: a caller admitted without a credential check may switch auth back on, or
+// replace the stored credentials, only by presenting the current admin password
+// (current_password) or the operator-configured setup token. A genuinely authenticated
+// session needs no extra proof, and a disabled-state save that resubmits nothing keeps the
+// stored credentials as before.
+func TestUpdateConfig_StoredCredentialsRequireProofWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const (
+		storedUser = "admin"
+		storedPass = "Current-Pass-1234!"
+		newPass    = "Replacement-Pass-5678!"
+		setupToken = "operator-setup-token"
+	)
+	body := func(enabled, extra string) string {
+		return `{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":` + enabled +
+			`,"admin_username":"` + storedUser + `","admin_password":"` + newPass + `"` + extra + `}}`
+	}
+	cases := []struct {
+		name        string
+		body        string
+		bypassed    bool
+		wantStatus  int
+		wantEnabled bool
+		wantPass    string
+	}{
+		{name: "anonymous re-enable with new password", body: body("true", ""), bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPass: storedPass},
+		{name: "anonymous re-enable with wrong current_password", body: body("true", `,"current_password":"not-it"`), bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPass: storedPass},
+		{name: "anonymous re-enable with wrong setup token", body: body("true", `,"setup_token":"wrong"`), bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPass: storedPass},
+		{name: "anonymous re-enable with correct current_password", body: body("true", `,"current_password":"`+storedPass+`"`), bypassed: true, wantStatus: fasthttp.StatusOK, wantEnabled: true, wantPass: newPass},
+		{name: "anonymous re-enable with valid setup token", body: body("true", `,"setup_token":"`+setupToken+`"`), bypassed: true, wantStatus: fasthttp.StatusOK, wantEnabled: true, wantPass: newPass},
+		{name: "authenticated re-enable needs no extra proof", body: body("true", ""), bypassed: false, wantStatus: fasthttp.StatusOK, wantEnabled: true, wantPass: newPass},
+		{name: "anonymous credential change while auth stays disabled", body: body("false", ""), bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPass: storedPass},
+		{name: "anonymous credential change while disabled with current_password", body: body("false", `,"current_password":"`+storedPass+`"`), bypassed: true, wantStatus: fasthttp.StatusOK, wantPass: newPass},
+		{name: "anonymous disabled save without credentials keeps the stored ones", body: `{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":false}}`, bypassed: true, wantStatus: fasthttp.StatusOK, wantPass: storedPass},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			hash, err := encrypt.Hash(storedPass)
+			require.NoError(t, err)
+			require.NoError(t, store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{
+				AdminUserName: schemas.NewSecretVar(storedUser),
+				AdminPassword: schemas.NewSecretVar(hash),
+				IsEnabled:     false,
+			}))
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store, setupToken: setupToken}}
+
+			ctx := putConfigCtx(tc.body)
+			if tc.bypassed {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+			h.updateConfig(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+			stored, err := store.GetAuthConfig(context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			assert.Equal(t, tc.wantEnabled, stored.IsEnabled)
+			assert.Equal(t, storedUser, stored.AdminUserName.GetValue())
+			ok, _ := encrypt.CompareHash(stored.AdminPassword.GetValue(), tc.wantPass)
+			assert.True(t, ok, "stored password must verify against %q", tc.wantPass)
+		})
+	}
+}
+
+// TestUpdateConfig_FirstAdminStillRequiresSetupToken pins that the first-admin gate is
+// unchanged by the stored-credential proof: with no admin account, only the setup token
+// creates one. A current_password cannot stand in for it - there is nothing to compare it to.
+func TestUpdateConfig_FirstAdminStillRequiresSetupToken(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const setupToken = "operator-setup-token"
+	body := func(extra string) string {
+		return `{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"First-Admin-Pass-1!"` + extra + `}}`
+	}
+	cases := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{name: "no setup token", body: body(""), wantStatus: fasthttp.StatusForbidden},
+		{name: "wrong setup token", body: body(`,"setup_token":"wrong"`), wantStatus: fasthttp.StatusForbidden},
+		{name: "current_password instead of setup token", body: body(`,"current_password":"First-Admin-Pass-1!"`), wantStatus: fasthttp.StatusForbidden},
+		{name: "valid setup token", body: body(`,"setup_token":"` + setupToken + `"`), wantStatus: fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store, setupToken: setupToken}}
+
+			ctx := putConfigCtx(tc.body)
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			h.updateConfig(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+			stored, err := store.GetAuthConfig(context.Background())
+			if tc.wantStatus == fasthttp.StatusOK {
+				require.NoError(t, err)
+				require.NotNil(t, stored)
+				assert.True(t, stored.IsEnabled)
+				return
+			}
+			if err != nil {
+				require.ErrorIs(t, err, configstore.ErrNotFound)
+				return
+			}
+			assert.Nil(t, stored, "no admin account may be created without the setup token")
+		})
+	}
+}
+
+// TestUpdateConfig_RejectedProofLeavesOtherSettingsUntouched pins the ordering of the
+// proof-of-control check: a bypassed request that is refused with 403 for missing or wrong
+// proof must not have persisted or applied anything else it carried. The check therefore
+// runs in the up-front validation block, before the client config is written.
+func TestUpdateConfig_RejectedProofLeavesOtherSettingsUntouched(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const (
+		storedUser = "admin"
+		storedPass = "Current-Pass-1234!"
+	)
+	cases := []struct {
+		name string
+		auth string
+	}{
+		{name: "re-enable without proof", auth: `{"is_enabled":true,"admin_username":"admin","admin_password":"Replacement-Pass-5678!"}`},
+		{name: "re-enable with wrong current_password", auth: `{"is_enabled":true,"admin_username":"admin","admin_password":"<redacted>","current_password":"not-it"}`},
+		{name: "credential change while disabled without proof", auth: `{"is_enabled":false,"admin_username":"admin","admin_password":"Replacement-Pass-5678!"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			hash, err := encrypt.Hash(storedPass)
+			require.NoError(t, err)
+			require.NoError(t, store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{
+				AdminUserName: schemas.NewSecretVar(storedUser),
+				AdminPassword: schemas.NewSecretVar(hash),
+				IsEnabled:     false,
+			}))
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			before := cfg.ClientConfig.LogRetentionDays
+			require.NotEqual(t, 42, before)
+			h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store, setupToken: "operator-setup-token"}}
+
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":42},"auth_config":` + tc.auth + `}`)
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			h.updateConfig(ctx)
+
+			require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+			assert.Equal(t, before, cfg.ClientConfig.LogRetentionDays, "a refused request must not change the live client config")
+			persisted, err := store.GetClientConfig(context.Background())
+			if err == nil && persisted != nil {
+				assert.NotEqual(t, 42, persisted.LogRetentionDays, "a refused request must not persist its client config")
+			} else if err != nil {
+				require.ErrorIs(t, err, configstore.ErrNotFound)
 			}
 		})
 	}

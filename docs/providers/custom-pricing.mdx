@@ -44,7 +44,7 @@ Before configuring overrides, Bifrost needs a pricing catalog to work from. By d
 }
 ```
 
-`file://` URLs are also supported for loading datasheets from the local filesystem:
+`file://` URLs are also supported in `config.json` for loading datasheets from the local filesystem (the Web UI and `PUT /api/config` accept `http(s)://` URLs only):
 
 ```json
 "pricing_url": "file:///opt/bifrost/pricing.json"
@@ -52,8 +52,8 @@ Before configuring overrides, Bifrost needs a pricing catalog to work from. By d
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `pricing_url` | string (URI) | No | built-in | URL of the pricing datasheet. Supports `http://`, `https://`, and `file://` |
-| `model_parameters_url` | string (URI) | No | built-in | URL of the model parameters datasheet. Supports `http://`, `https://`, and `file://` |
+| `pricing_url` | string (URI) | No | built-in | URL of the pricing datasheet. Supports `http://`, `https://`, and (in `config.json` only) `file://` |
+| `model_parameters_url` | string (URI) | No | built-in | URL of the model parameters datasheet. Supports `http://`, `https://`, and (in `config.json` only) `file://` |
 | `pricing_sync_interval` | integer | No | `86400` | Sync interval in seconds. Minimum `3600` (1 hour) |
 
 </Tab>

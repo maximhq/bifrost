@@ -117,6 +117,44 @@
           "}",
           "",
           "",
+          "// Writes that choose where Bifrost dials out (a provider base URL, the global",
+          "// proxy URL, an MCP client target on a loopback, private or unresolvable host,",
+          "// a test delivery to a private-network webhook) need an authenticated admin",
+          "// session. In the unauthenticated pass the server answers 403 and the request's",
+          "// own test asserts that; with admin_auth_header set the same 403 is a failure.",
+          "var adminSessionGatedRequests = {",
+          "  'Add Provider': /requires an authenticated admin session/i,",
+          "  'Update Proxy Config': /requires an authenticated admin session/i,",
+          "  'Add MCP Client': /unauthenticated callers cannot register MCP clients/i,",
+          "  'Add MCP Client (unresolvable host)': /could not resolve MCP target host/i,",
+          "  'Create MCP Client (vMCP setup)': /unauthenticated callers cannot register MCP clients/i,",
+          "  'Test Webhook Endpoint': /unauthenticated callers cannot test webhook endpoints/i",
+          "};",
+          "if (adminSessionGatedRequests[requestName] && code === 403 && !pm.variables.get('admin_auth_header')) {",
+          "  try {",
+          "    var gatedBody = pm.response.json();",
+          "    var gatedMsg = (gatedBody && gatedBody.error && gatedBody.error.message) ? gatedBody.error.message : '';",
+          "    if (adminSessionGatedRequests[requestName].test(gatedMsg)) {",
+          "      pass = true;",
+          "    }",
+          "  } catch (e) {}",
+          "}",
+          "// MCP registration input the server checks before either auth gate: an unknown",
+          "// connection_type is a 400 in both passes. An unresolvable target that an admin",
+          "// may register still cannot be connected, which the server reports as a 500.",
+          "if (requestName === 'Add MCP Client (unsupported connection_type)' && code === 400) {",
+          "  pass = true;",
+          "}",
+          "if (requestName === 'Add MCP Client (unresolvable host)' && code === 500 && pm.variables.get('admin_auth_header')) {",
+          "  try {",
+          "    var connectBody = pm.response.json();",
+          "    var connectMsg = (connectBody && connectBody.error && connectBody.error.message) ? connectBody.error.message : '';",
+          "    if (/failed to connect/i.test(connectMsg)) {",
+          "      pass = true;",
+          "    }",
+          "  } catch (e) {}",
+          "}",
+          "",
           "// Coverage probes intentionally exercise routes with placeholder IDs or invalid OAuth state.",
           "if (/\\(Coverage Probe\\)$/.test(requestName) && code >= 400 && code < 600) {",
           "  pass = true;",
@@ -148,6 +186,9 @@
           "    'Get Provider Governance': { providers: true },",
           "    'Get Plugin (After Create)': { config: true }",
           "  };",
+          "  // The proxy URL is only writable from an admin session: in the unauthenticated",
+          "  // pass the stored value is whatever the deployment had (empty on a fresh database).",
+          "  if (!pm.variables.get('admin_auth_header')) nullable['Get Proxy Config'] = { url: true };",
           "  return nullable[name] || {};",
           "}",
           "function expectKeysWithValues(value, keys) {",
@@ -1695,7 +1736,7 @@
           "function assertProxyConfig(body) {",
           "  pm.expect(body.enabled).to.equal(true);",
           "  pm.expect(body.type).to.equal('http');",
-          "  pm.expect(body.url).to.equal('http://proxy.example.com:8080');",
+          "  pm.expect(body.url).to.equal('http://127.0.0.1:38080');",
           "  pm.expect(Number(body.timeout)).to.equal(30);",
           "  pm.expect(body.enable_for_inference).to.equal(true);",
           "  pm.expect(body.enable_for_api).to.equal(true);",
@@ -1814,7 +1855,9 @@
           "      assertMessageContains(body, 'deleted');",
           "      break;",
           "    case 'Get Proxy Config':",
-          "      assertProxyConfig(body);",
+          "      // Only the authenticated pass stored the fixed URL; the unauthenticated",
+          "      // attempt is refused, which the request's own test asserts.",
+          "      if (pm.variables.get('admin_auth_header')) assertProxyConfig(body);",
           "      break;",
           "    case 'Update Proxy Config':",
           "      assertMessageContains(body, 'updated');",
@@ -1984,6 +2027,26 @@
     },
     {
       "key": "vmcp_derived_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "provider_created",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "proxy_attempted_url",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "mcp_client_registered",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_client_registered",
       "value": "",
       "type": "string"
     }
@@ -2261,7 +2324,36 @@
                 "providers"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// network_config.base_url chooses where provider credentials are sent, so the",
+                  "// server only accepts it from an authenticated admin session. Unauthenticated",
+                  "// (dashboard auth disabled or unconfigured) the create is refused with 403.",
+                  "pm.collectionVariables.unset('provider_created');",
+                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "if (!authed) {",
+                  "  pm.test('Unauthenticated provider create with a base URL is refused (403)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "    var b = pm.response.json();",
+                  "    pm.expect(b.error && b.error.message, 'error message').to.match(/requires an authenticated admin session/i);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Authenticated provider create succeeds (2xx)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "  });",
+                  "}",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  pm.collectionVariables.set('provider_created', 'custom-123');",
+                  "}"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Get Provider (After Create)",
@@ -2279,7 +2371,22 @@
                 "custom-123"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The create is refused in the unauthenticated pass, so skip rather than",
+                  "// report a missing provider as a different failure.",
+                  "if (!pm.collectionVariables.get('provider_created') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Update Provider",
@@ -2306,7 +2413,22 @@
                 "custom-123"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The create is refused in the unauthenticated pass, so skip rather than",
+                  "// report a missing provider as a different failure.",
+                  "if (!pm.collectionVariables.get('provider_created') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Delete Provider",
@@ -2324,7 +2446,22 @@
                 "custom-123"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The create is refused in the unauthenticated pass, so skip rather than",
+                  "// report a missing provider as a different failure.",
+                  "if (!pm.collectionVariables.get('provider_created') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -5572,7 +5709,36 @@
                 "client"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The target is http://localhost:3001/ (the e2e MCP server). Registering a",
+                  "// loopback, private-network or link-local target needs an authenticated admin",
+                  "// session; unauthenticated the server refuses before any connection is made.",
+                  "pm.collectionVariables.unset('mcp_client_registered');",
+                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "if (!authed) {",
+                  "  pm.test('Unauthenticated loopback MCP client registration is refused (403)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "    var b = pm.response.json();",
+                  "    pm.expect(b.error && b.error.message, 'error message').to.match(/loopback, private-network, or link-local/i);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Authenticated MCP client registration connects (200)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "  });",
+                  "}",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  pm.collectionVariables.set('mcp_client_registered', pm.collectionVariables.get('mcp_client_id'));",
+                  "}"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Reconnect MCP Client",
@@ -5592,7 +5758,22 @@
                 "reconnect"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The registration is refused in the unauthenticated pass, so skip rather",
+                  "// than report the missing client as a different failure.",
+                  "if (!pm.collectionVariables.get('mcp_client_registered') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Update MCP Client",
@@ -5620,7 +5801,22 @@
                 "{{mcp_client_id}}"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The registration is refused in the unauthenticated pass, so skip rather",
+                  "// than report the missing client as a different failure.",
+                  "if (!pm.collectionVariables.get('mcp_client_registered') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Delete MCP Client",
@@ -5639,22 +5835,119 @@
                 "{{mcp_client_id}}"
               ]
             }
-          }
-        }
-      ],
-      "event": [
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The registration is refused in the unauthenticated pass, so skip rather",
+                  "// than report the missing client as a different failure.",
+                  "if (!pm.collectionVariables.get('mcp_client_registered') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
         {
-          "listen": "prerequest",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "// #6757 SSRF/auth gate: registering a loopback MCP client (http://localhost:3001/)",
-              "// requires a genuine admin, so this folder runs only in the authenticated pass.",
-              "// Skip it in the unauthenticated pass (no admin_auth_header); no 403 is tolerated.",
-              "if (!pm.variables.get('admin_auth_header') && !pm.environment.get('admin_auth_header')) {",
-              "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
-              "}"
-            ]
+          "name": "Add MCP Client (unsupported connection_type)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// connection_type is validated before any target check or auth gate, so the",
+                  "// answer is the same in both passes and nothing is registered.",
+                  "pm.test('Unknown connection_type is rejected (400)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.error && b.error.message, 'error message').to.match(/must be one of http, sse, stdio/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_id\":\"test_mcp_unsupported_type\",\"name\":\"TestMCPClientUnsupportedType\",\"connection_type\":\"streamable\",\"connection_string\":{\"value\":\"http://localhost:3001/\",\"env_var\":\"\",\"from_env\":false},\"auth_type\":\"none\",\"is_ping_available\":false,\"needs_session_stickiness\":true}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Add MCP Client (unresolvable host)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A target the resolver cannot classify is refused unauthenticated (fail",
+                  "// closed). An admin may register it, but the connect attempt fails and the",
+                  "// server reports that as a 500 without storing the client.",
+                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "if (!authed) {",
+                  "  pm.test('Unauthenticated registration of an unresolvable target is refused (403)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "    var b = pm.response.json();",
+                  "    pm.expect(b.error && b.error.message, 'error message').to.match(/could not resolve MCP target host/i);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Authenticated registration of an unresolvable target fails to connect (500)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(500);",
+                  "    var b = pm.response.json();",
+                  "    pm.expect(b.error && b.error.message, 'error message').to.match(/failed to connect/i);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_id\":\"test_mcp_unresolvable\",\"name\":\"TestMCPClientUnresolvable\",\"connection_type\":\"http\",\"connection_string\":{\"value\":\"http://mcp.e2e-unresolvable.invalid/\",\"env_var\":\"\",\"from_env\":false},\"auth_type\":\"none\",\"is_ping_available\":false,\"needs_session_stickiness\":true}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
           }
         }
       ]
@@ -5712,12 +6005,24 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// The server must know this client for the vMCP tool-spec validation below to pass.",
-                  "// If the test MCP server on :3001 is down, Add returns 4xx and the global status",
-                  "// allowlist tolerates it (this name is registered there).",
-                  "var b = null; try { b = pm.response.json(); } catch (e) {}",
-                  "if (pm.response.code >= 200 && pm.response.code < 300 && b) {",
-                  "  pm.test('vMCP setup client connected', function () { pm.expect(String(b.message)).to.match(/connected/i); });",
+                  "// Same gate as MCP Clients / Add MCP Client: a loopback target needs an",
+                  "// authenticated admin session. The dependents below skip when this is refused.",
+                  "pm.collectionVariables.unset('vmcp_client_registered');",
+                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "var b = null; try { b = pm.response.json(); } catch (e) { b = null; }",
+                  "if (!authed) {",
+                  "  pm.test('Unauthenticated loopback MCP client registration is refused (403)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "    pm.expect(b && b.error && b.error.message, 'error message').to.match(/loopback, private-network, or link-local/i);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('vMCP setup client connected (200)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "    pm.expect(String(b && b.message)).to.match(/connected/i);",
+                  "  });",
+                  "}",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  pm.collectionVariables.set('vmcp_client_registered', pm.collectionVariables.get('vmcp_client_id'));",
                   "}"
                 ]
               }
@@ -6603,10 +6908,23 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "// #6757 SSRF/auth gate: registering a loopback MCP client (http://localhost:3001/)",
-              "// requires a genuine admin, so this folder runs only in the authenticated pass.",
-              "// Skip it in the unauthenticated pass (no admin_auth_header); no 403 is tolerated.",
-              "if (!pm.variables.get('admin_auth_header') && !pm.environment.get('admin_auth_header')) {",
+              "// The setup client targets http://localhost:3001/, which only an authenticated",
+              "// admin may register, so the unauthenticated pass gets a 403 from it. Every",
+              "// request that needs that client skips when it was not registered; the ones",
+              "// listed here stand on their own and run in both passes.",
+              "var independentOfSetupClient = [",
+              "  'Create MCP Client (vMCP setup)',",
+              "  'Create Virtual Key (vMCP setup)',",
+              "  'Create Virtual MCP Missing Name (Coverage Probe)',",
+              "  'Create Virtual MCP Unknown Client (Coverage Probe)',",
+              "  'Get Virtual MCP Not Found (Coverage Probe)',",
+              "  'Get Virtual MCP Invalid Id (Coverage Probe)',",
+              "  'Update Virtual MCP Not Found (Coverage Probe)',",
+              "  'Delete Virtual MCP Not Found (Coverage Probe)',",
+              "  'Delete Virtual Key (vMCP cleanup)'",
+              "];",
+              "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : '';",
+              "if (independentOfSetupClient.indexOf(requestName) === -1 && !pm.collectionVariables.get('vmcp_client_registered')) {",
               "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
               "}"
             ]
@@ -7753,7 +8071,7 @@
           ]
         },
         {
-          "name": "Test Webhook Endpoint (Coverage Probe)",
+          "name": "Test Webhook Endpoint",
           "request": {
             "method": "POST",
             "header": [
@@ -7789,6 +8107,33 @@
                   "}"
                 ],
                 "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The endpoint was created with allow_private_network: true, so a test",
+                  "// delivery would report whether a loopback receiver answered. Reading that",
+                  "// needs an authenticated admin session; unauthenticated the server refuses.",
+                  "// Authenticated, the receiver (127.0.0.1:39199) is deliberately not listening,",
+                  "// so the delivery result is reported rather than the request failing.",
+                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "if (!authed) {",
+                  "  pm.test('Unauthenticated test of a private-network endpoint is refused (403)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "    var b = pm.response.json();",
+                  "    pm.expect(b.error && b.error.message, 'error message').to.match(/private-network/i);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Authenticated test reports the delivery outcome (200)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "    var b = pm.response.json();",
+                  "    pm.expect(b.delivered, 'delivered flag').to.be.a('boolean');",
+                  "  });",
+                  "}"
+                ]
               }
             }
           ]
@@ -8062,7 +8407,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"enabled\": true, \"type\": \"http\", \"url\": \"http://proxy.example.com:8080\", \"timeout\": 30, \"enable_for_inference\": true, \"enable_for_api\": true, \"enable_for_scim\": false}"
+              "raw": "{\"enabled\": true, \"type\": \"http\", \"url\": \"http://127.0.0.1:38080\", \"timeout\": 30, \"enable_for_inference\": true, \"enable_for_api\": true, \"enable_for_scim\": false}"
             },
             "url": {
               "raw": "{{base_url}}/api/proxy-config",
@@ -8074,7 +8419,56 @@
                 "proxy-config"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The global proxy URL is only writable from an admin session, and the server",
+                  "// resolves it (a loopback or private host is allowed, as a self-hosted proxy",
+                  "// is the documented setup; a name that does not resolve is a 400). The",
+                  "// unauthenticated pass attempts a loopback URL with a port stamped per run,",
+                  "// so the refusal is provable even on a database where an earlier authenticated",
+                  "// pass already stored the fixed URL (an unchanged URL is not a change to refuse).",
+                  "var attempted = pm.variables.get('admin_auth_header')",
+                  "  ? 'http://127.0.0.1:38080'",
+                  "  : 'http://127.0.0.1:' + (20000 + (Date.now() % 10000));",
+                  "pm.collectionVariables.set('proxy_attempted_url', attempted);",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  enabled: true,",
+                  "  type: 'http',",
+                  "  url: attempted,",
+                  "  timeout: 30,",
+                  "  enable_for_inference: true,",
+                  "  enable_for_api: true,",
+                  "  enable_for_scim: false",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "if (!authed) {",
+                  "  pm.test('Unauthenticated proxy URL change is refused (403)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "    var b = pm.response.json();",
+                  "    pm.expect(b.error && b.error.message, 'error message').to.match(/requires an authenticated admin session/i);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Authenticated proxy update succeeds (200)', function () {",
+                  "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Get Proxy Config",
@@ -8091,7 +8485,33 @@
                 "proxy-config"
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Proxy config is readable (200)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var attempted = pm.collectionVariables.get('proxy_attempted_url');",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "if (!pm.variables.get('admin_auth_header')) {",
+                  "  pm.test('Refused proxy URL was not stored', function () {",
+                  "    pm.expect(attempted, 'attempted url captured by Update Proxy Config').to.be.a('string').and.not.empty;",
+                  "    pm.expect(body && body.url, 'body: ' + pm.response.text()).to.not.equal(attempted);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Stored proxy URL matches the authenticated update', function () {",
+                  "    pm.expect(body && body.url, 'body: ' + pm.response.text()).to.equal(attempted);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
         }
       ]
     },

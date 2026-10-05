@@ -497,6 +497,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
 	{IDs: []string{"add_ultrafast_above_272k_pricing_columns"}, run: migrationAddUltrafastAbove272kPricingColumns},
 	{IDs: []string{"add_priority_above_272k_cache_creation_pricing_column"}, run: migrationAddPriorityAbove272kCacheCreationPricingColumn},
+	{IDs: []string{"add_mcp_client_require_public_target_column"}, run: migrationAddMCPClientRequirePublicTargetColumn},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -13633,13 +13634,13 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 
 			// Find all budgets owned directly by a VK (old config.json flow).
 			type standaloneVKBudget struct {
-				ID           string
-				VirtualKeyID string
-				MaxLimit     float64
+				ID            string
+				VirtualKeyID  string
+				MaxLimit      float64
 				ResetDuration string
-				CurrentUsage float64
-				LastReset    time.Time
-				ConfigHash   string
+				CurrentUsage  float64
+				LastReset     time.Time
+				ConfigHash    string
 			}
 			var standaloneBudgets []standaloneVKBudget
 			if err := tx.Raw(`
@@ -13843,6 +13844,31 @@ func migrationAddPriorityAbove272kCacheCreationPricingColumn(ctx context.Context
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientRequirePublicTargetColumn adds the flag recording that an MCP client
+// was registered over the management API with no credential check, which restricts every
+// later dial to public addresses. Defaults to false: existing rows keep the dial policy they
+// ran with, since nothing on record says how they were registered.
+func migrationAddMCPClientRequirePublicTargetColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_require_public_target_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "require_public_target")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "require_public_target")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client require public target migration: %s", err.Error())
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -148,6 +149,11 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := validateProviderKeyServerURLs(key, nil); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid key URL: %v", err))
+		return
+	}
+
 	if err := key.Models.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid models: %v", err))
 		return
@@ -280,6 +286,11 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := validateProviderKeyURL(baseProvider, mergedKey); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := validateProviderKeyServerURLs(mergedKey, oldRawKey); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid key URL: %v", err))
 		return
 	}
 
@@ -768,6 +779,101 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 	}
 
 	return decoded, nil
+}
+
+// validateProviderKeyServerURLs holds the key-level server URLs (Ollama/SGL/VLLM) to the
+// same destination rule as a provider base URL: link-local (cloud metadata) and unspecified
+// addresses are refused; private and loopback hosts stay allowed because a self-hosted
+// server on the local network is the documented setup. Unresolved references are skipped -
+// their presence is validateProviderKeyURL's job, and the dialer re-checks at connect time.
+// validateProviderKeyServerURLs checks the Ollama/SGL/VLLM server URLs of key. The check
+// resolves each hostname, so on an update (stored non-nil) a URL equal to its stored value
+// is skipped: resending the stored URL while editing another field must not depend on DNS.
+// A new or changed URL is always validated.
+func validateProviderKeyServerURLs(key schemas.Key, stored *schemas.Key) error {
+	type serverURL struct {
+		name string
+		v    *schemas.SecretVar
+		prev *schemas.SecretVar
+	}
+	var urls []serverURL
+	if c := key.OllamaKeyConfig; c != nil {
+		u := serverURL{name: "ollama_key_config.url", v: &c.URL}
+		if stored != nil && stored.OllamaKeyConfig != nil {
+			u.prev = &stored.OllamaKeyConfig.URL
+		}
+		urls = append(urls, u)
+	}
+	if c := key.SGLKeyConfig; c != nil {
+		u := serverURL{name: "sgl_key_config.url", v: &c.URL}
+		if stored != nil && stored.SGLKeyConfig != nil {
+			u.prev = &stored.SGLKeyConfig.URL
+		}
+		urls = append(urls, u)
+	}
+	if c := key.VLLMKeyConfig; c != nil {
+		u := serverURL{name: "vllm_key_config.url", v: &c.URL}
+		if stored != nil && stored.VLLMKeyConfig != nil {
+			u.prev = &stored.VLLMKeyConfig.URL
+		}
+		urls = append(urls, u)
+	}
+	for _, u := range urls {
+		raw := u.v.GetValue()
+		if !u.v.IsSet() || raw == "" {
+			continue
+		}
+		if u.prev != nil && u.prev.IsSet() && u.prev.GetValue() == raw {
+			continue
+		}
+		if err := bifrost.ValidateExternalURL(raw, true); err != nil {
+			return fmt.Errorf("%s: %w", u.name, err)
+		}
+	}
+	return validateProviderKeyRegions(key)
+}
+
+// providerRegionPattern is the shape of a vendor region identifier (us-east-1, europe-west4,
+// us-gov-west-1, global, us). Nothing that could change the host a region is interpolated
+// into is allowed.
+var providerRegionPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+// validateProviderKeyRegions holds every key-level and per-alias region to
+// providerRegionPattern. A region is not a dial target (see keyDialTargets): it selects a
+// vendor region under a fixed host suffix (<region>-aiplatform.googleapis.com,
+// <service>.<region>.amazonaws.com), which is why a region-only key stays creatable without an
+// admin session. That only holds while the value cannot escape the suffix, so a host-shaped
+// region (evil.example/#) is refused here. Unresolved references are skipped, as for URLs.
+func validateProviderKeyRegions(key schemas.Key) error {
+	type region struct {
+		name string
+		v    *schemas.SecretVar
+	}
+	var regions []region
+	if c := key.VertexKeyConfig; c != nil {
+		regions = append(regions, region{"vertex_key_config.region", &c.Region})
+	}
+	if c := key.BedrockKeyConfig; c != nil && c.Region != nil {
+		regions = append(regions, region{"bedrock_key_config.region", c.Region})
+	}
+	if c := key.BedrockMantleKeyConfig; c != nil && c.Region != nil {
+		regions = append(regions, region{"bedrock_mantle_key_config.region", c.Region})
+	}
+	for alias, cfg := range key.Aliases {
+		if cfg.Region != nil {
+			regions = append(regions, region{"aliases." + alias + ".region", cfg.Region})
+		}
+	}
+	for _, r := range regions {
+		raw := r.v.GetValue()
+		if !r.v.IsSet() || raw == "" || r.v.IsFromSecret() {
+			continue
+		}
+		if !providerRegionPattern.MatchString(raw) {
+			return fmt.Errorf("%s: invalid region %q: a region is a vendor region identifier such as us-east-1", r.name, raw)
+		}
+	}
+	return nil
 }
 
 // validateProviderKeyURL checks that provider keys carry the nested fields
