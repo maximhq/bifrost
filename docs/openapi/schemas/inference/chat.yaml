@@ -222,6 +222,10 @@ ChatReasoning:
       enum: [none, minimal, low, medium, high, xhigh]
     max_tokens:
       type: integer
+    mode:
+      type: string
+      description: OpenAI GPT-5.6/GPT-6 reasoning mode. On OpenAI and Azure the chat request is served through the Responses API; other providers drop it.
+      enum: [standard, pro]
 
 ChatStreamOptions:
   type: object
