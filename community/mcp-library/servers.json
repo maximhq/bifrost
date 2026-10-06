@@ -2334,7 +2334,8 @@
         "people-search",
         "companies",
         "hosted"
-      ]
+      ],
+      "icon_url": "https://parlel.com/favicon.ico"
     }
   ]
 }
