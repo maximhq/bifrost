@@ -4,16 +4,19 @@ package starlark
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/canonical/starlark/starlark"
+	"github.com/canonical/starlark/syntax"
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
-	"go.starlark.net/starlark"
-	"go.starlark.net/syntax"
 )
 
 type testClientManager struct {
@@ -40,6 +43,10 @@ func (m *testClientManager) GetToolPerClient(ctx context.Context) map[string][]s
 	return m.tools
 }
 
+func (m *testClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+	return nil
+}
+
 func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {
 	return nil
 }
@@ -63,35 +70,35 @@ func (m *testClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, r
 
 func TestStarlarkToGo(t *testing.T) {
 	t.Run("Convert None", func(t *testing.T) {
-		result := starlarkToGo(starlark.None)
+		result := mustStarlarkToGo(t, starlark.None)
 		if result != nil {
 			t.Errorf("Expected nil, got %v", result)
 		}
 	})
 
 	t.Run("Convert Bool", func(t *testing.T) {
-		result := starlarkToGo(starlark.Bool(true))
+		result := mustStarlarkToGo(t, starlark.Bool(true))
 		if result != true {
 			t.Errorf("Expected true, got %v", result)
 		}
 	})
 
 	t.Run("Convert Int", func(t *testing.T) {
-		result := starlarkToGo(starlark.MakeInt(42))
+		result := mustStarlarkToGo(t, starlark.MakeInt(42))
 		if result != int64(42) {
 			t.Errorf("Expected 42, got %v", result)
 		}
 	})
 
 	t.Run("Convert Float", func(t *testing.T) {
-		result := starlarkToGo(starlark.Float(3.14))
+		result := mustStarlarkToGo(t, starlark.Float(3.14))
 		if result != 3.14 {
 			t.Errorf("Expected 3.14, got %v", result)
 		}
 	})
 
 	t.Run("Convert String", func(t *testing.T) {
-		result := starlarkToGo(starlark.String("hello"))
+		result := mustStarlarkToGo(t, starlark.String("hello"))
 		if result != "hello" {
 			t.Errorf("Expected 'hello', got %v", result)
 		}
@@ -103,7 +110,7 @@ func TestStarlarkToGo(t *testing.T) {
 			starlark.MakeInt(2),
 			starlark.MakeInt(3),
 		})
-		result := starlarkToGo(list)
+		result := mustStarlarkToGo(t, list)
 		arr, ok := result.([]interface{})
 		if !ok {
 			t.Errorf("Expected []interface{}, got %T", result)
@@ -121,7 +128,7 @@ func TestStarlarkToGo(t *testing.T) {
 		dict.SetKey(starlark.String("key1"), starlark.String("value1"))
 		dict.SetKey(starlark.String("key2"), starlark.MakeInt(42))
 
-		result := starlarkToGo(dict)
+		result := mustStarlarkToGo(t, dict)
 		m, ok := result.(map[string]interface{})
 		if !ok {
 			t.Errorf("Expected map[string]interface{}, got %T", result)
@@ -137,21 +144,21 @@ func TestStarlarkToGo(t *testing.T) {
 
 func TestGoToStarlark(t *testing.T) {
 	t.Run("Convert nil", func(t *testing.T) {
-		result := goToStarlark(nil)
+		result := mustGoToStarlark(t, nil)
 		if result != starlark.None {
 			t.Errorf("Expected None, got %v", result)
 		}
 	})
 
 	t.Run("Convert bool", func(t *testing.T) {
-		result := goToStarlark(true)
+		result := mustGoToStarlark(t, true)
 		if result != starlark.Bool(true) {
 			t.Errorf("Expected True, got %v", result)
 		}
 	})
 
 	t.Run("Convert int", func(t *testing.T) {
-		result := goToStarlark(42)
+		result := mustGoToStarlark(t, 42)
 		expected := starlark.MakeInt(42)
 		if result.String() != expected.String() {
 			t.Errorf("Expected %v, got %v", expected, result)
@@ -159,21 +166,21 @@ func TestGoToStarlark(t *testing.T) {
 	})
 
 	t.Run("Convert float64", func(t *testing.T) {
-		result := goToStarlark(3.14)
+		result := mustGoToStarlark(t, 3.14)
 		if result != starlark.Float(3.14) {
 			t.Errorf("Expected 3.14, got %v", result)
 		}
 	})
 
 	t.Run("Convert string", func(t *testing.T) {
-		result := goToStarlark("hello")
+		result := mustGoToStarlark(t, "hello")
 		if result != starlark.String("hello") {
 			t.Errorf("Expected 'hello', got %v", result)
 		}
 	})
 
 	t.Run("Convert slice", func(t *testing.T) {
-		result := goToStarlark([]interface{}{1, "two", 3.0})
+		result := mustGoToStarlark(t, []interface{}{1, "two", 3.0})
 		list, ok := result.(*starlark.List)
 		if !ok {
 			t.Errorf("Expected *starlark.List, got %T", result)
@@ -184,7 +191,7 @@ func TestGoToStarlark(t *testing.T) {
 	})
 
 	t.Run("Convert map", func(t *testing.T) {
-		result := goToStarlark(map[string]interface{}{
+		result := mustGoToStarlark(t, map[string]interface{}{
 			"key1": "value1",
 			"key2": 42,
 		})
@@ -916,8 +923,8 @@ result = main()
 		if err == nil {
 			t.Fatal("try/except should be rejected by Starlark")
 		}
-		if !strings.Contains(err.Error(), "got try") {
-			t.Errorf("Expected 'got try' in error, got: %v", err)
+		if !strings.Contains(err.Error(), "got try") && !strings.Contains(err.Error(), "illegal token") {
+			t.Errorf("Expected a parser rejection, got: %v", err)
 		}
 	})
 
@@ -1044,4 +1051,467 @@ func TestGeneratePythonErrorHintsNewCases(t *testing.T) {
 			t.Errorf("Expected scope persistence hint, got: %v", hints)
 		}
 	})
+}
+
+func TestCodeModeExecutionBudget(t *testing.T) {
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{ToolExecutionTimeout: 5 * time.Second}, nil)
+	mode.clientManager = &testClientManager{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := mode.executeCode(ctx, "result = 0\nfor i in range(2000000):\n    result += i")
+	if result.Errors == nil {
+		t.Fatal("expected execution budget rejection, computation ran to completion")
+	}
+	if !strings.Contains(result.Errors.Message, "step") {
+		t.Fatalf("expected step limit, got %s", result.Errors.Message)
+	}
+}
+
+func TestCodeModeSandboxLimitsAndRecovery(t *testing.T) {
+	// No case here is about steps; an unbounded step budget makes each one reach
+	// the limit it targets instead of running out of steps first.
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{ToolExecutionTimeout: 5 * time.Second, Limits: &schemas.MCPCodeModeLimits{MaxSteps: 1 << 40}}, nil)
+	mode.clientManager = &testClientManager{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, tc := range []struct{ code, wantErr string }{
+		{"result = len([0] * 200000000)", "exceeded memory allocation limits"},
+		{"result = 'x' * 200000000", "exceeded memory allocation limits"},
+		{"for i in range(1000):\n    print('x' * 1024)", "log limit exceeded"},
+		{"result = 'x' * 2000000", "value exceeds size limit"},
+		{"#" + strings.Repeat("x", 65536), "source limit"},
+	} {
+		code := tc.code
+		result := mode.executeCode(ctx, code)
+		if result.Errors == nil || !strings.Contains(result.Errors.Message, tc.wantErr) {
+			t.Fatalf("expected %q for %.60s, got %+v", tc.wantErr, code, result.Errors)
+		}
+		next := mode.executeCode(ctx, "result = 6 * 7")
+		if next.Errors != nil || next.Result != int64(42) {
+			t.Fatalf("failed execution affected next request: %+v", next)
+		}
+	}
+}
+
+func TestCodeModeSandboxToolRoundTrip(t *testing.T) {
+	var called bool
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := runSandbox(ctx, schemas.MCPCodeModeLimits{}.WithDefaults(), "result = server.echo(value=7)", map[string][]string{"server": {"server-echo"}}, func(_ context.Context, client, tool string, args map[string]interface{}, log func(string)) (interface{}, error) {
+		called = true
+		if client != "server" || tool != "server-echo" || args["value"] != int64(7) {
+			t.Fatalf("wrong call: %s %s %+v", client, tool, args)
+		}
+		log("tool completed")
+		return map[string]interface{}{"value": int64(7)}, nil
+	})
+	if !called || result.Errors != nil {
+		t.Fatalf("tool round trip failed: %+v", result)
+	}
+	if got, ok := result.Result.(map[string]interface{}); !ok || got["value"] != int64(7) {
+		t.Fatalf("result=%#v", result.Result)
+	}
+	if len(result.Logs) != 1 || result.Logs[0] != "tool completed" {
+		t.Fatalf("logs=%v", result.Logs)
+	}
+}
+
+func TestCodeModeSandboxCancellation(t *testing.T) {
+	mode := NewStarlarkCodeMode(nil, nil)
+	mode.clientManager = &testClientManager{}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	cancelledCtx := schemas.NewBifrostContext(cancelled, schemas.NoDeadline)
+	// BifrostContext propagates cancellation asynchronously.
+	select {
+	case <-cancelledCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("context cancellation did not propagate")
+	}
+	result := mode.executeCode(cancelledCtx, "result = 42")
+	if result.Errors == nil {
+		t.Fatal("cancelled execution was accepted")
+	}
+}
+
+// Executions parked in slow tool calls must not block or reject other executions.
+func TestCodeModeSandboxNoGlobalConcurrencyCap(t *testing.T) {
+	const executions = 1000
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	entered := make(chan struct{}, executions)
+	release := make(chan struct{})
+	results := make(chan ExecutionResult, executions)
+	for i := 0; i < executions; i++ {
+		go func() {
+			results <- runSandbox(ctx, schemas.MCPCodeModeLimits{}.WithDefaults(), "result = server.wait()", map[string][]string{"server": {"server-wait"}}, func(callCtx context.Context, _, _ string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+				entered <- struct{}{}
+				select {
+				case <-release:
+					return int64(1), nil
+				case <-callCtx.Done():
+					return nil, callCtx.Err()
+				}
+			})
+		}()
+	}
+	for i := 0; i < executions; i++ {
+		select {
+		case <-entered:
+		case result := <-results:
+			close(release)
+			t.Fatalf("execution finished before every execution reached its tool call: %+v", result.Errors)
+		case <-ctx.Done():
+			t.Fatal("executions did not run concurrently")
+		}
+	}
+	close(release)
+	for i := 0; i < executions; i++ {
+		if result := <-results; result.Errors != nil || result.Result != int64(1) {
+			t.Fatalf("concurrent execution failed: %+v", result.Errors)
+		}
+	}
+}
+
+func TestCodeModeAllocationRejectedBeforeExecution(t *testing.T) {
+	mode := NewStarlarkCodeMode(nil, nil)
+	mode.clientManager = &testClientManager{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := mode.executeCode(ctx, "result = len([0] * 6000000)")
+	if result.Errors == nil || (!strings.Contains(result.Errors.Message, "allocation") && !strings.Contains(result.Errors.Message, "steps")) {
+		t.Fatalf("expected a computation or allocation budget error before allocating the list, got %+v", result.Errors)
+	}
+}
+
+func TestCodeModeMemoryBudget(t *testing.T) {
+	// Raise only the computation budget to exercise the independent memory
+	// guard: the normal configuration may reject large operations on cost first.
+	for _, code := range []string{
+		"result = [0] * 6000000",
+		"result = 'x' * 100000000",
+	} {
+		thread := newSandboxThread(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults())
+		thread.SetMaxSteps(10_000_000_000)
+		_, err := starlark.ExecFileOptions(starlarkOpts(), thread, "budget.star", code, nil)
+		thread.Cancel("test finished")
+		var allocationError *starlark.AllocsSafetyError
+		if !errors.As(err, &allocationError) {
+			t.Fatalf("expected allocation rejection for %s, got %v", code, err)
+		}
+	}
+}
+
+func TestCodeModeBoundedValues(t *testing.T) {
+	for _, code := range []string{
+		"result = 1 << 128\nfor i in range(6):\n    result *= result",
+		"result = 1 << 1000000000",
+		"result = []\nresult.append(result)",
+		"result = {}\nresult['self'] = result",
+		"result = [0]\nfor i in range(30):\n    result = [result, result]",
+		"result = []\nfor i in range(100):\n    result = [result]",
+		"result = '%1000000000s' % 'x'",
+		"result = '{}'.format('x' * 1000000000)",
+		"result = ''.join(['abc'] * 100000000)",
+	} {
+		result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), code, nil, nil)
+		if result.Errors == nil {
+			t.Fatalf("expected bounded execution: %s", code)
+		}
+	}
+}
+
+func TestCodeModeRejectsUnmeteredBuiltin(t *testing.T) {
+	thread := newSandboxThread(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults())
+	defer thread.Cancel("test finished")
+	called := false
+	fn := starlark.NewBuiltin("unmetered", func(_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
+		called = true
+		return starlark.None, nil
+	})
+	_, err := starlark.Call(thread, fn, nil, nil)
+	if called || !errors.Is(err, starlark.ErrSafety) {
+		t.Fatalf("unmetered builtin accepted: called=%v err=%v", called, err)
+	}
+}
+
+func TestCodeModeToolResponseSize(t *testing.T) {
+	oversized := strings.Repeat("x", schemas.DefaultCodeModeMaxValueBytes+1)
+	for _, content := range [][]mcp.Content{
+		{mcp.TextContent{Text: oversized}},
+		{mcp.ImageContent{Data: oversized}},
+		{mcp.AudioContent{Data: oversized}},
+		{mcp.ResourceLink{URI: oversized}},
+		{&mcp.TextContent{Text: oversized}},
+		{mcp.TextContent{Text: oversized[:schemas.DefaultCodeModeMaxValueBytes/2]}, mcp.TextContent{Text: oversized[:schemas.DefaultCodeModeMaxValueBytes/2+1]}},
+	} {
+		_, err := extractTextFromMCPResponse(&mcp.CallToolResult{Content: content}, "echo", schemas.DefaultCodeModeMaxValueBytes)
+		if err == nil {
+			t.Fatal("oversized tool response accepted")
+		}
+	}
+	thread := newSandboxThread(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults())
+	defer thread.Cancel("test finished")
+	thread.SetMaxAllocs(1024)
+	if err := chargeToolResult(thread.Context(), 100); err == nil {
+		t.Fatal("JSON decoding was not charged to execution budget")
+	}
+}
+
+func TestCodeModeResourceLink(t *testing.T) {
+	link := mcp.ResourceLink{Type: "resource_link", URI: "https://example.com/data", Name: "data"}
+	want, err := schemas.MarshalSorted(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, content := range []mcp.Content{link, &link} {
+		got, err := extractTextFromMCPResponse(&mcp.CallToolResult{Content: []mcp.Content{content}}, "echo", schemas.DefaultCodeModeMaxValueBytes)
+		if err != nil || got != string(want) {
+			t.Fatalf("resource link changed: got=%s err=%v", got, err)
+		}
+	}
+}
+
+func TestCodeModeToolLogPreview(t *testing.T) {
+	preview := formatResultForLog(strings.Repeat("x", 100_000))
+	if len(preview) > 4096 || !strings.Contains(preview, "truncated") {
+		t.Fatalf("unbounded tool log preview: %d bytes", len(preview))
+	}
+}
+
+func TestCodeModeToolBoundaryLimits(t *testing.T) {
+	bindings := map[string][]string{"server": {"server-echo"}}
+	t.Run("cyclic arguments never call tool", func(t *testing.T) {
+		called := false
+		result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "a = []\na.append(a)\nresult = server.echo(value=a)", bindings,
+			func(_ context.Context, _, _ string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+				called = true
+				return nil, nil
+			})
+		if called || result.Errors == nil {
+			t.Fatalf("cyclic arguments escaped conversion: %+v", result)
+		}
+	})
+	t.Run("tool results", func(t *testing.T) {
+		cycle := map[string]interface{}{}
+		cycle["self"] = cycle
+		for _, value := range []interface{}{cycle, strings.Repeat("x", schemas.DefaultCodeModeMaxValueBytes+1), make([]interface{}, schemas.DefaultCodeModeMaxValueBytes)} {
+			result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = server.echo()", bindings,
+				func(_ context.Context, _, _ string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+					return value, nil
+				})
+			if result.Errors == nil {
+				t.Fatal("accepted an unbounded tool result")
+			}
+		}
+	})
+	t.Run("call count", func(t *testing.T) {
+		calls := 0
+		result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "for i in range(65):\n    server.echo()", bindings,
+			func(_ context.Context, _, _ string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+				calls++
+				return nil, nil
+			})
+		if calls != 64 || result.Errors == nil || !strings.Contains(result.Errors.Message, "tool call limit") {
+			t.Fatalf("calls=%d, result=%+v", calls, result)
+		}
+	})
+}
+
+func TestCodeModeConfigurableLimits(t *testing.T) {
+	bindings := map[string][]string{"server": {"server-echo"}}
+	echo := func(_ context.Context, _, _ string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+		return int64(1), nil
+	}
+	nested := func(depth int) string {
+		return "result = 1\nfor i in range(" + strconv.Itoa(depth) + "):\n    result = [result]"
+	}
+	for _, tc := range []struct {
+		name    string
+		limits  schemas.MCPCodeModeLimits
+		code    string
+		wantErr string // empty means the execution must succeed
+	}{
+		{name: "source lowered", limits: schemas.MCPCodeModeLimits{MaxSourceBytes: 16}, code: "result = 1 + 2 + 3 + 4", wantErr: "source limit"},
+		{name: "steps lowered", limits: schemas.MCPCodeModeLimits{MaxSteps: 1000}, code: "for i in range(100000):\n    pass", wantErr: "steps"},
+		{name: "memory lowered", limits: schemas.MCPCodeModeLimits{MaxMemoryBytes: 64 << 10}, code: "result = len([0] * 100000)", wantErr: "allocation"},
+		{name: "logs lowered", limits: schemas.MCPCodeModeLimits{MaxLogBytes: 64}, code: "print('x' * 100)", wantErr: "log limit"},
+		{name: "tool calls lowered", limits: schemas.MCPCodeModeLimits{MaxToolCalls: 2}, code: "for i in range(3):\n    server.echo()", wantErr: "tool call limit"},
+		{name: "value lowered", limits: schemas.MCPCodeModeLimits{MaxValueBytes: 2048}, code: "result = 'x' * 4096", wantErr: "size limit"},
+		{name: "depth lowered", limits: schemas.MCPCodeModeLimits{MaxNestingDepth: 3}, code: nested(5), wantErr: "nesting limit"},
+		{name: "steps at default", limits: schemas.MCPCodeModeLimits{}, code: "for i in range(2000000):\n    pass", wantErr: "steps"},
+		{name: "steps raised", limits: schemas.MCPCodeModeLimits{MaxSteps: 50_000_000}, code: "for i in range(2000000):\n    pass"},
+		{name: "tool calls raised", limits: schemas.MCPCodeModeLimits{MaxToolCalls: 100}, code: "for i in range(65):\n    server.echo()"},
+		{name: "value raised", limits: schemas.MCPCodeModeLimits{MaxValueBytes: 4 << 20, MaxMemoryBytes: 256 << 20, MaxSteps: 50_000_000}, code: "result = 'x' * 300000"},
+		{name: "depth raised", limits: schemas.MCPCodeModeLimits{MaxNestingDepth: 100}, code: nested(80)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runSandbox(context.Background(), tc.limits.WithDefaults(), tc.code, bindings, echo)
+			if tc.wantErr == "" {
+				if result.Errors != nil {
+					t.Fatalf("expected success, got %+v", result.Errors)
+				}
+				return
+			}
+			if result.Errors == nil || !strings.Contains(result.Errors.Message, tc.wantErr) {
+				t.Fatalf("expected %q error, got %+v", tc.wantErr, result.Errors)
+			}
+		})
+	}
+}
+
+func TestStarlarkCodeModeLimitsHotReload(t *testing.T) {
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{Limits: &schemas.MCPCodeModeLimits{MaxSourceBytes: 16}}, nil)
+	mode.clientManager = &testClientManager{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const code = "result = 1 + 2 + 3 + 4"
+	if result := mode.executeCode(ctx, code); result.Errors == nil || !strings.Contains(result.Errors.Message, "source limit") {
+		t.Fatalf("configured source limit not applied: %+v", result.Errors)
+	}
+	mode.UpdateConfig(&codemcp.CodeModeConfig{BindingLevel: schemas.CodeModeBindingLevelServer})
+	if result := mode.executeCode(ctx, code); result.Errors == nil {
+		t.Fatal("an update without limits must keep the configured limits")
+	}
+	mode.UpdateConfig(&codemcp.CodeModeConfig{Limits: &schemas.MCPCodeModeLimits{}})
+	if result := mode.executeCode(ctx, code); result.Errors != nil || result.Result != int64(10) {
+		t.Fatalf("zero limits must restore defaults: %+v", result)
+	}
+	for _, invalid := range []schemas.MCPCodeModeLimits{
+		{MaxSourceBytes: 16, MaxSteps: -1},
+		{MaxSourceBytes: 16, MaxNestingDepth: schemas.MaxCodeModeNestingDepth + 1},
+	} {
+		mode.UpdateConfig(&codemcp.CodeModeConfig{Limits: &invalid})
+		if result := mode.executeCode(ctx, code); result.Errors != nil {
+			t.Fatalf("invalid limits %+v must not replace the current limits: %+v", invalid, result.Errors)
+		}
+	}
+	invalid := NewStarlarkCodeMode(&codemcp.CodeModeConfig{Limits: &schemas.MCPCodeModeLimits{MaxSourceBytes: 16, MaxToolCalls: -1}}, nil)
+	invalid.clientManager = &testClientManager{}
+	if result := invalid.executeCode(ctx, code); result.Errors != nil {
+		t.Fatalf("invalid startup limits must fall back to defaults: %+v", result.Errors)
+	}
+}
+
+func TestCodeModeToolLogsDoNotExhaustPrintBudget(t *testing.T) {
+	bindings := map[string][]string{"server": {"server-echo"}}
+	line := "[TOOL] server.echo raw response: " + strings.Repeat("x", 4000)
+	calls := 0
+	result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "for i in range(30):\n    server.echo()\nresult = 1", bindings,
+		func(_ context.Context, _, _ string, _ map[string]interface{}, log func(string)) (interface{}, error) {
+			calls++
+			log(line)
+			return int64(1), nil
+		})
+	if result.Errors != nil || result.Result != int64(1) || calls != 30 {
+		t.Fatalf("tool diagnostics ended the execution: calls=%d result=%+v", calls, result.Errors)
+	}
+	markers := 0
+	for _, l := range result.Logs {
+		if strings.Contains(l, "further tool logs omitted") {
+			markers++
+		}
+	}
+	if markers != 1 {
+		t.Fatalf("expected exactly one omission marker, got %d in %d log lines", markers, len(result.Logs))
+	}
+}
+
+func TestCodeModeUnsupportedStatementHint(t *testing.T) {
+	for _, code := range []string{
+		"try:\n    x = 1\nexcept:\n    pass",
+		"raise ValueError('x')",
+		"x = 1\ntry:\n    x = 2\nfinally:\n    pass",
+	} {
+		result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), code, nil, nil)
+		if result.Errors == nil {
+			t.Fatalf("expected a parse error for %q", code)
+		}
+		if !strings.Contains(strings.Join(result.Errors.Hints, "\n"), "does NOT support try/except") {
+			t.Fatalf("missing try/except hint for %q: %+v", code, result.Errors)
+		}
+	}
+}
+
+func TestCodeModeInboundToolStringsChargedAtRawSize(t *testing.T) {
+	bindings := map[string][]string{"server": {"server-big"}}
+	big := strings.Repeat("x", 300_000)
+	call := func(_ context.Context, _, _ string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+		return map[string]interface{}{"body": big}, nil
+	}
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	if result := runSandbox(context.Background(), limits, "result = len(server.big()['body'])", bindings, call); result.Errors != nil || result.Result != int64(300_000) {
+		t.Fatalf("a tool string within the 1 MiB budget was rejected: %+v", result.Errors)
+	}
+	if result := runSandbox(context.Background(), limits, "result = server.big()['body']", bindings, call); result.Errors == nil || !strings.Contains(result.Errors.Message, "size limit") {
+		t.Fatalf("returning the string must still be charged for JSON escaping: %+v", result.Errors)
+	}
+}
+
+func TestCodeModeDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	result := runSandbox(ctx, schemas.MCPCodeModeLimits{}.WithDefaults(), "while True:\n    pass", nil, nil)
+	if result.Errors == nil || !strings.Contains(result.Errors.Message, "deadline") {
+		t.Fatalf("expected deadline error: %+v", result)
+	}
+}
+
+func BenchmarkCodeModeExecution(b *testing.B) {
+	for _, tc := range []struct{ name, code string }{
+		{"scalar", "result = 6 * 7"},
+		{"transform", "result = [x * 2 for x in range(100)]"},
+		{"tool", "result = server.echo(value=7)"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			bindings := map[string][]string{"server": {"server-echo"}}
+			call := func(_ context.Context, _, _ string, args map[string]interface{}, _ func(string)) (interface{}, error) {
+				return args, nil
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), tc.code, bindings, call)
+				if result.Errors != nil {
+					b.Fatal(result.Errors.Message)
+				}
+			}
+		})
+	}
+}
+
+func mustStarlarkToGo(t *testing.T, v starlark.Value) interface{} {
+	t.Helper()
+	thread := newSandboxThread(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults())
+	defer thread.Cancel("test finished")
+	result, err := newValueConversion(thread).toGo(v, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+func mustGoToStarlark(t *testing.T, v interface{}) starlark.Value {
+	t.Helper()
+	thread := newSandboxThread(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults())
+	defer thread.Cancel("test finished")
+	result, err := newValueConversion(thread).fromGo(v, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func BenchmarkCodeModeInProcess(b *testing.B) {
+	for _, tc := range []struct{ name, code string }{
+		{"scalar", "result = 6 * 7"},
+		{"transform", "result = [x * 2 for x in range(100)]"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			mode := NewStarlarkCodeMode(nil, nil)
+			mode.clientManager = &testClientManager{}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				result := mode.executeCode(ctx, tc.code)
+				if result.Errors != nil {
+					b.Fatal(result.Errors.Message)
+				}
+			}
+		})
+	}
 }

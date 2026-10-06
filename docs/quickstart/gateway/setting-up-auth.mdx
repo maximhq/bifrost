@@ -8,6 +8,8 @@ icon: "lock"
 
 Bifrost provides built-in authentication to protect your dashboard and admin API endpoints. When enabled, users must log in with credentials before accessing the dashboard or making admin API calls. This feature helps secure your Bifrost instance, especially when deployed in production environments.
 
+Deleting MCP tool logs requires authenticated management access. Requests that bypass authentication because it is disabled, unconfigured, or whitelisted receive `403`; enable authentication and remove the deletion endpoint from the auth whitelist before deleting logs.
+
 <Note>
   **Bifrost Enterprise:** you do not need this password toggle if you use single sign-on. Configuring OAuth 2.0 /
   OIDC login or inbound SCIM 2.0 provisioning already counts as configured dashboard authentication, and it gates
@@ -49,6 +51,15 @@ Bifrost provides built-in authentication to protect your dashboard and admin API
 
 <Note>
   Setup token is required for version 2.0.0-prerelease3 and above.
+</Note>
+
+<Note>
+  **Re-enabling authentication after disabling it:** while authentication is switched off, the admin API is reachable
+  without a password even though your admin account is still stored. To stop anyone who can reach the port from
+  switching it back on with their own credentials, a `PUT /api/config` that re-enables authentication, or that changes
+  `admin_username` / `admin_password` while it stays disabled, must prove control of the instance with either
+  `auth_config.current_password` (the stored admin password) or the configured `auth_config.setup_token`. Requests made
+  from an authenticated session (for example through Basic Auth) need neither.
 </Note>
 
 ### Step 3: Configure Inference Call Authentication (Optional)

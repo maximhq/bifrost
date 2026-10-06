@@ -23,7 +23,7 @@ type StreamAccumulatorResult struct {
 	OutputMessage    *ChatMessage        // Accumulated output message
 	OutputMessages   []ResponsesMessage  // For responses API
 	TokenUsage       *BifrostLLMUsage    // Token usage
-	ServiceTier      *BifrostServiceTier // Served tier (for example "priority", "flex", "ultrafast", or "default"); needs its own field because it lives on the response envelope, not on BifrostLLMUsage like Speed and InferenceGeo
+	ServiceTier      *BifrostServiceTier // Served tier (for example "priority", "fast", "flex", "ultrafast", or "default"); needs its own field because it lives on the response envelope, not on BifrostLLMUsage like Speed and InferenceGeo
 	Cost             *float64            // Cost in dollars
 	// Debug spelling is retained for the established Go contract.
 	CacheDebug            *BifrostCacheMetadata           // Semantic cache metadata if available
@@ -92,6 +92,14 @@ type Tracer interface {
 	// PopulateLLMResponseAttributes populates all LLM-specific response attributes on the span.
 	// This includes output messages, tokens, usage stats, and error information if present.
 	PopulateLLMResponseAttributes(ctx *BifrostContext, handle SpanHandle, resp *BifrostResponse, err *BifrostError)
+
+	// DeferTraceCompletion marks a trace as still being written by a worker, so the
+	// transport skips completing it.
+	DeferTraceCompletion(traceID string)
+	// ClearTraceCompletionDeferral drops the marker once the worker has completed it.
+	ClearTraceCompletionDeferral(traceID string)
+	// AwaitTransportHandoff blocks until the transport has attached its own logs.
+	AwaitTransportHandoff(traceID string)
 
 	// StoreDeferredSpan stores a span handle for later completion (used for streaming requests).
 	// The span handle is stored keyed by trace ID so it can be retrieved when the stream completes.
@@ -243,6 +251,15 @@ func (n *NoOpTracer) PopulateLLMResponseAttributes(_ *BifrostContext, _ SpanHand
 
 // StoreDeferredSpan does nothing.
 func (n *NoOpTracer) StoreDeferredSpan(_ string, _ SpanHandle) {}
+
+// DeferTraceCompletion is a no-op.
+func (n *NoOpTracer) DeferTraceCompletion(_ string) {}
+
+// ClearTraceCompletionDeferral is a no-op.
+func (n *NoOpTracer) ClearTraceCompletionDeferral(_ string) {}
+
+// AwaitTransportHandoff is a no-op.
+func (n *NoOpTracer) AwaitTransportHandoff(_ string) {}
 
 // GetDeferredSpanHandle returns nil.
 func (n *NoOpTracer) GetDeferredSpanHandle(_ string) SpanHandle { return nil }

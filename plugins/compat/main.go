@@ -99,6 +99,11 @@ func (p *CompatPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 	return nil
 }
 
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *CompatPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged.
 func (p *CompatPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
@@ -183,10 +188,21 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
-	// Namespace-tool flattening used to run here under should_convert_params. It moved
-	// to core dispatch (prepareResponsesRequest), where it applies to every provider
-	// whose wire lacks the namespace type and maps tool calls back on the response.
-	// The flag is still parsed so existing configs load; it no longer changes anything.
+	// Convert param values the model cannot accept. Runs after the drop above so a
+	// dropped param is never converted. Namespace-tool flattening used to live under
+	// this flag too; it moved to core dispatch (prepareResponsesRequest).
+	if ((shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams) && p.modelCatalog != nil {
+		provider, model, _ := modifiedReq.GetRequestFields()
+		if model != "" {
+			maxOutputTokens := p.modelCatalog.GetMaxOutputTokens(model, provider)
+			if maxOutputTokens <= 0 {
+				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog has no max_output_tokens for model %s (%s), no param values converted", model, provider))
+			} else if changes := convertUnsupportedParamValues(modifiedReq, maxOutputTokens); len(changes) > 0 {
+				p.logger.Debug("compat: converted param values for model %s: %v", model, changes)
+				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("converted %d param value(s) for model %s - the model catalog lists max_output_tokens %d: %s", len(changes), model, maxOutputTokens, strings.Join(changes, ", ")))
+			}
+		}
+	}
 
 	return modifiedReq, nil, nil
 }

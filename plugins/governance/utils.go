@@ -2,6 +2,7 @@
 package governance
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -55,10 +56,23 @@ func IsModelRequiredForRequest(requestType schemas.RequestType) bool {
 	// Responses retrieve/delete/cancel/input_items target a response_id, not a model.
 	// Video edit's model is optional too — the OpenAI SDKs send none and the provider infers it from
 	// the source video — so it is evaluated only when the caller supplies one, same as passthrough.
-	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.CachedContentListRequest || requestType == schemas.CachedContentRetrieveRequest || requestType == schemas.CachedContentUpdateRequest || requestType == schemas.CachedContentDeleteRequest || requestType == schemas.ResponsesRetrieveRequest || requestType == schemas.ResponsesRetrieveStreamRequest || requestType == schemas.ResponsesDeleteRequest || requestType == schemas.ResponsesCancelRequest || requestType == schemas.ResponsesInputItemsRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.VideoEditRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
+	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.CachedContentListRequest || requestType == schemas.CachedContentRetrieveRequest || requestType == schemas.CachedContentUpdateRequest || requestType == schemas.CachedContentDeleteRequest || requestType == schemas.ResponsesRetrieveRequest || requestType == schemas.ResponsesRetrieveStreamRequest || requestType == schemas.ResponsesDeleteRequest || requestType == schemas.ResponsesCancelRequest || requestType == schemas.ResponsesInputItemsRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.VideoEditRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest || requestType == schemas.LiveContentRequest {
 		return false
 	}
 	return true
+}
+
+// batchModelBoundByProvider reports whether a provider's batch API runs the model named on the
+// batch create request. Gemini (models/{m}:batchGenerateContent), Vertex (job model) and Bedrock
+// (required modelId) do; OpenAI and Azure take only the uploaded input, whose rows each name their
+// own model, so the request's model is at most a pricing hint there.
+func batchModelBoundByProvider(provider schemas.ModelProvider) bool {
+	switch provider {
+	case schemas.OpenAI, schemas.Azure:
+		return false
+	default:
+		return true
+	}
 }
 
 // IsModelCheckedWhenPresent reports whether a request type whose model is optional
@@ -292,4 +306,12 @@ func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []str
 		})
 	}
 	return permits
+}
+
+// isLiveSessionContinuation reports a billing unit of an admitted live session: the continuation
+// flag counts only on a live request, so no other path can skip request limits by setting it.
+func isLiveSessionContinuation(ctx context.Context) bool {
+	continuation, _ := ctx.Value(schemas.BifrostContextKeySessionContinuation).(bool)
+	requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
+	return continuation && requestType == schemas.LiveRequest
 }

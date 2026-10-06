@@ -35,6 +35,9 @@ type UsageUpdate struct {
 	Budgets    []schemas.Limit `json:"-"`
 	RateLimits []schemas.Limit `json:"-"`
 
+	// SkipRequestCount charges cost and tokens without counting a request (GPT Live billing windows).
+	SkipRequestCount bool `json:"skip_request_count,omitempty"`
+
 	// Streaming optimization fields
 	IsStreaming  bool `json:"is_streaming"`   // Whether this is a streaming response
 	IsFinalChunk bool `json:"is_final_chunk"` // Whether this is the final chunk
@@ -111,14 +114,12 @@ func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *Budge
 		batchBilled: make(map[string]time.Time),
 	}
 
-	// Start background workers for business logic
+	// Workers start only after all governance maps have been hydrated.
 	tracker.trackerCtx, tracker.trackerCancel = context.WithCancel(context.Background())
-	tracker.startWorkers(tracker.trackerCtx)
-
 	return tracker
 }
 
-// UpdateUsage queues a usage update for async processing (main business entry point)
+// UpdateUsage applies request usage to its resolved budgets and rate limits.
 func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// Bill for tokens the provider actually processed, even when the
 	// request ultimately failed or was cancelled. A failed request is only
@@ -148,7 +149,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// request adds cost+tokens but must not inflate success/rate-limit request
 	// counts.
 	shouldUpdateTokens := !update.IsStreaming || (update.IsStreaming && update.HasUsageData)
-	shouldUpdateRequests := update.Success && (!update.IsStreaming || (update.IsStreaming && update.IsFinalChunk))
+	shouldUpdateRequests := update.Success && !update.SkipRequestCount && (!update.IsStreaming || (update.IsStreaming && update.IsFinalChunk))
 	shouldUpdateBudget := !update.IsStreaming || (update.IsStreaming && update.HasUsageData)
 
 	// Everything this request answers to was resolved when its provider and model were settled, and

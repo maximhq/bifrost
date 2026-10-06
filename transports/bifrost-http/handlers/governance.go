@@ -22,6 +22,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -59,6 +60,9 @@ type GovernanceManager interface {
 	RemoveCustomer(ctx context.Context, id string) error
 	ReloadModelConfig(ctx context.Context, id string) (*configstoreTables.TableModelConfig, error)
 	RemoveModelConfig(ctx context.Context, id string) error
+	// ModelConfigIndexKey is the spelling the governance store indexes a config for
+	// (model, provider) under; two configs with the same key shadow each other.
+	ModelConfigIndexKey(model string, provider *string) string
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
@@ -68,6 +72,11 @@ type GovernanceManager interface {
 	RemoveVirtualMCP(ctx context.Context, id uint) error
 	AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
 	DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
+	// ReloadVirtualKeys reloads many virtual keys exactly as ReloadVirtualKey
+	// reloads one, from batched reads. Enterprise also propagates the reload to
+	// cluster peers. An error means nothing was reloaded, and the caller falls
+	// back to ReloadVirtualKey per key.
+	ReloadVirtualKeys(ctx context.Context, ids []string) error
 }
 
 // BudgetUsageResetOwner identifies the entity whose budgets had their usage reset.
@@ -113,19 +122,57 @@ var (
 // (e.g. an enterprise build registering a "user" resolver). Overwrites any
 // previously registered resolver for the same scope. Safe to call
 // concurrently.
+//
+// A per-id registration also drops any batch resolver registered for the same
+// scope: the batch resolver is consulted first, so leaving it in place would
+// silently shadow the resolver the caller just installed.
 func RegisterScopeNameResolver(scope string, fn ScopeNameResolver) {
 	if scope == "" || fn == nil {
 		return
 	}
 	scopeNameResolversMu.Lock()
 	scopeNameResolvers[scope] = fn
+	delete(scopeNameBatchResolvers, scope)
 	scopeNameResolversMu.Unlock()
 }
 
+// lookupScopeNameResolver returns the per-id resolver registered for scope.
 func lookupScopeNameResolver(scope string) (ScopeNameResolver, bool) {
 	scopeNameResolversMu.RLock()
 	defer scopeNameResolversMu.RUnlock()
 	fn, ok := scopeNameResolvers[scope]
+	return fn, ok
+}
+
+// ScopeNameBatchResolver resolves the names of many scope targets of one scope
+// in a single lookup. The map holds only the ids that resolved; an id missing
+// from it has no name. The bool is false when the lookup itself failed, in
+// which case callers fall back to the per-id ScopeNameResolver.
+type ScopeNameBatchResolver func(ctx context.Context, scopeIDs []string) (map[string]string, bool)
+
+// scopeNameBatchResolvers holds the optional batch form of a scope's resolver.
+// The model-config list is polled by the UI, so resolving a page of names one
+// fully preloaded entity read at a time is a real load; a batch resolver turns
+// that into one query per scope per page. Guarded by scopeNameResolversMu.
+var scopeNameBatchResolvers = map[string]ScopeNameBatchResolver{}
+
+// RegisterScopeNameBatchResolver wires a batch resolver for a scope. Register
+// it after the scope's per-id resolver, because RegisterScopeNameResolver
+// clears the batch form for its scope.
+func RegisterScopeNameBatchResolver(scope string, fn ScopeNameBatchResolver) {
+	if scope == "" || fn == nil {
+		return
+	}
+	scopeNameResolversMu.Lock()
+	scopeNameBatchResolvers[scope] = fn
+	scopeNameResolversMu.Unlock()
+}
+
+// lookupScopeNameBatchResolver returns the batch resolver registered for scope.
+func lookupScopeNameBatchResolver(scope string) (ScopeNameBatchResolver, bool) {
+	scopeNameResolversMu.RLock()
+	defer scopeNameResolversMu.RUnlock()
+	fn, ok := scopeNameBatchResolvers[scope]
 	return fn, ok
 }
 
@@ -176,6 +223,11 @@ type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables
 // whole page at once, and a per-key hook would reintroduce the N+1 the UI used to
 // do over the /virtual-keys/{id}/users endpoint.
 type VirtualKeyAssigneeResolver func(ctx context.Context, vkIDs []string) (map[string]*configstoreTables.AssignedUser, error)
+
+// VirtualKeyBusinessUnitResolver returns the business units with the given IDs, keyed by ID.
+// Unknown IDs are simply absent. Batched over the distinct owners of a page, like
+// VirtualKeyAssigneeResolver.
+type VirtualKeyBusinessUnitResolver func(ctx context.Context, businessUnitIDs []string) (map[string]*configstoreTables.VirtualKeyBusinessUnit, error)
 
 // SourcedBudget pairs a budget with what governs it (e.g. an access profile), for
 // quota responses that can be composed from more than one source. The embedded
@@ -232,6 +284,15 @@ type GovernanceHandler struct {
 	// assigned to (enterprise: the enterprise_virtual_key_users link). Injected at
 	// construction; nil on OSS builds, which have no user directory.
 	virtualKeyAssigneeResolver VirtualKeyAssigneeResolver
+	// virtualKeyBusinessUnitResolver, when non-nil, names each VK's owning business unit.
+	// Injected at construction; nil on OSS builds, which have no business unit table.
+	virtualKeyBusinessUnitResolver VirtualKeyBusinessUnitResolver
+	// sidekiq and notify back the daily expired-key cleanup job; see virtualkeyexpiry.go.
+	sidekiq           *sidekiq.Runner
+	notify            schemas.NotificationPublisher
+	expiryCleanupStop context.CancelFunc
+	// now is the clock, overridden in tests.
+	now func() time.Time
 }
 
 // GovernanceRouteRegistrar registers one replaceable governance route family.
@@ -260,10 +321,12 @@ type GovernanceRouteOverrides struct {
 // is tracked outside their own budget rows.
 // virtualKeyAssigneeResolver is optional (may be nil); when supplied the virtual
 // key read paths use it to fill in each key's assigned user.
+// virtualKeyBusinessUnitResolver is optional (may be nil); when supplied the same
+// read paths use it to name each key's owning business unit.
 // Side effect: ensures the default virtual_key scope-name resolver is
 // registered against the supplied configStore, so resolveModelConfigScopeName
 // can render VK names for OSS-only builds without further wiring.
-func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager, externalQuotaBudgetResolver ExternalQuotaBudgetResolver, virtualKeyAssigneeResolver VirtualKeyAssigneeResolver) (*GovernanceHandler, error) {
+func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager, externalQuotaBudgetResolver ExternalQuotaBudgetResolver, virtualKeyAssigneeResolver VirtualKeyAssigneeResolver, virtualKeyBusinessUnitResolver VirtualKeyBusinessUnitResolver) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
@@ -277,12 +340,30 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 		}
 		return vk.Name, true
 	})
+	// Batch form: one id+name read for every VK on a page. GetRedactedVirtualKeys
+	// returns ALL keys for an empty id list, so the empty case never reaches it.
+	RegisterScopeNameBatchResolver(configstoreTables.ModelConfigScopeVirtualKey, func(ctx context.Context, scopeIDs []string) (map[string]string, bool) {
+		if len(scopeIDs) == 0 {
+			return map[string]string{}, true
+		}
+		vks, err := configStore.GetRedactedVirtualKeys(ctx, scopeIDs)
+		if err != nil {
+			return nil, false
+		}
+		names := make(map[string]string, len(vks))
+		for i := range vks {
+			names[vks[i].ID] = vks[i].Name
+		}
+		return names, true
+	})
 	return &GovernanceHandler{
 		governanceManager:           manager,
 		configStore:                 configStore,
 		logManager:                  logManager,
 		externalQuotaBudgetResolver: externalQuotaBudgetResolver,
 		virtualKeyAssigneeResolver:  virtualKeyAssigneeResolver,
+
+		virtualKeyBusinessUnitResolver: virtualKeyBusinessUnitResolver,
 	}, nil
 }
 
@@ -315,6 +396,7 @@ type CreateVirtualKeyRequest struct {
 	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
 	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; provider_configs remain optional overrides
 	ExpiresAt         *time.Time              `json:"expires_at,omitempty"`          // Optional expiry; nil means never expires
+	DeleteAfterExpire *bool                   `json:"delete_after_expire,omitempty"` // Omit to inherit client.delete_expired_virtual_keys; true/false override it. Requires expires_at
 	// DisableContentLogging is the key's own content-logging decision. Omit to inherit
 	// client.disable_content_logging; true forces content off for this key's traffic, false forces
 	// it on for the log store.
@@ -367,6 +449,10 @@ type UpdateVirtualKeyRequest struct {
 	AllowAllProviders *bool                        `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; nil means leave unchanged
 	ResetBudgetUsage  *bool                        `json:"reset_budget_usage,omitempty"`
 	ExpiresAt         *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
+	// DeleteAfterExpire is tri-state on the wire: omitted leaves the current value, null
+	// clears it back to inheriting client.delete_expired_virtual_keys, true/false set it.
+	// A value requires an expiry.
+	DeleteAfterExpire schemas.OptionalJSON[bool] `json:"delete_after_expire,omitempty"`
 	// DisableContentLogging is tri-state on the wire: omitted leaves the current decision, null
 	// clears it back to inheriting client.disable_content_logging, true/false set it.
 	DisableContentLogging schemas.OptionalJSON[bool] `json:"disable_content_logging,omitempty"`
@@ -420,6 +506,26 @@ func applyVirtualKeyContentLoggingUpdate(vk *configstoreTables.TableVirtualKey, 
 		return
 	}
 	vk.DisableContentLogging = new(req.DisableContentLogging.Value)
+}
+
+// applyVirtualKeyDeleteAfterExpireUpdate applies the tri-state delete_after_expire field.
+// A value needs an expiry, and clearing the expiry resets the flag to inherit, since it
+// means nothing without one.
+func applyVirtualKeyDeleteAfterExpireUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) error {
+	if req.DeleteAfterExpire.Set {
+		if req.DeleteAfterExpire.Null {
+			vk.DeleteAfterExpire = nil
+		} else {
+			if vk.ExpiresAt == nil {
+				return errors.New("delete_after_expire requires expires_at")
+			}
+			vk.DeleteAfterExpire = new(req.DeleteAfterExpire.Value)
+		}
+	}
+	if vk.ExpiresAt == nil {
+		vk.DeleteAfterExpire = nil
+	}
+	return nil
 }
 
 func applyVirtualKeyOwnershipUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) error {
@@ -1370,22 +1476,39 @@ func (h *GovernanceHandler) hydrateVKGovernance(ctx context.Context, vk *configs
 	hydrateVKGovernanceFromStore(ctx, h.configStore, vk)
 }
 
+// vkModelConfigReader is the one store read hydrateVKGovernanceFromStore
+// needs, so a caller holding less than a whole ConfigStore (Warp's tests, a
+// narrowed reader) can still hydrate a row.
+type vkModelConfigReader interface {
+	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, tx ...*gorm.DB) ([]configstoreTables.TableModelConfig, error)
+}
+
 // hydrateVKGovernanceFromStore is the store-only form of hydrateVKGovernance so
 // producers without a handler (the VirtualKeyRotator) can hydrate a row too.
-func hydrateVKGovernanceFromStore(ctx context.Context, configStore configstore.ConfigStore, vk *configstoreTables.TableVirtualKey) {
+// It logs and leaves the row alone on a read error; callers that must not
+// serve a bare row on a failed read use hydrateVKGovernanceFromStoreErr.
+func hydrateVKGovernanceFromStore(ctx context.Context, configStore vkModelConfigReader, vk *configstoreTables.TableVirtualKey) {
+	if err := hydrateVKGovernanceFromStoreErr(ctx, configStore, vk); err != nil {
+		logger.Error("failed to load model configs for VK governance hydration: %v", err)
+	}
+}
+
+// hydrateVKGovernanceFromStoreErr is hydrateVKGovernanceFromStore returning
+// the read error instead of logging it.
+func hydrateVKGovernanceFromStoreErr(ctx context.Context, configStore vkModelConfigReader, vk *configstoreTables.TableVirtualKey) error {
 	if vk == nil {
-		return
+		return nil
 	}
 	mcs, err := configStore.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, []string{vk.ID})
 	if err != nil {
-		logger.Error("failed to load model configs for VK governance hydration: %v", err)
-		return
+		return err
 	}
 	ptrs := make([]*configstoreTables.TableModelConfig, len(mcs))
 	for i := range mcs {
 		ptrs[i] = &mcs[i]
 	}
 	applyVKGovernanceFromModelConfigs(vk, buildVKModelConfigIndex(ptrs), buildVKModelBudgetsIndex(ptrs))
+	return nil
 }
 
 // buildVKModelConfigIndex builds a lookup map of VK-scoped model configs keyed by
@@ -1400,26 +1523,49 @@ func buildVKModelConfigIndex(mcs []*configstoreTables.TableModelConfig) map[stri
 	return byKey
 }
 
-// hydrateVKListGovernance reverse-maps governance for a list of VKs using a single bulk load
-// of all VK-scoped model configs (avoids per-VK/per-provider queries).
-func (h *GovernanceHandler) hydrateVKListGovernance(ctx context.Context, vks []configstoreTables.TableVirtualKey) {
+// vkHydrationChunkSize bounds how many VK ids one scoped model-config load
+// carries. The export and unpaginated list paths hand over every VK, and the
+// scoped load expands its id list into one bind parameter per id, so an
+// unchunked 100k-key list would exceed the Postgres bind-parameter limit.
+const vkHydrationChunkSize = 1000
+
+// hydrateVKListGovernance reverse-maps governance for a list of VKs from the VK-scoped
+// model configs of exactly those VKs, loaded in bounded id chunks (avoids both
+// per-VK/per-provider queries and loading every model config in the database).
+// A failed chunk fails the whole hydration: returning the keys without their
+// budgets and rate limits would present limited keys as unlimited.
+func (h *GovernanceHandler) hydrateVKListGovernance(ctx context.Context, vks []configstoreTables.TableVirtualKey) error {
 	if len(vks) == 0 {
-		return
+		return nil
 	}
-	allMCs, err := h.configStore.GetModelConfigs(ctx)
-	if err != nil {
-		logger.Error("failed to load model configs for VK governance hydration: %v", err)
-		return
+	ids := make([]string, 0, len(vks))
+	seen := make(map[string]struct{}, len(vks))
+	for i := range vks {
+		if _, dup := seen[vks[i].ID]; dup || vks[i].ID == "" {
+			continue
+		}
+		seen[vks[i].ID] = struct{}{}
+		ids = append(ids, vks[i].ID)
 	}
-	ptrs := make([]*configstoreTables.TableModelConfig, len(allMCs))
-	for i := range allMCs {
-		ptrs[i] = &allMCs[i]
+	var pageMCs []configstoreTables.TableModelConfig
+	for start := 0; start < len(ids); start += vkHydrationChunkSize {
+		end := min(start+vkHydrationChunkSize, len(ids))
+		mcs, err := h.configStore.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, ids[start:end])
+		if err != nil {
+			return fmt.Errorf("failed to load model configs for VK governance hydration: %w", err)
+		}
+		pageMCs = append(pageMCs, mcs...)
+	}
+	ptrs := make([]*configstoreTables.TableModelConfig, len(pageMCs))
+	for i := range pageMCs {
+		ptrs[i] = &pageMCs[i]
 	}
 	byKey := buildVKModelConfigIndex(ptrs)
 	perModelByKey := buildVKModelBudgetsIndex(ptrs)
 	for i := range vks {
 		applyVKGovernanceFromModelConfigs(&vks[i], byKey, perModelByKey)
 	}
+	return nil
 }
 
 // applyExternalBudgets swaps a VK's own budget and rate-limit rows for the ones
@@ -1432,16 +1578,26 @@ func (h *GovernanceHandler) hydrateVKListGovernance(ctx context.Context, vks []c
 // (resolver nil) and for non-AP-managed VKs (resolver returns nil). A resolver error
 // degrades gracefully to the VK's own rows rather than failing the whole read.
 func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
-	if h.externalQuotaBudgetResolver == nil || vk == nil {
-		return
-	}
-	ext, err := h.externalQuotaBudgetResolver(ctx, vk)
-	if err != nil {
+	if _, err := applyExternalQuotaBudgets(ctx, h.externalQuotaBudgetResolver, vk); err != nil {
 		logger.Error("failed to resolve external budgets for VK %s: %v", vk.ID, err)
-		return
+	}
+}
+
+// applyExternalQuotaBudgets overlays a resolver's answer onto a key row, for
+// every read path that shows a key's governance - the governance handler and
+// Warp's describe_virtual_key alike. It returns the result so a caller can
+// name what governs the key (the sources on each budget); nil when the
+// resolver had nothing to say or there is no resolver.
+func applyExternalQuotaBudgets(ctx context.Context, resolver ExternalQuotaBudgetResolver, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+	if resolver == nil || vk == nil {
+		return nil, nil
+	}
+	ext, err := resolver(ctx, vk)
+	if err != nil {
+		return nil, err
 	}
 	if ext == nil {
-		return
+		return nil, nil
 	}
 	// The VK is access-profile-managed: its own budget/rate-limit rows are untracked
 	// mirrors (reset to current_usage=0 at adoption and never charged), so surface the
@@ -1455,6 +1611,7 @@ func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *config
 	}
 	vk.Budgets = budgets
 	vk.RateLimit = ext.RateLimit
+	return ext, nil
 }
 
 // applyAssignees fills in the AssignedUser of each virtual key from the injected
@@ -1499,6 +1656,39 @@ func (h *GovernanceHandler) applyAssignees(ctx context.Context, vks []*configsto
 		}
 		vk.AssignedUser = assignees[vk.ID]
 		vk.AssigneeResolved = true
+	}
+}
+
+// applyBusinessUnits names the owning business unit of each virtual key from the injected
+// resolver, in one batched call over the distinct owners. Like applyAssignees, a resolver error
+// logs and leaves BusinessUnit nil (the UI falls back to "Business unit"), and OSS is a no-op.
+func (h *GovernanceHandler) applyBusinessUnits(ctx context.Context, vks []*configstoreTables.TableVirtualKey) {
+	if h.virtualKeyBusinessUnitResolver == nil || len(vks) == 0 {
+		return
+	}
+	seen := make(map[string]struct{})
+	buIDs := make([]string, 0)
+	for _, vk := range vks {
+		if vk == nil || vk.BusinessUnitID == nil || *vk.BusinessUnitID == "" {
+			continue
+		}
+		if _, ok := seen[*vk.BusinessUnitID]; !ok {
+			seen[*vk.BusinessUnitID] = struct{}{}
+			buIDs = append(buIDs, *vk.BusinessUnitID)
+		}
+	}
+	if len(buIDs) == 0 {
+		return
+	}
+	units, err := h.virtualKeyBusinessUnitResolver(ctx, buIDs)
+	if err != nil {
+		logger.Error("failed to resolve business units for %d virtual keys: %v", len(vks), err)
+		return
+	}
+	for _, vk := range vks {
+		if vk != nil && vk.BusinessUnitID != nil {
+			vk.BusinessUnit = units[*vk.BusinessUnitID]
+		}
 	}
 }
 
@@ -1738,6 +1928,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		// cache: the cache holds no assignments, and emitting an unresolved
 		// assigned_user would read as "assigned to nobody" rather than "unknown".
 		h.applyAssignees(ctx, hydratedVKs)
+		h.applyBusinessUnits(ctx, hydratedVKs)
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": hydratedVKs,
 			"count":        len(hydratedVKs),
@@ -1814,11 +2005,16 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// Reverse-map governance from VK-scoped model configs for display.
-		h.hydrateVKListGovernance(ctx, virtualKeys)
+		if err := h.hydrateVKListGovernance(ctx, virtualKeys); err != nil {
+			logger.Error("%v", err)
+			SendError(ctx, 500, "Failed to load virtual key governance")
+			return
+		}
 		for i := range virtualKeys {
 			h.applyExternalBudgets(ctx, &virtualKeys[i])
 		}
 		h.applyAssignees(ctx, virtualKeyPtrs(virtualKeys))
+		h.applyBusinessUnits(ctx, virtualKeyPtrs(virtualKeys))
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": virtualKeys,
 			"count":        len(virtualKeys),
@@ -1836,11 +2032,16 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve virtual keys")
 		return
 	}
-	h.hydrateVKListGovernance(ctx, virtualKeys)
+	if err := h.hydrateVKListGovernance(ctx, virtualKeys); err != nil {
+		logger.Error("%v", err)
+		SendError(ctx, 500, "Failed to load virtual key governance")
+		return
+	}
 	for i := range virtualKeys {
 		h.applyExternalBudgets(ctx, &virtualKeys[i])
 	}
 	h.applyAssignees(ctx, virtualKeyPtrs(virtualKeys))
+	h.applyBusinessUnits(ctx, virtualKeyPtrs(virtualKeys))
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_keys": virtualKeys,
 		"count":        len(virtualKeys),
@@ -1900,6 +2101,10 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	if req.DeleteAfterExpire != nil && req.ExpiresAt == nil {
+		SendError(ctx, 400, "delete_after_expire requires expires_at")
+		return
+	}
 	// Set defaults: nil means "use DB default (true)"
 	isActive := req.IsActive
 	if isActive == nil {
@@ -1929,6 +2134,8 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			CalendarAligned:   req.CalendarAligned,
 			AllowAllProviders: req.AllowAllProviders,
 			ExpiresAt:         req.ExpiresAt,
+			// Stored as given: nil inherits client.delete_expired_virtual_keys.
+			DeleteAfterExpire: req.DeleteAfterExpire,
 			// Stored as given: nil is inherit, so no defaulting here.
 			DisableContentLogging: req.DisableContentLogging,
 		}
@@ -2099,6 +2306,7 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 				applyVKGovernanceFromModelConfigs(&clone, byKey, perModelByKey)
 				h.applyExternalBudgets(ctx, &clone)
 				h.applyAssignees(ctx, []*configstoreTables.TableVirtualKey{&clone})
+				h.applyBusinessUnits(ctx, []*configstoreTables.TableVirtualKey{&clone})
 				SendJSON(ctx, map[string]interface{}{
 					"virtual_key": &clone,
 				})
@@ -2123,6 +2331,7 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	// untracked rows so the admin detail panel matches the self-service quota view.
 	h.applyExternalBudgets(ctx, vk)
 	h.applyAssignees(ctx, []*configstoreTables.TableVirtualKey{vk})
+	h.applyBusinessUnits(ctx, []*configstoreTables.TableVirtualKey{vk})
 
 	// The Virtual MCPs this key is assigned to, so the detail view can show and edit them.
 	vmcpIDs, err := h.configStore.GetVirtualMCPIDsForVirtualKey(ctx, vkID)
@@ -2322,6 +2531,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		if req.ExpiresAt != nil {
 			vk.ExpiresAt = newExpiresAt
+		}
+		if err := applyVirtualKeyDeleteAfterExpireUpdate(vk, &req); err != nil {
+			return &badRequestError{err: err}
 		}
 		if req.CalendarAligned != nil {
 			alignmentSwitchedOn = !vk.CalendarAligned && *req.CalendarAligned
@@ -4082,14 +4294,94 @@ func (h *GovernanceHandler) enrichModelConfigManagedBy(ctx context.Context, conf
 }
 
 // enrichModelConfigScopeNames populates ScopeName for each non-global config in the slice.
+// Scopes with a batch resolver are prefetched with one lookup per scope, so a page
+// costs one query per scope rather than one per distinct scope target.
 func (h *GovernanceHandler) enrichModelConfigScopeNames(ctx context.Context, configs []configstoreTables.TableModelConfig) {
 	cache := map[string]string{}
+	h.prefetchModelConfigScopeNames(ctx, configs, cache)
 	for i := range configs {
 		h.resolveModelConfigScopeName(ctx, &configs[i], cache)
 	}
 }
 
+// prefetchModelConfigScopeNames fills cache (keyed like resolveModelConfigScopeName)
+// for every scope that has a batch resolver. Ids the batch did not resolve are
+// cached as "" so the per-id resolver is not retried for them, which matches the
+// per-id path's own caching of a miss. A failed batch leaves the cache untouched
+// and resolution falls back to the per-id resolver.
+func (h *GovernanceHandler) prefetchModelConfigScopeNames(ctx context.Context, configs []configstoreTables.TableModelConfig, cache map[string]string) {
+	idsByScope := map[string][]string{}
+	seen := map[string]struct{}{}
+	for i := range configs {
+		mc := &configs[i]
+		if mc.Scope == "" || mc.ScopeID == nil {
+			continue
+		}
+		key := mc.Scope + "|" + *mc.ScopeID
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		idsByScope[mc.Scope] = append(idsByScope[mc.Scope], *mc.ScopeID)
+	}
+	for scope, ids := range idsByScope {
+		batch, ok := lookupScopeNameBatchResolver(scope)
+		if !ok {
+			continue
+		}
+		names, ok := batch(ctx, ids)
+		if !ok {
+			continue
+		}
+		for _, id := range ids {
+			cache[scope+"|"+id] = names[id]
+		}
+	}
+}
+
 // createModelConfig handles POST /api/governance/model-configs - Create a new model config
+// rejectModelConfigSpellingCollision refuses a create or rename whose model name canonicalises
+// (governance.CanonicalModelConfigName: trim, lower-case, own-provider prefix stripped) to the
+// same key as another config in the same scope, scope_id and provider. The governance store
+// indexes configs by that key, so two such configs would shadow each other and one set of
+// limits would silently stop being enforced. excludeID is the config being renamed, so a
+// re-spelling of its own name is not a collision. On rejection the 409 has been sent and true
+// is returned; the caller must return immediately.
+func (h *GovernanceHandler) rejectModelConfigSpellingCollision(ctx *fasthttp.RequestCtx, scope string, scopeID, provider *string, modelName, excludeID string) bool {
+	all, err := h.configStore.GetModelConfigs(ctx)
+	if err != nil {
+		logger.Error("failed to list model configs for spelling check: %v", err)
+		SendError(ctx, 500, "Failed to check existing model configs")
+		return true
+	}
+	sameRef := func(a, b *string) bool {
+		if a == nil || b == nil {
+			return a == nil && b == nil
+		}
+		return strings.EqualFold(strings.TrimSpace(*a), strings.TrimSpace(*b))
+	}
+	// Compare on the key the governance store indexes by: catalog-aware when the manager is
+	// available (a provider-less dated alias collapses onto its base model), the
+	// catalog-independent canonical spelling otherwise.
+	indexKey := governance.CanonicalModelConfigName
+	if h.governanceManager != nil {
+		indexKey = h.governanceManager.ModelConfigIndexKey
+	}
+	want := indexKey(modelName, provider)
+	for i := range all {
+		existing := &all[i]
+		if existing.ID == excludeID || existing.Scope != scope || !sameRef(existing.ScopeID, scopeID) || !sameRef(existing.Provider, provider) {
+			continue
+		}
+		if indexKey(existing.ModelName, existing.Provider) != want {
+			continue
+		}
+		SendError(ctx, 409, fmt.Sprintf("Model config '%s' would be keyed the same as existing model config '%s' (id %s): names are compared case-insensitively with the provider prefix stripped, and a provider-less config is keyed by its base model", modelName, existing.ModelName, existing.ID))
+		return true
+	}
+	return false
+}
+
 func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 	var req CreateModelConfigRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
@@ -4152,6 +4444,9 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		} else {
 			SendError(ctx, 409, fmt.Sprintf("Model config for model '%s' (%s) already exists", req.ModelName, scopeDesc))
 		}
+		return
+	}
+	if h.rejectModelConfigSpellingCollision(ctx, req.Scope, req.ScopeID, req.Provider, req.ModelName, "") {
 		return
 	}
 	// Validate budgets if provided
@@ -4259,6 +4554,18 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		}
 		SendError(ctx, 500, "Failed to retrieve model config")
 		return
+	}
+	if req.ModelName != nil || req.Provider != nil {
+		nextName, nextProvider := mc.ModelName, mc.Provider
+		if req.ModelName != nil {
+			nextName = *req.ModelName
+		}
+		if req.Provider != nil {
+			nextProvider = req.Provider
+		}
+		if h.rejectModelConfigSpellingCollision(ctx, mc.Scope, mc.ScopeID, nextProvider, nextName, mc.ID) {
+			return
+		}
 	}
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		// Track rate-limit ID to delete after updating the model config (to avoid FK constraint).

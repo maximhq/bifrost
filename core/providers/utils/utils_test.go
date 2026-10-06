@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -3721,5 +3722,181 @@ func TestRewriteToolSchemaPatterns_DescendsIntoPlainMapSchemas(t *testing.T) {
 	clean["sentinel"] = true
 	if c2, _ := updated.Properties.Get("clean"); c2.(map[string]any)["sentinel"] != true {
 		t.Fatal("an unchanged plain-map schema was copied instead of shared")
+	}
+}
+
+// TestIsAbsoluteRequestURL pins the rule GetRequestPath and the management API's auth guard
+// share: only a scheme plus host makes a request-path override a full destination URL.
+func TestIsAbsoluteRequestURL(t *testing.T) {
+	cases := map[string]bool{
+		"https://evil.example.com/v1/chat": true,
+		"  http://10.0.0.5:8080/x  ":       true,
+		"/v2/chat/completions":             false,
+		"v2/chat/completions":              false,
+		"https:///no-host":                 false,
+		"":                                 false,
+	}
+	for in, want := range cases {
+		if got := IsAbsoluteRequestURL(in); got != want {
+			t.Errorf("IsAbsoluteRequestURL(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestBuildPassthroughURL pins that the resolved passthrough URL always keeps the provider's
+// authority: a remainder that would turn the base host into userinfo or a scheme-relative
+// authority is refused, while ordinary rooted paths and queries are forwarded byte-for-byte.
+func TestBuildPassthroughURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseURL  string
+		path     string
+		rawQuery string
+		want     string
+		wantErr  bool
+	}{
+		{name: "rooted path on bare origin", baseURL: "https://api.anthropic.com", path: "/v1/messages", want: "https://api.anthropic.com/v1/messages"},
+		{name: "query appended", baseURL: "https://api.anthropic.com", path: "/v1/messages", rawQuery: "beta=true", want: "https://api.anthropic.com/v1/messages?beta=true"},
+		{name: "trailing slash on base trimmed", baseURL: "https://api.anthropic.com/", path: "/v1/messages", want: "https://api.anthropic.com/v1/messages"},
+		{name: "base with path", baseURL: "https://generativelanguage.googleapis.com/v1beta", path: "/models/gemini:generateContent", rawQuery: "alt=sse", want: "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?alt=sse"},
+		{name: "empty path hits base", baseURL: "https://api.runware.ai/v1", path: "", want: "https://api.runware.ai/v1"},
+		{name: "at sign past first segment is path", baseURL: "https://aiplatform.googleapis.com/v1", path: "/projects/p/locations/l/publishers/anthropic/models/claude@20250929:rawPredict", want: "https://aiplatform.googleapis.com/v1/projects/p/locations/l/publishers/anthropic/models/claude@20250929:rawPredict"},
+		{name: "decoded percent stays an encoded percent", baseURL: "https://api.anthropic.com", path: "/v1/files/a%2Fb", want: "https://api.anthropic.com/v1/files/a%252Fb"},
+		{name: "decoded percent before question mark", baseURL: "https://api.anthropic.com", path: "/v1/files/a%3F?b", want: "https://api.anthropic.com/v1/files/a%253F%3Fb"},
+		{name: "decoded question mark stays in the path", baseURL: "https://api.anthropic.com", path: "/v1/files/a?b", rawQuery: "beta=true", want: "https://api.anthropic.com/v1/files/a%3Fb?beta=true"},
+		{name: "decoded hash stays in the path", baseURL: "https://api.anthropic.com", path: "/v1/files/a#b", want: "https://api.anthropic.com/v1/files/a%23b"},
+		{name: "at sign in query is query", baseURL: "https://api.anthropic.com", path: "/v1/messages", rawQuery: "user=a@b", want: "https://api.anthropic.com/v1/messages?user=a@b"},
+		{name: "base with userinfo kept", baseURL: "https://user:pw@proxy.internal", path: "/v1/messages", want: "https://user:pw@proxy.internal/v1/messages"},
+		{name: "userinfo remainder rejected", baseURL: "https://api.anthropic.com", path: "@127.0.0.1/x", wantErr: true},
+		{name: "port smuggling remainder rejected", baseURL: "https://api.anthropic.com", path: ":8443@evil.example/x", wantErr: true},
+		{name: "unanchored remainder rejected", baseURL: "https://api.anthropic.com", path: "foo/x", wantErr: true},
+		{name: "scheme-relative remainder rejected", baseURL: "https://api.anthropic.com", path: "//evil.example/x", wantErr: true},
+		{name: "base without scheme rejected", baseURL: "api.anthropic.com", path: "/v1/messages", wantErr: true},
+		{name: "empty base rejected", baseURL: "", path: "/v1/messages", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := BuildPassthroughURL(tc.baseURL, tc.path, tc.rawQuery)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("BuildPassthroughURL(%q, %q, %q) = %q, want error", tc.baseURL, tc.path, tc.rawQuery, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("BuildPassthroughURL(%q, %q, %q) unexpected error: %v", tc.baseURL, tc.path, tc.rawQuery, err)
+			}
+			if got != tc.want {
+				t.Fatalf("BuildPassthroughURL(%q, %q, %q) = %q, want %q", tc.baseURL, tc.path, tc.rawQuery, got, tc.want)
+			}
+		})
+	}
+}
+
+// newRoundTripperClient returns an *http.Client on fasthttpRoundTripper over a plain
+// fasthttp client, the way NewProviderHTTPClient and the fetch client wire it.
+func newRoundTripperClient(dial fasthttp.DialFunc) *http.Client {
+	client := &fasthttp.Client{Dial: dial, Transport: NewContextTransport()}
+	return &http.Client{Transport: &fasthttpRoundTripper{client: client}}
+}
+
+func TestFasthttpRoundTripper_MapsRequestAndResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Add("X-Echo-Method", r.Method)
+		w.Header().Add("X-Echo-Auth", r.Header.Get("Authorization"))
+		w.Header().Add("X-Multi", "a")
+		w.Header().Add("X-Multi", "b")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(append([]byte("echo:"), body...))
+	}))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/token?grant_type=client_credentials", strings.NewReader("form=1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Basic c3A6c2VjcmV0")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := newRoundTripperClient(nil).Do(req)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusCreated || resp.Status != "201 Created" {
+		t.Errorf("status = %d %q, want 201 Created", resp.StatusCode, resp.Status)
+	}
+	if string(body) != "echo:form=1" {
+		t.Errorf("body = %q, want the request body echoed", body)
+	}
+	if resp.ContentLength != int64(len(body)) {
+		t.Errorf("ContentLength = %d, want %d", resp.ContentLength, len(body))
+	}
+	if got := resp.Header.Get("X-Echo-Method"); got != http.MethodPost {
+		t.Errorf("method reached the server as %q", got)
+	}
+	if got := resp.Header.Get("X-Echo-Auth"); got != "Basic c3A6c2VjcmV0" {
+		t.Errorf("Authorization reached the server as %q", got)
+	}
+	if got := resp.Header.Values("X-Multi"); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("multi-valued header = %v, want [a b]", got)
+	}
+	if resp.Request != req {
+		t.Error("resp.Request must be the original request")
+	}
+}
+
+func TestFasthttpRoundTripper_RedirectsStayWithHTTPClient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("final"))
+	}))
+	defer server.Close()
+
+	var hops int
+	client := newRoundTripperClient(nil)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		hops++
+		return nil
+	}
+	resp, err := client.Get(server.URL + "/start")
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "final" || hops != 1 {
+		t.Errorf("body = %q after %d CheckRedirect calls, want \"final\" after 1", body, hops)
+	}
+}
+
+// TestFasthttpRoundTripper_ContextEndsWhileDialing pins that RoundTrip returns as soon
+// as the request context ends, even though fasthttp cannot interrupt a dial. net/http
+// cancels dials through the context, and oauth2 and azidentity rely on that.
+func TestFasthttpRoundTripper_ContextEndsWhileDialing(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	client := newRoundTripperClient(func(string) (net.Conn, error) {
+		<-release
+		return nil, fmt.Errorf("dial released")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://slow-dial.example/", nil)
+
+	start := time.Now()
+	_, err := client.Do(req)
+	if err == nil || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("expected the context deadline, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("RoundTrip took %v after the context ended, want it to return promptly", elapsed)
 	}
 }

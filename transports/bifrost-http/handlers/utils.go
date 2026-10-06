@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -212,19 +211,7 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 		return
 	}
 
-	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(lib.NormalizeJSONErrorStatus(*bifrostErr.StatusCode))
-	} else if !bifrostErr.IsBifrostError {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-	} else {
-		if bifrostErr.Error != nil &&
-			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
-				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		} else {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		}
-	}
+	ctx.SetStatusCode(bifrostErr.EffectiveHTTPStatus())
 
 	// Routed-identity headers from the error itself (provider/model/request-type +
 	// routing_info incl. is-fallback). Callers forward provider headers before this,
@@ -403,4 +390,23 @@ func fuzzyMatch(text, query string) bool {
 	}
 
 	return queryIndex == len(queryRunes)
+}
+
+// isAuthBypassed reports whether ctx was let through the auth middleware's fail-open branch
+// (dashboard auth disabled/unconfigured) rather than a genuine credential check. Handlers
+// gating a capability that's fine for a real admin but dangerous for anyone on the network
+// (e.g. pointing a dial destination somewhere new) should check this, not
+// IsLocalAdminContextKey, which is also true for genuinely authenticated sessions.
+func isAuthBypassed(ctx *fasthttp.RequestCtx) bool {
+	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	return bypassed
+}
+
+// isSetupTokenAuthenticated reports whether the OSS setup-lock gate let ctx through because
+// it carried the operator's setup token (see AuthMiddleware.SetupLockMiddleware). That is
+// the same proof the body's auth_config.setup_token gives, so first-admin creation accepts
+// either.
+func isSetupTokenAuthenticated(ctx *fasthttp.RequestCtx) bool {
+	authed, _ := ctx.UserValue(schemas.BifrostContextKeySetupTokenAuthenticated).(bool)
+	return authed
 }

@@ -3164,6 +3164,204 @@ func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
 	}
 }
 
+// A kept output_config.effort snaps onto the model's ladder: Opus 4.5 takes
+// low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+ add xhigh. Claude Code
+// defaults to xhigh, which a retargeted request carries onto older models.
+func TestStripUnsupportedFields_EffortLevelClamp(t *testing.T) {
+	tests := []struct {
+		model, effort, want string
+	}{
+		{"claude-opus-4-5", "xhigh", "high"},
+		{"claude-opus-4-5", "max", "high"},
+		{"claude-opus-4-5-20251101", "medium", "medium"},
+		{"claude-opus-4-6", "xhigh", "max"},
+		{"claude-sonnet-4-6", "max", "max"},
+		{"claude-opus-4-7", "xhigh", "xhigh"},
+		{"claude-opus-5-5", "max", "max"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model+"/"+tt.effort+"/raw", func(t *testing.T) {
+			body := []byte(`{"model":"` + tt.model + `","output_config":{"effort":"` + tt.effort + `"}}`)
+			out, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, tt.model)
+			if err != nil {
+				t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+			}
+			if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != tt.want {
+				t.Errorf("output_config.effort = %q, want %q; body=%s", got, tt.want, out)
+			}
+		})
+		t.Run(tt.model+"/"+tt.effort+"/typed", func(t *testing.T) {
+			req := &AnthropicMessageRequest{Model: tt.model, OutputConfig: &AnthropicOutputConfig{Effort: new(tt.effort)}}
+			stripUnsupportedAnthropicFields(req, schemas.Anthropic, tt.model)
+			if req.OutputConfig == nil || req.OutputConfig.Effort == nil || *req.OutputConfig.Effort != tt.want {
+				t.Errorf("OutputConfig = %+v, want effort %q", req.OutputConfig, tt.want)
+			}
+		})
+	}
+
+	t.Run("datasheet_ladder_wins", func(t *testing.T) {
+		model := "claude-opus-4-5-ladder-override"
+		setOverride(t, model, schemas.ModelCapabilities{ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh"}})
+		body := []byte(`{"model":"` + model + `","output_config":{"effort":"xhigh"}}`)
+		out, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, model)
+		if err != nil {
+			t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+		}
+		if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != "xhigh" {
+			t.Errorf("output_config.effort = %q, want \"xhigh\" from the row's ladder; body=%s", got, out)
+		}
+	})
+}
+
+// TestStripUnsupportedFieldsFromRawBody_PerMessageOutputConfig pins the raw-passthrough
+// gate for per-message effort (messages[].output_config, beta
+// mid-conversation-output-config-2026-07-01). Claude Code 2.1.285 sends it on a
+// text-bearing role:"system" message alongside the top-level output_config; Vertex
+// rejects the nested field with "messages.1.output_config: Extra inputs are not
+// permitted". Off Anthropic direct (or on a model without per-turn effort) the nested
+// field is stripped, the message text and top-level effort survive, and an effort-only
+// system message (no content) is dropped whole because it carries nothing else.
+func TestStripUnsupportedFieldsFromRawBody_PerMessageOutputConfig(t *testing.T) {
+	claudeCodeBody := func(model string) string {
+		return `{"model":"` + model + `","max_tokens":1024,"output_config":{"effort":"medium"},"messages":[` +
+			`{"role":"user","content":[{"type":"text","text":"hi"}]},` +
+			`{"role":"system","content":[{"type":"text","text":"reminder"}],"output_config":{"effort":"medium"}},` +
+			`{"role":"user","content":[{"type":"text","text":"go on"}]}]}`
+	}
+	effortOnlyBody := func(model string) string {
+		return `{"model":"` + model + `","max_tokens":1024,"output_config":{"effort":"high"},"messages":[` +
+			`{"role":"user","content":[{"type":"text","text":"hi"}]},` +
+			`{"role":"system","content":[],"output_config":{"effort":"low"}},` +
+			`{"role":"assistant","content":[{"type":"text","text":"ok"}]},` +
+			`{"role":"system","content":"","output_config":{"effort":"low"}},` +
+			`{"role":"user","content":[{"type":"text","text":"go on"}]}]}`
+	}
+
+	tests := []struct {
+		name         string
+		provider     schemas.ModelProvider
+		model        string
+		body         string
+		wantKept     bool   // messages[].output_config forwarded verbatim
+		wantMessages string // expected messages array when stripped
+	}{
+		{name: "vertex opus 5.5 claude code shape", provider: schemas.Vertex, model: "claude-opus-5-5", body: claudeCodeBody("claude-opus-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "vertex fable 5.1 claude code shape", provider: schemas.Vertex, model: "claude-fable-5-1", body: claudeCodeBody("claude-fable-5-1"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "vertex sonnet 5.5 claude code shape", provider: schemas.Vertex, model: "claude-sonnet-5-5", body: claudeCodeBody("claude-sonnet-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "bedrock opus 5.5 claude code shape", provider: schemas.Bedrock, model: "claude-opus-5-5", body: claudeCodeBody("claude-opus-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "vertex effort-only system messages dropped whole", provider: schemas.Vertex, model: "claude-opus-5-5", body: effortOnlyBody("claude-opus-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":[{"type":"text","text":"ok"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "anthropic opus 4.8 lacks per-turn effort", provider: schemas.Anthropic, model: "claude-opus-4-8", body: claudeCodeBody("claude-opus-4-8"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "anthropic opus 5.5 keeps per-message effort", provider: schemas.Anthropic, model: "claude-opus-5-5", body: claudeCodeBody("claude-opus-5-5"), wantKept: true},
+		{name: "anthropic opus 5.5 keeps effort-only system message", provider: schemas.Anthropic, model: "claude-opus-5-5", body: effortOnlyBody("claude-opus-5-5"), wantKept: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := StripUnsupportedFieldsFromRawBody([]byte(tt.body), tt.provider, tt.model)
+			if err != nil {
+				t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+			}
+			wantTop := providerUtils.GetJSONField([]byte(tt.body), "output_config.effort").String()
+			if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != wantTop {
+				t.Errorf("top-level output_config.effort = %q, want %q; body=%s", got, wantTop, out)
+			}
+			gotMessages := providerUtils.GetJSONField(out, "messages").Raw
+			if tt.wantKept {
+				if want := providerUtils.GetJSONField([]byte(tt.body), "messages").Raw; gotMessages != want {
+					t.Errorf("messages changed on a supported pair:\n got %s\nwant %s", gotMessages, want)
+				}
+				return
+			}
+			if gotMessages != tt.wantMessages {
+				t.Errorf("messages:\n got %s\nwant %s", gotMessages, tt.wantMessages)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedFieldsFromRawBody_NoPerMessageWorkWithoutCandidates pins the hot
+// path: a long Claude Code conversation on a surface that strips per-message effort and
+// server-side fallback blocks (Vertex), where no message carries either. Both message
+// walks are skipped by byte prefilters, so the strip's allocation must not grow with the
+// number of messages. Before the prefilters each walk materialised every message
+// (gjson Array) on every request.
+func TestStripUnsupportedFieldsFromRawBody_NoPerMessageWorkWithoutCandidates(t *testing.T) {
+	build := func(turns int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-5-5","max_tokens":64,"output_config":{"effort":"medium"},"messages":[`)
+		for i := range turns {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("x", 200) + `"}]}`)
+		}
+		b.WriteString(`]}`)
+		return b.Bytes()
+	}
+	strip := func(body []byte) func() {
+		return func() {
+			if _, err := StripUnsupportedFieldsFromRawBody(body, schemas.Vertex, "claude-opus-5-5"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		}
+	}
+	small := memtest.AllocBytesPerOp(strip(build(50)))
+	large := memtest.AllocBytesPerOp(strip(build(400)))
+	t.Logf("strip allocation: %d B at 50 messages, %d B at 400", small, large)
+	if large > small+small/2 {
+		t.Fatalf("strip allocation grew with message count on a body with nothing to strip: %d B at 50 messages, %d B at 400", small, large)
+	}
+}
+
+// TestMayCarryPerMessageOutputConfig pins the byte prefilter as conservative: it may only
+// say "no" when no message can carry output_config. False positives are allowed (they fall
+// through to the gjson walk); a false negative would forward the field to Vertex.
+func TestMayCarryPerMessageOutputConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"no output_config anywhere", `{"messages":[{"role":"user","content":"hi"}]}`, false},
+		{"top-level only", `{"output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"}]}`, false},
+		{"top-level only, whitespace", `{ "output_config" : {"effort":"high"}, "messages":[]}`, false},
+		{"mentioned inside a string value", `{"output_config":{"effort":"high"},"messages":[{"role":"user","content":"set \"output_config\" please"}]}`, false},
+		{"per-message, no top-level", `{"messages":[{"role":"system","content":[],"output_config":{"effort":"low"}}]}`, true},
+		{"per-message plus top-level", `{"output_config":{"effort":"high"},"messages":[{"role":"system","content":[],"output_config":{"effort":"low"}}]}`, true},
+		{"value exactly output_config (false positive)", `{"output_config":{},"messages":[{"role":"user","content":"output_config"}]}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mayCarryPerMessageOutputConfig([]byte(tc.body)); got != tc.want {
+				t.Fatalf("mayCarryPerMessageOutputConfig = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedFieldsFromRawBody_ScopeTokenWithoutCacheControlScope: a "scope" key
+// elsewhere (here a tool input property) passes the byte prefilter but no block carries
+// cache_control.scope, so the detection pass must leave messages byte-identical.
+func TestStripUnsupportedFieldsFromRawBody_ScopeTokenWithoutCacheControlScope(t *testing.T) {
+	body := `{"model":"claude-opus-5-5","max_tokens":64,"messages":[` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"auth","input":{"scope":"repo"}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok","cache_control":{"type":"ephemeral"}}]}]}`
+	out, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Vertex, "claude-opus-5-5")
+	if err != nil {
+		t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+	}
+	want := providerUtils.GetJSONField([]byte(body), "messages").Raw
+	if got := providerUtils.GetJSONField(out, "messages").Raw; got != want {
+		t.Fatalf("messages changed:\n got %s\nwant %s", got, want)
+	}
+}
+
 func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -4005,6 +4203,32 @@ func TestRemapRawToolVersionsForProvider_AllocationScaling(t *testing.T) {
 	})
 }
 
+// TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling covers the
+// passthrough eager_input_streaming default, which marks every custom tool in
+// the request. Claude Code sends 50+ of them on Vertex and Bedrock.
+func TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(tools int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-4-8","tools":[`)
+		for i := range tools {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// A custom tool with no eager_input_streaming, so every tool in the
+			// array triggers a write.
+			fmt.Fprintf(&b, `{"name":"tool_%d","input_schema":{"type":"object"},"description":"`, i)
+			b.WriteString(strings.Repeat("d", 400))
+			b.WriteString(`"}`)
+		}
+		b.WriteString(`],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		if _, err := ApplyDefaultEagerInputStreamingToRawBody(body, schemas.Vertex, "claude-opus-4-8"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 // TestStripUnsupportedFieldsFromRawBody_AllocationScaling covers the system-block
 // cache_control scope strip, whose loop walks every system block in the request.
 func TestStripUnsupportedFieldsFromRawBody_AllocationScaling(t *testing.T) {
@@ -4069,7 +4293,13 @@ func betaHeaderCorpus() map[string]string {
 		"both message signals at once":                                  `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"organization"}},{"type":"document","source":{"type":"file","file_id":"file_123"}}]}]}`,
 		"signals on a later message, not the first":                     `{"model":"` + model + `","messages":[{"role":"user","content":[{"type":"text","text":"one"}]},{"role":"assistant","content":[{"type":"text","text":"two"}]},{"role":"user","content":[{"type":"document","source":{"type":"file","file_id":"file_9"}}]}]}`,
 		"string content messages are skipped":                           `{"model":"` + model + `","messages":[{"role":"user","content":"plain string"}]}`,
-		"no messages field at all":                                      `{"model":"` + model + `","max_tokens":64}`,
+		// Per-message effort is a sibling of content on the message itself, not a block
+		// field, so it is read before the content-array gate; the effort-only form has an
+		// empty content array and a string-content system message may carry it too.
+		"per-message output_config.effort on an effort-only system message":   `{"model":"claude-opus-5-5","output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":"low"}}]}`,
+		"per-message output_config.effort on a string-content system message": `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":"be brief","output_config":{"effort":"low"}}]}`,
+		"per-message output_config without effort (must NOT trigger)":         `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":null}}]}`,
+		"no messages field at all":                                            `{"model":"` + model + `","max_tokens":64}`,
 
 		// --- scope found elsewhere; the messages branch must not double-add or mask it ---
 		"scoped cache_control in system": `{"model":"` + model + `","system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","scope":"organization"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
@@ -4242,6 +4472,12 @@ func TestAccumulateResponsesUsage_BillsWebSearch(t *testing.T) {
 	if got := *billed.CompletionTokensDetails.NumSearchQueries; got != 2 {
 		t.Fatalf("billed usage NumSearchQueries = %d, want 2", got)
 	}
+	if got := usage.ToolUsage.WebSearch.NumRequests; got != 2 {
+		t.Fatalf("response usage ToolUsage web search = %d, want 2", got)
+	}
+	if got := billed.ToolUsage.WebSearch.NumRequests; got != 2 {
+		t.Fatalf("billed usage ToolUsage web search = %d, want 2", got)
+	}
 }
 
 // TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo verifies the chat
@@ -4278,6 +4514,9 @@ func TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo(t *testing.T) {
 	}
 	if got := *result.Usage.CompletionTokensDetails.NumSearchQueries; got != 3 {
 		t.Fatalf("chat usage NumSearchQueries = %d, want 3", got)
+	}
+	if result.Usage.ToolUsage == nil || result.Usage.ToolUsage.WebSearch == nil || result.Usage.ToolUsage.WebSearch.NumRequests != 3 {
+		t.Fatalf("chat usage ToolUsage = %+v, want web_search.num_requests 3", result.Usage.ToolUsage)
 	}
 	if result.InferenceGeo == nil || *result.InferenceGeo != "us" {
 		t.Fatalf("inference_geo not forwarded; got %v", result.InferenceGeo)
@@ -5207,5 +5446,182 @@ func TestBetaProbeNeverMutatesTheOutboundBody(t *testing.T) {
 	}
 	if got := providerUtils.GetJSONField(body, "tools.0.input_schema.properties.q.type").String(); got != "string" {
 		t.Errorf("the nested schema was altered: tools.0.input_schema.properties.q.type = %q, want \"string\"", got)
+	}
+}
+
+// TestAddMissingBetaHeaders_PerMessageEffortInjectsMidConversationOutputConfig: a
+// per-message output_config.effort (Pi's mid-conversation effort override) is gated by
+// beta mid-conversation-output-config-2026-07-01. Bifrost derives beta headers from the
+// request body on both the typed and the raw-body path, so the header must be injected
+// on both, and only when the per-message field is present.
+func TestAddMissingBetaHeaders_PerMessageEffortInjectsMidConversationOutputConfig(t *testing.T) {
+	const want = "mid-conversation-output-config-2026-07-01"
+	withoutOverride := `{"model":"claude-opus-5-5","max_tokens":128,"output_config":{"effort":"high"},` +
+		`"messages":[{"role":"user","content":"Say hello."}]}`
+
+	t.Run("typed path", func(t *testing.T) {
+		var req AnthropicMessageRequest
+		if err := schemas.Unmarshal([]byte(perMessageEffortPiBody), &req); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if err := AddMissingBetaHeadersToContext(ctx, &req, schemas.Anthropic); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+		}
+		merged := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic)
+		if !slices.Contains(merged, want) {
+			t.Fatalf("typed path did not inject %q for a per-message output_config.effort; got %v", want, merged)
+		}
+	})
+
+	t.Run("raw-body path", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(perMessageEffortPiBody), schemas.Anthropic); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+		}
+		merged := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic)
+		if !slices.Contains(merged, want) {
+			t.Fatalf("raw-body path did not inject %q for a per-message output_config.effort; got %v", want, merged)
+		}
+	})
+
+	t.Run("not injected without the per-message field", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(withoutOverride), schemas.Anthropic); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+		}
+		merged := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic)
+		if slices.Contains(merged, want) {
+			t.Fatalf("%q injected although no message carries output_config: %v", want, merged)
+		}
+	})
+}
+
+// TestDefaultSupportsMidConversationSystem_ModelList pins the documented model list for
+// mid-conversation system messages: Opus 4.8+, Sonnet 5.5 (not Sonnet 5), Fable/Mythos.
+// Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
+func TestDefaultSupportsMidConversationSystem_ModelList(t *testing.T) {
+	for _, tc := range []struct {
+		model string
+		want  bool
+	}{
+		{"claude-opus-4-8", true},
+		{"claude-opus-5", true},
+		{"claude-opus-5-5", true},
+		{"claude-sonnet-5-5", true},
+		{"claude-fable-5-1", true},
+		{"claude-sonnet-5", false},
+		{"claude-opus-4-7", false},
+		{"claude-haiku-4-5", false},
+	} {
+		if got := DefaultSupportsMidConversationSystem(schemas.Anthropic, tc.model); got != tc.want {
+			t.Errorf("DefaultSupportsMidConversationSystem(anthropic, %q) = %v, want %v", tc.model, got, tc.want)
+		}
+	}
+	if DefaultSupportsMidConversationSystem(schemas.Vertex, "claude-sonnet-5-5") {
+		t.Error("mid-conversation system messages are Anthropic-API only; Vertex must stay false")
+	}
+	// Per-message effort is the narrower gate: Opus 4.8 has system messages but no per-turn effort.
+	if DefaultSupportsMidConversationOutputConfig(schemas.Anthropic, "claude-opus-4-8") {
+		t.Error("Opus 4.8 must not report per-message effort support")
+	}
+	if !DefaultSupportsMidConversationOutputConfig(schemas.Anthropic, "claude-sonnet-5-5") {
+		t.Error("Sonnet 5.5 must report per-message effort support")
+	}
+}
+
+// TestHandleAnthropicResponsesRequest_KeepsBedrockInvokeGuardrailOutcome: Bedrock's native
+// InvokeModel reports the guardrail outcome as top-level amazon-bedrock-* fields that
+// AnthropicMessageResponse has no member for; the handler must keep them on the response.
+func TestHandleAnthropicResponsesRequest_KeepsBedrockInvokeGuardrailOutcome(t *testing.T) {
+	const trace = `{"guardrail":{"input":{"gr-1":[{"topicPolicy":{"topics":[{"name":"x","action":"BLOCKED"}]}}]},"outputs":[]}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"amazon-bedrock-guardrailAction":"INTERVENED","amazon-bedrock-trace":` + trace + `}`))
+	}))
+	defer server.Close()
+
+	run := func(provider schemas.ModelProvider) *schemas.BifrostResponsesResponse {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		request := &schemas.BifrostResponsesRequest{Provider: provider, Model: "claude-sonnet-4-6", Input: makeSimpleInput("Hello!")}
+		resp, bifrostErr := HandleAnthropicResponsesRequest(ctx, &fasthttp.Client{}, server.URL+"/model/m/invoke", request,
+			AnthropicRequestBuildConfig{Provider: provider, Model: "claude-sonnet-4-6"},
+			map[string]string{}, nil, nil, truncationTestLogger{})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+		}
+		return resp
+	}
+
+	resp := run(schemas.Bedrock)
+	if got := resp.ProviderExtraFields[BedrockInvokeGuardrailActionKey]; got != "INTERVENED" {
+		t.Errorf("guardrail action = %v, want INTERVENED", got)
+	}
+	raw, _ := resp.ProviderExtraFields[BedrockInvokeGuardrailTraceKey].(json.RawMessage)
+	if string(raw) != trace {
+		t.Errorf("guardrail trace = %s, want %s", raw, trace)
+	}
+
+	if extra := run(schemas.Anthropic).ProviderExtraFields; len(extra) != 0 {
+		t.Errorf("a non-Bedrock response must not grow guardrail fields: %v", extra)
+	}
+}
+
+// TestHandleAnthropicResponsesStream_KeepsBedrockInvokeGuardrailOutcome: on a native
+// InvokeModelWithResponseStream the guardrail outcome arrives as top-level amazon-bedrock-*
+// fields of the final event, which AnthropicStreamEvent has no member for; the terminal
+// response chunk must carry them, verbatim.
+func TestHandleAnthropicResponsesStream_KeepsBedrockInvokeGuardrailOutcome(t *testing.T) {
+	const trace = `{"guardrail":{"input":{"gr-1":[{"topicPolicy":{"topics":[{"name":"x","action":"BLOCKED"}]}}]},"outputs":[]}}`
+	body := anthropicMessageStart + anthropicTextDelta +
+		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}` + "\n\n" +
+		"event: message_stop\n" + `data: {"type":"message_stop","amazon-bedrock-invocationMetrics":{"inputTokenCount":5},"amazon-bedrock-guardrailAction":"INTERVENED","amazon-bedrock-trace":` + trace + `}` + "\n\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	run := func(plain string) []*schemas.BifrostStreamChunk {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		request := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "claude-sonnet-4-6", Input: makeSimpleInput("Hello!")}
+		jsonData, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: schemas.Bedrock, Model: "claude-sonnet-4-6", IsStreaming: true})
+		if bifrostErr != nil {
+			t.Fatalf("build: %s", bifrostErr.Error.Message)
+		}
+		stream, bifrostErr := HandleAnthropicResponsesStream(ctx, &fasthttp.Client{}, server.URL+"/model/m/invoke-with-response-stream"+plain, jsonData,
+			map[string]string{}, nil, 30, nil, false, false, schemas.Bedrock,
+			truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+		}
+		return collectTruncationChunks(t, stream)
+	}
+
+	chunks := run("")
+	var carrying int
+	for _, chunk := range chunks {
+		if chunk.BifrostResponsesStreamResponse == nil || chunk.BifrostResponsesStreamResponse.Response == nil {
+			continue
+		}
+		extra := chunk.BifrostResponsesStreamResponse.Response.ProviderExtraFields
+		if extra[BedrockInvokeGuardrailActionKey] == nil && extra[BedrockInvokeGuardrailTraceKey] == nil {
+			continue
+		}
+		carrying++
+		if chunk.BifrostResponsesStreamResponse.Type != schemas.ResponsesStreamResponseTypeCompleted {
+			t.Errorf("guardrail outcome rode on %s, want the terminal completed chunk", chunk.BifrostResponsesStreamResponse.Type)
+		}
+		if got := extra[BedrockInvokeGuardrailActionKey]; got != "INTERVENED" {
+			t.Errorf("guardrail action = %v, want INTERVENED", got)
+		}
+		raw, _ := extra[BedrockInvokeGuardrailTraceKey].(json.RawMessage)
+		if string(raw) != trace {
+			t.Errorf("guardrail trace = %s, want %s", raw, trace)
+		}
+	}
+	if carrying != 1 {
+		t.Fatalf("%d chunks carried the guardrail outcome, want exactly 1", carrying)
 	}
 }

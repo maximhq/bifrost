@@ -58,6 +58,10 @@ if ! command -v newman >/dev/null 2>&1; then
   exit 1
 fi
 
+# Pin collection assertion behavior and provider/secret-field coverage before
+# spending time building the gateway or starting backing services.
+node "$REPO_ROOT/tests/e2e/api/collections/collection-scripts.test.mjs"
+
 source "$SCRIPT_DIR/setup-go-workspace.sh"
 
 TEMP_DIR=$(mktemp -d)
@@ -166,6 +170,10 @@ jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES
 export BIFROST_SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}"
 export BIFROST_E2E_SETUP_TOKEN="$BIFROST_SETUP_TOKEN"
 
+# Match the API management collection's synthetic canary, including local runs.
+# It must be exported before starting the gateway so env-backed fields resolve.
+export BIFROST_SECRET_REDACTION_CANARY="${BIFROST_SECRET_REDACTION_CANARY:-synthetic-secretvar-harness-canary-0123456789}"
+
 echo "🚀 Starting bifrost-http on port $PORT..."
 "$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &
 BIFROST_PID=$!
@@ -201,3 +209,11 @@ fi
 echo ""
 echo "🧪 Running api-management newman collection..."
 "$RUNNER" $REPORT_ARGS
+
+# Warp boots its own server on its own database (bifrost_warp_e2e on the same
+# Postgres), because its answers cover every row in the logs table and the
+# api-management run above has just written to this server's. It reuses the
+# compose stack's Weaviate and the job's OPENAI_API_KEY.
+echo ""
+echo "🧪 Running Warp newman collection..."
+"$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-warp-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 8))" $REPORT_ARGS

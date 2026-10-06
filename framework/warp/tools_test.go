@@ -3,8 +3,10 @@ package warp
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -407,7 +409,7 @@ func runTool(t *testing.T, name string, deps *ToolDeps, args map[string]any) (an
 	// Built for the deps under test: the semantic tool is only in the set when a
 	// searcher exists, which is the behaviour TestWarpToolsOmitSemanticSearch...
 	// pins, so a test exercising that tool has to supply one.
-	tool, ok := toolByName(buildToolsFor(deps.semantic), name)
+	tool, ok := toolByName(buildToolsFor(deps.semantic, deps.userGovernance != nil), name)
 	require.True(t, ok, "tool %s should exist", name)
 	// Default to an identified caller. A deployment with no user identity has no
 	// default scope, so an unscoped query from one is refused - correct, but it
@@ -448,20 +450,28 @@ func TestWarpToolSchemasAreValid(t *testing.T) {
 // instead of the pure optimization it is meant to be.
 func TestWarpDeclaredToolsMatchesFreshParse(t *testing.T) {
 	for _, semantic := range []bool{false, true} {
-		var searcher *SemanticSearcher
-		if semantic {
-			searcher = &SemanticSearcher{}
+		for _, userLimits := range []bool{false, true} {
+			var searcher *SemanticSearcher
+			if semantic {
+				searcher = &SemanticSearcher{}
+			}
+			fresh, err := responsesTools(buildToolsFor(searcher, userLimits))
+			require.NoError(t, err)
+
+			cached, err := declaredTools(semantic, userLimits)
+			require.NoError(t, err)
+			require.Equal(t, fresh, cached, "semantic=%v userLimits=%v", semantic, userLimits)
+
+			again, err := declaredTools(semantic, userLimits)
+			require.NoError(t, err)
+			require.Same(t, &cached[0], &again[0], "repeated calls must reuse the same backing array, not re-parse")
+
+			names := make([]string, 0, len(cached))
+			for _, tool := range cached {
+				names = append(names, *tool.Name)
+			}
+			require.Equal(t, userLimits, slices.Contains(names, UserLimitsToolName), "the declarations carry describe_user_limits exactly when a reader exists")
 		}
-		fresh, err := responsesTools(buildToolsFor(searcher))
-		require.NoError(t, err)
-
-		cached, err := declaredTools(semantic)
-		require.NoError(t, err)
-		require.Equal(t, fresh, cached, "semantic=%v", semantic)
-
-		again, err := declaredTools(semantic)
-		require.NoError(t, err)
-		require.Same(t, &cached[0], &again[0], "repeated calls must reuse the same backing array, not re-parse")
 	}
 }
 
@@ -470,7 +480,7 @@ func TestWarpDeclaredToolsMatchesFreshParse(t *testing.T) {
 // and must not carry it otherwise.
 func TestWarpDeclaredToolsFollowSemanticAvailability(t *testing.T) {
 	declaredNames := func(semantic bool) []string {
-		tools, err := declaredTools(semantic)
+		tools, err := declaredTools(semantic, false)
 		require.NoError(t, err)
 		names := make([]string, 0, len(tools))
 		for _, tool := range tools {
@@ -1418,6 +1428,9 @@ func TestWarpDescribeFilterSpaceDescriptionMatchesResult(t *testing.T) {
 		"routing_engines": "routing engines",
 		"tool_call_names": "tool call names",
 		"metadata":        "metadata keys",
+		// What the lists are, so an absence is read as "no traffic" and not
+		// "does not exist".
+		"coverage": "coverage note",
 	}
 	for key := range returned {
 		phrase, known := names[key]
@@ -1445,8 +1458,8 @@ type fakeFilterSpaceReader struct {
 	LogReaderStub
 }
 
-func (f *fakeFilterSpaceReader) GetAvailableModels(context.Context, int, string) ([]string, error) {
-	return []string{"gpt-4o"}, nil
+func (f *fakeFilterSpaceReader) GetAvailableModels(_ context.Context, _ int, query string) ([]string, error) {
+	return matchingValues(query, "gpt-4o"), nil
 }
 
 // Nothing routed in this deployment: the lookups exist and come back empty.
@@ -1468,23 +1481,45 @@ func (f *fakeFilterSpaceReader) GetAvailableToolCallNames(context.Context, int, 
 func (f *fakeFilterSpaceReader) GetAvailableMetadataKeys(context.Context, int, string) (map[string][]string, error) {
 	return nil, nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableApps(context.Context, int, string) ([]string, error) {
-	return []string{"dashboard"}, nil
+func (f *fakeFilterSpaceReader) GetAvailableApps(_ context.Context, _ int, query string) ([]string, error) {
+	return matchingValues(query, "dashboard"), nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableStopReasons(context.Context, int, string) ([]string, error) {
-	return []string{"stop"}, nil
+func (f *fakeFilterSpaceReader) GetAvailableStopReasons(_ context.Context, _ int, query string) ([]string, error) {
+	return matchingValues(query, "stop"), nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableTeams(context.Context, int, string) ([]KeyPair, error) {
-	return []KeyPair{{ID: "team-1", Name: "Team One"}}, nil
+func (f *fakeFilterSpaceReader) GetAvailableTeams(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	return matchingPairs(query, KeyPair{ID: "team-1", Name: "Team One"}), nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableCustomers(context.Context, int, string) ([]KeyPair, error) {
-	return []KeyPair{{ID: "cust-1", Name: "Customer One"}}, nil
+func (f *fakeFilterSpaceReader) GetAvailableCustomers(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	return matchingPairs(query, KeyPair{ID: "cust-1", Name: "Customer One"}), nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableBusinessUnits(context.Context, int, string) ([]KeyPair, error) {
-	return []KeyPair{{ID: "bu-1", Name: "Unit One"}}, nil
+func (f *fakeFilterSpaceReader) GetAvailableBusinessUnits(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	return matchingPairs(query, KeyPair{ID: "bu-1", Name: "Unit One"}), nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableVirtualKeys(context.Context, int, string) ([]KeyPair, error) {
-	return []KeyPair{{ID: "vk-1", Name: "default"}}, nil
+
+// matchingValues and matchingPairs apply search the way the store does: a
+// case-insensitive substring of the value (or its name), empty matching all.
+func matchingValues(query string, values ...string) []string {
+	out := []string{}
+	for _, v := range values {
+		if strings.Contains(strings.ToLower(v), strings.ToLower(query)) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func matchingPairs(query string, pairs ...KeyPair) []KeyPair {
+	out := []KeyPair{}
+	for _, p := range pairs {
+		if strings.Contains(strings.ToLower(p.Name), strings.ToLower(query)) || strings.Contains(strings.ToLower(p.ID), strings.ToLower(query)) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+func (f *fakeFilterSpaceReader) GetAvailableVirtualKeys(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	return matchingPairs(query, KeyPair{ID: "vk-1", Name: "default"}), nil
 }
 
 // The same principle parseFilters already applies to unknown field names: a
@@ -1975,11 +2010,11 @@ func TestWarpQueryLogsMarksSampledResults(t *testing.T) {
 // step calling it, and gets an error back - and on a deployment with no
 // embedding provider that is every single time it tries.
 func TestWarpToolsOmitSemanticSearchWhenUnavailable(t *testing.T) {
-	withSearcher := buildToolsFor(&SemanticSearcher{})
+	withSearcher := buildToolsFor(&SemanticSearcher{}, false)
 	_, present := toolByName(withSearcher, SemanticSearchToolName)
 	require.True(t, present, "a configured deployment still offers semantic search")
 
-	without := buildToolsFor(nil)
+	without := buildToolsFor(nil, false)
 	_, present = toolByName(without, SemanticSearchToolName)
 	require.False(t, present, "a tool that cannot run must not be advertised to the model")
 
@@ -2415,4 +2450,316 @@ func TestWarpLogRowsCarryRoutingFields(t *testing.T) {
 	require.Equal(t, "smart", rows[0]["alias"])
 	require.Equal(t, "COMPLEX", rows[0]["complexity_tier"])
 	require.Equal(t, []any{"get_weather"}, rows[0]["tool_calls"])
+}
+
+// search narrows by part of a value's name. A live run passed {"search":"team"}
+// to find teams, got back only teams whose names contain "team" - none - and
+// told the person no team had traffic. The schema says what search is, and an
+// empty filtered result says how to recover rather than reading as a census.
+func TestWarpDescribeFilterSpaceSearchIsANameFragment(t *testing.T) {
+	tool, ok := toolByName(buildTools(), "describe_filter_space")
+	require.True(t, ok)
+	require.Contains(t, tool.schemaJSON, "never a category such as")
+
+	result, err := tool.execute(context.Background(), &ToolDeps{logManager: &fakeFilterSpaceReader{}}, map[string]any{"search": "customer segment"})
+	require.NoError(t, err)
+	guidance, _ := result.(map[string]any)["guidance"].(string)
+	require.Contains(t, guidance, `Nothing matched search "customer segment"`)
+	require.Contains(t, guidance, "without search")
+
+	unfiltered, err := tool.execute(context.Background(), &ToolDeps{logManager: &fakeFilterSpaceReader{}}, map[string]any{})
+	require.NoError(t, err)
+	require.NotContains(t, unfiltered.(map[string]any), "guidance", "an unfiltered listing is the census; it needs no recovery hint")
+}
+
+// Live runs asked query_usage_by for a model breakdown (no such dimension, so
+// the model gave up) and answered "which provider errors most" with the
+// selected_key ranking, naming an API key instead of the provider.
+func TestWarpUsageByPointsProviderAndModelBreakdownsElsewhere(t *testing.T) {
+	tool, ok := toolByName(buildTools(), "query_usage_by")
+	require.True(t, ok)
+	require.Contains(t, tool.description, "There is no provider or model dimension")
+	require.Contains(t, tool.description, "selected_key (the provider API key Bifrost sent the request with, by name - not the provider")
+}
+
+// A live run filtered error_codes: ["overloaded_error"]. That is an error type,
+// error_code is empty for Anthropic, so the incident matched zero rows.
+func TestWarpErrorCodesFilterSendsErrorTypesElsewhere(t *testing.T) {
+	require.Contains(t, FilterSchema, "overloaded_error and rate_limit_error are error types")
+}
+
+// Told there is no model dimension, a live run ranked by alias instead to
+// answer "was the incident isolated to one model?". The requests named their
+// models directly, so every alias was empty, and Warp concluded the overload
+// "affected Anthropic broadly" when all 30 failures were one model.
+func TestWarpAliasIsNotAModelStandIn(t *testing.T) {
+	tool, ok := toolByName(buildTools(), "query_usage_by")
+	require.True(t, ok)
+	require.Contains(t, tool.description, "empty when a request named its model directly - never a stand-in for the model")
+}
+
+// Two further live runs still asked query_usage_by for dimension "model", got
+// the generic "unknown dimension" list, and then ranked by alias or gave up.
+// The model reads the error at the moment it retries, so the error names the
+// tool that answers the question it was trying to ask.
+func TestWarpUsageByRedirectsModelAndProviderDimensions(t *testing.T) {
+	for dimension, want := range map[string]string{
+		"model":    "query_model_performance",
+		"models":   "query_model_performance",
+		"provider": "query_metrics with group_by provider",
+	} {
+		_, err := runTool(t, "query_usage_by", &ToolDeps{logManager: &fakeFilterSpaceReader{}}, map[string]any{"dimension": dimension, "filters": map[string]any{"start_time": "-7d"}})
+		require.Error(t, err, dimension)
+		require.Contains(t, err.Error(), want, dimension)
+		require.Contains(t, err.Error(), "same filters", dimension)
+	}
+}
+
+// query_metrics reduced every ungrouped series to one summary, and grouped ones
+// to a dozen buckets that do not line up with days, so "errors per day this
+// week" had no single call: a live run made a count_logs call per day - seven
+// to nine calls for a table, or for the numbers behind a chart it then drew in
+// mermaid. interval returns the series bucket by bucket at an hour or a day.
+func TestWarpQueryMetricsIntervalReturnsBuckets(t *testing.T) {
+	day := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	fake := &fakeLogReader{histogramResult: &logstore.HistogramResult{
+		BucketSizeSeconds: 86400,
+		Buckets: []logstore.HistogramBucket{
+			{Timestamp: day, Count: 10, Success: 9, Error: 1},
+			{Timestamp: day.Add(24 * time.Hour), Count: 12, Success: 8, Error: 4},
+		},
+	}}
+	out, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{"start_time": "-7d"}, "metrics": []any{"requests"}, "interval": "day",
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(86400), fake.histogramBucket)
+	encoded, err := sonic.Marshal(out)
+	require.NoError(t, err)
+	var shape struct {
+		Requests struct {
+			Buckets []logstore.HistogramBucket `json:"buckets"`
+		} `json:"requests"`
+	}
+	require.NoError(t, sonic.Unmarshal(encoded, &shape))
+	require.Len(t, shape.Requests.Buckets, 2, "a day interval returns every bucket, not a summary: %s", encoded)
+	require.Equal(t, int64(4), shape.Requests.Buckets[1].Error)
+
+	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": "-30d"}, "metrics": []any{"requests"}, "interval": "hour",
+	})
+	require.ErrorContains(t, err, `interval "day"`, "720 hourly buckets is over the cap; the error names the way out")
+
+	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": "-7d"}, "metrics": []any{"cost"}, "group_by": "provider", "interval": "day",
+	})
+	require.ErrorContains(t, err, "interval")
+}
+
+// "Spend by provider over the last 7 days" came back as $0.00 everywhere: the
+// objects description told the model to filter to chat_completion "to exclude
+// non-chat traffic", and the filter is an exact match on the request type, so
+// every streamed and Responses API request - all of the deployment's spend -
+// was dropped. The schema must not invite the filter, and must name the types
+// chat traffic is actually logged under.
+func TestWarpObjectsFilterIsNotInvitedForTotals(t *testing.T) {
+	var schema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	require.NoError(t, sonic.UnmarshalString(FilterSchema, &schema))
+	description := schema.Properties["objects"].Description
+	require.NotContains(t, description, "Use this to exclude non-chat traffic")
+	require.Contains(t, description, "Leave it unset")
+	for _, requestType := range []schemas.RequestType{
+		schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest,
+		schemas.ResponsesRequest, schemas.ResponsesStreamRequest,
+	} {
+		require.Contains(t, description, string(requestType), "chat traffic is logged under %s too", requestType)
+	}
+}
+
+// A total narrowed by request type reads exactly like a total. Every aggregate
+// says so when objects was set, zero or not: one chat_completion row out of
+// 1,700 requests is as wrong a "spend" as none.
+func TestWarpObjectsFilterIsReportedOnAggregates(t *testing.T) {
+	cases := []struct {
+		tool string
+		args map[string]any
+	}{
+		{"count_logs", map[string]any{}},
+		{"query_metrics", map[string]any{"metrics": []any{"summary"}, "group_by": "provider"}},
+		{"query_usage_by", map[string]any{"dimension": "user"}},
+		{"query_model_performance", map[string]any{}},
+		{"render_chart", map[string]any{"kind": "bar", "metric": "cost", "group": "provider", "title": "Spend by provider"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			narrowed := maps.Clone(tc.args)
+			narrowed["filters"] = map[string]any{"start_time": "-7d", "objects": []any{"chat_completion"}}
+			result, err := runTool(t, tc.tool, &ToolDeps{logManager: &fakeLogReader{}}, narrowed)
+			require.NoError(t, err)
+			note, _ := result.(map[string]any)["request_types"].(string)
+			require.Contains(t, note, "chat_completion", "%s must name the request types it was narrowed to", tc.tool)
+			require.Contains(t, note, "responses", "%s must say what the filter left out", tc.tool)
+
+			unfiltered := maps.Clone(tc.args)
+			unfiltered["filters"] = map[string]any{"start_time": "-7d"}
+			result, err = runTool(t, tc.tool, &ToolDeps{logManager: &fakeLogReader{}}, unfiltered)
+			require.NoError(t, err)
+			require.NotContains(t, result.(map[string]any), "request_types", "%s: nothing to report without objects", tc.tool)
+		})
+	}
+}
+
+// Asked about a key created minutes earlier, Warp searched describe_filter_space
+// for its name, found nothing, and told the person no such key existed. The
+// lists are what traffic contains, and every result now says so; an empty
+// search additionally points at the tool that reads configuration.
+func TestWarpDescribeFilterSpaceSaysItsListsComeFromTraffic(t *testing.T) {
+	tool, ok := toolByName(buildTools(), "describe_filter_space")
+	require.True(t, ok)
+	deps := &ToolDeps{logManager: &fakeFilterSpaceReader{}}
+
+	out := resultMap(t, mustRunTool(t, "describe_filter_space", deps, map[string]any{}))
+	require.Contains(t, out["coverage"], "seen in logged traffic")
+	require.Contains(t, out["coverage"], "describe_virtual_key")
+	require.Contains(t, tool.description, "not what is configured")
+
+	out = resultMap(t, mustRunTool(t, "describe_filter_space", deps, map[string]any{"search": "warp-verify-budgeted"}))
+	require.Contains(t, out["guidance"], "A virtual key with no traffic is never listed here")
+	require.Contains(t, out["guidance"], "describe_virtual_key")
+}
+
+// A calendar day is resolved here, in the asker's zone, rather than by the
+// model. The model used to be handed the zone name and told to work out each
+// date's UTC offset itself - the same arithmetic relative offsets exist to
+// take away from it - so a wrong offset moved a day's boundary by hours and
+// the answer still read as "yesterday".
+func TestWarpParseFiltersResolvesCalendarDaysInTheAskersZone(t *testing.T) {
+	kolkata, err := time.LoadLocation("Asia/Kolkata")
+	require.NoError(t, err)
+	// 08:30 on Oct 5th in Kolkata, which is still 03:00 UTC.
+	now := time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC).In(kolkata)
+	utc := func(year int, month time.Month, day, hour, minute int) time.Time {
+		return time.Date(year, month, day, hour, minute, 0, 0, time.UTC)
+	}
+
+	t.Run("today starts at local midnight and ends now", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "today"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 10, 4, 18, 30), *filters.StartTime)
+		require.Equal(t, now.UTC(), *filters.EndTime)
+	})
+
+	t.Run("yesterday is the whole previous local day", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "yesterday", "end_time": "Yesterday"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 10, 3, 18, 30), *filters.StartTime)
+		require.Equal(t, utc(2026, 10, 4, 18, 30).Add(-time.Microsecond), *filters.EndTime)
+	})
+
+	t.Run("a date names its whole local day", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "2026-09-01", "end_time": "2026-09-03"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 8, 31, 18, 30), *filters.StartTime)
+		require.Equal(t, utc(2026, 9, 3, 18, 30).Add(-time.Microsecond), *filters.EndTime)
+	})
+
+	t.Run("a day still in progress ends now, not at a midnight that has not happened", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "yesterday", "end_time": "today"}, now)
+		require.NoError(t, err)
+		require.Equal(t, now.UTC(), *filters.EndTime)
+	})
+
+	t.Run("a time with no offset is the asker's wall clock", func(t *testing.T) {
+		for _, text := range []string{"2026-09-03T14:00", "2026-09-03 14:00", "2026-09-03T14:00:00"} {
+			filters, err := parseFilters(map[string]any{"start_time": text}, now)
+			require.NoError(t, err, text)
+			require.Equal(t, utc(2026, 9, 3, 8, 30), *filters.StartTime, text)
+		}
+	})
+
+	t.Run("an explicit offset is still taken as written", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "2026-09-03T14:00:00Z"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 9, 3, 14, 0), *filters.StartTime)
+	})
+
+	t.Run("each date takes its own offset across a daylight saving change", func(t *testing.T) {
+		newYork, err := time.LoadLocation("America/New_York")
+		require.NoError(t, err)
+		// Clocks went forward on March 8th 2026, so that day is 23 hours long:
+		// it starts at UTC-5 and ends at UTC-4.
+		filters, err := parseFilters(map[string]any{"start_time": "2026-03-08", "end_time": "2026-03-08"}, now.In(newYork))
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 3, 8, 5, 0), *filters.StartTime)
+		require.Equal(t, utc(2026, 3, 9, 4, 0).Add(-time.Microsecond), *filters.EndTime)
+	})
+
+	// Clocks in New York went from 02:00 straight to 03:00 on March 8th 2026.
+	// Go reads a wall time inside that hour as a different, real one, so the
+	// bound would silently be an hour away from what was written.
+	t.Run("a local time that never happened is rejected", func(t *testing.T) {
+		newYork, err := time.LoadLocation("America/New_York")
+		require.NoError(t, err)
+		_, err = parseFilters(map[string]any{"start_time": "2026-03-08T02:30"}, now.In(newYork))
+		require.ErrorContains(t, err, "start_time")
+		require.ErrorContains(t, err, "does not exist")
+
+		filters, err := parseFilters(map[string]any{"start_time": "2026-03-08T03:30"}, now.In(newYork))
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 3, 8, 7, 30), *filters.StartTime)
+	})
+
+	t.Run("a rolling window is unaffected by the zone", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "-7d"}, now)
+		require.NoError(t, err)
+		require.Equal(t, now.UTC().Add(-7*24*time.Hour), *filters.StartTime)
+	})
+
+	t.Run("a date that does not exist is rejected", func(t *testing.T) {
+		_, err := parseFilters(map[string]any{"start_time": "2026-02-30"}, now)
+		require.ErrorContains(t, err, "start_time")
+	})
+}
+
+// The schema is the one description every model reads at the moment it fills
+// the argument in, so it has to say which way end_time's day is counted.
+func TestWarpFilterSchemaSaysEndTimeIsInclusive(t *testing.T) {
+	require.Contains(t, FilterSchema, "end_time is inclusive")
+	require.Contains(t, FilterSchema, "never the day after")
+}
+
+// askerLocation is what puts the zone on the clock the tools read. The named
+// zone wins because only it knows a past date's offset; the bare offset is the
+// fallback for a client that sent no usable name.
+func TestWarpAskerLocation(t *testing.T) {
+	instant := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	hourIn := func(location *time.Location) int { return instant.In(location).Hour() }
+
+	// New York is UTC-5 in January even when the offset sent is July's UTC-4.
+	require.Equal(t, 7, hourIn(askerLocation("America/New_York", -240)))
+	require.Equal(t, 17, hourIn(askerLocation("", 330)), "with no zone name the current offset is all there is")
+	require.Equal(t, 17, hourIn(askerLocation("Not/AZone", 330)))
+	require.Equal(t, time.UTC, askerLocation("", 0))
+}
+
+// Every tool call in a turn measures from the same instant. Each used to read
+// the clock for itself, so "-7d" named a slightly different window per call and
+// a total and its breakdown, fetched seconds apart, covered different requests.
+func TestWarpToolsReadTheTurnsPinnedClock(t *testing.T) {
+	pinned := time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC)
+	original := Now
+	Now = func() time.Time { return pinned.Add(42 * time.Second) }
+	defer func() { Now = original }()
+
+	fake := &fakeLogReader{}
+	_, err := runTool(t, "query_logs", &ToolDeps{logManager: fake, clock: pinned}, map[string]any{
+		"filters": map[string]any{"start_time": "-7d"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, pinned.Add(-7*24*time.Hour), *fake.searchFilters.StartTime)
+	require.Equal(t, pinned, *fake.searchFilters.EndTime)
 }

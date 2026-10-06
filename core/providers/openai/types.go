@@ -54,10 +54,88 @@ func (req *OpenAITextCompletionRequest) IsStreamingRequested() bool {
 	return req.Stream != nil && *req.Stream
 }
 
+type OpenAIEmbeddingInput struct {
+	Text       *string
+	Texts      []string
+	Embedding  []int
+	Embeddings [][]int
+}
+
+func (e *OpenAIEmbeddingInput) MarshalJSON() ([]byte, error) {
+	// enforce one-of
+	set := 0
+	if e.Text != nil {
+		set++
+	}
+	if e.Texts != nil {
+		set++
+	}
+	if e.Embedding != nil {
+		set++
+	}
+	if e.Embeddings != nil {
+		set++
+	}
+	if set == 0 {
+		return nil, fmt.Errorf("embedding input is empty")
+	}
+	if set > 1 {
+		return nil, fmt.Errorf("embedding input must set exactly one of: text, texts, embedding, embeddings")
+	}
+
+	if e.Text != nil {
+		return providerUtils.MarshalSorted(*e.Text)
+	}
+	if e.Texts != nil {
+		return providerUtils.MarshalSorted(e.Texts)
+	}
+	if e.Embedding != nil {
+		return providerUtils.MarshalSorted(e.Embedding)
+	}
+	if e.Embeddings != nil {
+		return providerUtils.MarshalSorted(e.Embeddings)
+	}
+
+	return nil, fmt.Errorf("invalid embedding input")
+}
+
+func (e *OpenAIEmbeddingInput) UnmarshalJSON(data []byte) error {
+	e.Text = nil
+	e.Texts = nil
+	e.Embedding = nil
+	e.Embeddings = nil
+	// Try string
+	var s string
+	if err := sonic.Unmarshal(data, &s); err == nil {
+		e.Text = &s
+		return nil
+	}
+	// Try []string
+	var ss []string
+	if err := sonic.Unmarshal(data, &ss); err == nil {
+		e.Texts = ss
+		return nil
+	}
+	// Try []int
+	var i []int
+	if err := sonic.Unmarshal(data, &i); err == nil {
+		e.Embedding = i
+		return nil
+	}
+	// Try [][]int
+	var i2 [][]int
+	if err := sonic.Unmarshal(data, &i2); err == nil {
+		e.Embeddings = i2
+		return nil
+	}
+
+	return fmt.Errorf("unsupported embedding input shape")
+}
+
 // OpenAIEmbeddingRequest represents an OpenAI embedding request
 type OpenAIEmbeddingRequest struct {
-	Model string                  `json:"model"`
-	Input *schemas.EmbeddingInput `json:"input"` // Can be string or []string
+	Model string                `json:"model"`
+	Input *OpenAIEmbeddingInput `json:"input"` // Can be string or []string
 
 	schemas.EmbeddingParameters
 
@@ -251,7 +329,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
 				for j, block := range msg.Content.ContentBlocks {
 					stripBlockCacheControl := block.CacheControl != nil && !keepCacheControl
-					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil))
+					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil || fileDataNeedsDataURL(block.File.FileData)))
 					if needsBlockCopy {
 						blockCopy := block
 						if stripBlockCacheControl {
@@ -265,8 +343,13 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 						// was discarded. Providers that cannot take a URL now say so by
 						// name, and any OpenAI-compatible endpoint that does accept one
 						// keeps working without a Bifrost change.
-						if blockCopy.File != nil && blockCopy.File.FileType != nil {
+						// Fold it into file_data first: the wire has nowhere else to carry
+						// the media type, and bare base64 is rejected (fileDataAsDataURL).
+						if blockCopy.File != nil && (blockCopy.File.FileType != nil || fileDataNeedsDataURL(blockCopy.File.FileData)) {
 							fileCopy := *blockCopy.File
+							if fileCopy.FileData != nil {
+								fileCopy.FileData = schemas.Ptr(fileDataAsDataURL(*fileCopy.FileData, fileCopy.FileType))
+							}
 							fileCopy.FileType = nil
 							blockCopy.File = &fileCopy
 						}
@@ -485,7 +568,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						continue
 					}
 
-					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
+					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && (block.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(block.ResponsesInputMessageContentBlockFile.FileData))) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
 					if needsBlockCopy {
 						hasContentModification = true
 						blockCopy := block
@@ -508,8 +591,13 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						}
 
 						// Strip FileType from file block
-						if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
+						// Fold it into file_data first: the wire has nowhere else to carry
+						// the media type, and bare base64 is rejected (fileDataAsDataURL).
+						if blockCopy.ResponsesInputMessageContentBlockFile != nil && (blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(blockCopy.ResponsesInputMessageContentBlockFile.FileData)) {
 							fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
+							if fileCopy.FileData != nil {
+								fileCopy.FileData = schemas.Ptr(fileDataAsDataURL(*fileCopy.FileData, fileCopy.FileType))
+							}
 							fileCopy.FileType = nil
 							blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
 						}
@@ -735,7 +823,7 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 			if block.Citations != nil {
 				return true
 			}
-			if block.File != nil && block.File.FileType != nil {
+			if block.File != nil && (block.File.FileType != nil || fileDataNeedsDataURL(block.File.FileData)) {
 				return true
 			}
 		}
@@ -768,7 +856,7 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.MediaResolution != nil {
 				return true
 			}
-			if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {
+			if block.ResponsesInputMessageContentBlockFile != nil && (block.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(block.ResponsesInputMessageContentBlockFile.FileData)) {
 				return true
 			}
 			if block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0 {
@@ -832,6 +920,11 @@ func isFunctionCallOutputBlocksFlattenable(blocks []schemas.ResponsesMessageCont
 			return false
 		}
 		if block.Text == nil {
+			return false
+		}
+		// A string has nowhere to carry a prompt_cache_breakpoint; the array
+		// form is the documented home for it on a function_call_output.
+		if block.PromptCacheBreakpoint != nil {
 			return false
 		}
 	}
@@ -1069,6 +1162,9 @@ type OpenAIModel struct {
 	Object  string `json:"object"`
 	OwnedBy string `json:"owned_by"`
 	Created *int64 `json:"created,omitempty"`
+
+	// Retirement date announced by the provider, returned by model retrieve
+	ShutdownDate *string `json:"shutdown_date,omitempty"`
 
 	// GROQ specific fields
 	Active        *bool `json:"active,omitempty"`

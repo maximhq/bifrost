@@ -50,10 +50,15 @@ describe("assignedToLabel", () => {
 		expect(assignedToLabel({ assigned_user: { name: "", email: "ada@acme.com" } })).toBe("User: ada@acme.com");
 	});
 
-	// A business unit reaches the payload as an id with no relation to read a name from, so it is
-	// named by its kind. Blank is what this used to show, which reads as "assigned to nothing".
+	// Without the business_unit relation (OSS, or unresolved) a business unit is named by its kind.
+	// Blank is what this used to show, which reads as "assigned to nothing".
 	it("labels a business-unit assignment by its kind", () => {
 		expect(assignedToLabel({ business_unit_id: "bu-1" })).toBe("Business unit");
+	});
+
+	it("names the business unit when the payload carries it", () => {
+		expect(assignedToLabel({ business_unit_id: "bu-1", business_unit: { name: "Payments" } })).toBe("Business unit: Payments");
+		expect(csvAssignedToCell({ business_unit_id: "bu-1", business_unit: { name: "Payments" } })).toBe("Business unit: Payments");
 	});
 
 	it("prefers team, then customer, then business unit, then user", () => {

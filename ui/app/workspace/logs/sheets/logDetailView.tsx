@@ -42,17 +42,27 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
-import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
+import { getLogRoutingPanel } from "@/lib/registries/logs";
+import { useGetLogsQuery, useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
-import { BatchRequestCounts, ContentBlock, LLMUsage, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
+import {
+	BatchRequestCounts,
+	ContentBlock,
+	InputCostDetails,
+	LLMUsage,
+	LogEntry,
+	OutputCostDetails,
+	OverheadBucket,
+	ResponsesMessage,
+} from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
-import { extractResponsesItemPayload, summarizeResponsesToolCall } from "@/lib/utils/responsesItems";
 import { isJson } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import "@enterprise/lib/registrations/logs";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench, X } from "lucide-react";
@@ -69,7 +79,31 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
-import { extractProviderErrorMessage, parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
+import {
+	extractProviderErrorMessage,
+	isClientToolCallItem,
+	nextSessionLookupStart,
+	isShownMetadataKey,
+	parseRoutingDecisionLine,
+	pickNextSessionLog,
+	resolveRawJsonNoticeState,
+} from "./logDetailView.utils";
+import LiveSessionView from "../views/liveSessionView";
+import {
+	CollapsibleCode,
+	EncryptedReveal,
+	MessageRow,
+	ResponsesItemRow,
+	ToolNameLabel,
+	extractReasoningParts,
+	extractResponsesText,
+	flattenDeclaredTools,
+	getResponsesRole,
+	messageDotClass,
+	messageRoleLabel,
+	messageToneClass,
+	type MessageRole,
+} from "../views/responsesItemRow";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -110,125 +144,6 @@ const formatRealtimeSource = (value: unknown): string => {
 	}
 };
 
-const extractResponsesText = (msg: ResponsesMessage, mapping?: Record<string, string>): string => {
-	let text: string;
-	if (msg.type === "reasoning") {
-		const summaryText = (msg.summary ?? [])
-			.map((s) => s.text)
-			.filter(Boolean)
-			.join("\n")
-			.trim();
-		if (summaryText) text = summaryText;
-		else if (msg.encrypted_content) text = msg.encrypted_content;
-		else text = "";
-	} else if (typeof msg.content === "string") {
-		text = msg.content;
-	} else if (Array.isArray(msg.content)) {
-		text = msg.content
-			.filter(
-				(b: any) =>
-					b &&
-					(b.text || b.refusal) &&
-					(b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal"),
-			)
-			// Refusal blocks carry their text in `refusal`, not `text`.
-			.map((b: any) => (b.text ?? b.refusal) as string)
-			.join("\n");
-	} else if (typeof (msg as any).arguments === "string") {
-		text = (msg as any).arguments as string;
-	} else {
-		text = "";
-	}
-	if (mapping && text) {
-		for (const [key, value] of Object.entries(mapping)) {
-			text = text.replaceAll(`[${key}]`, value);
-		}
-	}
-	return text;
-};
-
-type ReasoningParts = {
-	summaries: string[];
-	encrypted?: string;
-	signatures: string[];
-	contentText?: string;
-};
-
-const collectReasoningFromBlocks = (blocks: any[]): { text: string; signatures: string[] } => {
-	const texts: string[] = [];
-	const signatures: string[] = [];
-	for (const b of blocks) {
-		if (!b || typeof b !== "object") continue;
-		const isReasoningish =
-			b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal" || !b.type;
-		if (isReasoningish && typeof b.text === "string" && b.text.trim()) {
-			texts.push(b.text);
-		}
-		if (typeof b.signature === "string" && b.signature.trim()) {
-			signatures.push(b.signature.trim());
-		}
-	}
-	return { text: texts.join("\n"), signatures };
-};
-
-const extractReasoningParts = (msg: ResponsesMessage, mapping?: Record<string, string>): ReasoningParts => {
-	let summaries = (msg.summary ?? []).map((s) => (s?.text ?? "").trim()).filter(Boolean);
-	const encryptedRaw = (msg as any).encrypted_content?.trim?.();
-	let encrypted = encryptedRaw ? encryptedRaw : undefined;
-	const signatures: string[] = [];
-	let contentText = "";
-	if (typeof msg.content === "string") {
-		contentText = msg.content;
-	} else if (Array.isArray(msg.content)) {
-		const fromContent = collectReasoningFromBlocks(msg.content as any[]);
-		contentText = fromContent.text;
-		signatures.push(...fromContent.signatures);
-	}
-	// Some providers stash reasoning under `output` instead of `content`
-	const out = (msg as any).output;
-	if (out !== undefined) {
-		if (typeof out === "string" && out.trim() && !contentText) {
-			contentText = out;
-		} else if (Array.isArray(out)) {
-			const fromOutput = collectReasoningFromBlocks(out as any[]);
-			if (!contentText && fromOutput.text) contentText = fromOutput.text;
-			signatures.push(...fromOutput.signatures);
-		}
-	}
-	// Defensive: top-level text-bearing fields some variants use
-	if (!contentText) {
-		const topText =
-			(typeof (msg as any).text === "string" && (msg as any).text) ||
-			(typeof (msg as any).thinking === "string" && (msg as any).thinking) ||
-			"";
-		if (topText.trim()) contentText = topText;
-	}
-	if (mapping) {
-		summaries = summaries.map((s) => {
-			for (const [key, value] of Object.entries(mapping)) {
-				s = s.replaceAll(`[${key}]`, value);
-			}
-			return s;
-		});
-		if (encrypted) {
-			for (const [key, value] of Object.entries(mapping)) {
-				encrypted = encrypted.replaceAll(`[${key}]`, value);
-			}
-		}
-		if (contentText) {
-			for (const [key, value] of Object.entries(mapping)) {
-				contentText = contentText.replaceAll(`[${key}]`, value);
-			}
-		}
-	}
-	return {
-		summaries,
-		encrypted,
-		signatures,
-		contentText: contentText || undefined,
-	};
-};
-
 const extractChatReasoning = (message: any, mapping?: Record<string, string>): string => {
 	if (!message) return "";
 	let text = "";
@@ -249,27 +164,6 @@ const extractChatReasoning = (message: any, mapping?: Record<string, string>): s
 	return text;
 };
 
-const getResponsesRole = (msg: ResponsesMessage): MessageRole => {
-	if (msg.type === "reasoning") return "reasoning";
-	if (
-		msg.type &&
-		(msg.type.endsWith("_call") ||
-			msg.type.endsWith("_call_output") ||
-			msg.type === "tool_search_output" ||
-			msg.type === "additional_tools" ||
-			msg.type === "mcp_list_tools" ||
-			msg.type === "mcp_approval_request" ||
-			msg.type === "mcp_approval_responses")
-	) {
-		return "tool";
-	}
-	const r = msg.role;
-	if (r === "user") return "user";
-	if (r === "assistant") return "assistant";
-	if (r === "system" || r === "developer") return "system";
-	return "assistant";
-};
-
 const isPlainAssistantResponsesMessage = (m: ResponsesMessage): boolean => {
 	if (m.type && m.type !== "message") return false;
 	return getResponsesRole(m) === "assistant";
@@ -280,15 +174,6 @@ const isReasoningResponsesMessage = (m: ResponsesMessage): boolean => m.type ===
 // Streaming providers can emit a single logical assistant turn (or reasoning
 // item) as many small messages. Collapse adjacent ones so the UI shows one
 // bubble per turn instead of N "1 line" bubbles.
-// Expands namespace tool declarations into their callable children
-// (`namespace.tool` names), leaving plain declarations untouched.
-const flattenDeclaredTools = (tools: any[]): any[] =>
-	tools.flatMap((tool) =>
-		tool?.type === "namespace" && Array.isArray(tool.tools)
-			? (tool.tools as any[]).map((nested) => ({ ...nested, name: `${tool.name ?? "namespace"}.${nested?.name ?? ""}` }))
-			: [tool],
-	);
-
 // Later declarations of the same tool replace earlier ones — a conversation
 // history can carry multiple `additional_tools` items, each a point-in-time
 // update, so the effective tool set is last-write-wins by name. Unnamed
@@ -421,6 +306,35 @@ const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
 	}
 	lines.push(`Input tokens: ${formatExactNumber(total)}`);
 	return lines.join("\n");
+};
+
+const INPUT_COST_LABELS: [keyof InputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["cached_read_cost", "Cache read"],
+	["cached_write_cost", "Cache write"],
+	["request_cost", "Per-request fee"],
+];
+
+const OUTPUT_COST_LABELS: [keyof OutputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["reasoning_cost", "Reasoning"],
+	["citation_cost", "Citations"],
+	["search_queries_cost", "Web search"],
+];
+
+// Lists the non-zero cost categories; undefined when there are none or text is the only one.
+const getCostDetailsTooltip = <T extends InputCostDetails | OutputCostDetails>(
+	details: T | undefined,
+	labels: [keyof T, string][],
+): string | undefined => {
+	if (!details) return undefined;
+	const set = labels.filter(([key]) => ((details[key] as number | undefined) ?? 0) > 0);
+	if (set.length === 0 || (set.length === 1 && set[0][0] === "text_cost")) return undefined;
+	return set.map(([key, label]) => `${label}: ${formatCostPrecise(details[key] as number)}`).join("\n");
 };
 
 // Helper to detect passthrough operations
@@ -837,29 +751,6 @@ function CopyInlineButton({ text, testId }: { text: string; testId?: string }) {
 	);
 }
 
-type MessageRole = "system" | "user" | "assistant" | "reasoning" | "tool";
-const messageToneClass: Record<MessageRole, string> = {
-	system: "bg-zinc-50 border-zinc-200 dark:bg-zinc-900/40 dark:border-zinc-800",
-	user: "bg-blue-50/60 border-blue-200 dark:bg-blue-950/30 dark:border-blue-900",
-	assistant: "bg-white border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800",
-	reasoning: "bg-violet-50/70 border-violet-200 dark:bg-violet-950/30 dark:border-violet-900",
-	tool: "bg-amber-50/70 border-amber-200 dark:bg-amber-950/30 dark:border-amber-900",
-};
-const messageDotClass: Record<MessageRole, string> = {
-	system: "bg-zinc-400",
-	user: "bg-blue-500",
-	assistant: "bg-zinc-900 dark:bg-zinc-100",
-	reasoning: "bg-violet-500",
-	tool: "bg-amber-500",
-};
-const messageRoleLabel: Record<MessageRole, string> = {
-	system: "System",
-	user: "User",
-	assistant: "Assistant",
-	reasoning: "Reasoning",
-	tool: "Tool Result",
-};
-
 // Decision logs store the state as the user message and the answers as the
 // assistant message; label them by what they actually are.
 const decisionRoleLabel = (requestType: string | undefined, role: MessageRole): string | undefined => {
@@ -963,106 +854,59 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 	);
 }
 
-function EncryptedReveal({ text, label }: { text: string; label: string }) {
-	const [open, setOpen] = useState(false);
-	return (
-		<div className="space-y-1">
-			<button
-				type="button"
-				onClick={() => setOpen((o) => !o)}
-				className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-[10.5px] font-semibold tracking-wider uppercase"
-			>
-				<ChevronDown className={cn("h-3 w-3 transition-transform", open ? "rotate-180" : "-rotate-90")} />
-				{label}
-				{!open ? (
-					<span className="text-muted-foreground/70 ml-1 font-mono text-[10px] tracking-normal normal-case">{text.length} chars</span>
-				) : null}
-			</button>
-			{open ? <pre className="font-mono text-[12.5px] leading-[1.6] break-all whitespace-pre-wrap">{text}</pre> : null}
-		</div>
+// A response that ends on a tool call the caller runs itself (Warp's agent loop, any
+// Responses client) has no result in this row: the caller executes the tool and, if
+// it carries on, sends the output with a later request. Point at the next row in the
+// same session, without claiming it is the one that carries the result.
+function NextSessionRequestLink({ log, onOpenLog }: { log: LogEntry; onOpenLog: (logId: string) => void }) {
+	// currentData, not data: data keeps the previous log's page while this one's
+	// lookup runs, which would briefly link to the wrong request.
+	const { currentData, isError, refetch } = useGetLogsQuery(
+		{
+			filters: { session_id: log.session_id, start_time: nextSessionLookupStart(log.timestamp) },
+			pagination: { limit: 2, offset: 0, sort_by: "timestamp", order: "asc" },
+			rootsOnly: true,
+		},
+		// The caller may send its follow-up after this opens, so look again while
+		// the page is in view.
+		{ skip: !log.session_id, pollingInterval: 10_000, skipPollingIfUnfocused: true },
 	);
-}
-
-function CollapsibleCode({ text, preview = 3, lang, mono = true }: { text: string; preview?: number; lang?: string; mono?: boolean }) {
-	const [open, setOpen] = useState(false);
-	// Trailing blank lines would otherwise count as hidden content and render a
-	// "Show more" that expands to nothing visible.
-	const lines = text.replace(/\s+$/, "").split("\n");
-	const shown = open ? lines : lines.slice(0, preview);
-	const hasMore = lines.length > preview;
-	const moreCount = lines.length - preview;
+	const next = currentData ? pickNextSessionLog(currentData.logs, log) : undefined;
+	// A failed lookup is not "there is no next request": say so, and offer a retry.
+	if (isError && !currentData) {
+		return (
+			<div className="text-muted-foreground mt-2 text-[12px]" data-testid="log-tool-call-next-request-error">
+				Couldn't look up the next request in this session.{" "}
+				<button
+					type="button"
+					className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+					onClick={() => void refetch()}
+					data-testid="log-tool-call-next-request-retry"
+				>
+					Retry
+				</button>
+			</div>
+		);
+	}
 	return (
-		<>
-			{mono ? (
-				<pre className="font-mono text-[12.5px] leading-[1.6] break-words whitespace-pre-wrap">{shown.join("\n")}</pre>
+		<div className="text-muted-foreground mt-2 text-[12px]" data-testid="log-tool-call-next-request">
+			The tool's result isn't in this request.{" "}
+			{next ? (
+				<button
+					type="button"
+					className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+					onClick={() => onOpenLog(next.id)}
+					data-testid="log-tool-call-next-request-link"
+				>
+					Open next request
+				</button>
+			) : !log.session_id ? null : currentData ? (
+				// The lookup finished and found nothing: the caller has not sent a
+				// follow-up in this session, or has not yet.
+				<span data-testid="log-tool-call-next-request-none">No later request in this session.</span>
 			) : (
-				<div className="text-[13px] leading-relaxed break-words whitespace-pre-wrap">{shown.join("\n")}</div>
+				<span data-testid="log-tool-call-next-request-loading">Looking for the next request…</span>
 			)}
-			{hasMore && (
-				<div className="mt-1.5 flex items-center justify-between">
-					<button
-						type="button"
-						onClick={() => setOpen((o) => !o)}
-						className="text-primary inline-flex items-center gap-1 text-[11.5px] font-medium hover:underline"
-					>
-						{open ? "Show less" : `Show ${moreCount} more lines`}
-						<ChevronDown className={cn("h-3 w-3 transition-transform", open && "rotate-180")} />
-					</button>
-					<span className="text-muted-foreground font-mono text-[10.5px]">
-						{lines.length} lines{lang ? ` · ${lang}` : ""}
-					</span>
-				</div>
-			)}
-		</>
-	);
-}
-
-// Generated tool identifiers (e.g. Codex-style names with embedded signatures)
-// can run to hundreds of characters; truncate the middle and keep the full name
-// one hover away.
-const TOOL_NAME_MAX = 48;
-
-function ToolNameLabel({ name }: { name: string }) {
-	if (name.length <= TOOL_NAME_MAX) return <>{name}</>;
-	const truncated = `${name.slice(0, 32)}…${name.slice(-12)}`;
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<span className="cursor-default" data-testid="log-tool-name-truncated">
-					{truncated}
-				</span>
-			</TooltipTrigger>
-			<TooltipContent className="max-w-[480px] font-mono text-[11px] break-all">{name}</TooltipContent>
-		</Tooltip>
-	);
-}
-
-function MessageRow({
-	role,
-	meta,
-	children,
-	last = false,
-	label,
-}: {
-	role: MessageRole;
-	meta?: ReactNode;
-	children: ReactNode;
-	last?: boolean;
-	label?: string;
-}) {
-	return (
-		<div className="flex gap-3">
-			<div className="flex flex-col items-center pt-1.5">
-				<span className={cn("h-2 w-2 rounded-sm", messageDotClass[role])} />
-				{!last && <div className="bg-border my-1 w-px flex-1" />}
-			</div>
-			<div className="min-w-0 flex-1 pb-4">
-				<div className="mb-1 flex items-center gap-2">
-					<span className="text-foreground text-[11.5px] font-semibold">{label ?? messageRoleLabel[role]}</span>
-					{meta ? <span className="text-muted-foreground text-[11px]">{meta}</span> : null}
-				</div>
-				<div className={cn("rounded-sm border p-3 text-[13px] leading-relaxed", messageToneClass[role])}>{children}</div>
-			</div>
 		</div>
 	);
 }
@@ -1088,6 +932,28 @@ function MessageHistoryCollapse({ count, children }: { count: number; children: 
 	);
 }
 
+function EmbeddingJsonBox({ title, value }: { title: string; value: unknown }) {
+	const json = JSON.stringify(value, null, 2);
+	return (
+		<CollapsibleBox title={title} onCopy={() => json} collapsedHeight={150}>
+			<CodeEditor
+				className="z-0 w-full"
+				shouldAdjustInitialHeight
+				maxHeight={450}
+				wrap
+				code={json}
+				lang="json"
+				readonly
+				options={{
+					scrollBeyondLastLine: false,
+					lineNumbers: "off",
+					alwaysConsumeMouseWheel: false,
+				}}
+			/>
+		</CollapsibleBox>
+	);
+}
+
 interface LogDetailViewProps {
 	log: LogEntry | null;
 	resolvedSelectedPromptName?: string; // Current prompt name from prompt-repo when `selected_prompt_id` is set; falls back to stored log name
@@ -1098,6 +964,7 @@ interface LogDetailViewProps {
 	headerAction?: ReactNode;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
 	onFilterBySessionId?: (sessionId: string) => void;
+	onOpenLog?: (logId: string) => void;
 }
 
 // Explains an empty Raw JSON tab. Raw payloads are only persisted when the
@@ -1176,6 +1043,7 @@ export function LogDetailView({
 	headerAction,
 	onFilterByParentRequestId,
 	onFilterBySessionId,
+	onOpenLog,
 }: LogDetailViewProps) {
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: "Request body copied to clipboard",
@@ -1220,12 +1088,15 @@ export function LogDetailView({
 	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const complexityRouting = deriveComplexityRouting(log);
+	// A downstream build can draw its own routing record at the top of the Routing tab.
+	const RoutingPanel = getLogRoutingPanel();
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isRealtimeTranscription =
 		isRealtimeTurn && log.metadata?.realtime_event_type === "conversation.item.input_audio_transcription.completed";
 	const audioSeconds = log.token_usage?.audio_seconds;
 	const isBatch = isBatchOperation(log.object);
+	const isEmbedding = log.object === "embedding";
 	const batchDebug = log.batch_debug;
 	// Set on both the submission row and the aggregate cost row a settlement writes;
 	// only the latter carries accounting, which is what tells the two apart.
@@ -1692,11 +1563,13 @@ export function LogDetailView({
 					/>
 					<HeroStat
 						label="Cost"
-						// Decisions bill fractions of a cent per call (jev: $42 per 1B input
-						// tokens), so the shared 4-dp rounding floors every value to $0.0000.
+						// Routing classifiers add sidecar cost to normal inference
+						// requests, so keep those totals visible at useful precision.
 						value={
 							log.cost != null
-								? log.object === "decisions" || (log.status === "cancelled" && log.stream && log.provider === "anthropic")
+								? log.object === "decisions" ||
+									(log.cost_breakdown?.additional_cost_details?.routing_cost ?? 0) > 0 ||
+									(log.status === "cancelled" && log.stream && log.provider === "anthropic")
 									? formatCostPrecise(log.cost)
 									: formatCost(log.cost)
 								: "—"
@@ -1710,7 +1583,13 @@ export function LogDetailView({
 						}
 						hasRightBorder
 					/>
-					{isRealtimeTurn ? (
+					{log.live_session ? (
+						<HeroStat
+							label="Voice"
+							value={log.live_session.transport ? formatRealtimeTransport(log.live_session.transport) : "\u2014"}
+							valueClass="text-[15px]"
+						/>
+					) : isRealtimeTurn ? (
 						<HeroStat
 							label={isRealtimeTranscription ? "Type" : "Voice"}
 							value={
@@ -1877,12 +1756,13 @@ export function LogDetailView({
 										onFilterByParentRequestId ? (
 											<Tooltip>
 												<TooltipTrigger asChild>
-													<code
-														className="block max-w-full min-w-0 cursor-pointer truncate font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+													<button
+														type="button"
+														className="block max-w-full min-w-0 cursor-pointer truncate text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
 														onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
 													>
 														{log.parent_request_id}
-													</code>
+													</button>
 												</TooltipTrigger>
 												<TooltipContent sideOffset={6} className="max-w-md break-all">
 													{log.parent_request_id} · Filter this session
@@ -2270,13 +2150,19 @@ export function LogDetailView({
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
 									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
-										<LogEntryDetailsView className="w-full" label="Input Cost" value={formatCostPrecise(log.cost_breakdown?.input_cost)} />
+										<LogEntryDetailsView
+											className="w-full"
+											label="Input Cost"
+											value={formatCostPrecise(log.cost_breakdown?.input_cost)}
+											tooltip={getCostDetailsTooltip(log.cost_breakdown?.input_cost_details, INPUT_COST_LABELS)}
+										/>
 									)}
 									{(log.cost_breakdown?.output_cost ?? 0) > 0 && (
 										<LogEntryDetailsView
 											className="w-full"
 											label="Output Cost"
 											value={formatCostPrecise(log.cost_breakdown?.output_cost)}
+											tooltip={getCostDetailsTooltip(log.cost_breakdown?.output_cost_details, OUTPUT_COST_LABELS)}
 										/>
 									)}
 									{(log.cost_breakdown?.total_cost ?? log.cost ?? 0) > 0 && (
@@ -2467,7 +2353,9 @@ export function LogDetailView({
 														}
 													/>
 												)}
-												{reasoning.max_tokens && <LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />}
+												{reasoning.max_tokens != null && (
+													<LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />
+												)}
 											</div>
 										</div>
 									</>
@@ -2706,7 +2594,11 @@ export function LogDetailView({
 												label="Mechanism"
 												value={
 													<Badge variant="secondary" className="uppercase">
-														{call.output_tokens != null ? "LLM Classification" : "Embedding"}
+														{call.request_type === "decisions"
+															? "Jev Classification"
+															: call.output_tokens != null
+																? "LLM Classification"
+																: "Embedding"}
 													</Badge>
 												}
 											/>
@@ -2735,46 +2627,14 @@ export function LogDetailView({
 					{!isContainer &&
 						!isPassthrough &&
 						log.metadata &&
-						Object.keys(log.metadata).filter((k) => {
-							if (k === "isAsyncRequest") return false;
-							if (
-								isRealtimeTurn &&
-								[
-									"realtime_session_id",
-									"provider_session_id",
-									"realtime_source",
-									"realtime_event_type",
-									"realtime_transport",
-									"realtime_voice",
-									"realtime",
-								].includes(k)
-							)
-								return false;
-							return true;
-						}).length > 0 && (
+						Object.keys(log.metadata).some((k) => isShownMetadataKey(k, isRealtimeTurn)) && (
 							<>
 								<DottedSeparator />
 								<div className="space-y-4">
 									<BlockHeader title="Metadata" />
 									<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 										{Object.entries(log.metadata)
-											.filter(([key]) => {
-												if (key === "isAsyncRequest") return false;
-												if (
-													isRealtimeTurn &&
-													[
-														"realtime_session_id",
-														"provider_session_id",
-														"realtime_source",
-														"realtime_event_type",
-														"realtime_transport",
-														"realtime_voice",
-														"realtime",
-													].includes(key)
-												)
-													return false;
-												return true;
-											})
+											.filter(([key]) => isShownMetadataKey(key, isRealtimeTurn))
 											.map(([key, value]) => (
 												<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
 											))}
@@ -2811,7 +2671,7 @@ export function LogDetailView({
 						</TabsTrigger>
 					)}
 
-					{showTabs && !isPassthrough && !log.list_models_output && !isBatch && (
+					{showTabs && !isPassthrough && !log.list_models_output && !isBatch && !isEmbedding && (
 						<TabsTrigger value="tools" className="px-3">
 							Tools
 							{declaredTools.length ? (
@@ -3000,7 +2860,7 @@ export function LogDetailView({
 						</div>
 					)}
 					{/* Passthrough just renders the raw json, so there's nothing to filter */}
-					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough) && "hidden")}>
+					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough || isEmbedding) && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<button
@@ -3088,6 +2948,7 @@ export function LogDetailView({
 							requestType={log.object}
 						/>
 					)}
+					{log.live_session && <LiveSessionView session={log.live_session} mapping={activeOutputRevealMapping} />}
 
 					{isPassthrough && passthroughRequestBody && (
 						<CollapsibleBox
@@ -3161,6 +3022,7 @@ export function LogDetailView({
 					)}
 
 					{!isPassthrough &&
+						!log.live_session &&
 						((log.input_history && log.input_history.length > 0) ||
 							(log.output_message && !log.error_details?.error.message) ||
 							log.stop_reason === "refusal" ||
@@ -3249,9 +3111,7 @@ export function LogDetailView({
 															.map((b, i) => {
 																const src = b.image_url?.url;
 																if (!src) return null;
-																return (
-																	<img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />
-																);
+																return <img key={`${i}-${src}`} src={src} alt="Attachment" className="mt-2 max-w-full rounded border" />;
 															})}
 													{text &&
 														Array.isArray(message.content) &&
@@ -3389,156 +3249,35 @@ export function LogDetailView({
 						const rawOutput = log.status !== "processing" && !log.error_details?.error.message ? (log.responses_output ?? []) : [];
 						const outputMsgs =
 							visibleRoles.size < allRoles.length ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m))) : rawOutput;
-						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string> }> = [
-							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping })),
-							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping })),
+						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string>; fromOutput: boolean }> = [
+							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping, fromOutput: false })),
+							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping, fromOutput: true })),
 						];
 						if (all.length === 0) return null;
+						// The link to the request carrying the results goes under the last call
+						// the caller has to run, once, however many calls the response made.
+						const lastClientCallIndex =
+							onOpenLog && log.session_id ? all.findLastIndex((entry) => entry.fromOutput && isClientToolCallItem(entry.msg.type)) : -1;
 						return (
 							<div className="bg-card rounded-sm border p-5">
-								{all.map(({ msg, mapping }, index) => {
-									const role = getResponsesRole(msg);
-									const isLast = index === all.length - 1;
-									const reasoningParts = role === "reasoning" ? extractReasoningParts(msg, mapping) : null;
-									const reasoningHasAny =
-										!!reasoningParts &&
-										(reasoningParts.summaries.length > 0 ||
-											!!reasoningParts.encrypted ||
-											!!reasoningParts.contentText ||
-											reasoningParts.signatures.length > 0);
-									const text = role === "reasoning" ? "" : extractResponsesText(msg, mapping);
-									// Whatever the item carries outside the fields rendered below — a server tool's `action`,
-									// a custom_tool_call's `input`, a compaction item's `encrypted_content`.
-									const itemPayload = extractResponsesItemPayload(msg);
-									const lineCount = text ? text.split("\n").length : 0;
-									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
-									let meta: ReactNode | undefined;
-									if (role === "reasoning" && reasoningParts) {
-										const totalLen =
-											reasoningParts.summaries.reduce((acc, s) => acc + s.length, 0) +
-											(reasoningParts.contentText?.length ?? 0) +
-											(reasoningParts.encrypted?.length ?? 0);
-										const totalApprox = totalLen ? Math.max(1, Math.round(totalLen / 4)) : 0;
-										const hasOpaqueOnly =
-											(!!reasoningParts.encrypted || reasoningParts.signatures.length > 0) &&
-											reasoningParts.summaries.length === 0 &&
-											!reasoningParts.contentText;
-										meta = totalApprox
-											? `~${totalApprox} tokens${hasOpaqueOnly ? " · encrypted" : ""}`
-											: hasOpaqueOnly
-												? "encrypted"
-												: undefined;
-									} else {
-										meta = text ? (
-											role === "system" || role === "tool" ? (
-												msg.name ? (
-													<>
-														<ToolNameLabel name={msg.name} />
-														{` · ${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`}
-													</>
-												) : (
-													`${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-												)
-											) : (
-												`${lineCount} line${lineCount === 1 ? "" : "s"}`
-											)
-										) : msg.name ? (
-											<ToolNameLabel name={msg.name} />
-										) : msg.type === "function_call_output" && msg.call_id ? (
-											<ToolNameLabel name={msg.call_id} />
-										) : Array.isArray(msg.tools) ? (
-											(() => {
-												const callable = flattenDeclaredTools(msg.tools).length;
-												return callable !== msg.tools.length
-													? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
-													: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
-											})()
-										) : (
-											[msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined
-										);
-									}
-									const usePlainText = role === "user" || role === "assistant";
-									return (
-										<MessageRow key={index} role={role} meta={meta} last={isLast}>
-											{role === "reasoning" ? (
-												reasoningHasAny && reasoningParts ? (
-													<div className="space-y-3">
-														{reasoningParts.contentText ? (
-															<CollapsibleCode text={reasoningParts.contentText} preview={3} mono={false} />
-														) : null}
-														{reasoningParts.summaries.map((s, i) => (
-															<div key={`s-${i}`} className="space-y-1">
-																{reasoningParts.summaries.length > 1 ? (
-																	<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">
-																		Summary {i + 1}
-																	</div>
-																) : null}
-																<CollapsibleCode text={s} preview={3} mono={false} />
-															</div>
-														))}
-														{reasoningParts.encrypted ? (
-															// Ciphertext is noise even at two preview lines; fold it
-															// entirely until the reader asks for it.
-															<EncryptedReveal text={reasoningParts.encrypted} label="Encrypted" />
-														) : null}
-														{reasoningParts.signatures.length > 0 ? (
-															<EncryptedReveal
-																text={reasoningParts.signatures.join("\n\n")}
-																label={reasoningParts.signatures.length > 1 ? "Encrypted signatures" : "Encrypted signature"}
-															/>
-														) : null}
-													</div>
-												) : (
-													<div className="text-muted-foreground text-[12px] italic">No reasoning content available</div>
-												)
-											) : text ? (
-												usePlainText ? (
-													<CollapsibleCode text={text} preview={3} mono={false} />
-												) : (
-													<CollapsibleCode text={text} preview={3} lang={role === "system" ? "xml" : undefined} />
-												)
-											) : msg.output !== undefined ? (
-												<CollapsibleCode
-													text={
-														typeof msg.output === "string"
-															? applyRedactionMapping(msg.output, mapping)
-															: JSON.stringify(applyRedactionMappingToValue(msg.output, mapping), null, 2)
-													}
-													preview={3}
-												/>
-											) : Array.isArray(msg.tools) && msg.tools.length > 0 ? (
-												<CollapsibleCode text={JSON.stringify(msg.tools, null, 2)} preview={3} />
-											) : Array.isArray(msg.tools) ? (
-												<div className="text-muted-foreground text-[12px] italic">No tools declared</div>
-											) : itemPayload ? (
-												<CollapsibleCode text={JSON.stringify(applyRedactionMappingToValue(itemPayload, mapping), null, 2)} preview={3} />
-											) : (
-												<div className="text-muted-foreground text-[12px] italic">No content</div>
-											)}
-											{Array.isArray(msg.content) &&
-												msg.content
-													.filter((b) => b?.type === "input_image" && b.image_url)
-													.map((b, i) => (
-														<img
-															key={`${i}-${b.image_url}`}
-															src={b.image_url}
-															alt="Attached image"
-															className="mt-2 max-w-full rounded border"
-														/>
-													))}
-										</MessageRow>
-									);
-								})}
+								{all.map(({ msg, mapping }, index) => (
+									<ResponsesItemRow key={index} msg={msg} mapping={mapping} last={index === all.length - 1}>
+										{index === lastClientCallIndex && onOpenLog ? <NextSessionRequestLink log={log} onOpenLog={onOpenLog} /> : null}
+									</ResponsesItemRow>
+								))}
 							</div>
 						);
 					})()}
 
-					{log.is_large_payload_request && !log.input_history?.length && !log.responses_input_history?.length && (
-						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-							Large payload request: input content was streamed directly to the provider and is not available for display.
-							{log.raw_request && " A truncated preview is available in the Raw JSON tab."}
-						</div>
-					)}
+					{log.is_large_payload_request &&
+						!log.input_history?.length &&
+						!log.responses_input_history?.length &&
+						!log.embedding_input?.length && (
+							<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+								Large payload request: input content was streamed directly to the provider and is not available for display.
+								{log.raw_request && " A truncated preview is available in the Raw JSON tab."}
+							</div>
+						)}
 					{log.is_large_payload_response && !log.output_message && !log.responses_output?.length && log.status !== "processing" && (
 						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
 							Large payload response: response content was streamed directly to the client and is not available for display.
@@ -3546,20 +3285,11 @@ export function LogDetailView({
 						</div>
 					)}
 
+					{log.embedding_input && log.embedding_input.length > 0 && (
+						<EmbeddingJsonBox title="Input" value={applyRedactionMappingToValue(log.embedding_input, activeInputRevealMapping)} />
+					)}
 					{log.status !== "processing" && log.embedding_output && log.embedding_output.length > 0 && !log.error_details?.error.message && (
-						<div className="bg-card space-y-3 rounded-sm border p-5">
-							<div className="text-sm font-medium">Embedding</div>
-							<LogChatMessageView
-								message={{
-									role: "assistant",
-									content: JSON.stringify(
-										log.embedding_output.map((embedding) => embedding.embedding),
-										null,
-										2,
-									),
-								}}
-							/>
-						</div>
+						<EmbeddingJsonBox title="Embedding" value={log.embedding_output.map((embedding) => embedding.embedding)} />
 					)}
 					{log.status !== "processing" && log.rerank_output && !log.error_details?.error.message && (
 						<CollapsibleBox title={`Rerank Output (${log.rerank_output.length})`} onCopy={() => JSON.stringify(log.rerank_output, null, 2)}>
@@ -3714,6 +3444,7 @@ export function LogDetailView({
 				</TabsContent>
 
 				<TabsContent value="routing" className="space-y-3">
+					{RoutingPanel && <RoutingPanel log={log} />}
 					{log.attempt_trail && log.attempt_trail.length > 1 && (
 						<CollapsibleBox
 							title={`Attempt Trail (${log.attempt_trail.length} attempts)`}
@@ -3845,7 +3576,7 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 		const isRealtimeTurn = log.object === "realtime.turn";
 		const isSpeech = log.object === "audio.speech" || log.object === "audio.speech.chunk";
 		const isTextCompletion = log.object === "text.completion" || log.object === "text.completion.chunk";
-		const isEmbedding = log.object === "list";
+		const isEmbedding = log.object === "embedding";
 
 		const extractTextFromMessage = (message: any): string => {
 			if (!message || !message.content) {
@@ -3909,7 +3640,10 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 			if (prompt) {
 				requestBody.prompt = prompt;
 			}
+		} else if (log.object === "embedding" && log.embedding_input && log.embedding_input.length > 0) {
+			requestBody.input = log.embedding_input;
 		} else if (isEmbedding && log.input_history && log.input_history.length > 0) {
+			// Fallback for logs written before embedding_input existed.
 			const texts: string[] = [];
 			for (const message of log.input_history) {
 				const messageTexts = extractTextsFromMessage(message);

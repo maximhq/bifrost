@@ -906,6 +906,16 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 		copy.File = &copyFile
 	}
 
+	// The guard marker is replayed to Bedrock verbatim; copy the qualifiers slice so the
+	// two blocks never share backing storage.
+	if original.GuardContent != nil {
+		copyGuardContent := &GuardContent{}
+		if original.GuardContent.Qualifiers != nil {
+			copyGuardContent.Qualifiers = append([]string(nil), original.GuardContent.Qualifiers...)
+		}
+		copy.GuardContent = copyGuardContent
+	}
+
 	return copy
 }
 
@@ -1863,6 +1873,16 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		copy.MediaResolution = copyMediaResolution
 	}
 
+	// The guard marker is replayed to Bedrock verbatim; copy the qualifiers slice so the
+	// two blocks never share backing storage.
+	if original.GuardContent != nil {
+		copyGuardContent := &GuardContent{}
+		if original.GuardContent.Qualifiers != nil {
+			copyGuardContent.Qualifiers = append([]string(nil), original.GuardContent.Qualifiers...)
+		}
+		copy.GuardContent = copyGuardContent
+	}
+
 	// Deep copy ResponsesInputMessageContentBlockImage
 	if original.ResponsesInputMessageContentBlockImage != nil {
 		copyImage := &ResponsesInputMessageContentBlockImage{}
@@ -2207,6 +2227,12 @@ func IsElevenlabsSoundModel(model string) bool {
 	return strings.Contains(model, "eleven_text_to_sound")
 }
 
+// IsTypesafeModel checks if the model targets a TypeSafe System One decisions
+// endpoint (e.g. "typesafe/jev-1.13", "~typesafe/jev-latest") rather than chat.
+func IsTypesafeModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "~"), "typesafe/")
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
@@ -2389,6 +2415,11 @@ func IsCohereModel(model string) bool {
 // Bedrock identifier prefix ("amazon.titan-*").
 func IsTitanModel(model string) bool {
 	return strings.Contains(model, "titan")
+}
+
+// IsTitanMultimodalEmbeddingModel checks if the model is Titan's multimodal embedding model.
+func IsTitanMultimodalEmbeddingModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "titan-embed-image")
 }
 
 // IsGrokModel checks if the model is an xAI Grok model.

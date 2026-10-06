@@ -290,7 +290,8 @@ export function CodeEditor(props: CodeEditorProps) {
 						monaco.editor.defineTheme("custom-dark", {
 							base: "vs-dark",
 							inherit: true,
-							rules: [],
+							// vs-dark comment green sits just under 4.5:1 on the dark card background.
+							rules: [{ token: "comment", foreground: "7ca668" }],
 							colors: {
 								"editor.background": "#00000000",
 								focusBorder: "#00000000",

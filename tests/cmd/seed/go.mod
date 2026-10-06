@@ -8,7 +8,8 @@ replace (
 )
 
 require (
-	github.com/maximhq/bifrost/core v1.10.2
+	github.com/google/uuid v1.6.0
+	github.com/maximhq/bifrost/core v1.11.1
 	github.com/maximhq/bifrost/framework v1.3.16
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
@@ -58,6 +59,7 @@ require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2 // indirect
 	github.com/bytedance/sonic/loader v0.5.2 // indirect
+	github.com/canonical/starlark v0.0.0-20260428155828-9a81051fac39 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
@@ -72,7 +74,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
 	github.com/hashicorp/go-version v1.8.0 // indirect
@@ -121,7 +122,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
-	go.starlark.net v0.0.0-20260102030733-3fee463870c9 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/net v0.58.0 // indirect

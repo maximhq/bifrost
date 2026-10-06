@@ -308,3 +308,47 @@ func TestMCPToolLogGovernanceSetsTolerateCorruptJSON(t *testing.T) {
 		t.Fatalf("team_ids = %v, want nil", entry.TeamIDsParsed)
 	}
 }
+
+func TestSerializeFieldsStoresWebSearchAsNumSearchQueries(t *testing.T) {
+	stale := 1
+	usage := &schemas.BifrostLLMUsage{
+		TotalTokens:             15,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ReasoningTokens: 4, NumSearchQueries: &stale},
+		ToolUsage:               &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 3}},
+	}
+	log := &Log{TokenUsageParsed: usage}
+	require.NoError(t, log.SerializeFields())
+
+	assert.NotContains(t, log.TokenUsage, "tool_usage")
+	assert.JSONEq(t, `{"total_tokens":15,"completion_tokens_details":{"reasoning_tokens":4,"num_search_queries":3}}`, log.TokenUsage)
+	// The caller's usage keeps its own shape.
+	require.NotNil(t, usage.ToolUsage)
+	assert.Equal(t, 1, *usage.CompletionTokensDetails.NumSearchQueries)
+
+	onlyTool := &Log{TokenUsageParsed: &schemas.BifrostLLMUsage{TotalTokens: 1, ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 2}}}}
+	require.NoError(t, onlyTool.SerializeFields())
+	assert.JSONEq(t, `{"total_tokens":1,"completion_tokens_details":{"num_search_queries":2}}`, onlyTool.TokenUsage)
+}
+
+func TestDeserializeFieldsRebuildsToolUsageFromNumSearchQueries(t *testing.T) {
+	log := &Log{TokenUsage: `{"total_tokens":15,"completion_tokens_details":{"num_search_queries":3}}`}
+	require.NoError(t, log.DeserializeFields())
+	require.NotNil(t, log.TokenUsageParsed.ToolUsage)
+	assert.Equal(t, 3, log.TokenUsageParsed.ToolUsage.WebSearch.NumRequests)
+
+	null := &Log{TokenUsage: `null`}
+	require.NoError(t, null.DeserializeFields())
+	assert.Nil(t, null.TokenUsageParsed)
+
+	none := &Log{TokenUsage: `{"total_tokens":15}`}
+	require.NoError(t, none.DeserializeFields())
+	assert.Nil(t, none.TokenUsageParsed.ToolUsage)
+
+	// Round trip: what the gateway writes, a later read prices.
+	written := &Log{TokenUsageParsed: &schemas.BifrostLLMUsage{TotalTokens: 1, ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 5}}}}
+	require.NoError(t, written.SerializeFields())
+	read := &Log{TokenUsage: written.TokenUsage}
+	require.NoError(t, read.DeserializeFields())
+	assert.Equal(t, 5, read.TokenUsageParsed.ToolUsage.WebSearch.NumRequests)
+	assert.Equal(t, 5, *read.TokenUsageParsed.CompletionTokensDetails.NumSearchQueries)
+}

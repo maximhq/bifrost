@@ -252,10 +252,30 @@ bifrost:
   #       enabled: "env.BIFROST_AUDIT_VERBOSE"
   featureFlags: {}
 
+  # Global outbound proxy (the dashboard's proxy settings page) and which components use it.
+  # Renders into config.json's top-level proxy_config. Under sourceOfTruth "split" it is applied
+  # when new or changed and dashboard edits are kept otherwise; under "config.json" it is applied
+  # on every startup. Leave unset to manage the proxy from the dashboard.
+  # proxyConfig:
+  #   enabled: true
+  #   type: "http"                       # only http is supported
+  #   url: "http://proxy.example.com:8080"
+  #   username: "env.PROXY_USERNAME"     # optional; env.VAR_NAME supported
+  #   password: "env.PROXY_PASSWORD"     # optional; env.VAR_NAME supported
+  #   noProxy: "localhost,.internal.example.com"
+  #   timeout: 30                        # seconds
+  #   skipTlsVerify: false
+  #   enableForScim: true                # Enterprise: SCIM directory sync and identity-provider requests
+  #   enableForInference: false
+  #   enableForApi: false
+
   # Client configuration
   client:
     dropExcessRequests: false
     initialPoolSize: 300
+    # While dashboard auth is disabled, browser requests to the management API are accepted
+    # only from localhost, the gateway's own origin, and origins listed here explicitly;
+    # "*" does not admit them.
     allowedOrigins:
       - "*"
     enableLogging: true
@@ -306,7 +326,7 @@ bifrost:
     # mcpServerAuthMode: "headers"
     # OAuth2 authorization server settings for /mcp (only used when mcpServerAuthMode is "both" or "oauth")
     # oauth2ServerConfig:
-    #   issuerUrl: ""             # Stable public issuer URL; required for multi-host deployments. Supports env.VAR_NAME
+    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth" (helm fails without it). Supports env.VAR_NAME
     #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
@@ -595,6 +615,22 @@ bifrost:
       maxAgentDepth: 10
       # codeModeBindingLevel: "server"  # Code mode binding level (server or tool)
       # disableAutoToolInject: false    # Disable automatic MCP tool injection
+      # How far an upstream MCP server's initialize instructions travel:
+      # off (default, dropped), gateway (/mcp handshake only), all (also injected into LLM requests)
+      # bifrost.mcp.toolManagerConfig.maxInstructionsPerClient -- byte bound per MCP server; 0 = default (4096)
+      # maxInstructionsPerClient: 0
+      # bifrost.mcp.toolManagerConfig.maxInstructionsTotal -- byte bound on the whole aggregate; 0 = default (16384)
+      # maxInstructionsTotal: 0
+      # bifrost.mcp.toolManagerConfig.codeModeLimits -- limits on each code mode execution; omit a field or set 0 for its default.
+      # There is no limit on concurrent executions.
+      # codeModeLimits:
+      #   maxSourceBytes: 65536      # submitted code size
+      #   maxSteps: 1000000          # interpreter computation steps
+      #   maxMemoryBytes: 67108864   # estimated allocation budget
+      #   maxLogBytes: 65536         # print and tool log output
+      #   maxToolCalls: 64           # nested MCP tool calls
+      #   maxValueBytes: 1048576     # each tool payload / converted result; 0 or at least 1024
+      #   maxNestingDepth: 64        # value nesting depth; at most 1000
 
   # Plugins configuration
   plugins:
@@ -693,6 +729,8 @@ bifrost:
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
         #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
+        #     excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
+        #     export_raw_payloads: false  # Raw provider request/response bodies on spans; needs raw storage on the provider
         #     overhead_breakdown_enabled: false # Export the per-component overhead histogram bifrost_overhead_component_microseconds (requires metrics_enabled and an active trace)
         #
         # Single-profile shape:
@@ -728,6 +766,7 @@ bifrost:
         # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
         # Note: "*" captures all headers including sensitive ones like Authorization.
         # request_headers: []
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # Export the per-component overhead histogram bifrost_overhead_component_microseconds
         # (overhead latency split by the overhead_component attribute). Requires metrics_enabled
         # and an active trace, since the breakdown is computed from completed spans (default: false)
@@ -764,6 +803,7 @@ bifrost:
         # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
         # disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # Agentless mode (direct to Datadog API, no local agent):
         # agentless: true
         # api_key: "env.DD_API_KEY"   # Required for agentless mode (supports env.VAR_NAME)
@@ -787,6 +827,8 @@ bifrost:
         custom_labels: {}
         disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Column names to omit, matched exactly (e.g. "tools"); trace_id and timestamp cannot be excluded
+        # export_raw_payloads: false  # Store raw provider request/response bodies; needs raw storage on the provider
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
@@ -809,6 +851,7 @@ bifrost:
         auto_create_topic: false
         disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
@@ -822,6 +865,7 @@ bifrost:
         auto_create_topic: false
         disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
@@ -836,6 +880,7 @@ bifrost:
         enable_events: true
         enable_metrics: true
         disable_content_logging: false # events include prompt/response content by default; set true for metadata only
+        # excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         # source: "bifrost"            # HEC source field (default: bifrost)
         # sourcetype: "bifrost:llm"    # HEC sourcetype for events (metrics use bifrost:metric; default: bifrost:llm)
         # host: ""                     # HEC host field (defaults to the server hostname)
@@ -891,6 +936,9 @@ bifrost:
       #       reset_duration: "1Y"
       #   # Option B: single budget reference (pre-declared in governance.budgets)
       #   budget_id: "budget-1"
+      #   # Enterprise: hold an access profile (declared under accessProfiles) instead of
+      #   # budgets and a rate limit of its own; the two cannot be combined.
+      #   access_profile: "customer-profile"
     teams: []
       # - id: "team-1"
       #   name: "Team Name"
@@ -900,16 +948,25 @@ bifrost:
       #   profile: {}              # Team profile data
       #   config: {}               # Team configuration data
       #   claims: {}               # Team claims data
+      #   access_profile: "team-profile"  # Enterprise: access profile the team holds, instead of budget_id / rate_limit_id
+    # Enterprise: business unit definitions. Membership is managed by the IdP or the dashboard.
+    # businessUnits:
+    #   - id: "bu-emea"
+    #     name: "EMEA"
+    #     access_profile: "bu-profile"  # Access profile the business unit holds
+    #   # source_of_truth "split": access_profile applies when new or changed, dashboard changes kept otherwise.
+    #   # source_of_truth "config.json": enforced every startup; an entry without it has its profile removed.
     roles: []
       # - name: "dataAnalyst"
       #   description: "Read-only access for data analysts"
-      #   dac: "team-data"           # own-data | team-data | all-data (default: all-data)
+      #   dac: "team-data"           # own-data | team-data | business-unit-data | customer-data | all-data (default: all-data)
       #   # Optional per-entity overrides of the role's global dac. Resources supported as of
       #   # this chart release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers,
       #   # BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules,
       #   # GuardrailsConfig, MCPGateway, VirtualMCPs, Projects.
       #   entity_dac:
       #     VirtualKeys: "own-data"  # team-data everywhere else, but only their own keys
+      #     Logs: "customer-data"    # every log under the customers their teams or business units reach
       #   access_profiles:                    # Optional: names of all access profiles to grant
       #     - "analyst-profile"              # Takes precedence over deprecated access_profile
       #   permissions:
@@ -1007,6 +1064,7 @@ bifrost:
       #       model: ""              # Empty means use original model
       #       provider_key_name: ""  # Optional provider key name (resolved to internal key_id at load time)
       #       weight: 1.0
+      #       ttft_timeout_ms: 5000  # Optional: cut off a streaming attempt with no first token in 5s and run the next fallback
       #   fallbacks: ["openai"]
       #   scope: "global"           # Options: global, team, customer, virtual_key
       #   scope_id: ""              # Required for non-global scopes
@@ -1021,7 +1079,16 @@ bifrost:
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     complexityAnalyzerConfig: null
-      # semantic:                          # Semantic (embedding-based) complexity classification — the only mechanism; without it no complexity_tier is published
+      # classifier: "jev"                  # Primary classifier: semantic (default) or jev
+      # jev:                               # Uses the configured Typesafe provider and its enabled key
+      #   previous_message_count: 1        # Earlier user messages sent with the current request (0-5)
+      #   timeout: "1.5s"                  # Maximum wait for one Jev decision; usage counts toward request cost and budgets
+      #   criteria:                        # Optional: per-tier overrides; tiers are SIMPLE, MEDIUM, COMPLEX
+      #     COMPLEX:
+      #       definition: "..."            # Replaces the shipped definition of this tier (max 500 chars)
+      #       signals: ["..."]             # Replaces the shipped signals (max 12 items, 300 chars each)
+      #       examples: ["..."]            # Replaces the shipped examples (same limits)
+      # semantic:                          # Semantic (embedding-based) complexity classification
       #   provider: "openai"               # Embedding provider (must have an enabled key in bifrost.providers)
       #   embedding_model: "text-embedding-3-small"
       #                                      # Bifrost detects the embedding dimension during warmup
@@ -1037,7 +1104,7 @@ bifrost:
       #                                      #                   storage_mode on /api/routing/complexity-analyzer-status, and logged).
       #                                      #                   Qdrant, Weaviate, Redis and Pinecone are all supported here; chromem is
       #                                      #                   node-local even with a path, so it is private per pod.
-      #   fallback: "none"                 # none (default, records skipped) | llm (asks the llm block below when semantic produces no tier; requires llm to be set)
+      #   fallback: "none"                 # none (default) | llm (requires llm below) | jev (uses Typesafe); runs when semantic produces no tier
       # llm:                                # Chat-completion fallback classifier — inert unless semantic.fallback is "llm"
       #   provider: "openai"               # Provider used for the classification chat completion (must have an enabled key in bifrost.providers)
       #   model: "gpt-4o-mini"             # Small, fast chat model — every fallback classification waits on one completion from it
@@ -1045,9 +1112,9 @@ bifrost:
       #   prompt: ""                       # Replaces the shipped classification guidance (max 4000 chars); empty uses the shipped guidance
       #   message_history_count: 1         # Recent user messages sent to the classifier, oldest first (1 = latest only)
       #   count_toward_budgets: false      # Count classification completion cost toward virtual-key budgets (record-only, never enforced)
-      # session:                            # Optional session-aware routing; requires semantic configuration above
+      # session:                            # Optional session-aware routing; works with semantic or Jev primary
       #   enabled: true                     # Retain the highest tier across sequential turns for 24 hours; overlapping requests are best-effort
-      # keywords:                          # Required when complexityAnalyzerConfig is non-null; in split mode these phrases merge with stored defaults
+      # keywords:                          # Required when complexityAnalyzerConfig is non-null; Jev does not read these phrases
       #   simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
       #   medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
       #   complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
@@ -1131,7 +1198,7 @@ bifrost:
       # authServerType: "org"  # "org" or "custom"; auto-detected from issuer URL when omitted
       # clientId: ""
       # clientSecret: ""
-      # apiToken: ""  # optional — enables 24-hour background user/group reconciliation
+      # apiToken: ""  # optional — enables background user/group reconciliation (every bulkSyncInterval, 24h by default)
       # audience: ""
       # # Extra OAuth scopes on top of the base openid/profile/email/offline_access set
       # # (for Custom Authorization Servers where claims like "groups" are gated behind a scope).
@@ -1176,6 +1243,13 @@ bifrost:
       #   - attribute: "groups"
       #     value: "bifrost-power-users"
       #     accessProfile: "power-user"
+      # # Attribute -> project memberships. Every matching rule adds the user to that project (by name;
+      # # never auto-created). Memberships a rule added are removed when it stops matching; members
+      # # added from the dashboard are kept.
+      # attributeProjectMappings:
+      #   - attribute: "groups"
+      #     value: "ml-research"
+      #     project: "ml-platform"
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:
@@ -1186,6 +1260,12 @@ bifrost:
       # # "both" (default) = login/refresh claims and SCIM both sync roles/teams/business-units/profile and can JIT-create users;
       # # "scim" = SCIM is the sole source of truth — claims are ignored for provisioning and new users must be pushed by SCIM.
       # claimsSyncMode: "both"
+      # # Directory sync interval (Enterprise). Shared across every provider above: how often Bifrost
+      # # lists the IdP's users through its admin API and deprovisions the ones it no longer returns.
+      # # Whole days or h/m/s pairs ("12h", "1h30m", "7d"), 1h-30d; default 24h. Only runs with SCIM
+      # # off and directory access granted (Okta apiToken, Auth0 management credentials, Entra/Google
+      # # bulk sync).
+      # bulkSyncInterval: "24h"
       #
       # # Auth proxy / identity-aware proxy (Enterprise). Shared across every provider above:
       # # when a Zero Trust / ZTNA proxy fronts the IdP, Bifrost reads the login credential from the
@@ -1231,6 +1311,7 @@ bifrost:
       #     team: "platform-team"
       # attributeBusinessUnitMappings: []
       # attributeAccessProfileMappings: []
+      # attributeProjectMappings: []
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:
@@ -1254,6 +1335,7 @@ bifrost:
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
       # attributeAccessProfileMappings: []
+      # attributeProjectMappings: []
       #
       # Zitadel configuration:
       # domain: "my-instance.zitadel.cloud"      # no scheme
@@ -1268,6 +1350,7 @@ bifrost:
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
       # attributeAccessProfileMappings: []
+      # attributeProjectMappings: []
       #
       # Google Workspace configuration:
       # domain: "company.com"
@@ -1288,6 +1371,7 @@ bifrost:
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
       # attributeAccessProfileMappings: []
+      # attributeProjectMappings: []
       #
       # Generic OIDC configuration (any standards-compliant OIDC IdP):
       # issuerUrl: "https://idp.company.com"        # required; endpoints resolved via OIDC discovery (.well-known/openid-configuration)
@@ -1305,6 +1389,7 @@ bifrost:
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
       # attributeAccessProfileMappings: []
+      # attributeProjectMappings: []
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:
@@ -1493,6 +1578,7 @@ bifrost:
   auditLogs:
     disabled: false
     hmacKey: ""
+    # omitIpAddresses: false  # Don't record client IPs (e.g. for works council requirements); IPs already stored are hidden, not deleted
     # Object storage archival for audit events (optional). A background job copies events to
     # object storage one closed time window at a time as JSONL parts plus a manifest:
     #   {prefix}/audit-logs/YYYY/MM/DD/<start>-<end>/part-00000.jsonl[.gz] (+ manifest.json[.gz])

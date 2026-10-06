@@ -268,6 +268,59 @@ func TestGeminiResponsesStreamThoughtSignatureSurvives(t *testing.T) {
 		"a signature that cannot be decoded produces no part")
 }
 
+func TestGeminiResponsesStreamInlineDataWithThoughtSignatureSurvives(t *testing.T) {
+	rawSignature := []byte{0x01, 0x02, 0xff, 0xfe, 0x7f}
+	encoded := base64.StdEncoding.EncodeToString(rawSignature)
+
+	events := runGeminiReasoningStream(t, []*GenerateContentResponse{
+		{
+			ResponseID:   "resp-signed-image",
+			ModelVersion: "gemini-3-pro-preview",
+			Candidates: []*Candidate{{
+				Content: &Content{Role: "model", Parts: []*Part{{
+					InlineData:       &Blob{MIMEType: "image/png", Data: "aW1n"},
+					ThoughtSignature: rawSignature,
+				}}},
+			}},
+		},
+		{
+			ResponseID: "resp-signed-image",
+			Candidates: []*Candidate{{FinishReason: FinishReasonStop}},
+		},
+	})
+
+	var imageBlock *schemas.ResponsesMessageContentBlock
+	standaloneReasoningItems := 0
+	for _, event := range events {
+		if event.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded &&
+			event.Item != nil && event.Item.Type != nil &&
+			*event.Item.Type == schemas.ResponsesMessageTypeReasoning {
+			standaloneReasoningItems++
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeContentPartAdded &&
+			event.Part != nil && event.Part.Type == schemas.ResponsesInputMessageContentBlockTypeImage {
+			imageBlock = event.Part
+		}
+	}
+
+	require.NotNil(t, imageBlock, "an inline image with a thoughtSignature must reach the stream")
+	require.NotNil(t, imageBlock.ResponsesInputMessageContentBlockImage)
+	require.NotNil(t, imageBlock.ResponsesInputMessageContentBlockImage.ImageURL)
+	assert.Equal(t, "data:image/png;base64,aW1n", *imageBlock.ResponsesInputMessageContentBlockImage.ImageURL)
+	require.NotNil(t, imageBlock.Signature, "the image block must preserve its thoughtSignature")
+	assert.Equal(t, encoded, *imageBlock.Signature)
+	assert.Zero(t, standaloneReasoningItems, "the signature must stay attached to the image item")
+
+	native := ToGeminiResponsesStreamResponse(&schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeContentPartAdded,
+		Part: imageBlock,
+	}, NewBifrostToGeminiStreamState())
+	require.NotNil(t, native)
+	require.Len(t, native.Candidates, 1)
+	require.Len(t, native.Candidates[0].Content.Parts, 1)
+	assert.Equal(t, rawSignature, native.Candidates[0].Content.Parts[0].ThoughtSignature)
+}
+
 // The signature-only part the reverse converter now emits for an Anthropic/Bedrock signature
 // delta must carry the empty `text` data field #6745 established. Without it the part is a
 // metadata-only object, which Google's own clients tolerate but strict adapters reject.

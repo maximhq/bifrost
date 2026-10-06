@@ -271,6 +271,20 @@ false
 {{- if .Values.bifrost.setupToken }}
 {{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
 {{- end }}
+{{- with .Values.bifrost.proxyConfig }}
+{{- $proxy := dict "enabled" (.enabled | default false) }}
+{{- if .type }}{{- $_ := set $proxy "type" .type }}{{- end }}
+{{- if .url }}{{- $_ := set $proxy "url" .url }}{{- end }}
+{{- if .username }}{{- $_ := set $proxy "username" .username }}{{- end }}
+{{- if .password }}{{- $_ := set $proxy "password" .password }}{{- end }}
+{{- if .noProxy }}{{- $_ := set $proxy "no_proxy" .noProxy }}{{- end }}
+{{- if hasKey . "timeout" }}{{- $_ := set $proxy "timeout" (.timeout | int) }}{{- end }}
+{{- if hasKey . "skipTlsVerify" }}{{- $_ := set $proxy "skip_tls_verify" .skipTlsVerify }}{{- end }}
+{{- if hasKey . "enableForScim" }}{{- $_ := set $proxy "enable_for_scim" .enableForScim }}{{- end }}
+{{- if hasKey . "enableForInference" }}{{- $_ := set $proxy "enable_for_inference" .enableForInference }}{{- end }}
+{{- if hasKey . "enableForApi" }}{{- $_ := set $proxy "enable_for_api" .enableForApi }}{{- end }}
+{{- $_ := set $config "proxy_config" $proxy }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}
@@ -411,6 +425,11 @@ false
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
 {{- end }}
 {{- if .Values.bifrost.client.mcpServerAuthMode }}
+{{- if or (eq .Values.bifrost.client.mcpServerAuthMode "oauth") (eq .Values.bifrost.client.mcpServerAuthMode "both") }}
+{{- $issuerSet := false }}
+{{- if .Values.bifrost.client.oauth2ServerConfig }}{{- if .Values.bifrost.client.oauth2ServerConfig.issuerUrl }}{{- $issuerSet = true }}{{- end }}{{- end }}
+{{- if not $issuerSet }}{{- fail (printf "ERROR: bifrost.client.oauth2ServerConfig.issuerUrl is required when bifrost.client.mcpServerAuthMode is '%s'. Bifrost exits at startup without it. Set the issuer URL (env.VAR_NAME is supported) or use mcpServerAuthMode 'headers'." .Values.bifrost.client.mcpServerAuthMode) }}{{- end }}
+{{- end }}
 {{- $_ := set $client "mcp_server_auth_mode" .Values.bifrost.client.mcpServerAuthMode }}
 {{- end }}
 {{- if .Values.bifrost.client.oauth2ServerConfig }}
@@ -579,6 +598,7 @@ false
 {{- if .profile }}{{- $_ := set $bu "profile" .profile }}{{- end }}
 {{- if .config }}{{- $_ := set $bu "config" .config }}{{- end }}
 {{- if .claims }}{{- $_ := set $bu "claims" .claims }}{{- end }}
+{{- if .access_profile }}{{- $_ := set $bu "access_profile" .access_profile }}{{- end }}
 {{- if .teamIds }}{{- $_ := set $bu "team_ids" .teamIds }}{{- end }}
 {{- $businessUnits = append $businessUnits $bu }}
 {{- end }}
@@ -1351,6 +1371,9 @@ false
 {{- if hasKey $client "toolExecutionTimeout" }}
 {{- $_ := set $cc "tool_execution_timeout" $client.toolExecutionTimeout }}
 {{- end }}
+{{- if hasKey $client "maxInstructionsLength" }}
+{{- $_ := set $cc "max_instructions_length" $client.maxInstructionsLength }}
+{{- end }}
 {{- if $client.toolPricing }}
 {{- $_ := set $cc "tool_pricing" $client.toolPricing }}
 {{- end }}
@@ -1405,6 +1428,40 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp.toolManagerConfig "disableAutoToolInject" }}
 {{- $_ := set $tmConfig "disable_auto_tool_inject" .Values.bifrost.mcp.toolManagerConfig.disableAutoToolInject }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.maxInstructionsPerClient }}
+{{- $_ := set $tmConfig "max_instructions_per_client" .Values.bifrost.mcp.toolManagerConfig.maxInstructionsPerClient }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
+{{- $_ := set $tmConfig "max_instructions_total" .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
+{{- end }}
+{{- if hasKey .Values.bifrost.mcp.toolManagerConfig "codeModeLimits" }}
+{{- $limits := dict }}
+{{- with .Values.bifrost.mcp.toolManagerConfig.codeModeLimits }}
+{{- if .maxSourceBytes }}
+{{- $_ := set $limits "max_source_bytes" .maxSourceBytes }}
+{{- end }}
+{{- if .maxSteps }}
+{{- $_ := set $limits "max_steps" .maxSteps }}
+{{- end }}
+{{- if .maxMemoryBytes }}
+{{- $_ := set $limits "max_memory_bytes" .maxMemoryBytes }}
+{{- end }}
+{{- if .maxLogBytes }}
+{{- $_ := set $limits "max_log_bytes" .maxLogBytes }}
+{{- end }}
+{{- if .maxToolCalls }}
+{{- $_ := set $limits "max_tool_calls" .maxToolCalls }}
+{{- end }}
+{{- if .maxValueBytes }}
+{{- $_ := set $limits "max_value_bytes" .maxValueBytes }}
+{{- end }}
+{{- if .maxNestingDepth }}
+{{- $_ := set $limits "max_nesting_depth" .maxNestingDepth }}
+{{- end }}
+{{- end }}
+{{- /* Render the key even when every limit is 0, so an explicit setting resets stored limits to defaults. */}}
+{{- $_ := set $tmConfig "code_mode_limits" $limits }}
 {{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
@@ -1620,6 +1677,12 @@ false
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $otelConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $otelConfig "excluded_attributes" $inputConfig.excluded_attributes }}
+{{- end }}
+{{- if hasKey $inputConfig "export_raw_payloads" }}
+{{- $_ := set $otelConfig "export_raw_payloads" $inputConfig.export_raw_payloads }}
+{{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
@@ -1703,6 +1766,9 @@ false
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $datadogConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $datadogConfig "excluded_attributes" $inputConfig.excluded_attributes }}
+{{- end }}
 {{- if hasKey $inputConfig "metric_dimensions" }}
 {{- $_ := set $datadogConfig "metric_dimensions" $inputConfig.metric_dimensions }}
 {{- end }}
@@ -1748,6 +1814,12 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $bigqueryConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $bigqueryConfig "excluded_attributes" $inputConfig.excluded_attributes }}
+{{- end }}
+{{- if hasKey $inputConfig "export_raw_payloads" }}
+{{- $_ := set $bigqueryConfig "export_raw_payloads" $inputConfig.export_raw_payloads }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $bigqueryConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
@@ -1795,6 +1867,9 @@ false
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $kafkaConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $kafkaConfig "excluded_attributes" $inputConfig.excluded_attributes }}
+{{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $kafkaConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
@@ -1822,6 +1897,9 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $pubsubConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $pubsubConfig "excluded_attributes" $inputConfig.excluded_attributes }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $pubsubConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
@@ -1875,6 +1953,9 @@ false
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $splunkConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
+{{- if hasKey $inputConfig "excluded_attributes" }}
+{{- $_ := set $splunkConfig "excluded_attributes" $inputConfig.excluded_attributes }}
+{{- end }}
 {{- if $inputConfig.batch_max_bytes }}
 {{- $_ := set $splunkConfig "batch_max_bytes" (int $inputConfig.batch_max_bytes) }}
 {{- end }}
@@ -1925,6 +2006,9 @@ false
 {{- end }}
 {{- if .Values.bifrost.auditLogs.hmacKey }}
 {{- $_ := set $auditLogs "hmac_key" .Values.bifrost.auditLogs.hmacKey }}
+{{- end }}
+{{- if .Values.bifrost.auditLogs.omitIpAddresses }}
+{{- $_ := set $auditLogs "omit_ip_addresses" true }}
 {{- end }}
 {{- if .Values.bifrost.auditLogs.archiveInterval }}
 {{- $_ := set $auditLogs "archive_interval" .Values.bifrost.auditLogs.archiveInterval }}

@@ -10,7 +10,7 @@ const projects: NonNullable<PlaywrightTestConfig['projects']> = [
     name: 'chromium',
     testDir: './features',
     use: { ...devices['Desktop Chrome'] },
-    testIgnore: ['**/config/**', '**/mobile/**', '**/plugins/**', '**/virtual-keys/**', '**/mcp-registry/**', '**/model-limits/**', '**/providers/**'],
+    testIgnore: ['**/accessibility/**', '**/config/**', '**/mobile/**', '**/plugins/**', '**/virtual-keys/**', '**/mcp-registry/**', '**/model-limits/**', '**/providers/**'],
   },
   {
     name: 'chromium-serial',
@@ -80,6 +80,13 @@ export default defineConfig({
   use: {
     // Base URL for the application
     baseURL: process.env.BASE_URL || 'http://localhost:3000',
+
+    // OSS setup lock: while dashboard auth is not active, every /api call needs the
+    // operator's setup token. Matches setup_token in the test server's config.json (or
+    // its BIFROST_SETUP_TOKEN). The setup-screen spec clears it with test.use().
+    extraHTTPHeaders: {
+      'X-Bifrost-Setup-Token': process.env.BIFROST_E2E_SETUP_TOKEN || process.env.BIFROST_SETUP_TOKEN || 'bifrost-e2e-setup-token',
+    },
 
     // Collect trace when retrying the failed test
     trace: 'on-first-retry',

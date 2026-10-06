@@ -123,6 +123,32 @@ func (provider *OllamaProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 	)
 }
 
+// ModelRetrieve retrieves a single model's metadata from Ollama's OpenAI-compatible API.
+func (provider *OllamaProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	if request == nil || request.Model == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
+	}
+	escapedModel, idErr := providerUtils.EscapeResourceID(request.Model, "model")
+	if idErr != nil {
+		return nil, idErr
+	}
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return openai.HandleOpenAIModelRetrieveRequest(
+		ctx,
+		provider.client,
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/models/"+escapedModel),
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+	)
+}
+
 // TextCompletion performs a text completion request to the Ollama API.
 func (provider *OllamaProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	baseURL, bifrostErr := provider.baseURLOrError(key)

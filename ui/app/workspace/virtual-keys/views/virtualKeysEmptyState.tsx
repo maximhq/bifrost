@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { DisabledReason } from "@/components/ui/disabledReason";
+import { actionDisabledReason } from "@/lib/utils/governance";
 import { KeyRound } from "lucide-react";
 import { ArrowUpRight } from "lucide-react";
 
@@ -34,9 +36,11 @@ export function VirtualKeysEmptyState({ onAddClick, canCreate = true }: VirtualK
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button aria-label="Add your first virtual key" onClick={onAddClick} disabled={!canCreate} data-testid="create-vk-btn">
-						Add Virtual Key
-					</Button>
+					<DisabledReason reason={actionDisabledReason(canCreate, "create", "virtual keys")}>
+						<Button onClick={onAddClick} disabled={!canCreate} data-testid="create-vk-btn">
+							Add Virtual Key
+						</Button>
+					</DisabledReason>
 				</div>
 			</div>
 		</div>

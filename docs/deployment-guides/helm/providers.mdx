@@ -496,7 +496,7 @@ bedrock_key_config:
 
 ### Google Vertex AI
 
-Vertex requires `vertex_key_config` with `project_id` and `region`. Two auth modes:
+Vertex requires `vertex_key_config` with `project_id` and `region`. Three auth modes:
 
 <Tabs>
 <Tab title="Service Account Key">
@@ -593,6 +593,51 @@ bifrost:
 
 ```bash
 helm install bifrost bifrost/bifrost -f vertex-wli-values.yaml
+```
+
+</Tab>
+<Tab title="AWS Workload Identity (EKS)">
+
+When the chart runs on EKS, `aws_workload_identity` federates the pod's IAM role into a GCP token through a Workload Identity Pool AWS provider - no service account key, no AWS access key. The GCP pool, provider and IAM grant are described in [AWS Workload Identity Federation](/providers/supported-providers/vertex#aws-workload-identity-federation).
+
+**Step 1 - Attach the IAM role to the pod** (IRSA shown; EKS Pod Identity works the same way without the annotation)
+
+```yaml
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/bifrost-vertex"
+```
+
+**Step 2 - Values file**
+
+```yaml
+# vertex-aws-wif-values.yaml
+image:
+  tag: "v1.4.11"
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/bifrost-vertex"
+
+bifrost:
+  providers:
+    vertex:
+      keys:
+        - name: "vertex-eks"
+          value: ""
+          weight: 1
+          models: ["*"]
+          vertex_key_config:
+            project_id: "my-gcp-project"
+            region: "us-central1"
+            aws_workload_identity:
+              audience: "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/eks-pool/providers/aws"
+              # Omit to call Vertex AI as the federated principal directly
+              service_account_email: "bifrost-vertex@my-gcp-project.iam.gserviceaccount.com"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f vertex-aws-wif-values.yaml
 ```
 
 </Tab>

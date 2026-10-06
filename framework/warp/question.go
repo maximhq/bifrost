@@ -77,7 +77,7 @@ const AskUserSchema = `{
         "type": "object",
         "properties": {
           "label": {"type": "string", "description": "What the person reads, e.g. 'Last 7 days'."},
-          "hint": {"type": "string", "description": "The value you want back, e.g. '-7d' or a team id. Keep it short."}
+          "hint": {"type": "string", "description": "The value you want back, e.g. '-7d', a team id, or - for the person's own traffic - the caller_user_id describe_filter_space returned. Keep it short."}
         },
         "required": ["label"]
       }
@@ -97,6 +97,7 @@ func askUserToolDef() Tool {
 		name: AskUserTool,
 		description: "Ask the person a short multiple-choice question and wait for their answer. " +
 			"Use this when a metric question does not say which time range it means, or whose traffic it means - both change the answer, and guessing produces a confident number about the wrong thing. " +
+			"Never call this for a message you are declining: a request to write something, general knowledge, or anything else not about this deployment's traffic or the virtual-key settings describe_virtual_key reads gets a one-sentence refusal, not a question about time range or scope. " +
 			"Offer concrete options they can pick rather than asking them to type. Ask about one thing at a time, and do not ask again once they have told you. " +
 			"This tool call is what renders as something the person can click - writing the same question and options into your answer as prose or a markdown list instead is not a substitute: it leaves them typing a reply you then have to re-parse, or worse, ends the turn with no way for them to answer at all.",
 		schemaJSON: AskUserSchema,
@@ -200,10 +201,13 @@ const QuestionGuidance = `
 
 Asking before you answer:
 
+- These rules apply only to a question you are going to answer from the data. A message outside what you cover is declined without asking anything (see "Staying on topic").
 - Two things decide a metric answer: which time range, and whose traffic. If the question does not say, ask with ` + AskUserTool + ` rather than choosing for them. A number computed over the wrong window or the wrong scope is not a smaller answer, it is a different one.
 - Offer options they can pick. For a time range that is usually: Last 24 hours (-24h), Last 7 days (-7d), Last 30 days (-30d), and a custom range. For scope, use what describe_filter_space reported - the teams, customers or business units that actually have traffic.
+- An option's hint is what comes back to you, so it must be something a tool accepts. For the person's own traffic that is the caller_user_id describe_filter_space returned, which you then pass as user_ids - never a word like "self" or "mine", which no tool understands and a search for it finds nothing.
+- "This week", "last week", "this month" and "last month" do not settle the window. Each can mean the calendar period (Monday until now, the 1st until now, or the whole week or month before it) or a rolling one (the last 7 or 30 days), and early in a week or month the two are several times apart. Ask which, offering Last 7 days (-7d) and This calendar week (since Monday) for a week, or Last 30 days (-30d) and This calendar month (since the 1st) for a month - for a comparison, the rolling period against the one before it, or the calendar period so far against all of the previous one. Do not ask when the wording already decides it - "the last 7 days", "the past week", "since Monday", "week to date", "this calendar week", "the last 30 days", "the past month", "month to date", "in August" - or when the person already chose earlier in this conversation.
 - Ask about one thing at a time. If both the window and the scope are missing, ask the window first, then the scope once they answer.
-- Do not ask when you already know. An identified caller's own traffic is the default scope, and a question that names a period ("yesterday", "this month") has already told you the window.
+- Do not ask when you already know. An identified caller's own traffic is the default scope, and a question that names a period ("yesterday", "on sept 3rd") has already told you the window - a week or a month being the exception below.
 - Never ask more than twice in a row. If it is still unclear, pick the most reasonable option, run the query, and say plainly which one you chose.
 - After asking, stop. Do not answer your own question in the same turn.
 - Every question to the person goes through ` + AskUserTool + `. A reply that asks something in prose, with nothing to click, is a failed turn.`
