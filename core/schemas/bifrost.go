@@ -206,6 +206,7 @@ const (
 	WebSocketResponsesRequest      RequestType = "websocket_responses"
 	RealtimeRequest                RequestType = "realtime"
 	LiveRequest                    RequestType = "live"
+	LiveContentRequest             RequestType = "live_content"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.
@@ -329,6 +330,12 @@ const (
 	BifrostContextKeyApp                                 BifrostContextKey = "app"                                              // string (canonical app key such as claude-code; set by plugins)
 	BifrostContextKeySkipBudgetAndRateLimits             BifrostContextKey = "bifrost-skip-budget-and-rate-limits"              // bool (set by bifrost for read-only requests like list models that don't consume quota)
 	BifrostContextKeySessionContinuation                 BifrostContextKey = "bifrost-session-continuation"                     // bool (a billing unit of an already-admitted session, e.g. a GPT Live window; not checked or counted as a request)
+	BifrostContextKeyLiveSessionID                       BifrostContextKey = "bifrost-live-session-id"                          // string (set by the live transport on every billing unit: the session the unit belongs to; logging folds units into one row per session)
+	BifrostContextKeyLiveUnit                            BifrostContextKey = "bifrost-live-unit"                                // string (set by the live transport: "voice" for a window of voice seconds, "backend" for one delegated Responses call)
+	BifrostContextKeyLiveSessionStart                    BifrostContextKey = "bifrost-live-session-start"                       // bool (set by the live transport on the unit that opens the session)
+	BifrostContextKeyLiveSessionEnd                      BifrostContextKey = "bifrost-live-session-end"                         // bool (set by the live transport on the unit that closes the session; its response output is the transcript)
+	BifrostContextKeyLiveDelegationID                    BifrostContextKey = "bifrost-live-delegation-id"                       // string (set by the live transport on a backend unit: the delegation its response ran)
+	BifrostContextKeyLiveDelegationStartMs               BifrostContextKey = "bifrost-live-delegation-start-ms"                 // int64 (set by the live transport on a backend unit: when its delegation began, on the session timeline)
 	BifrostContextKeySkipProviderCheck                   BifrostContextKey = "bifrost-skip-provider-check"                      // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the provider is the intercepted upstream rather than an operator choice; skips the virtual key and access profile provider allowlists)
 	BifrostContextKeySkipModelCheck                      BifrostContextKey = "bifrost-skip-model-check"                         // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the model is the intercepted upstream model rather than an operator grant; skips the virtual key and access profile model allowlists)
 	BifrostContextKeySkipVirtualKeyUsageTracking         BifrostContextKey = "bifrost-skip-virtual-key-usage-tracking"          // bool (set by governance callers to skip VK usage while preserving VK auth/attribution)
@@ -657,6 +664,7 @@ type BifrostRequest struct {
 	FileRetrieveRequest          *BifrostFileRetrieveRequest
 	FileDeleteRequest            *BifrostFileDeleteRequest
 	FileContentRequest           *BifrostFileContentRequest
+	LiveContentRequest           *BifrostLiveContentRequest
 	CachedContentCreateRequest   *BifrostCachedContentCreateRequest
 	CachedContentListRequest     *BifrostCachedContentListRequest
 	CachedContentRetrieveRequest *BifrostCachedContentRetrieveRequest
@@ -762,6 +770,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 			return br.FileContentRequest.Provider, *br.FileContentRequest.Model, nil
 		}
 		return br.FileContentRequest.Provider, "", nil
+	case br.LiveContentRequest != nil:
+		return br.LiveContentRequest.Provider, "", nil
 	case br.CachedContentCreateRequest != nil:
 		return br.CachedContentCreateRequest.Provider, br.CachedContentCreateRequest.Model, nil
 	case br.CachedContentListRequest != nil:
@@ -1224,12 +1234,14 @@ type BifrostResponse struct {
 	VideoGenerationResponse       *BifrostVideoGenerationResponse
 	VideoDownloadResponse         *BifrostVideoDownloadResponse
 	VideoListResponse             *BifrostVideoListResponse
+	LiveSession                   *LiveSessionLog // GPT Live: what a session's closing unit reports for its log row
 	VideoDeleteResponse           *BifrostVideoDeleteResponse
 	FileUploadResponse            *BifrostFileUploadResponse
 	FileListResponse              *BifrostFileListResponse
 	FileRetrieveResponse          *BifrostFileRetrieveResponse
 	FileDeleteResponse            *BifrostFileDeleteResponse
 	FileContentResponse           *BifrostFileContentResponse
+	LiveContentResponse           *LiveContentResponse
 	CachedContentCreateResponse   *BifrostCachedContentCreateResponse
 	CachedContentListResponse     *BifrostCachedContentListResponse
 	CachedContentRetrieveResponse *BifrostCachedContentRetrieveResponse
@@ -1306,6 +1318,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.FileDeleteResponse.ExtraFields
 	case r.FileContentResponse != nil:
 		return &r.FileContentResponse.ExtraFields
+	case r.LiveContentResponse != nil:
+		return &r.LiveContentResponse.ExtraFields
 	case r.VideoGenerationResponse != nil:
 		return &r.VideoGenerationResponse.ExtraFields
 	case r.VideoDownloadResponse != nil:
@@ -1635,6 +1649,11 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.FileContentResponse.ExtraFields.Provider = provider
 		r.FileContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.FileContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.LiveContentResponse != nil:
+		r.LiveContentResponse.ExtraFields.RequestType = requestType
+		r.LiveContentResponse.ExtraFields.Provider = provider
+		r.LiveContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.LiveContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	case r.BatchCreateResponse != nil:
 		r.BatchCreateResponse.ExtraFields.RequestType = requestType
 		r.BatchCreateResponse.ExtraFields.Provider = provider

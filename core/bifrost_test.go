@@ -1542,6 +1542,24 @@ func TestSelectKeyFromProviderForModel_VLLMAliasResolution(t *testing.T) {
 	})
 }
 
+// affinityPrefers is a session policy that keeps a session on one key whenever that key is offered.
+type affinityPrefers struct{ id string }
+
+func (affinityPrefers) ResolveRoute(_ *schemas.BifrostContext, _ schemas.Route, chain []schemas.Route) []schemas.Route {
+	return chain
+}
+
+func (a affinityPrefers) ResolveKey(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, eligible []schemas.Key) (schemas.Key, bool) {
+	for _, key := range eligible {
+		if key.ID == a.id {
+			return key, true
+		}
+	}
+	return schemas.Key{}, false
+}
+
+func (affinityPrefers) Observe(*schemas.BifrostContext, schemas.Route, schemas.RouteOutcome) {}
+
 func TestSelectKeyForProviderRequestType_AdditionalModels(t *testing.T) {
 	account := NewMockAccount()
 	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError), keySelector: keyselectors.WeightedRandom}
@@ -1586,6 +1604,17 @@ func TestSelectKeyForProviderRequestType_AdditionalModels(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "voice-only")
 		if key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna"); err == nil {
 			t.Fatalf("pinned voice-only: selected %q, want error", key.ID)
+		}
+	})
+
+	t.Run("session affinity picks among keys that serve every model", func(t *testing.T) {
+		// The session's last key serves only the voice model; another key serves both. Affinity
+		// must choose from the pool narrowed by every model, not rebind to the voice-only key.
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly, both})
+		sticky := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError), keySelector: keyselectors.WeightedRandom, sessionAffinity: affinityPrefers{id: "voice-only"}}
+		key, err := sticky.SelectKeyForProviderRequestType(sessionCtx("live-1"), schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna")
+		if err != nil || key.ID != "both" {
+			t.Fatalf("key=%q err=%v, want both", key.ID, err)
 		}
 	})
 

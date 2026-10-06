@@ -3552,6 +3552,47 @@ func (bifrost *Bifrost) ContainerFileRetrieveRequest(ctx *schemas.BifrostContext
 	return response.ContainerFileRetrieveResponse, nil
 }
 
+// LiveSessionContentRequest downloads a stored GPT Live session's recording from the specified provider.
+func (bifrost *Bifrost) LiveSessionContentRequest(ctx *schemas.BifrostContext, req *schemas.BifrostLiveContentRequest) (*schemas.LiveContentResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "live content request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for live content request",
+			},
+		}
+	}
+	if req.SessionID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "session_id is required for live content request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.LiveContentRequest
+	bifrostReq.LiveContentRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.LiveContentResponse, nil
+}
+
 // ContainerFileContentRequest retrieves the content of a file from a container.
 func (bifrost *Bifrost) ContainerFileContentRequest(ctx *schemas.BifrostContext, req *schemas.BifrostContainerFileContentRequest) (*schemas.BifrostContainerFileContentResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -4953,23 +4994,9 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 		ctx = bifrost.ctx
 	}
 	baseProvider := bifrost.baseProviderType(providerKey)
-	supportedKeys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider)
+	supportedKeys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider, additionalModels...)
 	if err != nil {
 		return schemas.Key{}, err
-	}
-	// A caller-supplied direct key has no model lists to check.
-	if _, isDirectKey := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); !isDirectKey && len(supportedKeys) > 0 {
-		for _, additionalModel := range additionalModels {
-			if additionalModel == "" {
-				continue
-			}
-			supportedKeys = slices.DeleteFunc(supportedKeys, func(key schemas.Key) bool {
-				return !keySupportsModel(baseProvider, &key, additionalModel)
-			})
-			if len(supportedKeys) == 0 {
-				return schemas.Key{}, fmt.Errorf("no keys found for provider %s that support both model %s and model %s", providerKey, model, additionalModel)
-			}
-		}
 	}
 	if len(supportedKeys) == 0 {
 		return schemas.Key{}, nil
@@ -8591,6 +8618,16 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.FileContentResponse = fileContentResponse
+	case schemas.LiveContentRequest:
+		live, ok := provider.(schemas.LiveProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.LiveContentRequest, provider.GetProviderKey())
+		}
+		liveContentResponse, bifrostError := live.LiveSessionContent(req.Context, key, req.BifrostRequest.LiveContentRequest.SessionID)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.LiveContentResponse = liveContentResponse
 	case schemas.CachedContentCreateRequest:
 		cachedContentCreateResponse, bifrostError := provider.CachedContentCreate(req.Context, key, req.BifrostRequest.CachedContentCreateRequest)
 		if bifrostError != nil {
@@ -9683,6 +9720,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.FileRetrieveRequest = nil
 	req.FileDeleteRequest = nil
 	req.FileContentRequest = nil
+	req.LiveContentRequest = nil
 	req.CachedContentCreateRequest = nil
 	req.CachedContentListRequest = nil
 	req.CachedContentRetrieveRequest = nil
@@ -9863,7 +9901,9 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 //
 // canRotate=true is returned when there are two or more eligible keys and no pinning
 // or stickiness constraint is in effect.
-func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider) ([]schemas.Key, bool, error) {
+// additionalModels narrows the pool to keys that also serve those models before a key is pinned
+// or a session's affinity is honored, so both choose among keys that serve every model.
+func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider, additionalModels ...string) ([]schemas.Key, bool, error) {
 	// Direct key bypass: caller supplied a raw API key via x-bf-direct-key header.
 	if ctx != nil {
 		if key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
@@ -9905,7 +9945,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 
 	// Skip model check conditions
 	// We can improve these conditions in the future
-	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isCachedContentRequestType(requestType) || isModellessVideoRequestType(requestType) || isPassthroughRequestType(requestType) || requestType == schemas.LiveRequest)) || requestType == schemas.ListModelsRequest || isResponsesLifecycleRequestType(requestType)
+	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isCachedContentRequestType(requestType) || isModellessVideoRequestType(requestType) || isPassthroughRequestType(requestType) || requestType == schemas.LiveRequest || requestType == schemas.LiveContentRequest)) || requestType == schemas.ListModelsRequest || isResponsesLifecycleRequestType(requestType)
 	if skipModelCheck {
 		// When skipping model check: just verify keys are enabled and have values
 		for _, key := range keys {
@@ -9945,6 +9985,17 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	}
 	if len(supportedKeys) == 0 {
 		return nil, false, fmt.Errorf("no keys found that support model: %s", model)
+	}
+	for _, additionalModel := range additionalModels {
+		if additionalModel == "" {
+			continue
+		}
+		supportedKeys = slices.DeleteFunc(supportedKeys, func(key schemas.Key) bool {
+			return !keySupportsModel(baseProviderType, &key, additionalModel)
+		})
+		if len(supportedKeys) == 0 {
+			return nil, false, fmt.Errorf("no keys found for provider %s that support both model %s and model %s", providerKey, model, additionalModel)
+		}
 	}
 
 	// Explicit key ID takes priority over key name — pin to that key, no rotation.
