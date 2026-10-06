@@ -174,3 +174,27 @@ func TestLoadModelTagsAtStartup_RetriesAfterFailure(t *testing.T) {
 	stopped.wg.Wait()
 	assert.Nil(t, stopped.modelTags.Load(), "a shut-down catalog stops retrying")
 }
+
+// TestRetryModelTags_StaleOverlayIsReloaded pins that a failed reload after an overlay was already
+// published (a tag write whose reload and retries all failed) marks the overlay stale, and that the
+// periodic retry keeps reloading until the store answers, then stops.
+func TestRetryModelTags_StaleOverlayIsReloaded(t *testing.T) {
+	store := &fakeModelTagsStore{tags: map[string]map[string][]string{"openai": {"gpt-5.1": {"old"}}}}
+	mc := NewTestCatalogWithConfigStore(store)
+	require.NoError(t, mc.ReloadModelTags(context.Background()))
+	assert.False(t, mc.ModelTagsStale())
+
+	// A tag write commits "new", but the reload after it fails: the overlay keeps "old" and is stale.
+	store.tags = map[string]map[string][]string{"openai": {"gpt-5.1": {"new"}}}
+	store.err = errors.New("config store unavailable")
+	require.Error(t, mc.ReloadModelTags(context.Background()))
+	assert.True(t, mc.ModelTagsStale(), "a failed reload must mark the published overlay stale")
+	mc.retryModelTagsIfNeeded(context.Background())
+	assert.Equal(t, []string{"old"}, mc.GetModelTags(schemas.OpenAI, "gpt-5.1"))
+	assert.True(t, mc.ModelTagsStale(), "the overlay stays stale while the store is down")
+
+	store.err = nil
+	mc.retryModelTagsIfNeeded(context.Background())
+	assert.Equal(t, []string{"new"}, mc.GetModelTags(schemas.OpenAI, "gpt-5.1"), "the periodic retry must publish the committed tags")
+	assert.False(t, mc.ModelTagsStale())
+}
