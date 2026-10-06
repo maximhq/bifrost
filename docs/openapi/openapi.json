@@ -288,6 +288,16 @@
                 }
               }
             }
+          },
+          "502": {
+            "description": "A tags-filtered listing of a provider exceeded the 20-page read limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "security": [

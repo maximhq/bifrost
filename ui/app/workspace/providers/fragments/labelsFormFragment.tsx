@@ -49,6 +49,12 @@ export function LabelsFormFragment({ provider }: LabelsFormFragmentProps) {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [provider.name, provider.metadata, provider.tags]);
 
+	// A duplicate-key warning belongs to the provider it was typed for; the table is keyed by
+	// provider name so it remounts without the old conflict, and the flag is cleared with it.
+	useEffect(() => {
+		setHasDuplicateKeys(false);
+	}, [provider.name]);
+
 	const onSubmit = (data: ProviderLabelsFormSchema) => {
 		// Sent as a whole: {} and [] clear the stored labels.
 		const labels = { metadata: data.metadata, tags: normalizeTags(data.tags).tags };
@@ -97,6 +103,7 @@ export function LabelsFormFragment({ provider }: LabelsFormFragmentProps) {
 					render={({ field }) => (
 						<FormItem data-testid="provider-labels-metadata-section">
 							<HeadersTable
+								key={provider.name}
 								label="Metadata"
 								value={field.value ?? {}}
 								onChange={field.onChange}
