@@ -186,7 +186,7 @@ acme-prod/audit-logs/2026/07/14/20260714T000000Z-20260715T000000Z/manifest.json.
 | `manifest.json` | The window's commit record. Written last; see below. |
 | `.gz` | Present only when `compress` is enabled. |
 
-Every object also carries tags (`type`, `window_start`, `window_end`, `count`, and `part`/`parts`) so lifecycle rules and consumers can select objects without listing and pattern-matching keys. Manifests are tagged `type=audit-logs-manifest`, parts `type=audit-logs`.
+S3 objects carry tags (`type`, `window_start`, `window_end`, `count`, and `part`/`parts`) so lifecycle rules and consumers can select objects without listing and pattern-matching keys. Manifests are tagged `type=audit-logs-manifest`, parts `type=audit-logs`. R2 objects are stored without tags; use the `{prefix}/audit-logs/YYYY/MM/DD/` key prefix for lifecycle and retention rules.
 
 #### Reading the Archive
 
@@ -284,12 +284,12 @@ Unlike the earlier per-flush implementation, archival is **no longer best-effort
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
-| `type` | string | Yes | Backend type: `s3`, `gcs`, or `r2`. For R2, use its S3 API endpoint and access credentials; see [R2 configuration](/deployment-guides/config-json/storage#cloudflare-r2). |
+| `type` | string | Yes | Backend type: `s3`, `gcs`, or `r2`. For R2, use its HTTPS S3 API endpoint and access credentials; R2 objects are stored without tags, so use prefix-based lifecycle rules. See [R2 configuration](/deployment-guides/config-json/storage#cloudflare-r2). |
 | `bucket` | string | Yes | Bucket name. Supports `env.` references. |
 | `prefix` | string | No | Configurable base key path; `audit-logs/` is appended under it. Default: `bifrost`. |
 | `compress` | boolean | No | Gzip stored objects (objects use a `.jsonl.gz` extension). Default: `false`. |
 | `region` | string | No | AWS region (S3). Supports `env.` references. |
-| `endpoint` | string | No | Custom S3-compatible endpoint for MinIO/R2. Supports `env.` references. |
+| `endpoint` | string | No | Custom S3-compatible endpoint for MinIO/R2. R2 requires HTTPS. Supports `env.` references. |
 | `access_key_id` | string | No | AWS access key ID. Omit to use the default credential chain (instance role, env vars). Requires `secret_access_key`. |
 | `secret_access_key` | string | No | AWS secret access key. Supports `env.` references. |
 | `session_token` | string | No | STS temporary session token. |
