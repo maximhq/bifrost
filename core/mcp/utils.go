@@ -1454,10 +1454,16 @@ func sanitizeMCPToolDescription(desc string, maxBytes ...int) string {
 		limit = maxBytes[0]
 	}
 	cleaned := strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' || r >= 32 {
+		if r == '\n' || r == '\t' {
 			return r
 		}
-		return -1
+		if r < 32 {
+			return -1
+		}
+		if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r) {
+			return -1
+		}
+		return r
 	}, desc)
 	if len(cleaned) > limit {
 		cleaned = truncateUTF8(cleaned, limit)
