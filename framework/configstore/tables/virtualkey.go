@@ -275,8 +275,8 @@ type TableVirtualKey struct {
 	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
 
 	// Metadata is free-form key/value data the operator attaches to the key (cost center, project,
-	// owner, environment, ...). It is snapshotted onto every log row the key produces, so spend can
-	// be filtered by it. Validated by ValidateVirtualKeyMetadata; an empty map is stored as NULL.
+	// owner, environment, ...) for cost attribution. Validated by ValidateVirtualKeyMetadata; an
+	// empty map is stored as NULL, and a nil map on UpdateVirtualKey keeps the stored value.
 	Metadata map[string]string `gorm:"type:text;serializer:json" json:"metadata,omitempty"`
 
 	// Relationships
