@@ -9280,6 +9280,10 @@
             "type": "string"
           }
         },
+        "displayName": {
+          "type": "string",
+          "description": "Label for the login button (\"Sign in with <displayName>\"). Defaults to \"SSO\"."
+        },
         "attributeRoleMappings": {
           "$ref": "#/$defs/scim_attribute_role_mappings"
         },
