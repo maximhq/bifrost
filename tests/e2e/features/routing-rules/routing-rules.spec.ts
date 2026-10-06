@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { createRoutingRuleData } from './routing-rules.data'
 
@@ -301,6 +302,45 @@ test.describe('Routing Rules', () => {
       await routingRulesPage.openEditSheet(ruleData.name)
       await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('')
       await routingRulesPage.cancelRule()
+    })
+
+    test('should show a mixed TTFT state and keep per-target deadlines on an unrelated save', async ({ routingRulesPage, request }) => {
+      // The form writes one value to every target, so a mixed rule can only come from the API.
+      const name = `TTFT Mixed ${Date.now()}-${randomUUID().slice(0, 8)}`
+      const created = await request.post('/api/routing/rules', {
+        data: {
+          name,
+          description: '',
+          cel_expression: '',
+          targets: [
+            { provider: 'openai', model: 'gpt-4o', weight: 0.5, ttft_timeout_ms: 1500 },
+            { provider: 'anthropic', model: 'claude-sonnet-4-5', weight: 0.5 },
+          ],
+          fallbacks: [],
+          scope: 'global',
+          priority: 0,
+          enabled: false,
+        },
+      })
+      expect(created.ok(), await created.text()).toBeTruthy()
+      const ruleId = (await created.json()).rule.id as string
+      createdRules.push(name)
+
+      await routingRulesPage.goto()
+      await routingRulesPage.openEditSheet(name)
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('')
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute('placeholder', 'Mixed')
+      // No fallbacks and an active deadline on one target: the warning must still show.
+      await expect(routingRulesPage.sheet.getByTestId('routing-rule-ttft-timeout-no-fallback-warning')).toBeVisible()
+
+      // An unrelated save must not touch the per-target deadlines.
+      await routingRulesPage.saveBtn.click()
+      await expect(routingRulesPage.sheet).not.toBeVisible()
+      const after = await request.get(`/api/routing/rules/${ruleId}`)
+      expect(after.ok(), await after.text()).toBeTruthy()
+      const targets = (await after.json()).rule.targets as { provider: string; ttft_timeout_ms?: number | null }[]
+      expect(targets.find((t) => t.provider === 'openai')?.ttft_timeout_ms).toBe(1500)
+      expect(targets.find((t) => t.provider === 'anthropic')?.ttft_timeout_ms ?? null).toBeNull()
     })
 
     test('should warn about a TTFT cutoff without fallbacks and reject out-of-range values', async ({ routingRulesPage }) => {

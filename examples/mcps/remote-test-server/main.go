@@ -37,11 +37,22 @@ const (
 	httpEndpointPath    = "/mcp"
 	sseEndpointPath     = "/sse"
 	messageEndpointPath = "/message"
+
+	// Advertised on the initialize handshake so the instruction-forwarding path has a
+	// live upstream in environments that configure this fixture (the provider harness
+	// points its sse_mcp client here). Short enough not to trip the gateway's cap.
+	defaultInstructions = "Prefer echo for plain text; call add only with numeric operands."
 )
 
 func main() {
 	httpPort := envOr("MCP_HTTP_PORT", defaultHTTPPort)
 	ssePort := envOr("MCP_SSE_PORT", defaultSSEPort)
+	// Not envOr: an explicitly empty MCP_INSTRUCTIONS is the "advertises none" case
+	// and must not fall back to the default.
+	instructions, hasInstructions := os.LookupEnv("MCP_INSTRUCTIONS")
+	if !hasInstructions {
+		instructions = defaultInstructions
+	}
 
 	// Two MCPServer instances rather than one shared between transports: the
 	// SSE server keeps per-session state keyed off the server it was built
@@ -50,9 +61,9 @@ func main() {
 	// Paths are pinned rather than left to the SDK's defaults so the URLs the
 	// test harness builds cannot drift with an mcp-go upgrade. These happen to
 	// match v0.43.2's defaults ("/mcp", "/sse" + "/message").
-	httpSrv := server.NewStreamableHTTPServer(newMCPServer(),
+	httpSrv := server.NewStreamableHTTPServer(newMCPServer(instructions),
 		server.WithEndpointPath(httpEndpointPath))
-	sseSrv := server.NewSSEServer(newMCPServer(),
+	sseSrv := server.NewSSEServer(newMCPServer(instructions),
 		server.WithSSEEndpoint(sseEndpointPath),
 		server.WithMessageEndpoint(messageEndpointPath))
 
@@ -81,8 +92,12 @@ func main() {
 // specific tool semantics, but they do need every tool to carry a typed schema
 // (codemode_files_test.go asserts the generated servers/*.pyi files are
 // non-empty).
-func newMCPServer() *server.MCPServer {
-	s := server.NewMCPServer("remote-test-server", "1.0.0")
+func newMCPServer(instructions string) *server.MCPServer {
+	opts := []server.ServerOption{}
+	if instructions != "" {
+		opts = append(opts, server.WithInstructions(instructions))
+	}
+	s := server.NewMCPServer("remote-test-server", "1.0.0", opts...)
 
 	s.AddTool(mcp.NewTool(
 		"echo",

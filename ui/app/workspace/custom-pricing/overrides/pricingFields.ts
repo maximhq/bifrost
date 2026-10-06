@@ -22,7 +22,7 @@ export const REQUEST_TYPE_GROUPS = [
 	},
 	{
 		label: "Audio",
-		types: ["speech", "transcription"],
+		types: ["speech", "transcription", "live"],
 	},
 	{
 		label: "Image",
