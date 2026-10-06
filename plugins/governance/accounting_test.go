@@ -626,3 +626,51 @@ func TestAccounting_RequestsThatSpendNothingAreNotCharged(t *testing.T) {
 		})
 	}
 }
+
+// TestAccounting_SkipRequestCountChargesCostOnly: a GPT Live voice window bills its
+// cost and tokens but is not a request, so it must not consume request allowance.
+func TestAccounting_SkipRequestCountChargesCostOnly(t *testing.T) {
+	f := newAccountingFixture(t)
+
+	window := acctUpdate("live-window-1", 0, true, 0.025, 0)
+	window.SkipRequestCount = true
+	f.apply(window, acctUpdate("req-1", 0, true, 1.0, 10))
+
+	assert.InDelta(t, 1.025, f.cost(), 1e-9)
+	assert.Equal(t, int64(1), f.requests(), "only the ordinary request counts")
+	assert.Equal(t, int64(10), f.tokens())
+}
+
+// TestAccounting_SessionContinuationSkipsRequestLimits: a continuation unit (a GPT Live window) skips
+// request limits but still charges tokens; an admission unit is refused once the limit is spent.
+func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("rl-vk", 1_000_000, 0, 1, 1) // request limit already spent
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-live", "Live VK", rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	admission := resolverCtx(store, "sk-bf-live")
+	_, shortCircuit, err := plugin.PreLLMHook(admission, newChatRequest())
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "a new request is refused once the request limit is spent")
+
+	continuation := resolverCtx(store, "sk-bf-live")
+	continuation.SetValue(schemas.BifrostContextKeySessionContinuation, true)
+	_, shortCircuit, err = plugin.PreLLMHook(continuation, newChatRequest())
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "a continuation of an admitted session is not refused by the request limit")
+
+	_, _, err = plugin.PostLLMHook(continuation, countableResponse(), nil)
+	require.NoError(t, err)
+	settleAccounting(t, plugin)
+
+	updated := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
+	assert.Equal(t, int64(1), updated.RequestCurrentUsage, "the continuation is not counted as a request")
+	assert.Equal(t, int64(1000), updated.TokenCurrentUsage, "the continuation's tokens are still charged")
+}
