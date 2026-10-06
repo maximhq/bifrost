@@ -91,6 +91,10 @@ type ModelCapabilities struct {
 	// Datasheet "mode" for the row (chat, embedding, image_generation, …).
 	Mode *string `json:"mode,omitempty"`
 
+	// Model the provider actually serves for this id when the response does not say
+	// (e.g. DeepSeek's Anthropic endpoint echoes retired ids back).
+	ServerSideModel *string `json:"server_side_model,omitempty"`
+
 	// Endpoints the model is reachable on. Normalised into the catalog's
 	// supported-response-type index.
 	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
