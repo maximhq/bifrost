@@ -320,6 +320,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		HiddenRequestTypes:                        config.HiddenRequestTypes,
 		RoutingChainMaxDepth:                      config.RoutingChainMaxDepth,
 		MCPExternalClientURL:                      mcpExternalURLToString(config.MCPExternalClientURL),
+		A2AExternalClientURL:                      mcpExternalURLToString(config.A2AExternalClientURL),
 		HeaderFilterConfig:                        config.HeaderFilterConfig,
 		AllowPerRequestContentStorageOverride:     config.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:                config.AllowPerRequestRawOverride,
@@ -624,6 +625,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		HiddenRequestTypes:                    dbConfig.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
+		A2AExternalClientURL:                  schemas.NewSecretVar(dbConfig.A2AExternalClientURL),
 		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
 		AllowPerRequestContentStorageOverride: dbConfig.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            dbConfig.AllowPerRequestRawOverride,
@@ -3702,7 +3704,8 @@ func preloadVirtualKeyBaseRelations(db *gorm.DB) *gorm.DB {
 			return db.Select("id, name, key_id, models_json, provider")
 		}).
 		Preload("MCPConfigs").
-		Preload("MCPConfigs.MCPClient")
+		Preload("MCPConfigs.MCPClient").
+		Preload("AgentGrants")
 }
 
 // preloadVirtualKeyDetailRelations preloads the detail relationships for a virtual key.
@@ -4348,6 +4351,10 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		}
 		// Delete all MCP configs associated with the virtual key
 		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "virtual_key_id = ?", id).Error; err != nil {
+			return err
+		}
+		// Delete all direct Agent Gateway grants associated with the virtual key.
+		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyAgentGrant{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
 		}
 		// Delete upstream OAuth flow rows tied to this VK. No flow_mode
