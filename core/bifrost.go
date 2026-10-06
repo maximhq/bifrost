@@ -144,10 +144,9 @@ type Bifrost struct {
 	dropExcessRequests  atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 	keySelector         schemas.KeySelector                 // Custom key selector function
 	keyPoolFilter       schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
+	keyRotator          *keyselectors.Rotator               // cross-request state for provider-level key_selection strategies (fork: see keyrotation.go)
 	kvStore             schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
 	sessionAffinity     schemas.SessionAffinity             // decides which key a session stays on; never nil after Init
-	keyRotator          *keyselectors.Rotator               // cross-request state for provider-level key_selection strategies (round robin, least used, fill first, cooldowns)
-	credentialUpdater   schemas.KeyCredentialUpdater        // persists credentials refreshed by OAuth subscription providers (nil = memory only)
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -297,13 +296,11 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		waitGroups:    sync.Map{},
 		keySelector:   config.KeySelector,
 		keyPoolFilter: config.KeyPoolFilter,
+		keyRotator:    keyselectors.NewRotator(),
 		mcpCredStore:  credstore.NewCredStore(config.OAuth2Provider, config.MCPHeadersProvider, config.Logger),
 		logger:        config.Logger,
 		kvStore:       config.KVStore,
 		modelCatalog:  config.ModelCatalog,
-		keyRotator:    keyselectors.NewRotator(),
-
-		credentialUpdater: config.KeyCredentialUpdater,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
@@ -4946,9 +4943,9 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 	case schemas.GithubCopilot:
 		return githubcopilot.NewGithubCopilotProvider(config, bifrost.logger)
 	case schemas.Antigravity:
-		return antigravity.NewAntigravityProvider(config, bifrost.logger, bifrost.credentialUpdater)
+		return antigravity.NewAntigravityProvider(config, bifrost.logger, bifrost.keyCredentialUpdater())
 	case schemas.Kiro:
-		return kiro.NewKiroProvider(config, bifrost.logger, bifrost.credentialUpdater)
+		return kiro.NewKiroProvider(config, bifrost.logger, bifrost.keyCredentialUpdater())
 	case schemas.SGL:
 		return sgl.NewSGLProvider(config, bifrost.logger)
 	case schemas.Parasail:

@@ -20,6 +20,18 @@ var ErrCredentialFromEnv = errors.New("refreshed credential not persisted")
 
 var _ schemas.KeyCredentialUpdater = (*Config)(nil).UpdateProviderKeyCredential
 
+// BaseAccount implements schemas.KeyCredentialStore, so core hands refreshed OAuth
+// credentials of subscription providers back to the config store.
+var _ schemas.KeyCredentialStore = (*BaseAccount)(nil)
+
+// UpdateKeyCredential persists a refreshed credential through the account's config.
+func (baseAccount *BaseAccount) UpdateKeyCredential(ctx context.Context, provider schemas.ModelProvider, keyID string, value string) error {
+	if baseAccount.store == nil {
+		return errors.New("store not initialized")
+	}
+	return baseAccount.store.UpdateProviderKeyCredential(ctx, provider, keyID, value)
+}
+
 // UpdateProviderKeyCredential persists a credential that a provider refreshed
 // on its own (a rotated OAuth refresh token, say) as the key's new value. It
 // implements schemas.KeyCredentialUpdater.

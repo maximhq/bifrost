@@ -160,6 +160,14 @@ case schemas.Kiro:
     }}, nil
 ```
 
+Kiro can rotate the refresh token on every refresh, so persist refreshed credentials: let your `Account` implement `schemas.KeyCredentialStore`. Without it the rotated token lives in memory only and the stored one may already be invalid after a restart:
+
+```go
+func (a *MyAccount) UpdateKeyCredential(ctx context.Context, provider schemas.ModelProvider, keyID, value string) error {
+    return a.store.SaveKeyValue(provider, keyID, value) // persist the complete new key value
+}
+```
+
 </Tab>
 </Tabs>
 

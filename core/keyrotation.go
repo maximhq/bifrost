@@ -7,6 +7,17 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// keyCredentialUpdater returns the write-back hook for credentials that OAuth subscription
+// providers refresh on their own: the account's UpdateKeyCredential when the account
+// implements schemas.KeyCredentialStore, nil (memory only) otherwise. Taking it from the
+// account keeps the fork out of upstream's BifrostConfig and Init.
+func (bifrost *Bifrost) keyCredentialUpdater() schemas.KeyCredentialUpdater {
+	if store, ok := bifrost.account.(schemas.KeyCredentialStore); ok {
+		return store.UpdateKeyCredential
+	}
+	return nil
+}
+
 // keyAttemptObserverContextKey carries the *keyAttemptObserver of the request's current
 // provider attempt loop. It is unexported: only requestWorker sets it, only
 // executeRequestWithRetries reads it.

@@ -140,9 +140,9 @@ It deliberately does not run the rest of upstream's test suite. Upstream `dev` h
 Conflicts only happen where the fork edits a file that upstream also changed. Most fork code lives in files upstream does not have:
 
 - `core/providers/antigravity/` and `core/providers/kiro/`
-- `core/keyselectors/rotation.go` and `core/keyrotation.go`
+- `core/keyselectors/rotation.go`, `core/keyrotation.go`, `core/schemas/keyselection.go` and `core/schemas/keycredentials.go`
 - `framework/configstore/forkmigrations.go`
-- `transports/bifrost-http/handlers/oauth_subscriptions.go` and `transports/bifrost-http/lib/credential_updater.go`
+- `transports/bifrost-http/handlers/oauth_subscriptions.go` and `transports/bifrost-http/lib/credential_updater.go` (credential write-back: `BaseAccount` implements `schemas.KeyCredentialStore`, so `BifrostConfig` and `bifrost.Init` stay as upstream has them)
 - `ui/.../keySelectionFormFragment.tsx`, `ui/.../oauthSubscriptionSignIn.tsx` and `ui/lib/store/apis/oauthSubscriptionsApi.ts`
 - the docs pages, `scripts/fork/`, the `fork-*.yml` workflows and this file
 
@@ -150,12 +150,12 @@ The edits to upstream files are small, additive hooks:
 
 | File | Fork edit | How to resolve |
 |------|-----------|----------------|
-| `core/bifrost.go` | provider imports and factory `case`s, `keyRotator`/`credentialUpdater` fields and their `Init` lines, `keyObserver` calls in `executeRequestWithRetries`, the `requestWorker` observer and `selectKeyWithStrategy` call, `SelectKeyForProviderRequestType` | Keep upstream's change and re-add the fork lines around it |
-| `core/schemas/bifrost.go`, `core/schemas/provider.go` | provider constants and `StandardProviders` entries, `KeyCredentialUpdater`, `ProviderConfig.KeySelection` and its types | Keep both sides |
+| `core/bifrost.go` | provider imports and factory `case`s, the `keyRotator` field and its `Init` line, `keyObserver` calls in `executeRequestWithRetries`, the `requestWorker` observer and `selectKeyWithStrategy` call, `SelectKeyForProviderRequestType` | Keep upstream's change and re-add the fork lines around it |
+| `core/schemas/bifrost.go`, `core/schemas/provider.go` | provider constants and `StandardProviders` entries; the `ProviderConfig.KeySelection` field | Keep both sides |
 | `core/utils.go` | `validateKey` cases | Keep both |
 | `framework/configstore/{clientconfig,rdb}.go`, `tables/provider.go` | `KeySelection` next to every `PromptCache` | Keep both; mirror any new `PromptCache` site |
 | `transports/bifrost-http/handlers/{providers,provider_keys}.go`, `lib/account.go` | `key_selection` next to `prompt_cache`; credential validation | Keep both |
-| `transports/bifrost-http/server/server.go` | `KeyCredentialUpdater` in `bifrost.Init`, sign-in route registration | Take upstream's block and re-add the fork lines |
+| `transports/bifrost-http/server/server.go` | sign-in handler creation and route registration (2 lines) | Keep both |
 | `transports/config.schema.json`, `helm-charts/bifrost/values.schema.json` | `key_selection` beside `prompt_cache`; provider entries | Keep both; `TestKeySelectionValidateMatchesConfigSchema` (run by `verify.sh`) checks the `key_selection` schema against the Go validation |
 | `ui/...` (provider constants, types, schemas, key form, config sheet) | provider entries, `key_selection` field, sign-in section, tab | Keep both |
 | `docs/docs.json`, `docs/openapi/**/*.yaml`, `overview.mdx`, `keys-management.mdx` | nav entries, endpoint and schema docs | Keep both |
@@ -180,7 +180,7 @@ After resolving: `git add -A && git commit --no-edit && scripts/fork/verify.sh`.
 
 ### Unreleased
 
-- **feat (core):** `antigravity` provider. Uses a Google Antigravity subscription through Cloud Code Assist, with the key value holding a Google OAuth refresh token, either bare or as JSON with `project_id`/`email`. Supports chat, chat streaming, Responses (served through chat) and list models (live `fetchAvailableModels` with a built-in fallback catalog). Refreshes tokens and discovers the project automatically; discovered projects and rotated refresh tokens are written back through `BifrostConfig.KeyCredentialUpdater`.
+- **feat (core):** `antigravity` provider. Uses a Google Antigravity subscription through Cloud Code Assist, with the key value holding a Google OAuth refresh token, either bare or as JSON with `project_id`/`email`. Supports chat, chat streaming, Responses (served through chat) and list models (live `fetchAvailableModels` with a built-in fallback catalog). Refreshes tokens and discovers the project automatically; discovered projects and rotated refresh tokens are written back when the `Account` implements `schemas.KeyCredentialStore` (the HTTP gateway's does; Go SDK users can implement `UpdateKeyCredential` on their own account).
 - **feat (core):** `kiro` provider. Uses a Kiro subscription through the Kiro runtime, with the key value holding a social refresh token or the Kiro IDE `kiro-auth-token.json` JSON (social or AWS SSO OIDC refresh). Supports chat, chat streaming, Responses (served through chat) and a static model list. Throttling, monthly quota and suspension are classified so rotation reacts to them, including errors sent inside the event stream.
 - **feat (core):** provider-level key rotation `ProviderConfig.KeySelection` (`key_selection`): `weighted_random`, `round_robin`, `least_used` and `fill_first`, with `sticky_limit` and per-key cooldowns (per model for rate limits and quota, whole key for rejected credentials). An upstream `Retry-After` overrides `cooldown_seconds` (default 60; 0 disables). State is in memory, per process.
 - **feat (framework):** the config store persists `key_selection` in `config_providers.key_selection_json` (migration `add_key_selection_json_column`).

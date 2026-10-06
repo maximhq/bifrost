@@ -3254,19 +3254,18 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// The account interface now benefits from ultra-fast config access times via in-memory storage
 	account := lib.NewBaseAccount(s.Config)
 	s.Client, err = bifrost.Init(ctx, schemas.BifrostConfig{
-		Account:              account,
-		InitialPoolSize:      s.Config.ClientConfig.InitialPoolSize,
-		DropExcessRequests:   s.Config.ClientConfig.DropExcessRequests,
-		LLMPlugins:           s.Config.GetLoadedLLMPlugins(),
-		MCPPlugins:           s.Config.GetLoadedMCPPlugins(),
-		A2APlugins:           s.Config.GetLoadedA2APlugins(),
-		MCPConfig:            mcpConfig,
-		OAuth2Provider:       s.Config.OAuthProvider,
-		MCPHeadersProvider:   s.Config.MCPHeadersProvider,
-		Logger:               logger,
-		KVStore:              s.Config.KVStore,
-		ModelCatalog:         s.Config.ModelCatalog,
-		KeyCredentialUpdater: s.Config.UpdateProviderKeyCredential,
+		Account:            account,
+		InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
+		DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
+		LLMPlugins:         s.Config.GetLoadedLLMPlugins(),
+		MCPPlugins:         s.Config.GetLoadedMCPPlugins(),
+		A2APlugins:         s.Config.GetLoadedA2APlugins(),
+		MCPConfig:          mcpConfig,
+		OAuth2Provider:     s.Config.OAuthProvider,
+		MCPHeadersProvider: s.Config.MCPHeadersProvider,
+		Logger:             logger,
+		KVStore:            s.Config.KVStore,
+		ModelCatalog:       s.Config.ModelCatalog,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)

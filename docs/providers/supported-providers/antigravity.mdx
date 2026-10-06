@@ -147,6 +147,14 @@ case schemas.Antigravity:
     }}, nil
 ```
 
+To keep refreshed credentials (a discovered `project_id`, a rotated refresh token), let your `Account` implement `schemas.KeyCredentialStore`; without it they live in memory only:
+
+```go
+func (a *MyAccount) UpdateKeyCredential(ctx context.Context, provider schemas.ModelProvider, keyID, value string) error {
+    return a.store.SaveKeyValue(provider, keyID, value) // persist the complete new key value
+}
+```
+
 </Tab>
 </Tabs>
 
