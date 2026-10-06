@@ -22,6 +22,7 @@ export enum RbacResource {
 	AdaptiveRouter = "AdaptiveRouter",
 	AuditLogs = "AuditLogs",
 	Customers = "Customers",
+	BusinessUnits = "BusinessUnits",
 	Teams = "Teams",
 	RBAC = "RBAC",
 	Governance = "Governance",
