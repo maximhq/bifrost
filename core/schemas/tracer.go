@@ -93,6 +93,14 @@ type Tracer interface {
 	// This includes output messages, tokens, usage stats, and error information if present.
 	PopulateLLMResponseAttributes(ctx *BifrostContext, handle SpanHandle, resp *BifrostResponse, err *BifrostError)
 
+	// DeferTraceCompletion marks a trace as still being written by a worker, so the
+	// transport skips completing it.
+	DeferTraceCompletion(traceID string)
+	// ClearTraceCompletionDeferral drops the marker once the worker has completed it.
+	ClearTraceCompletionDeferral(traceID string)
+	// AwaitTransportHandoff blocks until the transport has attached its own logs.
+	AwaitTransportHandoff(traceID string)
+
 	// StoreDeferredSpan stores a span handle for later completion (used for streaming requests).
 	// The span handle is stored keyed by trace ID so it can be retrieved when the stream completes.
 	StoreDeferredSpan(traceID string, handle SpanHandle)
@@ -243,6 +251,15 @@ func (n *NoOpTracer) PopulateLLMResponseAttributes(_ *BifrostContext, _ SpanHand
 
 // StoreDeferredSpan does nothing.
 func (n *NoOpTracer) StoreDeferredSpan(_ string, _ SpanHandle) {}
+
+// DeferTraceCompletion is a no-op.
+func (n *NoOpTracer) DeferTraceCompletion(_ string) {}
+
+// ClearTraceCompletionDeferral is a no-op.
+func (n *NoOpTracer) ClearTraceCompletionDeferral(_ string) {}
+
+// AwaitTransportHandoff is a no-op.
+func (n *NoOpTracer) AwaitTransportHandoff(_ string) {}
 
 // GetDeferredSpanHandle returns nil.
 func (n *NoOpTracer) GetDeferredSpanHandle(_ string) SpanHandle { return nil }

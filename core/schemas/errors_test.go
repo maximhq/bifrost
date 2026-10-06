@@ -466,6 +466,7 @@ var modelAddressingByRequestType = map[string]bool{
 	"CompactionRequest":         false,
 	"WebSocketResponsesRequest": false,
 	"RealtimeRequest":           false,
+	"LiveRequest":               false,
 }
 
 // Parses the RequestType constants out of bifrost.go, so the guard reflects what the

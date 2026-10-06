@@ -738,6 +738,23 @@ func (s *Span) End(status SpanStatus, statusMsg string) {
 // check and the caller falls back to the by-ID store lookup instead of mutating a
 // recycled span. The check rides inside the lock End already takes, so it adds no
 // extra locking.
+// EndIfOpen ends a span only if it has not ended, leaving finished spans untouched.
+// Used when a trace expires: an open span would otherwise export with a zero EndTime.
+func (s *Span) EndIfOpen(at time.Time, status SpanStatus, statusMsg string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.EndTime.IsZero() {
+		return false
+	}
+	s.EndTime = at
+	s.Status = status
+	s.StatusMsg = statusMsg
+	return true
+}
+
 func (s *Span) EndIfMatch(id string, status SpanStatus, statusMsg string) bool {
 	if s == nil {
 		return false
@@ -770,6 +787,25 @@ func (s *Span) SetAttributeIfMatch(id, key string, value any) bool {
 	}
 	s.Attributes[key] = value
 	return true
+}
+
+// EnsureLLMIfMatch returns the span's LLM payload, creating it when absent, but only
+// while the SpanID still equals id. Returns nil once the span has been recycled.
+// Callers must hold the returned pointer rather than re-reading span.LLM: Reset nils
+// the field, so a later deref would panic.
+func (s *Span) EnsureLLMIfMatch(id string) *LLMSpanData {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return nil
+	}
+	if s.LLM == nil {
+		s.LLM = &LLMSpanData{}
+	}
+	return s.LLM
 }
 
 // MatchesID reports whether the span's SpanID still equals id, read under the span
