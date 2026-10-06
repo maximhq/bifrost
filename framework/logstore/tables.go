@@ -1406,6 +1406,12 @@ func (l *Log) assembleCostBreakdown() {
 	if l.InputCost == 0 && l.OutputCost == 0 && l.AdditionalCost == 0 && total > 0 {
 		inputCost = total
 	}
+	// A provider-reported opaque total (no split) is not an input cost; leave the
+	// split empty so the UI shows only the total.
+	if l.TokenUsageParsed != nil && isOpaqueTotalCost(l.TokenUsageParsed.Cost) &&
+		l.OutputCost == 0 && l.AdditionalCost == 0 && costsReconcile(l.TokenUsageParsed.Cost.TotalCost, total) {
+		inputCost = 0
+	}
 	cb := &schemas.BifrostCost{
 		InputCost:      inputCost,
 		OutputCost:     l.OutputCost,
@@ -1425,6 +1431,11 @@ func (l *Log) assembleCostBreakdown() {
 		}
 	}
 	l.CostBreakdown = cb
+}
+
+// isOpaqueTotalCost reports whether a cost carries only a total with no input/output/additional split.
+func isOpaqueTotalCost(c *schemas.BifrostCost) bool {
+	return c != nil && c.TotalCost > 0 && c.InputCost == 0 && c.OutputCost == 0 && c.AdditionalCost == 0
 }
 
 // costsReconcile reports whether two cost figures match within float noise, used
