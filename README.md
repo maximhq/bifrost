@@ -15,7 +15,7 @@
 > - **OAuth subscription providers**: [`antigravity`](docs/providers/supported-providers/antigravity.mdx) (Google Antigravity / Cloud Code Assist) and [`kiro`](docs/providers/supported-providers/kiro.mdx) (AWS Kiro). Each key is one signed-in account; sign in from the UI (Google OAuth for Antigravity, device code for Kiro via AWS Builder ID / Google / GitHub) or paste a refresh token / Kiro token JSON. Access tokens refresh automatically and rotated refresh tokens are written back to the key.
 > - **Per-provider key rotation**: `key_selection` on any provider picks how requests spread across its keys/accounts: `weighted_random` (default), `round_robin` (weighted, optional `sticky_limit`), `least_used` (fewest in-flight, then fewest served) or `fill_first` (drain accounts in order). Keys that hit a rate limit or quota are skipped by later requests for the upstream's `Retry-After` or `cooldown_seconds`. See [Key Rotation](docs/providers/key-rotation.mdx).
 >
-> Ported from [OpenCodex](https://github.com/lidge-jun/opencodex). The fork changes core, framework and transports together, so build with the local modules: `make setup-workspace && make build LOCAL=1` (or `make docker-image LOCAL=1`).
+> Ported from [OpenCodex](https://github.com/lidge-jun/opencodex). Build it from source with `scripts/fork/build.sh`: the `npx` package and `maximhq/bifrost` Docker image in the Quick Start below are upstream builds without these features. Building, running, Docker and staying in sync with upstream are covered in **[FORK.md](FORK.md)**.
 
 ## The fastest way to build AI applications that never go down
 

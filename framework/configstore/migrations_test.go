@@ -4541,3 +4541,30 @@ func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_delete_after_expire_column").Error)
 	require.NoError(t, migrationAddVirtualKeyDeleteAfterExpireColumn(ctx, db, testMigrationLogger))
 }
+
+// Fork migrations run after every upstream step, and a database that already applied the
+// whole upstream chain (an upstream deployment switching to this fork, or a fork deployment
+// after an upstream sync added steps) still gets them on the next start.
+func TestForkMigrationsRunAfterUpstreamChain(t *testing.T) {
+	ctx := context.Background()
+	n := time.Now().UnixNano() + testDBCounter
+	testDBCounter++
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:forkmig_%d?mode=memory&cache=shared", n)), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+
+	require.GreaterOrEqual(t, len(configstoreMigrationSteps), len(forkMigrationSteps))
+	upstreamSteps := configstoreMigrationSteps[:len(configstoreMigrationSteps)-len(forkMigrationSteps)]
+	for i, step := range configstoreMigrationSteps[len(upstreamSteps):] {
+		require.Equal(t, forkMigrationSteps[i].IDs, step.IDs, "fork steps must be registered after every upstream step")
+	}
+	require.NoError(t, runMigrationSteps(ctx, db, testMigrationLogger, upstreamSteps))
+	// The init step auto-migrates today's TableProvider, which already carries the fork's
+	// field; drop it to get the schema an upstream binary would have left behind.
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableProvider{}, "key_selection_json"))
+
+	require.NoError(t, triggerMigrations(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "key_selection_json"))
+	pending, err := pendingMigrationStepIDs(ctx, db, configstoreMigrationSteps)
+	require.NoError(t, err)
+	require.Empty(t, pending)
+}

@@ -1,0 +1,41 @@
+# Fork only: runs scripts/fork/verify.sh (the fork's builds and tests, UI included) on the fork
+# branch and on pull requests into it, e.g. the upstream sync pull requests.
+name: Fork - Verify
+
+on:
+  push:
+    branches: ["plus"]
+  pull_request:
+    branches: ["plus"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Fork verification
+    if: github.repository != 'maximhq/bifrost'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: "**/go.sum"
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Verify
+        run: scripts/fork/verify.sh --ui

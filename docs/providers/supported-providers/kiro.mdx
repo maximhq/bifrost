@@ -188,7 +188,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ## Token refresh & credential write-back
 
-- A usable `accessToken` in the credential is used until shortly before `expiresAt`; then Bifrost refreshes - through AWS SSO OIDC when `clientId`/`clientSecret` are present, otherwise through the Kiro social auth service. Concurrent requests share one refresh, and an access token upstream rejects is refreshed once.
+- A usable `accessToken` in the credential is used until shortly before `expiresAt`; then Bifrost refreshes - through AWS SSO OIDC when `clientId`/`clientSecret` are present, otherwise through the Kiro social auth service. Tokens are cached per key, so the credential before and after a rotation shares one refresh; concurrent requests share one refresh, and an access token upstream rejects is refreshed once. Replacing the key's credential yourself drops the cached token.
 - Failed refreshes back off; a terminal refresh failure (revoked or invalid refresh token) backs off longer.
 - When a refresh rotates the refresh token or returns a `profileArn` the credential lacked, Bifrost re-encodes the JSON credential and writes it back to the key through the config store. Only `value` changes; the key keeps its ID, name, weight and config.json hash. Without a config store the new token lives only in memory and is lost on restart - which matters because Kiro may have already invalidated the old one.
 
@@ -202,12 +202,14 @@ A key whose value is `env.VAR` is never overwritten: Bifrost keeps the refreshed
 
 | Upstream signal | Bifrost error | Effect |
 |-----------------|---------------|--------|
-| 429 / `ThrottlingException` / "rate limit" | 429 `rate_limit_error` | `Retry-After` honoured; 10 s hint when absent |
+| 429 / `ThrottlingException` / "rate limit" | 429 `rate_limit_error` | Upstream `Retry-After` honoured; without one, key rotation uses `cooldown_seconds` |
 | Quota exhausted / `MONTHLY_REQUEST_COUNT` | 429 `insufficient_quota` | Current request moves to another key |
 | `TEMPORARILY_SUSPENDED` | 403 `account_suspended` | Log in to Kiro to resolve |
 | 401 / expired or invalid token | 401 `authentication_error` | Token refreshed once, then reported |
 | Content length over the context window | 400 `context_length_exceeded` | Compact the conversation |
 | `profileArn` required | 400 `kiro_profile_required` | Re-login so the profile ARN is captured |
+
+Throttling and quota errors that Kiro sends inside the event stream before any output are reported as the stream's first chunk, so they are retried on another account just like an HTTP 429. A stream cut off mid-frame is reported as a truncation error, never as a normal finish.
 
 With [key rotation](/providers/key-rotation) configured, rate-limit and quota failures put the account on cooldown **for that model**, and a rejected credential cools the whole account, so later requests go to other accounts first.
 

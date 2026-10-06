@@ -158,9 +158,9 @@ case schemas.Antigravity:
 
 | Model ID | Notes |
 |----------|-------|
-| `gemini-3.8-flash` | Effort maps to `gemini-3.8-flash-low` / `-medium` / `-high` |
-| `gemini-3.7-flash` | Sent as `gemini-3.7-flash-tiered` with a thinking level |
-| `gemini-3.1-pro` | `none`/`minimal`/`low` effort → `gemini-3.1-pro-low`, otherwise `gemini-pro-agent` |
+| `gemini-3.8-flash` | `low` / `high` effort → `gemini-3.8-flash-low` / `-high`, anything else → `gemini-3.8-flash-medium` |
+| `gemini-3.7-flash` | Sent as `gemini-3.7-flash-tiered` with the requested level (default `medium`) |
+| `gemini-3.1-pro` | `low` effort → `gemini-3.1-pro-low`; `high` → `gemini-pro-agent` with level `high`; otherwise `gemini-pro-agent` at its default |
 | `gemini-3.1-flash-image` | Image output |
 | `claude-sonnet-4-6` | |
 | `claude-opus-4-6-thinking` | |
@@ -176,7 +176,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-**Reasoning.** `reasoning.effort` is folded onto Antigravity's levels (`minimal`, `low`, `medium`, `high`; `xhigh`/`max` become `high`). `reasoning.max_tokens` maps to a level by budget (≤2048 low, ≤8192 medium, above high).
+**Reasoning.** `reasoning.effort` is folded onto the levels Cloud Code Assist accepts: `low`, `medium`, `high` (`xhigh`/`max` become `high`). `minimal`, `none` and disabled reasoning are not sent - Google rejects `minimal` for this generation - so the model keeps its default. `reasoning.max_tokens` maps to a level by budget (≤2048 low, ≤8192 medium, above high). Claude models carry the level as `thinkingLevel`; other non-Gemini models ignore it.
 
 **Aliases.** Retired Flash ids (`gemini-3.6-flash*`, `gemini-3.5-flash-*`, `gemini-3-flash-agent`) route to `gemini-3.7-flash-tiered` with a fixed level. Wire ids that already pin a variant (`gemini-3.1-pro-high`, `gemini-3.1-pro-low`, `gemini-pro-agent`, `gemini-3.8-flash-low`, ...) are sent unchanged. Per-key [model aliases](/providers/aliasing-models) work as for other providers.
 
@@ -186,7 +186,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ## Token refresh & credential write-back
 
-- Access tokens are cached in memory per credential and refreshed shortly before expiry, or once when upstream rejects one. Concurrent requests share a single refresh.
+- Access tokens are cached in memory per key and refreshed shortly before expiry, or once when upstream rejects one. Concurrent requests share a single refresh, and a written-back value keeps using the same cache entry. Replacing the key's credential yourself starts a fresh entry.
 - A failed refresh or project discovery is replayed for 30 seconds instead of hammering Google.
 - When Bifrost learns something the stored value lacks - a discovered `project_id` or a rotated refresh token - it re-encodes the JSON credential and writes it back to the key through the config store. Only `value` changes; the key keeps its ID, name, weight and config.json hash. With no config store, the update is kept in memory only.
 

@@ -1,0 +1,163 @@
+# Fork only: keeps this fork in step with maximhq/bifrost.
+#
+# Daily (or on demand) it fast-forwards the `dev` mirror to upstream `dev`, merges upstream into
+# a `sync/upstream-dev` branch cut from `plus`, runs scripts/fork/verify.sh and opens a pull
+# request into `plus`. Conflicts it cannot resolve are reported in an issue instead.
+#
+# Needs a repository secret FORK_SYNC_TOKEN (fine-grained PAT on this repo with Contents,
+# Pull requests, Issues and Workflows read/write): the default GITHUB_TOKEN cannot push commits
+# that touch .github/workflows, which most upstream syncs do. See FORK.md.
+name: Fork - Sync upstream
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: fork-sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream into plus
+    if: github.repository != 'maximhq/bifrost'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      UPSTREAM_BRANCH: dev
+      MIRROR_BRANCH: dev
+      FORK_BRANCH: plus
+      SYNC_BRANCH: sync/upstream-dev
+      GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.FORK_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: "**/go.sum"
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML (OpenAPI bundling)
+        run: pip install --require-hashes -r .github/workflows/requirements/pyyaml.txt
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream
+        id: sync
+        run: |
+          # Continue an open sync pull request rather than replacing it, so fixes pushed to
+          # its branch survive the next scheduled run.
+          open_pr="$(gh pr list --head "$SYNC_BRANCH" --base "$FORK_BRANCH" --state open --json number -q '.[0].number')"
+          if [ -n "$open_pr" ] && git show-ref --verify --quiet "refs/remotes/origin/$SYNC_BRANCH"; then
+            git checkout -B "$SYNC_BRANCH" "origin/$SYNC_BRANCH"
+          else
+            git checkout -B "$SYNC_BRANCH" "origin/$FORK_BRANCH"
+          fi
+          set +e
+          scripts/fork/sync-upstream.sh \
+            --upstream-branch "$UPSTREAM_BRANCH" \
+            --mirror "$MIRROR_BRANCH" \
+            --branch "$SYNC_BRANCH"
+          status=$?
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$(git rev-parse --short "upstream/$UPSTREAM_BRANCH")" >> "$GITHUB_OUTPUT"
+          if [ "$status" -eq 1 ]; then
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+            git merge --abort
+          fi
+          if [ "$status" -eq 2 ]; then
+            exit 2
+          fi
+
+      - name: Update the dev mirror
+        run: git push origin "$MIRROR_BRANCH"
+
+      - name: Open or update the sync pull request
+        if: steps.sync.outputs.status == '0' || steps.sync.outputs.status == '3'
+        env:
+          STATUS: ${{ steps.sync.outputs.status }}
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+        run: |
+          if [ "$(git rev-list --count "origin/$FORK_BRANCH..HEAD")" -eq 0 ]; then
+            echo "$FORK_BRANCH is already up to date with upstream $UPSTREAM_BRANCH"
+            exit 0
+          fi
+          git push --force-with-lease origin "HEAD:refs/heads/$SYNC_BRANCH"
+          if [ "$STATUS" = "0" ]; then
+            verdict="scripts/fork/verify.sh passed on the merged tree."
+          else
+            verdict="**scripts/fork/verify.sh failed on the merged tree** - see the [workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID). Fix it on this branch before merging."
+          fi
+          body="Merges upstream \`$UPSTREAM_BRANCH\` (\`$UPSTREAM_SHA\`) into \`$FORK_BRANCH\`.
+
+          $verdict
+
+          Merge with a merge commit (not squash or rebase) so the next sync only brings new upstream commits."
+          existing="$(gh pr list --head "$SYNC_BRANCH" --base "$FORK_BRANCH" --state open --json number -q '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "Sync upstream $UPSTREAM_BRANCH ($UPSTREAM_SHA)" --body "$body"
+          else
+            gh pr create --head "$SYNC_BRANCH" --base "$FORK_BRANCH" --title "Sync upstream $UPSTREAM_BRANCH ($UPSTREAM_SHA)" --body "$body"
+          fi
+          if [ "$STATUS" != "0" ]; then
+            exit 1
+          fi
+
+      - name: Report conflicts
+        if: steps.sync.outputs.status == '1'
+        env:
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+        run: |
+          title="Upstream sync needs manual conflict resolution"
+          files=""
+          while IFS= read -r file; do
+            files="$files- \`$file\`
+          "
+          done < "$RUNNER_TEMP/conflicts.txt"
+          body="Merging upstream \`$UPSTREAM_BRANCH\` (\`$UPSTREAM_SHA\`) into \`$FORK_BRANCH\` conflicts in:
+
+          $files
+
+          Resolve locally (see FORK.md, *Resolving sync conflicts*):
+
+          \`\`\`bash
+          git checkout $FORK_BRANCH && git pull
+          scripts/fork/sync-upstream.sh
+          # fix the files listed, then
+          git add -A && git commit --no-edit && scripts/fork/verify.sh && git push origin $FORK_BRANCH
+          \`\`\`
+
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number -q '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
+          exit 1

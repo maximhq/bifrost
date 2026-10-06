@@ -556,7 +556,6 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_compat_force_reasoning_only_models_to_responses_column"}, run: migrationAddCompatForceReasoningOnlyModelsToResponsesColumn},
 	{IDs: []string{"backfill_compat_force_reasoning_only_models_to_responses"}, run: migrationBackfillCompatForceReasoningOnlyModelsToResponses},
 	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
-	{IDs: []string{"add_key_selection_json_column"}, run: migrationAddKeySelectionJSONColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -7790,29 +7789,6 @@ func migrationAddPromptCacheJSONColumn(ctx context.Context, db *gorm.DB, logger 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_prompt_cache_json_column migration: %s", err.Error())
-	}
-	return nil
-}
-
-// migrationAddKeySelectionJSONColumn adds the key_selection_json column to the provider
-// table, backing ProviderConfig.KeySelection (per-provider key rotation strategy).
-func migrationAddKeySelectionJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_key_selection_json_column"
-	logger.Info("[configstore] starting migration %s", migrationName)
-	defer logger.Info("[configstore] finished migration %s", migrationName)
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: migrationName,
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			return addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "KeySelectionJSON")
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			return dropColumnIfExists(tx, logger, &tables.TableProvider{}, "key_selection_json")
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }
