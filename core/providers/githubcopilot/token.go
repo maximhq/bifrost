@@ -221,7 +221,7 @@ func mintWithConfig(
 	// Checked before the lock, so a misconfigured key does not queue every in-flight
 	// request behind a mutex just to be told no.
 	if f := entry.failure.Load(); f != nil && now.Before(f.retryAfter) {
-		return nil, f.err
+		return nil, f.errorCopy()
 	}
 
 	entry.mu.Lock()
@@ -234,7 +234,7 @@ func mintWithConfig(
 		return credentialsFrom(tok, configuredBaseURL), nil
 	}
 	if f := entry.failure.Load(); f != nil && now.Before(f.retryAfter) {
-		return nil, f.err
+		return nil, f.errorCopy()
 	}
 
 	exchangeCtx, cancel := context.WithTimeout(parent, exchangeTimeout)
@@ -304,11 +304,20 @@ func (e *copilotTokenEntry) recordFailure(bErr *schemas.BifrostError, permanent 
 	if prev := e.failure.Load(); prev != nil {
 		attempts = prev.attempts + 1
 	}
+	// The caller returns bErr to core, which writes request metadata onto it, so the cache
+	// keeps its own copy.
+	cached := *bErr
 	e.failure.Store(&exchangeFailure{
-		err:        bErr,
+		err:        &cached,
 		retryAfter: time.Now().Add(backoffFor(attempts, permanent)),
 		attempts:   attempts,
 	})
+}
+
+// errorCopy returns the cached error as a new value, so requests never share one.
+func (f *exchangeFailure) errorCopy() *schemas.BifrostError {
+	bErr := *f.err
+	return &bErr
 }
 
 // backoffFor grows the retry delay geometrically and clamps it.
@@ -328,14 +337,14 @@ func backoffFor(attempts int, permanent bool) time.Duration {
 }
 
 // isPermanentError reports whether a failure is a configuration fault rather than a
-// transient one. Rate limits and server errors are transient; everything else on the
-// credential path means something is misconfigured.
+// transient one. Rate limits, server errors and requests that got no response (status 0)
+// are transient; everything else on the credential path means something is misconfigured.
 func isPermanentError(bErr *schemas.BifrostError) bool {
 	if bErr == nil || bErr.StatusCode == nil {
 		return false
 	}
 	switch status := *bErr.StatusCode; {
-	case status == http.StatusTooManyRequests, status >= 500:
+	case status == 0, status == http.StatusTooManyRequests, status >= 500:
 		return false
 	default:
 		return true
@@ -362,6 +371,15 @@ func invalidateCredentials(keyConfig *schemas.GithubCopilotKeyConfig, scope inva
 	if scope == scopeAll {
 		e.installation.Store(nil)
 	}
+}
+
+// dropRejectedToken discards the cached Copilot token after inference answers 401, so the
+// next request mints a new one instead of failing until the scheduled refresh.
+func dropRejectedToken(key schemas.Key, bErr *schemas.BifrostError) {
+	if bErr == nil || bErr.StatusCode == nil || *bErr.StatusCode != http.StatusUnauthorized {
+		return
+	}
+	invalidateCredentials(key.GithubCopilotKeyConfig, scopeCopilotOnly)
 }
 
 // validateKeyConfig parses and checks the stored credential before anything touches the
