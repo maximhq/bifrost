@@ -407,6 +407,7 @@ type AllowedRequests struct {
 	PassthroughStream     bool `json:"passthrough_stream"`
 	WebSocketResponses    bool `json:"websocket_responses"`
 	Realtime              bool `json:"realtime"`
+	Live                  bool `json:"live"`
 	CachedContentCreate   bool `json:"cached_content_create"`
 	CachedContentList     bool `json:"cached_content_list"`
 	CachedContentRetrieve bool `json:"cached_content_retrieve"`
@@ -537,6 +538,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.WebSocketResponses
 	case RealtimeRequest:
 		return ar.Realtime
+	case LiveRequest:
+		return ar.Live
 	case CachedContentCreateRequest:
 		return ar.CachedContentCreate
 	case CachedContentListRequest:

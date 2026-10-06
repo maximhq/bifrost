@@ -195,6 +195,25 @@ func TestModelCaps_ToolNameMaxLength(t *testing.T) {
 	})
 }
 
+// ModelCaps.MaxOutputTokens: a positive row wins; an absent row or a non-positive
+// one (which would clamp every request to nothing) hands the fallback back.
+func TestModelCaps_MaxOutputTokens(t *testing.T) {
+	t.Run("RowWins", func(t *testing.T) {
+		model := "model-with-64k-output"
+		setCapabilityOverride(t, model, ModelCapabilities{MaxOutputTokens: new(64000)})
+		assert.Equal(t, 64000, ResolveModelCaps(Anthropic, model).MaxOutputTokens(0))
+	})
+	t.Run("AbsentFallsBack", func(t *testing.T) {
+		assert.Equal(t, 0, ResolveModelCaps(Anthropic, "no-row").MaxOutputTokens(0))
+		assert.Equal(t, 8192, ResolveModelCaps(Anthropic, "no-row").MaxOutputTokens(8192))
+	})
+	t.Run("NonPositiveRowIgnored", func(t *testing.T) {
+		model := "model-with-zero-output"
+		setCapabilityOverride(t, model, ModelCapabilities{MaxOutputTokens: new(0)})
+		assert.Equal(t, 0, ResolveModelCaps(Anthropic, model).MaxOutputTokens(0))
+	})
+}
+
 // ModelCaps.ReservedToolNamespaces: a non-empty row replaces the caller's
 // hardcoded list outright; an absent or empty row hands the fallback back.
 func TestModelCaps_ReservedToolNamespaces(t *testing.T) {

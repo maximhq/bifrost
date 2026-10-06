@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PRICING_FIELDS, pricingFieldError, pricingFieldUnit } from "./pricingFields";
+import { getRequestTypeGroup, PRICING_FIELDS, pricingFieldError, pricingFieldUnit, REQUEST_TYPE_OPTIONS } from "./pricingFields";
 
 describe("pricingFieldUnit", () => {
 	// Character-priced fields carry a "/ character" label, so rendering them
@@ -125,5 +125,14 @@ describe("pricingFieldError", () => {
 		expect(pricingFieldError("off_peak_cost_multiplier", "0")).toBe("Must be greater than 0 and at most 1");
 		expect(pricingFieldError("off_peak_cost_multiplier", "-0.5")).toBe("Must be greater than 0 and at most 1");
 		expect(pricingFieldError("off_peak_cost_multiplier", "1.5")).toBe("Must be greater than 0 and at most 1");
+	});
+});
+describe("request type groups", () => {
+	// GPT Live bills voice time per second, so its overrides use the audio fields.
+	it("offers live under the audio group with per-second pricing", () => {
+		expect(REQUEST_TYPE_OPTIONS).toContain("live");
+		expect(getRequestTypeGroup("live")).toBe("Audio");
+		const perSecond = PRICING_FIELDS.find((f) => f.key === "input_cost_per_second");
+		expect(perSecond?.requestTypeGroups).toContain("audio");
 	});
 });

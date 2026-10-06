@@ -35,6 +35,11 @@ type fakeWarpVectorStore struct {
 	listErr     error
 	addErr      error
 	createCalls int
+	// respond, when set, answers GetNearest from the filters it was given
+	// instead of from nearest - for tests where which rows come back depends on
+	// the prefilter. calls keeps every filter set asked for.
+	respond func(queries []vectorstore.Query) []vectorstore.SearchResult
+	calls   [][]vectorstore.Query
 }
 
 func newFakeWarpVectorStore() *fakeWarpVectorStore {
@@ -80,6 +85,14 @@ func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, _ []float3
 	f.threshold = threshold
 	f.limit = limit
 	f.limits = append(f.limits, limit)
+	f.calls = append(f.calls, queries)
+	if f.respond != nil {
+		page := f.respond(queries)
+		if limit >= 0 && int64(len(page)) > limit {
+			page = page[:limit]
+		}
+		return append([]vectorstore.SearchResult(nil), page...), nil
+	}
 	// A real vector store returns at most top-K. Returning the whole fixture
 	// regardless hid every bug that only shows up once the cap actually bites.
 	if limit >= 0 && int64(len(f.nearest)) > limit {

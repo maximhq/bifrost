@@ -706,6 +706,16 @@ func (c ModelCaps) MinOutputTokens(fallback int) int {
 	return fallback
 }
 
+// MaxOutputTokens returns the ceiling the model enforces on max_output_tokens.
+// A row with a positive max_output_tokens wins; absent or non-positive returns
+// fallback. Zero means no ceiling, so callers clamp only above zero.
+func (c ModelCaps) MaxOutputTokens(fallback int) int {
+	if c.record != nil && c.record.MaxOutputTokens != nil && *c.record.MaxOutputTokens > 0 {
+		return *c.record.MaxOutputTokens
+	}
+	return fallback
+}
+
 // BedrockReasoningShape returns the reasoning wire shape the datasheet says this
 // (provider, model) pair uses on Converse, falling back to the caller's
 // name-based answer when the row says nothing or publishes a value this binary
