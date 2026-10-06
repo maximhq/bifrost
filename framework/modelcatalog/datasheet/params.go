@@ -136,10 +136,10 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 			return nil, fmt.Errorf("failed to read model parameters file: %w", err)
 		}
 	} else {
-		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		if err := bifrost.ValidateExternalURL(rawURL, false); err != nil {
 			return nil, fmt.Errorf("model parameters URL validation failed: %w", err)
 		}
-		client := network.NewPrivateNetworkHTTPClient(DefaultModelParametersTimeout)
+		client := network.NewSSRFSafeHTTPClient(DefaultModelParametersTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
