@@ -673,6 +673,54 @@ func TestAnthropicMessageStartSafeguardResultsRoundTrip(t *testing.T) {
 	}
 }
 
+// Bedrock InvokeModel streams deliver safeguard_results nested in
+// message_delta.delta, not top-level. It must ride the message_delta chunk through
+// the Bifrost intermediate and come back in the same position; otherwise every
+// streamed Bedrock turn loses it and Claude Code falls back to billed classifier
+// requests.
+func TestAnthropicMessageDeltaNestedSafeguardResultsRoundTrip(t *testing.T) {
+	frame := `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null,"safeguard_results":[{"type":"dangerous_tool_use","status":{"type":"available","tool_uses":{"toolu_bdrk_01":{"type":"evaluated","outcome":"not_flagged"}}}}]},"usage":{"output_tokens":85}}`
+	const want = `[{"type":"dangerous_tool_use","status":{"type":"available","tool_uses":{"toolu_bdrk_01":{"type":"evaluated","outcome":"not_flagged"}}}}]`
+
+	var event AnthropicStreamEvent
+	if err := sonic.Unmarshal([]byte(frame), &event); err != nil {
+		t.Fatalf("unmarshal message_delta: %v", err)
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+
+	chunks, bifrostErr, _ := event.ToBifrostResponsesStream(ctx, 0, safeguardStreamState())
+	if bifrostErr != nil {
+		t.Fatalf("ingress conversion: %+v", bifrostErr)
+	}
+	if len(chunks) != 1 || chunks[0] == nil {
+		t.Fatalf("expected one message_delta chunk, got %#v", chunks)
+	}
+
+	events := ToAnthropicResponsesStreamResponse(ctx, chunks[0])
+	var rebuilt *AnthropicStreamEvent
+	for _, e := range events {
+		if e != nil && e.Type == AnthropicStreamEventTypeMessageDelta {
+			rebuilt = e
+		}
+	}
+	if rebuilt == nil {
+		t.Fatalf("no message_delta rebuilt: %#v", events)
+	}
+	out, err := sonic.Marshal(rebuilt)
+	if err != nil {
+		t.Fatalf("marshal rebuilt message_delta: %v", err)
+	}
+	if got := gjson.GetBytes(out, "delta.safeguard_results").Raw; got != want {
+		t.Fatalf("delta.safeguard_results lost on message_delta round trip: %s", string(out))
+	}
+	if gjson.GetBytes(out, "safeguard_results").Exists() {
+		t.Fatalf("safeguard_results duplicated top-level: %s", string(out))
+	}
+}
+
 // A chunk-level safeguard_results carry (attached by the provider SSE loop) must
 // be restored top-level on the first rebuilt frame.
 func TestAnthropicStreamChunkSafeguardResultsEgressRestore(t *testing.T) {
