@@ -22059,6 +22059,42 @@ func TestValidateCustomProvider_BaseProviderTypes(t *testing.T) {
 // not register as drift, and that invalid labels skip the provider instead of failing the store
 // write. The authoritative path drops only the invalid label field and keeps the provider and the
 // other, valid field.
+// TestProviderSync_KeepsStoredLabelsWhenFileOmitsThem pins the label rule for config.json sync:
+// a provider entry without metadata or tags keeps the labels already stored (set through the API
+// or UI), on both the hash-reconciled and the authoritative path; explicit empty values clear them.
+func TestProviderSync_KeepsStoredLabelsWhenFileOmitsThem(t *testing.T) {
+	SetLogger(&testLogger{})
+	stored := configstore.ProviderConfig{
+		Keys:       []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}},
+		Metadata:   map[string]string{"owner": "team-a"},
+		Tags:       []string{"prod"},
+		ConfigHash: "stale-hash-forces-a-sync",
+	}
+	file := func(metadata map[string]string, tags []string) configstore.ProviderConfig {
+		return configstore.ProviderConfig{
+			Keys:     []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}},
+			Metadata: metadata,
+			Tags:     tags,
+		}
+	}
+
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: stored}
+	require.NoError(t, processProvider(nil, "openai", file(nil, nil), providers))
+	assert.Equal(t, map[string]string{"owner": "team-a"}, providers[schemas.OpenAI].Metadata, "omitted metadata must keep the stored value")
+	assert.Equal(t, []string{"prod"}, providers[schemas.OpenAI].Tags, "omitted tags must keep the stored value")
+
+	providers = map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: stored}
+	require.NoError(t, processProvider(nil, "openai", file(map[string]string{}, []string{}), providers))
+	assert.Empty(t, providers[schemas.OpenAI].Metadata, "explicit empty metadata must clear it")
+	assert.Empty(t, providers[schemas.OpenAI].Tags, "explicit empty tags must clear them")
+	assert.NotNil(t, providers[schemas.OpenAI].Metadata, "the clear must stay explicit so the store writes it")
+
+	providers = map[schemas.ModelProvider]configstore.ProviderConfig{}
+	processAuthoritativeProvider("openai", file(nil, nil), stored, true, providers)
+	assert.Equal(t, map[string]string{"owner": "team-a"}, providers[schemas.OpenAI].Metadata, "authoritative sync must keep omitted metadata")
+	assert.Equal(t, []string{"prod"}, providers[schemas.OpenAI].Tags)
+}
+
 func TestProcessProvider_NormalizesLabelsBeforeHashing(t *testing.T) {
 	SetLogger(&testLogger{})
 	hashFor := func(tags []string) string {
