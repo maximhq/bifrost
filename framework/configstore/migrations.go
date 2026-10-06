@@ -8193,8 +8193,23 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 
 			// Backfill: for each ollama/sgl provider with a base_url, create a key
 			// with that URL and clear base_url from network_config.
-			var providers []tables.TableProvider
-			if err := tx.Where("name IN ?", []string{"ollama", "sgl"}).Find(&providers).Error; err != nil {
+			// Read the rows as plain columns rather than through
+			// Find(&[]tables.TableProvider): TableProvider.AfterFind decodes the whole
+			// NetworkConfig, and NetworkConfig.UnmarshalJSON fails loud on a reference
+			// that resolves to nothing. That error would abort the migration here --
+			// before the per-row decode below, which exists precisely so an
+			// unresolvable reference still migrates -- so the hook has to stay out of
+			// the read.
+			type providerRow struct {
+				ID                uint
+				Name              string
+				NetworkConfigJSON string
+			}
+			var providers []providerRow
+			if err := tx.Table("config_providers").
+				Select("id, name, network_config_json").
+				Where("name IN ?", []string{"ollama", "sgl"}).
+				Scan(&providers).Error; err != nil {
 				return fmt.Errorf("failed to fetch ollama/sgl providers for URL backfill: %w", err)
 			}
 			logger.Info("[configstore] %s: processing %d providers", migrationName, len(providers))
@@ -8261,14 +8276,14 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 
 			return nil
 		},
-		// The forward migration moves each ollama/sgl base_url onto a generated key and
-		// clears network_config.base_url, so the URL then lives only in ollama_url /
-		// sgl_url. Dropping those columns would destroy the only remaining copy and
-		// leave the generated keys behind with nothing in them, and a later forward run
+		// The forward migration copies each ollama/sgl base_url onto a generated key; it
+		// creates that key and nothing else, so network_config.base_url stays where it
+		// was. Dropping ollama_url/sgl_url would therefore not lose the endpoint, but it
+		// would leave every generated key with no URL in it, and a later forward run
 		// would mint a second default key alongside the first. The columns are additive
 		// and older binaries ignore them, so failing here is the safe outcome.
 		Rollback: func(tx *gorm.DB) error {
-			return fmt.Errorf("%s is non-rollbackable: the forward migration clears the provider base_url it moved onto a generated key, so dropping ollama_url/sgl_url would permanently lose the endpoint and strand the generated keys; the columns are additive and older binaries safely ignore them", migrationName)
+			return fmt.Errorf("%s is non-rollbackable: the forward migration copies the provider base_url onto a generated key without removing it from network_config, so dropping ollama_url/sgl_url would strand those keys with no endpoint and let a later forward run mint duplicates; the columns are additive and older binaries safely ignore them", migrationName)
 		},
 	}})
 	if err := m.Migrate(); err != nil {
