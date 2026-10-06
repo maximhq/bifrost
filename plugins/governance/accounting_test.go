@@ -660,8 +660,16 @@ func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, shortCircuit, "a new request is refused once the request limit is spent")
 
+	// The flag alone is not enough: only a live session's continuation was counted at admission.
+	flagged := resolverCtx(store, "sk-bf-live")
+	flagged.SetValue(schemas.BifrostContextKeySessionContinuation, true)
+	_, shortCircuit, err = plugin.PreLLMHook(flagged, newChatRequest())
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "a continuation flag on an ordinary request does not skip the request limit")
+
 	continuation := resolverCtx(store, "sk-bf-live")
 	continuation.SetValue(schemas.BifrostContextKeySessionContinuation, true)
+	continuation.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
 	_, shortCircuit, err = plugin.PreLLMHook(continuation, newChatRequest())
 	require.NoError(t, err)
 	require.Nil(t, shortCircuit, "a continuation of an admitted session is not refused by the request limit")

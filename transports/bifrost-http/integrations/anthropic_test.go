@@ -42,6 +42,84 @@ func TestAnthropicMessagesBillingHeaderNormalizedBeforeDispatch(t *testing.T) {
 	}
 }
 
+// TestAnthropicMessagesBillingHeaderAfterEffortOnlySystemMessage is a regression test for
+// 2.2.6: once per-message output_config was kept, an effort-only system message ahead of a
+// system billing header pushed the header out of the first slot and it survived ingress, so
+// guardrails evaluated it and non-Anthropic fallbacks received it.
+func TestAnthropicMessagesBillingHeaderAfterEffortOnlySystemMessage(t *testing.T) {
+	header := "x-anthropic-billing-header: cc_version=2.1.286; cc_entrypoint=cli;"
+	for name, headerContent := range map[string]string{
+		"string": `"` + header + `"`,
+		"blocks": `[{"type":"text","text":"` + header + `"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var incoming anthropic.AnthropicMessageRequest
+			raw := []byte(`{"model":"claude-opus-5-5","max_tokens":64,"messages":[` +
+				`{"role":"system","content":[],"output_config":{"effort":"high"}},` +
+				`{"role":"system","content":` + headerContent + `},` +
+				`{"role":"user","content":"alpha"}]}`)
+			if err := sonic.Unmarshal(raw, &incoming); err != nil {
+				t.Fatal(err)
+			}
+			for _, route := range createAnthropicMessagesRouteConfig("/anthropic", nil) {
+				request, err := route.RequestConverter(ctx, &incoming)
+				if err != nil {
+					t.Fatal(err)
+				}
+				input := request.ResponsesRequest.Input
+				normalized, err := schemas.MarshalSorted(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(normalized), "x-anthropic-billing-header:") {
+					t.Fatalf("billing header survived ingress behind an effort-only message: %s", normalized)
+				}
+				if len(input) != 2 || !input[0].IsEffortOnlySystemItem() {
+					t.Fatalf("effort-only message must stay first with the user turn after it: %s", normalized)
+				}
+
+				restored := request.ResponsesRequest.WithAnthropicBillingHeader().Input
+				if len(restored) != 3 || !restored[0].IsEffortOnlySystemItem() {
+					t.Fatalf("restored input lost its shape: %+v", restored)
+				}
+				content := restored[1].Content
+				got := ""
+				if content.ContentStr != nil {
+					got = *content.ContentStr
+				} else if len(content.ContentBlocks) == 1 && content.ContentBlocks[0].Text != nil {
+					got = *content.ContentBlocks[0].Text
+				}
+				if got != header {
+					t.Fatalf("billing header not restored in place for Anthropic: %q", got)
+				}
+			}
+
+			// Raw forwarding sends the native body, so its text target IDs must skip the
+			// header exactly as ingress did: the user turn is target 0 and the header stays.
+			targets, err := collectAnthropicRawRequestTextTargets(gjson.ParseBytes(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(targets) != 1 || targets[0].Path != "messages.2.content" || targets[0].ID != schemas.TextTargetIDForIndex(0) {
+				t.Fatalf("raw targets out of line with normalized input: %+v", targets)
+			}
+			rewritten, err := rewriteAnthropicRawRequestBodyTransforms(append([]byte(nil), raw...), []schemas.TextRewrite{{TargetID: targets[0].ID, Original: "alpha", Replacement: "[MASKED]"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(rewritten, "messages.2.content").String(); got != "[MASKED]" {
+				t.Fatalf("raw rewrite missed the user turn: %q", got)
+			}
+			for _, path := range []string{"messages.0", "messages.1"} {
+				if got, want := gjson.GetBytes(rewritten, path).Raw, gjson.GetBytes(raw, path).Raw; got != want {
+					t.Fatalf("raw rewrite changed %s: %s", path, got)
+				}
+			}
+		})
+	}
+}
+
 // TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta verifies the codec preserves provider-native event structure.
 func TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta(t *testing.T) {
 	codec := anthropicRawStreamTextCodec{}

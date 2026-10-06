@@ -2016,8 +2016,8 @@ type ResponsesInputMessageContentBlockAudio struct {
 // =============================================================================
 
 type ResponsesOutputMessageContentText struct {
-	Annotations []ResponsesOutputMessageContentTextAnnotation `json:"annotations"` // Citations and references
-	LogProbs    []ResponsesOutputMessageContentTextLogProb    `json:"logprobs"`    // Token log probabilities
+	Annotations []ResponsesOutputMessageContentTextAnnotation `json:"annotations"`       // Citations and references
+	LogProbs    []ResponsesOutputMessageContentTextLogProb    `json:"logprobs,omitzero"` // Token log probabilities; nil is omitted, [] is kept
 }
 
 type ResponsesOutputMessageContentTextAnnotation struct {
