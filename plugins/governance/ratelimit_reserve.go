@@ -42,7 +42,7 @@ func (gs *LocalGovernanceStore) CheckAndReserveRateLimits(ctx context.Context, e
 func (gs *LocalGovernanceStore) checkAndReserveSingle(
 	ctx context.Context,
 	rateLimit *configstoreTables.TableRateLimit,
-	entity EntityLabel,
+	entity string,
 	sessionContinuation bool,
 	tokensBaselines map[string]int64,
 	requestsBaselines map[string]int64,
