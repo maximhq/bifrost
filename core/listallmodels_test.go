@@ -160,6 +160,10 @@ func (c *staticListerCatalog) CalculateRequestCost(ctx *schemas.BifrostContext, 
 	return 0
 }
 
+func (c *staticListerCatalog) CalculateRequestCostBreakdown(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) *schemas.BifrostCost {
+	return nil
+}
+
 func (c *staticListerCatalog) GetModelsForProvider(provider schemas.ModelProvider) []string {
 	return c.modelsByProvider[provider]
 }

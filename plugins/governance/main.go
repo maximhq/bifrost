@@ -1323,6 +1323,8 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// Set by core on every retry iteration.
 		attemptNumber := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 		routingMetadata, _ := schemas.InitialAttemptRoutingMetadataFromContext(ctx)
+		// A session continuation bills its usage but was already counted as a request at admission.
+		sessionContinuation := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySessionContinuation)
 
 		p.wg.Add(1)
 		go func() {
@@ -1335,7 +1337,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
 		}()
 	}
 
@@ -1631,8 +1633,9 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isCacheRead: Whether the request is a cache read
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
+//   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -1701,18 +1704,19 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
-			Success:       success,
-			TokensUsed:    int64(tokensUsed),
-			Cost:          cost,
-			RequestID:     requestID,
-			BillingNonce:  billingNonce,
-			IsStreaming:   isStreaming,
-			IsFinalChunk:  isFinalChunk,
-			HasUsageData:  tokensUsed > 0 || cost > 0,
-			AttemptNumber: attemptNumber,
-			BilledReason:  billedReason,
-			Budgets:       budgets,
-			RateLimits:    rateLimits,
+			Success:          success,
+			TokensUsed:       int64(tokensUsed),
+			Cost:             cost,
+			RequestID:        requestID,
+			BillingNonce:     billingNonce,
+			SkipRequestCount: skipRequestCount,
+			IsStreaming:      isStreaming,
+			IsFinalChunk:     isFinalChunk,
+			HasUsageData:     tokensUsed > 0 || cost > 0,
+			AttemptNumber:    attemptNumber,
+			BilledReason:     billedReason,
+			Budgets:          budgets,
+			RateLimits:       rateLimits,
 		}
 
 		// Queue usage update asynchronously using tracker

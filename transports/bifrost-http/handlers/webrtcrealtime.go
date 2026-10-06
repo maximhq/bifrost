@@ -3,13 +3,8 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -20,32 +15,15 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
-	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	"github.com/valyala/fasthttp"
 )
 
-const (
-	webrtcRealtimeHandshakeTimeout   = 10 * time.Second
-	webrtcRealtimeICEGatherTimeout   = 3 * time.Second
-	webrtcRealtimeMaxPendingMessages = 1000
-)
-
-var defaultAudioCodec = webrtc.RTPCodecCapability{
-	MimeType:    webrtc.MimeTypeOpus,
-	ClockRate:   48000,
-	Channels:    2,
-	SDPFmtpLine: "minptime=10;useinbandfec=1",
-}
-
-var realtimeSDPMaxMessageSizePattern = regexp.MustCompile(`(?m)^a=max-message-size:(\d+)\s*$`)
-
 type WebRTCRealtimeHandler struct {
+	webrtcRelayRegistry
 	client       *bifrost.Bifrost
 	config       *lib.Config
 	handlerStore lib.HandlerStore
-	mu           sync.Mutex
-	relays       map[string]*webrtcRealtimeRelay
 	legacyRoutes map[string]schemas.ModelProvider // path → default provider (legacy raw-SDP routes)
 }
 
@@ -54,7 +32,6 @@ func NewWebRTCRealtimeHandler(client *bifrost.Bifrost, config *lib.Config) *WebR
 		client:       client,
 		config:       config,
 		handlerStore: config,
-		relays:       make(map[string]*webrtcRealtimeRelay),
 		legacyRoutes: make(map[string]schemas.ModelProvider),
 	}
 }
@@ -85,17 +62,7 @@ func (h *WebRTCRealtimeHandler) Close() {
 	if h == nil {
 		return
 	}
-
-	h.mu.Lock()
-	relays := make([]*webrtcRealtimeRelay, 0, len(h.relays))
-	for _, relay := range h.relays {
-		relays = append(relays, relay)
-	}
-	h.mu.Unlock()
-
-	for _, relay := range relays {
-		relay.closeWithShutdownSignal()
-	}
+	h.closeAll()
 }
 
 func (h *WebRTCRealtimeHandler) handleRequest(ctx *fasthttp.RequestCtx) {
@@ -542,9 +509,8 @@ func (h *WebRTCRealtimeHandler) resolveWebRTCProvider(providerKey schemas.ModelP
 	return rtProvider, nil
 }
 
-// establishRelay sets up the bidirectional WebRTC relay between the browser and the upstream provider.
-// exchangeSDP is called with the upstream peer connection's SDP offer and must return the provider's
-// SDP answer. This allows the handler to plug in different exchange strategies (GA calls vs legacy).
+// establishRelay sets up a Realtime session's WebRTC relay; exchangeSDP picks the GA or legacy
+// SDP exchange.
 func (h *WebRTCRealtimeHandler) establishRelay(
 	relayCtx *schemas.BifrostContext,
 	relayCancel context.CancelFunc,
@@ -557,334 +523,44 @@ func (h *WebRTCRealtimeHandler) establishRelay(
 	transcriptionSession bool,
 	exchangeSDP func(ctx *schemas.BifrostContext, upstreamOffer string) (string, *schemas.BifrostError),
 ) (string, *schemas.BifrostError) {
-	downstreamPC, err := newRealtimePeerConnection()
-	if err != nil {
-		return "", newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to create browser peer connection", err)
-	}
-	upstreamPC, err := newRealtimePeerConnection()
-	if err != nil {
-		_ = downstreamPC.Close()
-		return "", newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to create upstream peer connection", err)
-	}
-
-	relay := &webrtcRealtimeRelay{
-		client:               h.client,
-		downstreamPC:         downstreamPC,
-		upstreamPC:           upstreamPC,
-		session:              session,
-		bifrostCtx:           relayCtx,
-		cancel:               relayCancel,
-		provider:             provider,
-		providerKey:          providerKey,
-		model:                model,
-		key:                  key,
-		transcriptionSession: transcriptionSession,
-	}
-	relay.onClose = func() {
-		h.unregisterRelay(session.ID())
-	}
-	relay.installCloseHandlers()
-	h.registerRelay(session.ID(), relay)
-
-	// Downstream local audio track carries provider audio back to the browser.
-	providerToBrowserTrack, err := webrtc.NewTrackLocalStaticRTP(defaultAudioCodec, "audio", "bifrost-provider-audio")
-	if err != nil {
-		relay.close()
-		return "", newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to create browser audio track", err)
-	}
-	providerToBrowserSender, err := downstreamPC.AddTrack(providerToBrowserTrack)
-	if err != nil {
-		relay.close()
-		return "", newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to attach browser audio track", err)
-	}
-	relay.providerToBrowserTrack = providerToBrowserTrack
-	go relay.forwardRTCP(providerToBrowserSender, upstreamPC)
-
-	// Upstream local audio track carries browser audio to the provider.
-	browserToProviderTrack, err := webrtc.NewTrackLocalStaticRTP(defaultAudioCodec, "audio", "bifrost-browser-audio")
-	if err != nil {
-		relay.close()
-		return "", newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to create provider audio track", err)
-	}
-	browserToProviderSender, err := upstreamPC.AddTrack(browserToProviderTrack)
-	if err != nil {
-		relay.close()
-		return "", newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to attach provider audio track", err)
-	}
-	relay.browserToProviderTrack = browserToProviderTrack
-	go relay.forwardRTCP(browserToProviderSender, downstreamPC)
-
-	relay.installTrackForwarders()
-	if err := relay.installDataChannelRelay(); err != nil {
-		relay.close()
-		return "", newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to create upstream realtime data channel", err)
-	}
-
-	if err := setRemoteDescription(downstreamPC, webrtc.SessionDescription{
-		Type: webrtc.SDPTypeOffer,
-		SDP:  browserOffer,
-	}); err != nil {
-		relay.close()
-		return "", newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "invalid browser SDP offer", err)
-	}
-
-	upstreamOffer, err := relay.createOffer(upstreamPC)
-	if err != nil {
-		relay.close()
-		return "", newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to create upstream SDP offer", err)
-	}
-	upstreamOffer = constrainRealtimeSDPMaxMessageSize(upstreamOffer, browserOffer)
-
-	upstreamAnswer, exchangeErr := exchangeSDP(relayCtx, upstreamOffer)
-	if exchangeErr != nil {
-		relay.close()
-		return "", exchangeErr
-	}
-
-	if err := setRemoteDescription(upstreamPC, webrtc.SessionDescription{
-		Type: webrtc.SDPTypeAnswer,
-		SDP:  upstreamAnswer,
-	}); err != nil {
-		relay.close()
-		return "", newRealtimeWebRTCError(fasthttp.StatusBadGateway, "upstream_connection_error", "invalid upstream SDP answer", err)
-	}
-
-	waitCtx, waitCancel := context.WithTimeout(relayCtx, webrtcRealtimeHandshakeTimeout)
-	defer waitCancel()
-
-	if err := relay.waitForUpstream(waitCtx); err != nil {
-		relay.close()
-		return "", newRealtimeWebRTCError(fasthttp.StatusBadGateway, "upstream_connection_error", "upstream realtime WebRTC connection failed", err)
-	}
-
-	browserAnswer, err := relay.createAnswer(downstreamPC)
-	if err != nil {
-		relay.close()
-		return "", newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to create browser SDP answer", err)
-	}
-
-	return browserAnswer, nil
+	return establishWebRTCRelay(webrtcRelaySetup{
+		requestType: schemas.RealtimeRequest,
+		handler: &realtimeWebRTCMessages{
+			client:               h.client,
+			session:              session,
+			bifrostCtx:           relayCtx,
+			provider:             provider,
+			providerKey:          providerKey,
+			model:                model,
+			key:                  key,
+			transcriptionSession: transcriptionSession,
+		},
+		dataChannelLabel: provider.RealtimeWebRTCDataChannelLabel(),
+		browserOffer:     browserOffer,
+		handshakeCtx:     relayCtx,
+		exchangeSDP: func(upstreamOffer string) (string, *schemas.BifrostError) {
+			return exchangeSDP(relayCtx, upstreamOffer)
+		},
+		onCreate: func(relay *webrtcRelay) { h.registerRelay(session.ID(), relay) },
+		onClose:  func() { h.unregisterRelay(session.ID()) },
+		cancel:   relayCancel,
+	})
 }
 
-type webrtcRealtimeRelay struct {
-	client       *bifrost.Bifrost
-	downstreamPC *webrtc.PeerConnection
-	upstreamPC   *webrtc.PeerConnection
-
-	downstreamChannel *webrtc.DataChannel
-	upstreamChannel   *webrtc.DataChannel
-
-	providerToBrowserTrack *webrtc.TrackLocalStaticRTP
-	browserToProviderTrack *webrtc.TrackLocalStaticRTP
-
+// realtimeWebRTCMessages translates Realtime events across a WebRTC relay and runs a plugin
+// pass per turn.
+type realtimeWebRTCMessages struct {
+	client               *bifrost.Bifrost
 	session              *bfws.Session
 	bifrostCtx           *schemas.BifrostContext
-	cancel               context.CancelFunc
 	provider             schemas.RealtimeProvider
 	providerKey          schemas.ModelProvider
 	model                string
 	key                  *schemas.Key
 	transcriptionSession bool
-	onClose              func()
-
-	closeOnce sync.Once
-
-	channelMu                sync.Mutex
-	pendingToUpstream        []queuedDataChannelMessage
-	pendingToDownstream      []queuedDataChannelMessage
-	upstreamConnectedOrError chan error
 }
 
-type queuedDataChannelMessage struct {
-	payload  []byte
-	isString bool
-}
-
-func (r *webrtcRealtimeRelay) installCloseHandlers() {
-	r.upstreamConnectedOrError = make(chan error, 1)
-
-	handleState := func(name string, pc *webrtc.PeerConnection) {
-		pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-			switch state {
-			case webrtc.PeerConnectionStateConnected:
-				if name == "upstream" {
-					select {
-					case r.upstreamConnectedOrError <- nil:
-					default:
-					}
-				}
-			case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
-				if name == "upstream" {
-					select {
-					case r.upstreamConnectedOrError <- fmt.Errorf("peer connection state %s", state.String()):
-					default:
-					}
-				}
-				r.close()
-			case webrtc.PeerConnectionStateDisconnected:
-				r.close()
-			}
-		})
-	}
-
-	handleState("downstream", r.downstreamPC)
-	handleState("upstream", r.upstreamPC)
-}
-
-func (r *webrtcRealtimeRelay) installTrackForwarders() {
-	r.downstreamPC.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-		if track.Kind() != webrtc.RTPCodecTypeAudio {
-			return
-		}
-		r.forwardRTPTrack(track, r.browserToProviderTrack)
-	})
-
-	r.upstreamPC.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-		if track.Kind() != webrtc.RTPCodecTypeAudio {
-			return
-		}
-		r.forwardRTPTrack(track, r.providerToBrowserTrack)
-	})
-}
-
-func (r *webrtcRealtimeRelay) installDataChannelRelay() error {
-	label := strings.TrimSpace(r.provider.RealtimeWebRTCDataChannelLabel())
-	if label == "" {
-		return nil
-	}
-	upstreamDC, err := r.upstreamPC.CreateDataChannel(label, nil)
-	if err != nil {
-		return err
-	}
-	r.bindUpstreamChannel(upstreamDC)
-
-	r.downstreamPC.OnDataChannel(func(dc *webrtc.DataChannel) {
-		r.bindDownstreamChannel(dc)
-	})
-	return nil
-}
-
-func (r *webrtcRealtimeRelay) bindUpstreamChannel(dc *webrtc.DataChannel) {
-	r.channelMu.Lock()
-	r.upstreamChannel = dc
-	r.channelMu.Unlock()
-
-	dc.OnOpen(func() {
-		r.flushPending()
-	})
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		r.handleUpstreamMessage(msg)
-	})
-	dc.OnClose(func() { r.close() })
-	dc.OnError(func(err error) {
-		logger.Warn("upstream realtime data channel error: %v", err)
-		r.close()
-	})
-}
-
-func (r *webrtcRealtimeRelay) bindDownstreamChannel(dc *webrtc.DataChannel) {
-	r.channelMu.Lock()
-	if r.downstreamChannel != nil {
-		r.channelMu.Unlock()
-		_ = dc.Close()
-		return
-	}
-	r.downstreamChannel = dc
-	r.channelMu.Unlock()
-
-	dc.OnOpen(func() {
-		r.flushPending()
-	})
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		r.handleDownstreamMessage(msg)
-	})
-	dc.OnClose(func() { r.close() })
-	dc.OnError(func(err error) {
-		logger.Warn("browser realtime data channel error: %v", err)
-		r.close()
-	})
-}
-
-func (r *webrtcRealtimeRelay) createOffer(pc *webrtc.PeerConnection) (string, error) {
-	offer, err := pc.CreateOffer(nil)
-	if err != nil {
-		return "", err
-	}
-	gatherComplete := webrtc.GatheringCompletePromise(pc)
-	if err := pc.SetLocalDescription(offer); err != nil {
-		return "", err
-	}
-	select {
-	case <-gatherComplete:
-	case <-time.After(webrtcRealtimeICEGatherTimeout):
-	}
-	if pc.LocalDescription() == nil {
-		return "", errors.New("local description not set")
-	}
-	return pc.LocalDescription().SDP, nil
-}
-
-func (r *webrtcRealtimeRelay) createAnswer(pc *webrtc.PeerConnection) (string, error) {
-	answer, err := pc.CreateAnswer(nil)
-	if err != nil {
-		return "", err
-	}
-	gatherComplete := webrtc.GatheringCompletePromise(pc)
-	if err := pc.SetLocalDescription(answer); err != nil {
-		return "", err
-	}
-	select {
-	case <-gatherComplete:
-	case <-time.After(webrtcRealtimeICEGatherTimeout):
-	}
-	if pc.LocalDescription() == nil {
-		return "", errors.New("local description not set")
-	}
-	return pc.LocalDescription().SDP, nil
-}
-
-func (r *webrtcRealtimeRelay) waitForUpstream(ctx context.Context) error {
-	select {
-	case err := <-r.upstreamConnectedOrError:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (r *webrtcRealtimeRelay) forwardRTPTrack(track *webrtc.TrackRemote, target *webrtc.TrackLocalStaticRTP) {
-	for {
-		packet, _, err := track.ReadRTP()
-		if err != nil {
-			return
-		}
-		if err := target.WriteRTP(packet); err != nil {
-			return
-		}
-	}
-}
-
-func (r *webrtcRealtimeRelay) forwardRTCP(sender *webrtc.RTPSender, target *webrtc.PeerConnection) {
-	if sender == nil || target == nil {
-		return
-	}
-	buf := make([]byte, 1500)
-	for {
-		n, _, readErr := sender.Read(buf)
-		if readErr != nil {
-			return
-		}
-		pkts, parseErr := rtcp.Unmarshal(buf[:n])
-		if parseErr != nil {
-			continue
-		}
-		if writeErr := target.WriteRTCP(pkts); writeErr != nil {
-			return
-		}
-	}
-}
-
-func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMessage) {
+func (m *realtimeWebRTCMessages) fromBrowser(r *webrtcRelay, msg webrtc.DataChannelMessage) {
 	event, err := schemas.ParseRealtimeEvent(msg.Data)
 	if err != nil {
 		logger.Warn("failed to parse browser realtime event: %v", err)
@@ -893,35 +569,35 @@ func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMess
 	}
 	toolItemID, toolSummary := pendingRealtimeToolOutputUpdate(event)
 	if toolSummary != "" {
-		r.session.RecordRealtimeToolOutput(toolItemID, toolSummary, string(msg.Data))
+		m.session.RecordRealtimeToolOutput(toolItemID, toolSummary, string(msg.Data))
 	}
 	inputItemID, inputSummary := pendingRealtimeInputUpdate(event)
 	if inputSummary != "" {
-		r.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
+		m.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
 	}
-	startsTurn := r.provider.ShouldStartRealtimeTurn(event)
+	startsTurn := m.provider.ShouldStartRealtimeTurn(event)
 	if startsTurn {
-		if r.session.PeekRealtimeTurnHooks() != nil {
+		if m.session.PeekRealtimeTurnHooks() != nil {
 			r.sendDownstream(newRealtimeTurnErrorEventPayload(newRealtimeWireBifrostError(400, "invalid_request_error", "Conversation already has an active response in progress.")), true)
 			return
 		}
-		if bifrostErr := startRealtimeTurnHooks(r.client, r.bifrostCtx, r.session, r.provider, r.providerKey, r.model, r.key, event); bifrostErr != nil {
+		if bifrostErr := startRealtimeTurnHooks(m.client, m.bifrostCtx, m.session, m.provider, m.providerKey, m.model, m.key, event); bifrostErr != nil {
 			r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(bifrostErr))
 			return
 		}
 	}
 
 	sanitizeRealtimeSessionEventForProvider(event)
-	providerEvent, err := r.provider.ToProviderRealtimeEvent(event)
+	providerEvent, err := m.provider.ToProviderRealtimeEvent(event)
 	if err != nil {
 		if startsTurn {
 			if finalizeErr := finalizeRealtimeTurnHooksOnTransportError(
-				r.client,
-				r.bifrostCtx,
-				r.session,
-				r.providerKey,
-				r.model,
-				r.key,
+				m.client,
+				m.bifrostCtx,
+				m.session,
+				m.providerKey,
+				m.model,
+				m.key,
 				400,
 				"invalid_request_error",
 				err.Error(),
@@ -938,20 +614,20 @@ func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMess
 	}
 	// Track session metadata only after provider translation succeeds. Rejected
 	// session.update events must not affect later turn logs.
-	updateRealtimeSessionFromEvent(r.session, event)
+	updateRealtimeSessionFromEvent(m.session, event)
 	r.sendUpstream(providerEvent, msg.IsString)
 }
 
-func (r *webrtcRealtimeRelay) handleUpstreamMessage(msg webrtc.DataChannelMessage) {
-	event, err := r.provider.ToBifrostRealtimeEvent(msg.Data)
+func (m *realtimeWebRTCMessages) fromProvider(r *webrtcRelay, msg webrtc.DataChannelMessage) {
+	event, err := m.provider.ToBifrostRealtimeEvent(msg.Data)
 	if err != nil {
 		if finalizeErr := finalizeRealtimeTurnHooksOnTransportError(
-			r.client,
-			r.bifrostCtx,
-			r.session,
-			r.providerKey,
-			r.model,
-			r.key,
+			m.client,
+			m.bifrostCtx,
+			m.session,
+			m.providerKey,
+			m.model,
+			m.key,
 			502,
 			"server_error",
 			"failed to translate upstream realtime event",
@@ -965,56 +641,56 @@ func (r *webrtcRealtimeRelay) handleUpstreamMessage(msg webrtc.DataChannelMessag
 	}
 	if event != nil {
 		if event.Session != nil && event.Session.ID != "" {
-			r.session.SetProviderSessionID(event.Session.ID)
+			m.session.SetProviderSessionID(event.Session.ID)
 		}
 		// Track session tool definitions from session.created/session.updated (server→client).
-		updateRealtimeSessionFromEvent(r.session, event)
+		updateRealtimeSessionFromEvent(m.session, event)
 		inputItemID, inputSummary := pendingRealtimeInputUpdate(event)
 		if inputSummary != "" {
-			r.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
+			m.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
 		}
-		if event.Delta != nil && r.provider.ShouldAccumulateRealtimeOutput(event.Type) {
-			r.session.AppendRealtimeOutputText(event.Delta.Text)
-			r.session.AppendRealtimeOutputText(event.Delta.Transcript)
+		if event.Delta != nil && m.provider.ShouldAccumulateRealtimeOutput(event.Type) {
+			m.session.AppendRealtimeOutputText(event.Delta.Text)
+			m.session.AppendRealtimeOutputText(event.Delta.Transcript)
 		}
-		if r.provider.ShouldStartRealtimeTurn(event) && r.session.PeekRealtimeTurnHooks() == nil {
-			if bifrostErr := startRealtimeTurnHooks(r.client, r.bifrostCtx, r.session, r.provider, r.providerKey, r.model, r.key, event); bifrostErr != nil {
+		if m.provider.ShouldStartRealtimeTurn(event) && m.session.PeekRealtimeTurnHooks() == nil {
+			if bifrostErr := startRealtimeTurnHooks(m.client, m.bifrostCtx, m.session, m.provider, m.providerKey, m.model, m.key, event); bifrostErr != nil {
 				r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(bifrostErr))
 				return
 			}
 		}
 	}
 	if event != nil {
-		if !r.provider.ShouldForwardRealtimeEvent(event) {
+		if !m.provider.ShouldForwardRealtimeEvent(event) {
 			return
 		}
-		terminalEventType := realtimeTurnFinalEvent(r.provider, r.transcriptionSession)
+		terminalEventType := realtimeTurnFinalEvent(m.provider, m.transcriptionSession)
 		if event.Type == terminalEventType {
-			inputItemID, inputSummary, contentOverride := realtimeTurnCompletionContent(r.session, event, r.transcriptionSession)
+			inputItemID, inputSummary, contentOverride := realtimeTurnCompletionContent(m.session, event, m.transcriptionSession)
 			if inputSummary != "" {
-				r.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
+				m.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
 			}
-			if bifrostErr := finalizeRealtimeTurnHooks(r.client, r.bifrostCtx, r.session, r.provider, r.providerKey, r.model, r.key, msg.Data, contentOverride, terminalEventType, r.transcriptionSession); bifrostErr != nil {
+			if bifrostErr := finalizeRealtimeTurnHooks(m.client, m.bifrostCtx, m.session, m.provider, m.providerKey, m.model, m.key, msg.Data, contentOverride, terminalEventType, m.transcriptionSession); bifrostErr != nil {
 				r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(bifrostErr))
 				return
 			}
 		} else if event.Error != nil {
 			if finalizeErr := finalizeRealtimeTurnHooksWithError(
-				r.client,
-				r.bifrostCtx,
-				r.session,
-				r.providerKey,
-				r.model,
-				r.key,
+				m.client,
+				m.bifrostCtx,
+				m.session,
+				m.providerKey,
+				m.model,
+				m.key,
 				event.Type,
 				msg.Data,
-				newBifrostErrorFromRealtimeError(r.providerKey, r.model, msg.Data, event.Error),
+				newBifrostErrorFromRealtimeError(m.providerKey, m.model, msg.Data, event.Error),
 			); finalizeErr != nil {
 				r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(finalizeErr))
 				return
 			}
 		}
-		msg.Data, err = r.provider.ToProviderRealtimeEvent(event)
+		msg.Data, err = m.provider.ToProviderRealtimeEvent(event)
 		if err != nil {
 			logger.Warn("failed to encode translated realtime event: %v", err)
 			// Lifecycle events (response.done / error) must reach the client so it
@@ -1030,133 +706,28 @@ func (r *webrtcRealtimeRelay) handleUpstreamMessage(msg webrtc.DataChannelMessag
 	r.sendDownstream(msg.Data, msg.IsString)
 }
 
-func (r *webrtcRealtimeRelay) sendUpstream(payload []byte, isString bool) {
-	r.channelMu.Lock()
-	defer r.channelMu.Unlock()
-	if isDataChannelOpen(r.upstreamChannel) {
-		sendDataChannelMessage(r.upstreamChannel, payload, isString)
-		return
-	}
-	if len(r.pendingToUpstream) >= webrtcRealtimeMaxPendingMessages {
-		logger.Warn("upstream pending buffer exceeded %d messages, closing relay", webrtcRealtimeMaxPendingMessages)
-		go r.close()
-		return
-	}
-	r.pendingToUpstream = append(r.pendingToUpstream, queuedDataChannelMessage{payload: append([]byte(nil), payload...), isString: isString})
-}
-
-func (r *webrtcRealtimeRelay) sendDownstream(payload []byte, isString bool) {
-	r.channelMu.Lock()
-	defer r.channelMu.Unlock()
-	if isDataChannelOpen(r.downstreamChannel) {
-		sendDataChannelMessage(r.downstreamChannel, payload, isString)
-		return
-	}
-	if len(r.pendingToDownstream) >= webrtcRealtimeMaxPendingMessages {
-		logger.Warn("downstream pending buffer exceeded %d messages, closing relay", webrtcRealtimeMaxPendingMessages)
-		go r.close()
-		return
-	}
-	r.pendingToDownstream = append(r.pendingToDownstream, queuedDataChannelMessage{payload: append([]byte(nil), payload...), isString: isString})
-}
-
-func (r *webrtcRealtimeRelay) flushPending() {
-	r.channelMu.Lock()
-	defer r.channelMu.Unlock()
-
-	if isDataChannelOpen(r.upstreamChannel) && len(r.pendingToUpstream) > 0 {
-		for _, msg := range r.pendingToUpstream {
-			sendDataChannelMessage(r.upstreamChannel, msg.payload, msg.isString)
-		}
-		r.pendingToUpstream = nil
-	}
-	if isDataChannelOpen(r.downstreamChannel) && len(r.pendingToDownstream) > 0 {
-		for _, msg := range r.pendingToDownstream {
-			sendDataChannelMessage(r.downstreamChannel, msg.payload, msg.isString)
-		}
-		r.pendingToDownstream = nil
-	}
-}
-
-func (r *webrtcRealtimeRelay) close() {
-	r.closeOnce.Do(func() {
-		if r.session != nil {
-			_ = finalizeRealtimeTurnHooksOnTransportError(
-				r.client,
-				r.bifrostCtx,
-				r.session,
-				r.providerKey,
-				r.model,
-				r.key,
-				502,
-				"connection_closed",
-				"realtime WebRTC session closed before turn completed",
-			)
-			r.session.ClearRealtimeTurnHooks()
-		}
-
-		if r.onClose != nil {
-			r.onClose()
-		}
-		if r.cancel != nil {
-			r.cancel()
-		}
-
-		r.channelMu.Lock()
-		if r.downstreamChannel != nil {
-			_ = r.downstreamChannel.Close()
-		}
-		if r.upstreamChannel != nil {
-			_ = r.upstreamChannel.Close()
-		}
-		r.channelMu.Unlock()
-
-		if r.downstreamPC != nil {
-			_ = r.downstreamPC.Close()
-		}
-		if r.upstreamPC != nil {
-			_ = r.upstreamPC.Close()
-		}
-	})
-}
-
-func (r *webrtcRealtimeRelay) closeWithShutdownSignal() {
+// browserGone ends a Realtime relay as soon as the browser leaves.
+func (m *realtimeWebRTCMessages) browserGone(r *webrtcRelay) {
 	r.close()
 }
 
-func (r *webrtcRealtimeRelay) closeWithErrorEvent(payload []byte) {
-	r.channelMu.Lock()
-	dc := r.downstreamChannel
-	r.channelMu.Unlock()
-
-	if isDataChannelOpen(dc) && len(payload) > 0 {
-		sendDataChannelMessage(dc, payload, true)
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			r.close()
-		}()
+// closed finalizes a turn still in flight, so plugins see both halves of it.
+func (m *realtimeWebRTCMessages) closed() {
+	if m.session == nil {
 		return
 	}
-
-	r.close()
-}
-
-func (h *WebRTCRealtimeHandler) registerRelay(sessionID string, relay *webrtcRealtimeRelay) {
-	if strings.TrimSpace(sessionID) == "" || relay == nil {
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.relays[sessionID] = relay
-}
-
-func (h *WebRTCRealtimeHandler) unregisterRelay(sessionID string) {
-	if strings.TrimSpace(sessionID) == "" {
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.relays, sessionID)
+	_ = finalizeRealtimeTurnHooksOnTransportError(
+		m.client,
+		m.bifrostCtx,
+		m.session,
+		m.providerKey,
+		m.model,
+		m.key,
+		502,
+		"connection_closed",
+		"realtime WebRTC session closed before turn completed",
+	)
+	m.session.ClearRealtimeTurnHooks()
 }
 
 func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.BifrostContext, context.CancelFunc) {
@@ -1224,97 +795,6 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 	relayCtx.SetValue(schemas.BifrostContextKeyRealtimeTransport, "webrtc")
 
 	return relayCtx, cancel
-}
-
-func newRealtimePeerConnection() (*webrtc.PeerConnection, error) {
-	return webrtc.NewPeerConnection(webrtc.Configuration{})
-}
-
-// setRemoteDescription applies desc to pc and converts a panic raised inside the
-// SDP parser into an error. The description is caller-supplied bytes, and the
-// handler runs on the request goroutine, so a parser panic that escaped here
-// would end the whole process instead of failing the one request.
-func setRemoteDescription(pc *webrtc.PeerConnection, desc webrtc.SessionDescription) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("sdp rejected: %v", r)
-		}
-	}()
-	return pc.SetRemoteDescription(desc)
-}
-
-func isDataChannelOpen(dc *webrtc.DataChannel) bool {
-	return dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen
-}
-
-func realtimeEventTypeFromPayload(payload []byte) string {
-	var envelope struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(envelope.Type)
-}
-
-func parseRealtimeSDPMaxMessageSize(sdp string) (int64, bool) {
-	matches := realtimeSDPMaxMessageSizePattern.FindStringSubmatch(sdp)
-	if len(matches) < 2 {
-		return 0, false
-	}
-	size, err := strconv.ParseInt(matches[1], 10, 64)
-	if err != nil || size <= 0 {
-		return 0, false
-	}
-	return size, true
-}
-
-func setRealtimeSDPMaxMessageSize(sdp string, maxMessageSize int64) string {
-	line := "a=max-message-size:" + strconv.FormatInt(maxMessageSize, 10)
-	if realtimeSDPMaxMessageSizePattern.MatchString(sdp) {
-		return realtimeSDPMaxMessageSizePattern.ReplaceAllString(sdp, line)
-	}
-	if strings.Contains(sdp, "\r\nm=application ") {
-		return strings.Replace(sdp, "\r\nm=application ", "\r\n"+line+"\r\nm=application ", 1)
-	}
-	if strings.Contains(sdp, "\nm=application ") {
-		return strings.Replace(sdp, "\nm=application ", "\n"+line+"\nm=application ", 1)
-	}
-	return sdp
-}
-
-func constrainRealtimeSDPMaxMessageSize(upstreamOffer string, browserOffer string) string {
-	browserMax, ok := parseRealtimeSDPMaxMessageSize(browserOffer)
-	if !ok {
-		return upstreamOffer
-	}
-
-	upstreamMax, ok := parseRealtimeSDPMaxMessageSize(upstreamOffer)
-	if ok && upstreamMax <= browserMax {
-		return upstreamOffer
-	}
-
-	return setRealtimeSDPMaxMessageSize(upstreamOffer, browserMax)
-}
-
-func sendDataChannelMessage(dc *webrtc.DataChannel, payload []byte, isString bool) {
-	if dc == nil {
-		return
-	}
-	var err error
-	if isString {
-		err = dc.SendText(string(payload))
-	} else {
-		err = dc.Send(payload)
-	}
-	if err != nil {
-		eventType := realtimeEventTypeFromPayload(payload)
-		if eventType != "" {
-			logger.Warn("failed to send realtime data channel message: type=%s size=%d bytes err=%v", eventType, len(payload), err)
-			return
-		}
-		logger.Warn("failed to send realtime data channel message: size=%d bytes err=%v", len(payload), err)
-	}
 }
 
 func resolveRealtimeSDPTarget(ctx *fasthttp.RequestCtx, config *lib.Config, path string, sessionJSON []byte) (schemas.ModelProvider, string, []byte, bool, *schemas.BifrostError) {

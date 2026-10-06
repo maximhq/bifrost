@@ -2088,6 +2088,8 @@ func (gs *LocalGovernanceStore) deleteVirtualKeyAlias(value string, vkID string)
 
 // CheckRateLimit checks rate limits for tokens and requests across categories
 func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, entityWiseRateLimits EntityWiseRateLimits, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
+	// A session continuation was already counted as one request when the session was admitted.
+	sessionContinuation, _ := ctx.Value(schemas.BifrostContextKeySessionContinuation).(bool)
 	for entity, rateLimits := range entityWiseRateLimits {
 		for _, rateLimit := range rateLimits {
 			var violations []string
@@ -2134,7 +2136,7 @@ func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, entityWiseRa
 
 			// Request limits - check if total usage (local + remote baseline) exceeds limit
 			// Skip this check if request limit has expired
-			if !requestLimitExpired && rateLimit.RequestMaxLimit != nil && rateLimit.RequestCurrentUsage+requestsBaseline >= *rateLimit.RequestMaxLimit {
+			if !sessionContinuation && !requestLimitExpired && rateLimit.RequestMaxLimit != nil && rateLimit.RequestCurrentUsage+requestsBaseline >= *rateLimit.RequestMaxLimit {
 				duration := "unknown"
 				if rateLimit.RequestResetDuration != nil {
 					duration = *rateLimit.RequestResetDuration
