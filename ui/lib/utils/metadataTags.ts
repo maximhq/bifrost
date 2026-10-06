@@ -49,14 +49,15 @@ export function tagError(tag: string): string | undefined {
  * Returns the first problem instead when a tag is invalid or there are too many.
  */
 export function normalizeTags(tags: string[] | undefined): { tags: string[]; error?: string } {
+	// The server caps the list as sent, duplicates included, before de-duplicating.
+	if ((tags ?? []).length > MAX_TAGS) {
+		return { tags: [], error: `At most ${MAX_TAGS} tags are allowed` };
+	}
 	const out = new Set<string>();
 	for (const tag of tags ?? []) {
 		const error = tagError(tag);
 		if (error) return { tags: [], error };
 		out.add(tag.trim());
-	}
-	if (out.size > MAX_TAGS) {
-		return { tags: [], error: `At most ${MAX_TAGS} tags are allowed` };
 	}
 	// Plain code-point order, the same order Go's sort.Strings produces.
 	return { tags: [...out].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) };

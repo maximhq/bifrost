@@ -3,10 +3,12 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"slices"
 	"sort"
@@ -217,12 +219,20 @@ func applyProviderConfigUpdates(config *configstore.ProviderConfig, payload *pro
 		config.PromptCache = payload.PromptCache
 	}
 	// Labels follow the same rule: omitted leaves them alone, and a supplied map or list
-	// (including {} / [] / null) replaces them as a whole.
+	// (including {} / [] / null) replaces them as a whole. A supplied null becomes an explicit
+	// empty value, because the config store keeps stored labels for nil (an update that does not
+	// carry them) and clears them only for an empty map or list.
 	if carried("metadata") {
 		config.Metadata = payload.Metadata
+		if config.Metadata == nil {
+			config.Metadata = map[string]string{}
+		}
 	}
 	if carried("tags") {
 		config.Tags = payload.Tags
+		if config.Tags == nil {
+			config.Tags = []string{}
+		}
 	}
 }
 
@@ -1718,9 +1728,17 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 // outside the pricing datasheet (fine-tunes, custom deployments) can be tagged too. The whole
 // batch is validated before anything is written, and written in one transaction.
 func (h *ProviderHandler) setModelTags(ctx *fasthttp.RequestCtx) {
+	// Decoded strictly, matching the ModelTagsEntry schema (additionalProperties: false): a
+	// misspelled field would otherwise be dropped silently while the rest of the entry is written.
 	var payload []ModelTagsEntry
-	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request payload: %v", err))
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid request format: multiple JSON values")
 		return
 	}
 	if len(payload) == 0 {
@@ -1896,15 +1914,14 @@ func parseMetadataLabelFilters(args *fasthttp.Args) (map[string]string, error) {
 }
 
 // parseTagsFilter reads the tags query parameter: a comma-separated list (repeating the parameter
-// also works) of tags that must all be present. Empty entries are ignored; an invalid tag is a 400.
+// also works) of tags that must all be present. An empty entry (tags=, tags=, or a trailing comma)
+// is a 400 like any other invalid tag; skipping it would turn tags= into no filter at all and
+// return everything.
 func parseTagsFilter(args *fasthttp.Args) ([]string, error) {
 	var tags []string
 	for _, raw := range args.PeekMulti("tags") {
 		for tag := range strings.SplitSeq(string(raw), ",") {
 			tag = strings.TrimSpace(tag)
-			if tag == "" {
-				continue
-			}
 			if !tables.IsValidTag(tag) {
 				return nil, fmt.Errorf("invalid tags filter %q: tags must be 1-%d characters of letters, digits, '.', '_' or '-'", tag, tables.MaxTagLength)
 			}

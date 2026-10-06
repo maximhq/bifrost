@@ -1210,7 +1210,8 @@ test.describe("Provider Metadata & Tags", () => {
       expect(cleared.tags ?? []).toEqual([]);
       expect(cleared.metadata ?? {}).toEqual({});
     } finally {
-      await providersApi.delete(request, name);
+      // A failed delete would leave the provider behind in the shared environment.
+      expect(await providersApi.delete(request, name), `cleanup must delete provider ${name}`).toBe(true);
     }
   });
 
@@ -1226,7 +1227,8 @@ test.describe("Provider Metadata & Tags", () => {
       const unchanged = (await providersApi.get(request, name)) as LabeledProvider;
       expect(unchanged.tags ?? []).toEqual([]);
     } finally {
-      await providersApi.delete(request, name);
+      // A failed delete would leave the provider behind in the shared environment.
+      expect(await providersApi.delete(request, name), `cleanup must delete provider ${name}`).toBe(true);
     }
   });
 });

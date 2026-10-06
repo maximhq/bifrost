@@ -1197,6 +1197,9 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	}
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)
+	// The provider's model tag rows went with it; drop them from the overlay too, or a provider
+	// later created under the same name would show the deleted provider's model tags.
+	refreshModelTagsOverlay(ctx, s.Config.ModelCatalog, fmt.Sprintf("provider %s was removed", provider))
 
 	return nil
 }
@@ -2303,12 +2306,25 @@ func (s *BifrostHTTPServer) SetModelTags(ctx context.Context, entries []handlers
 	if err != nil {
 		return err
 	}
-	catalog := s.Config.ModelCatalog
-	if err := catalog.ReloadModelTags(context.WithoutCancel(ctx)); err != nil {
-		logger.Warn("model tags were saved but reloading the in-memory overlay failed, retrying in the background: %v", err)
+	refreshModelTagsOverlay(ctx, s.Config.ModelCatalog, "model tags were saved")
+	return nil
+}
+
+// modelTagsReloadTimeout bounds the immediate overlay reload after a committed change.
+var modelTagsReloadTimeout = 10 * time.Second
+
+// refreshModelTagsOverlay reloads the catalog's model tags overlay after a committed config-store
+// change: a tag write, or a provider delete whose model rows go with it. The reload is detached
+// from the request's cancellation, since the change has already taken effect, but bounded by
+// modelTagsReloadTimeout so a stalled store read cannot hold the request. A failed or timed-out
+// reload is retried in the background; until it succeeds listings may show the previous tags.
+func refreshModelTagsOverlay(ctx context.Context, catalog *modelcatalog.ModelCatalog, change string) {
+	reloadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), modelTagsReloadTimeout)
+	defer cancel()
+	if err := catalog.ReloadModelTags(reloadCtx); err != nil {
+		logger.Warn("%s, but reloading the in-memory model tags overlay failed, retrying in the background: %v", change, err)
 		go retryModelTagsReload(catalog, modelTagsReloadRetryDelays)
 	}
-	return nil
 }
 
 // retryModelTagsReload retries the model tags overlay reload after each delay in delays, stopping
