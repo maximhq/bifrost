@@ -30,8 +30,10 @@ models:
       description: >-
         Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag
         are returned. Pagination applies to the filtered list. Not forwarded to providers.
-        An invalid tag is rejected with a 400. Not applied when large response mode streams the
-        provider's response through unchanged.
+        An invalid or empty tag is rejected with a 400. When large response mode streams the
+        provider's response through unparsed, the filter cannot be applied and the request is
+        rejected with a 400. A single-provider listing reads at most 20 pages from the provider;
+        a provider with more pages is rejected with a 502 rather than filtered from a partial list.
       schema:
         type: string
     responses:

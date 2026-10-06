@@ -1028,6 +1028,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if rejectTagFilteredLargeResponse(ctx, bifrostCtx, tagFilters) {
+		return
+	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
 	}
@@ -1061,15 +1064,18 @@ func listAllProviderModelPages(
 	pageReq.PageSize = schemas.DefaultPageSize
 	pageReq.PageToken = ""
 	var all *schemas.BifrostListModelsResponse
+	complete := false
 	for range schemas.MaxPaginationRequests {
 		page, bifrostErr := listModels(ctx, &pageReq)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
 		if page == nil {
+			complete = true
 			break
 		}
 		if pageReq.PageToken != "" && page.NextPageToken == pageReq.PageToken {
+			complete = true
 			break
 		}
 		if all == nil {
@@ -1079,14 +1085,44 @@ func listAllProviderModelPages(
 			all.KeyStatuses = append(all.KeyStatuses, page.KeyStatuses...)
 		}
 		if page.NextPageToken == "" || len(page.Data) == 0 {
+			complete = true
 			break
 		}
 		pageReq.PageToken = page.NextPageToken
+	}
+	// Stopping at the cap with pages left would filter, and then paginate, a cut-off list that
+	// looks complete: tagged models past the cap would be missing with nothing to say so.
+	if !complete {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			StatusCode:     schemas.Ptr(fasthttp.StatusBadGateway),
+			Error: &schemas.ErrorField{
+				Message: fmt.Sprintf("provider %s has more than %d pages of models, more than a tags-filtered listing reads; list without the tags filter and page through the results", req.Provider, schemas.MaxPaginationRequests),
+			},
+		}
 	}
 	if all != nil {
 		all.NextPageToken = ""
 	}
 	return all, nil
+}
+
+// rejectTagFilteredLargeResponse refuses a tags-filtered listing that came back in large-response
+// mode. That body is streamed straight through and never parsed, so the filter cannot be applied;
+// sending it would return every model as if it matched. The stream is released and a 400 sent.
+// It reports whether it wrote the response.
+func rejectTagFilteredLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, tagFilters []string) bool {
+	if len(tagFilters) == 0 {
+		return false
+	}
+	if isLarge, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); !isLarge {
+		return false
+	}
+	if reader, ok := bifrostCtx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.ReadCloser); ok && reader != nil {
+		_ = reader.Close()
+	}
+	SendError(ctx, fasthttp.StatusBadRequest, "the tags filter is not available for this listing: the provider's model list is too large and is streamed through unparsed; list without the tags filter")
+	return true
 }
 
 // modelRetrieve handles GET /v1/models/{model} - retrieve a single model's metadata
