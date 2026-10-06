@@ -616,7 +616,7 @@ func (h *ClaudeCodeGatewayHandler) authenticate(ctx *fasthttp.RequestCtx) (int, 
 	}
 	claims, err := verifyOAuth2JWT(ctx, rawJWT, h.store, signingKey, claudeCodeResourceURL(ctx, h.store))
 	if err != nil {
-		if strings.HasPrefix(err.Error(), "invalid token") || strings.HasPrefix(err.Error(), "token ") {
+		if errors.Is(err, errOAuth2TokenRejected) {
 			return fasthttp.StatusUnauthorized, "the gateway session is invalid or expired; sign in again with /login"
 		}
 		logger.Error("claude code gateway: token verification failed: %v", err)

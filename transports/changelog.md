@@ -34,4 +34,4 @@
 
 ## 🗄️ Database Migrations
 
-- No new database migrations in this release.
+- `add_oauth2_authorize_requests_device_code_columns` - Adds the nullable `device_code_hash` and `user_code_hash` columns to `oauth2_authorize_requests`, each with a unique index built concurrently on PostgreSQL, so writes are never blocked. Existing rows keep NULL. Rollback drops both indexes and columns, which only hold sign-in state that expires within minutes.

@@ -356,6 +356,7 @@ func TestVerifyMCPJWT_Rejections(t *testing.T) {
 			claims, err := verifyMCPJWT(ctx, tc.raw(), cfg, key)
 			require.Error(t, err)
 			assert.Nil(t, claims)
+			assert.ErrorIs(t, err, errOAuth2TokenRejected, "a bad token must be reported as a rejected token")
 		})
 	}
 }
@@ -374,6 +375,7 @@ func TestVerifyMCPJWT_NilSigningKeyNotLabeledInvalidToken(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "signing key unavailable")
 	assert.NotContains(t, err.Error(), "invalid token")
+	assert.NotErrorIs(t, err, errOAuth2TokenRejected)
 }
 
 // TestCachedSigningKey_ConfigFaults pins that the handler's key loader — which
