@@ -27,7 +27,11 @@ import {
 } from "@/lib/types/complexityRouter";
 import { ModelProvider } from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
+import { clefModelFromProvider, namedSelfHostedGroup, type SelfHostedModelGroup } from "@/lib/utils/decisionModelProviders";
 import { z } from "zod";
+
+// Re-exported for the callers that read a provider's Clef model alongside the form helpers.
+export { clefModelFromProvider };
 
 // Form-owned duration values are always a single unit (the controls append
 // "ms"), so a plain positive-duration check is enough.
@@ -529,18 +533,6 @@ export function isRouterConfigured(config: AnalyzerConfig | undefined): boolean 
 // calls succeed — only a live request proves that — so the UI never calls it "ready".
 export type DecisionProviderState = "missing" | "failing" | "no-enabled-key" | "configured";
 
-// CLEF_URL_MODEL matches a decisions override that runs a Clef model on Cloudflare
-// Workers AI, capturing the model the URL serves.
-const CLEF_URL_MODEL = /\/ai\/run\/@cf\/cloudflare\/(clef(?:-flash)?)\/?$/;
-
-// clefModelFromProvider reads the Clef model a provider serves from its decisions
-// URL. Cloudflare binds the model to the URL and rejects any other in the body,
-// so the URL is the one source of truth for it.
-export function clefModelFromProvider(provider: ModelProvider | undefined): string | undefined {
-	const url = provider?.custom_provider_config?.request_path_overrides?.decisions;
-	return url?.match(CLEF_URL_MODEL)?.[1];
-}
-
 // isDecisionProvider reports a provider that answers /v1/decisions natively:
 // Typesafe, OpenRouter, or a custom provider built on the Typesafe base (Laya,
 // Nimble, Clef). Other providers would only emulate decisions through chat,
@@ -549,16 +541,6 @@ export function isDecisionProvider(provider: ModelProvider): boolean {
 	return (
 		provider.name === "typesafe" || provider.name === "openrouter" || provider.custom_provider_config?.base_provider_type === "typesafe"
 	);
-}
-
-type SelfHostedModelGroup = (typeof SELF_HOSTED_DECISION_MODELS)[number];
-
-// namedSelfHostedGroup finds the model a self-hosted provider is named after
-// ("Laya", "nimble-gpu"), when its name points at exactly one.
-function namedSelfHostedGroup(providerName: string): SelfHostedModelGroup | undefined {
-	const name = providerName.toLowerCase();
-	const named = SELF_HOSTED_DECISION_MODELS.filter((group) => name.includes(group.label.toLowerCase()));
-	return named.length === 1 ? named[0] : undefined;
 }
 
 // selfHostedModelGroups is the checkpoint list offered for a self-hosted provider

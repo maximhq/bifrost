@@ -541,9 +541,10 @@ export default function ComplexityRouterPage() {
 		if (next !== liveClassifier) setValue("classifier", next, { shouldDirty: true });
 		setPicked(true);
 	};
-	// The decision model cannot run without its provider, so Next waits for it rather than opening
-	// a configuration that can only fail.
-	const canContinue = hasClassifier && (isSemantic || decisionProviderReady || isProviderListLoading);
+	// Next never waits on the decision provider: the picker that can switch to a ready one lives in
+	// the next step, so gating here would strand a setup without Typesafe. Step 2 shows the provider
+	// problem and Save stays blocked until it is fixed.
+	const canContinue = hasClassifier;
 	const goToConfiguration = () => {
 		setOpenStep("setup");
 		// Semantic cannot classify without an embedding model, so go straight to
