@@ -5,8 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
+	"io"
 	"net/http"
+	"os"
 	"plugin"
 	"strings"
 
@@ -46,16 +47,21 @@ func WithHTTPClientFactory(factory *network.HTTPClientFactory) LoaderOption {
 }
 
 // VerifyPluginIntegrity checks the SHA-256 hash of a plugin file before loading.
+// Uses streaming hash to avoid loading the entire binary into memory.
 func VerifyPluginIntegrity(path string, expectedHash string) error {
 	if expectedHash == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("failed to read plugin for integrity check: %w", err)
+		return fmt.Errorf("failed to open plugin for integrity check: %w", err)
 	}
-	actual := sha256.Sum256(data)
-	actualHex := hex.EncodeToString(actual[:])
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("failed to hash plugin: %w", err)
+	}
+	actualHex := hex.EncodeToString(h.Sum(nil))
 	if actualHex != expectedHash {
 		return fmt.Errorf("plugin integrity check failed for %s: expected %s, got %s", path, expectedHash, actualHex)
 	}
