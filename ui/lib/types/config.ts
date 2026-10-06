@@ -465,6 +465,7 @@ export interface AllowedRequests {
 	video_remix: boolean;
 	websocket_responses: boolean;
 	realtime: boolean;
+	live?: boolean;
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig

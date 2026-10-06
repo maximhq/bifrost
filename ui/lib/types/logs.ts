@@ -377,6 +377,37 @@ export interface BifrostVideoGenerationOutput {
 	content_filter?: ContentFilterInfo;
 }
 
+// A GPT Live session's typed log payload: how it ran, what was said, and what the backend did.
+export interface LiveSessionLog {
+	transport?: string;
+	provider_session_id?: string;
+	voice_seconds: number;
+	voice_cost?: number;
+	backend_cost?: number;
+	usage_confirmed: boolean;
+	transcript?: LiveTranscriptLine[];
+	delegations?: LiveDelegationLog[];
+}
+
+export interface LiveTranscriptLine {
+	role: string;
+	text: string;
+	start_ms?: number;
+	end_ms?: number;
+}
+
+export interface LiveDelegationLog {
+	delegation_id?: string;
+	request_id: string;
+	response_ids?: string[];
+	model: string;
+	started_ms?: number;
+	usage?: LLMUsage;
+	cost?: number;
+	output?: ResponsesMessage[];
+	error?: string;
+}
+
 export interface BifrostVideoDownloadOutput {
 	video_id: string;
 	content_type?: string;
@@ -756,6 +787,7 @@ export interface LogEntry {
 	video_download_output?: BifrostVideoDownloadOutput;
 	video_list_output?: BifrostVideoListOutput;
 	video_delete_output?: BifrostVideoDeleteOutput;
+	live_session?: LiveSessionLog;
 	params?: ModelParameters;
 	speech_input?: SpeechInput;
 	transcription_input?: TranscriptionInput;
