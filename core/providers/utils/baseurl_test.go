@@ -121,3 +121,33 @@ func TestLoggableURL(t *testing.T) {
 		assert.Equal(t, "env.BIFROST_TEST_LOGGABLE_BASE_URL", LoggableURL(base, "://not a url"))
 	})
 }
+
+// TestBuildPassthroughURLFromSecretKeepsResolvedSecretsOutOfErrors covers the
+// disclosure boundary on the passthrough routes: BuildPassthroughURL quotes the
+// base URL in its error, and the passthrough handlers return that to the caller
+// as a 400. A literal base_url is operator-visible configuration and stays
+// readable; a value resolved from an env./vault. reference must not appear.
+func TestBuildPassthroughURLFromSecretKeepsResolvedSecretsOutOfErrors(t *testing.T) {
+	t.Run("a literal keeps its diagnostic", func(t *testing.T) {
+		_, err := BuildPassthroughURLFromSecret(schemas.NewSecretVar("not-a-url"), "/v1/x", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not-a-url", "a literal base_url should stay readable in the error")
+	})
+
+	t.Run("a resolved reference is named, not echoed", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_PASSTHROUGH_BASE_URL", "not-a-url-either")
+		_, err := BuildPassthroughURLFromSecret(
+			schemas.NewSecretVar("env.BIFROST_TEST_PASSTHROUGH_BASE_URL"), "/v1/x", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "env.BIFROST_TEST_PASSTHROUGH_BASE_URL")
+		assert.NotContains(t, err.Error(), "not-a-url-either", "the resolved value must not reach the caller")
+	})
+
+	t.Run("a conformant reference still builds", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_PASSTHROUGH_BASE_URL", "https://api.example.com")
+		got, err := BuildPassthroughURLFromSecret(
+			schemas.NewSecretVar("env.BIFROST_TEST_PASSTHROUGH_BASE_URL"), "/v1/x", "a=1")
+		require.NoError(t, err)
+		assert.Equal(t, "https://api.example.com/v1/x?a=1", got)
+	})
+}

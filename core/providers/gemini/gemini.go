@@ -4222,7 +4222,7 @@ func (provider *GeminiProvider) Passthrough(
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.PassthroughRequest); err != nil {
 		return nil, err
 	}
-	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL.GetValue(), req.Path, req.RawQuery)
+	url, err := providerUtils.BuildPassthroughURLFromSecret(provider.networkConfig.BaseURL, req.Path, req.RawQuery)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
@@ -4301,7 +4301,7 @@ func (provider *GeminiProvider) PassthroughStream(
 		return nil, err
 	}
 
-	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL.GetValue(), req.Path, req.RawQuery)
+	url, err := providerUtils.BuildPassthroughURLFromSecret(provider.networkConfig.BaseURL, req.Path, req.RawQuery)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}

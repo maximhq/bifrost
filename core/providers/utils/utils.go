@@ -1828,6 +1828,19 @@ var passthroughPathDelimiters = strings.NewReplacer("%", "%25", "?", "%3F", "#",
 // appended to a bare origin would otherwise turn the base host into userinfo or a
 // scheme-relative authority and send the operator's credential to a caller-chosen host. The
 // transport validates the path before dispatch; this is the last check before the dial.
+// BuildPassthroughURLFromSecret is BuildPassthroughURL for a base_url held as a
+// SecretVar. The error BuildPassthroughURL returns quotes the base URL, and the
+// passthrough routes hand that to the caller as a 400 -- fine for a literal,
+// which is operator-visible configuration, but a base_url resolved from an
+// env./vault. reference is not. Such a failure names the reference instead.
+func BuildPassthroughURLFromSecret(baseURL *schemas.SecretVar, path, rawQuery string) (string, error) {
+	requestURL, err := BuildPassthroughURL(baseURL.GetValue(), path, rawQuery)
+	if err != nil && baseURL.IsFromSecret() {
+		return "", fmt.Errorf("invalid provider base url resolved from %s", baseURL.GetRawRef())
+	}
+	return requestURL, err
+}
+
 func BuildPassthroughURL(baseURL, path, rawQuery string) (string, error) {
 	base := strings.TrimRight(baseURL, "/")
 	baseParsed, err := url.Parse(base)

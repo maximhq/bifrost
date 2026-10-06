@@ -3240,7 +3240,7 @@ func (provider *AnthropicProvider) Passthrough(
 		return nil, err
 	}
 
-	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL.GetValue(), req.Path, req.RawQuery)
+	url, err := providerUtils.BuildPassthroughURLFromSecret(provider.networkConfig.BaseURL, req.Path, req.RawQuery)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
@@ -3312,7 +3312,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 		return nil, err
 	}
 
-	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL.GetValue(), req.Path, req.RawQuery)
+	url, err := providerUtils.BuildPassthroughURLFromSecret(provider.networkConfig.BaseURL, req.Path, req.RawQuery)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}

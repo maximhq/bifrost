@@ -8341,7 +8341,7 @@ func (provider *OpenAIProvider) buildPassthroughURL(req *schemas.BifrostPassthro
 		path = after
 	}
 
-	return providerUtils.BuildPassthroughURL(baseURL, "/v1"+path, req.RawQuery)
+	return providerUtils.BuildPassthroughURLFromSecret(provider.networkConfig.BaseURL, "/v1"+path, req.RawQuery)
 }
 
 func (provider *OpenAIProvider) PassthroughStream(
