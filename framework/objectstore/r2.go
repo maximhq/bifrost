@@ -168,7 +168,9 @@ func (r *R2ObjectStore) DeleteBatch(ctx context.Context, keys []string) error {
 			return fmt.Errorf("objectstore: r2 delete objects batch starting at index %d: %w", i, err)
 		}
 		if len(output.Errors) > 0 {
-			return fmt.Errorf("objectstore: r2 %d objects failed to delete in batch starting at index %d", len(output.Errors), i)
+			first := output.Errors[0]
+			return fmt.Errorf("objectstore: r2 %d objects failed to delete in batch starting at index %d (first: key=%s code=%s message=%s)",
+				len(output.Errors), i, aws.ToString(first.Key), aws.ToString(first.Code), aws.ToString(first.Message))
 		}
 	}
 	return nil
