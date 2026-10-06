@@ -522,10 +522,18 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// system item. The Responses API models instructions as a property of the
 	// request, not a turn in the transcript, and keeping it out of Input means the
 	// history bound below counts only real turns.
+	// The clock is read once, here, and that reading is both the "current
+	// time" the prompt states and the instant every tool call measures from,
+	// so the model and the tools never disagree about what "today" or "-7d"
+	// covers. It carries the asker's zone for the tools' calendar dates.
+	now := Now()
+	if a.deps != nil {
+		a.deps.clock = now.In(askerLocation(a.timezone, a.utcOffsetMinutes))
+	}
 	instructions := systemInstructionsFor(a.config, toolAvailability{
 		semantic:   a.deps != nil && a.deps.semantic != nil,
 		userLimits: a.deps != nil && a.deps.userGovernance != nil,
-	}, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes})
+	}, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes, now: now})
 	finalInstructions := instructions + finalStepInstructions
 	conversation := append([]schemas.ResponsesMessage{}, messages...)
 	// conversationTokens tracks the running estimate behind

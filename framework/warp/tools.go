@@ -103,6 +103,42 @@ type ToolDeps struct {
 	// charts holds what render_chart drew this turn, so the answer's chart
 	// blocks can be expanded from it. Built per turn with the rest of deps.
 	charts *chartRegistry
+	// clock is the turn's one reading of the time, in the asker's zone.
+	clock time.Time
+}
+
+// now is the instant every tool call in a turn measures from, carrying the
+// asker's zone as its location.
+//
+// Pinned once per turn (see Agent.Run) rather than read per call: "-7d" then
+// names the same window for every tool the model calls, so a total and its
+// breakdown cover the same requests. The location is how parseTime knows whose
+// midnight "today" means. Deps built without a clock - most tests - read the
+// live one, in UTC.
+func (d *ToolDeps) now() time.Time {
+	if d == nil || d.clock.IsZero() {
+		return Now()
+	}
+	return d.clock
+}
+
+// askerLocation is the zone calendar dates are resolved in. timezone and
+// utcOffsetMinutes are the already-sanitized values a Turn carries.
+//
+// The named zone wins: only it knows that a date months away sits at a
+// different offset than today's. The bare offset is the fallback for a client
+// that sent no usable name, and is right for any date on this side of a
+// daylight saving change.
+func askerLocation(timezone string, utcOffsetMinutes int) *time.Location {
+	if timezone != "" {
+		if location, err := time.LoadLocation(timezone); err == nil {
+			return location
+		}
+	}
+	if utcOffsetMinutes != 0 {
+		return time.FixedZone("", utcOffsetMinutes*60)
+	}
+	return time.UTC
 }
 
 // Tool pairs a model-facing declaration with its executor.
@@ -142,8 +178,8 @@ const FilterSchema = `{
   "type": "object",
   "description": "Narrows which requests are considered. Omit a field to leave that dimension unfiltered. If start_time is omitted the last 24 hours are used.",
   "properties": {
-    "start_time": {"type": "string", "description": "RFC3339 timestamp, or a relative offset like -7d, -24h, -30m."},
-    "end_time": {"type": "string", "description": "RFC3339 timestamp, a relative offset like -1d, or \"now\". Defaults to now; omit it for a window that ends now."},
+    "start_time": {"type": "string", "description": "A relative offset like -7d, -24h, -30m for a rolling window. For a calendar day: \"today\", \"yesterday\" or a date like 2026-09-03, which starts at midnight in the asker's time zone. For a moment: a local time like 2026-09-03T14:00, read in the asker's time zone, or an RFC3339 timestamp with an explicit offset."},
+    "end_time": {"type": "string", "description": "Same forms as start_time, or \"now\". end_time is inclusive: a calendar day here means the end of that day, so one whole day is start_time and end_time set to that same day, never the day after. Defaults to now; omit it for a window that ends now."},
     "providers": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "e.g. openai, anthropic, bedrock."},
     "models": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "status": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "success, error, or cancelled."},
@@ -250,7 +286,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	if err != nil {
 		return nil, fmt.Errorf("start_time: %w", err)
 	}
-	end, err := parseTime(raw["end_time"], now)
+	end, err := parseTimeBound(raw["end_time"], now, true)
 	if err != nil {
 		return nil, fmt.Errorf("end_time: %w", err)
 	}
@@ -264,7 +300,11 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	if start.After(*end) {
 		return nil, fmt.Errorf("start_time must be before end_time")
 	}
-	filters.StartTime, filters.EndTime = start, end
+	// now carries the asker's zone so a calendar day could be resolved; the
+	// window itself is two instants, handed on in UTC like every other time
+	// the store sees.
+	resolvedStart, resolvedEnd := start.UTC(), end.UTC()
+	filters.StartTime, filters.EndTime = &resolvedStart, &resolvedEnd
 
 	// HEAD's validating field readers are kept over the replayed side's silent
 	// coercions: a filter that rejects a malformed value is the whole point of
@@ -363,11 +403,33 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	return filters, nil
 }
 
-// parseTime accepts RFC3339 or a relative offset like "-7d". Models reach
-// for relative offsets constantly ("last week"), and making them compute an
-// absolute timestamp from a date they only half-know is a reliable source of
-// wrong answers.
+// localTimeLayouts are the moments a model writes without an offset. They are
+// read on the asker's wall clock, which is where the time came from: someone
+// who says "around 2pm on the 3rd" means 2pm where they are.
+var localTimeLayouts = [...]string{"2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02T15:04", "2006-01-02 15:04"}
+
+// parseTime reads a window's start. See parseTimeBound.
 func parseTime(value any, now time.Time) (*time.Time, error) {
+	return parseTimeBound(value, now, false)
+}
+
+// parseTimeBound reads one end of a window: a relative offset like "-7d", a
+// calendar day ("today", "yesterday", "2026-09-03"), a local time with no
+// offset, or RFC3339.
+//
+// Models reach for relative offsets constantly ("last week"), and making them
+// compute an absolute timestamp from a date they only half-know is a reliable
+// source of wrong answers. The same holds for a calendar day, whose boundary
+// is midnight in the asker's zone at that date's own UTC offset: the model
+// names the day and the boundary is worked out here, in now's location, which
+// is the asker's zone (see ToolDeps.now).
+//
+// A day is a span, so which instant it stands for depends on the bound. As a
+// start it is the day's first instant. As an end (endOfDay) it is the last
+// microsecond before the next midnight - the store's end bound is inclusive,
+// and a bound on the midnight itself would take in the first hourly bucket of
+// the following day - or now, when the day is still in progress.
+func parseTimeBound(value any, now time.Time, endOfDay bool) (*time.Time, error) {
 	// Absent means "use the default window", which is documented. A value that
 	// is present but not a usable timestamp does not: returning nil for it
 	// turned a malformed argument into a valid query over different dates, and
@@ -375,12 +437,13 @@ func parseTime(value any, now time.Time) (*time.Time, error) {
 	if value == nil {
 		return nil, nil
 	}
+	const accepted = "a relative offset like -7d, a date like 2026-09-03, \"today\", \"yesterday\", or an RFC3339 timestamp"
 	text, ok := value.(string)
 	if !ok {
-		return nil, fmt.Errorf("must be an RFC3339 timestamp or a relative offset like -7d, got %T", value)
+		return nil, fmt.Errorf("must be %s, got %T", accepted, value)
 	}
 	if strings.TrimSpace(text) == "" {
-		return nil, fmt.Errorf("must be an RFC3339 timestamp or a relative offset like -7d, got a blank string")
+		return nil, fmt.Errorf("must be %s, got a blank string", accepted)
 	}
 	text = strings.TrimSpace(text)
 	// end_time is documented as defaulting to now, and models spell that out.
@@ -408,11 +471,52 @@ func parseTime(value any, now time.Time) (*time.Time, error) {
 		result := now.Add(duration)
 		return &result, nil
 	}
+	location := now.Location()
+	year, month, day := now.Date()
+	switch {
+	case strings.EqualFold(text, "today"):
+		return calendarDayBound(year, month, day, now, endOfDay), nil
+	case strings.EqualFold(text, "yesterday"):
+		return calendarDayBound(year, month, day-1, now, endOfDay), nil
+	}
+	if date, err := time.ParseInLocation(time.DateOnly, text, location); err == nil {
+		year, month, day = date.Date()
+		return calendarDayBound(year, month, day, now, endOfDay), nil
+	}
+	for _, layout := range localTimeLayouts {
+		parsed, err := time.ParseInLocation(layout, text, location)
+		if err != nil {
+			continue
+		}
+		// A wall time inside the hour a daylight saving change skips never
+		// happened. ParseInLocation does not refuse it: it returns a real
+		// instant an hour away, and the bound would silently be one nobody
+		// wrote. Formatting it back is how the shift shows.
+		if parsed.Format(layout) != text {
+			return nil, fmt.Errorf("local time %q does not exist in %s, where the clocks skip it; pass a time that does", text, location)
+		}
+		return &parsed, nil
+	}
 	parsed, err := time.Parse(time.RFC3339, text)
 	if err != nil {
-		return nil, fmt.Errorf("could not parse %q, expected RFC3339, a relative offset like -7d, or \"now\"", text)
+		return nil, fmt.Errorf("could not parse %q, expected %s, or \"now\"", text, accepted)
 	}
 	return &parsed, nil
+}
+
+// calendarDayBound is the start of a day in now's location, or its end. The day
+// is passed as a date rather than an instant so the next midnight is found by
+// the calendar: a day is 23 or 25 hours long across a daylight saving change.
+func calendarDayBound(year int, month time.Month, day int, now time.Time, endOfDay bool) *time.Time {
+	if !endOfDay {
+		start := time.Date(year, month, day, 0, 0, 0, 0, now.Location())
+		return &start
+	}
+	end := time.Date(year, month, day+1, 0, 0, 0, 0, now.Location()).Add(-time.Microsecond)
+	if end.After(now) {
+		end = now
+	}
+	return &end
 }
 
 // enumSliceArg reads a list argument whose values must come from a fixed set.
