@@ -203680,6 +203680,205 @@
           }
         }
       ]
+    },
+    {
+      "name": "176. Responses history output_text keeps logprobs absent (#7990) (responses-history-logprobs)",
+      "description": "Gateway regression for #7990. A client (Pi, via the OpenAI-compatible Responses route) replays an assistant output_text history block with `annotations: []` and no `logprobs`. Bifrost decoded the block into ResponsesOutputMessageContentText, whose LogProbs field had no omit tag, so the re-marshaled provider body carried `logprobs: null`; strict Responses backends reject it with `Invalid type for 'input[N].content[0].logprobs': expected an array ... got null`. Real OpenAI may tolerate the null, so the cases read the outbound body via x-bf-send-back-raw-request instead of relying on an upstream 400. Cases: (1) /openai/v1/responses, the reporter's route: raw_request input[0].content[0] has no logprobs key (pre-fix: logprobs null); (2) /v1/responses with an explicit `logprobs: []`: it stays an empty array (guards against an omitempty over-correction); (3) /openai/v1/responses streaming, Pi's actual shape: the replay completes. Run with FEATURE=responses-history-logprobs.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai/gpt-4o-mini /openai/v1/responses history output_text without logprobs is not nulled - responses-history-logprobs - #7990",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Previous answer.\",\n          \"annotations\": []\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('176.1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('176.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "var blk = ((((((rr || {}).input) || [])[0] || {}).content || [])[0]) || {};",
+                  "pm.test('176.1 history block reached the provider as output_text', function () {",
+                  "  pm.expect(blk.type, 'input[0].content[0]: ' + JSON.stringify(blk).slice(0, 400)).to.equal('output_text');",
+                  "  pm.expect(blk.annotations, 'annotations must stay an array: ' + JSON.stringify(blk)).to.be.an('array');",
+                  "});",
+                  "pm.test('176.1 omitted logprobs stays omitted on the wire (pre-fix: logprobs null) - #7990', function () {",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(blk, 'logprobs'), 'history output_text gained logprobs=' + JSON.stringify(blk.logprobs) + ': ' + JSON.stringify(blk)).to.equal(false);",
+                  "});",
+                  "pm.test('176.1 the model answered', function () {",
+                  "  pm.expect(body.output, 'no output: ' + pm.response.text().slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai/gpt-4o-mini /v1/responses history output_text logprobs [] stays an array - responses-history-logprobs - #7990",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Previous answer.\",\n          \"annotations\": [],\n          \"logprobs\": []\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('176.2: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('176.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "var blk = ((((((rr || {}).input) || [])[0] || {}).content || [])[0]) || {};",
+                  "pm.test('176.2 history block reached the provider as output_text', function () {",
+                  "  pm.expect(blk.type, 'input[0].content[0]: ' + JSON.stringify(blk).slice(0, 400)).to.equal('output_text');",
+                  "  pm.expect(blk.annotations, 'annotations must stay an array: ' + JSON.stringify(blk)).to.be.an('array');",
+                  "});",
+                  "pm.test('176.2 explicit empty logprobs stays an empty array - #7990', function () {",
+                  "  pm.expect(blk.logprobs, 'logprobs: ' + JSON.stringify(blk)).to.be.an('array').that.is.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai/gpt-4o-mini /openai/v1/responses streaming history replay completes - responses-history-logprobs - #7990",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 16,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Previous answer.\",\n          \"annotations\": []\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('176.3: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('176.3 streamed history replay completes without an error event - #7990', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'no response.completed: ' + raw.slice(0, 800)).to.include('response.completed');",
+                  "  pm.expect(raw.indexOf('\"type\":\"error\"'), 'stream carried an error event: ' + raw.slice(0, 800)).to.equal(-1);",
+                  "  pm.expect(raw.indexOf('logprobs\\': expected an array'), 'upstream rejected logprobs: ' + raw.slice(0, 800)).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
