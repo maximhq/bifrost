@@ -2863,6 +2863,13 @@ func TestListModels_FiltersAndReturnsTags(t *testing.T) {
 
 	ctx = get(h.listModels, "/api/models?provider=openai&tags=a%20b")
 	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	// An empty tags filter is invalid, not "no filter": it must not list every model.
+	for _, uri := range []string{"/api/models?provider=openai&tags=", "/api/models?provider=openai&tags=prod,"} {
+		ctx = get(h.listModels, uri)
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), uri)
+		ctx = get(h.listModelDetails, strings.Replace(uri, "/api/models", "/api/models/details", 1))
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), uri)
+	}
 }
 
 // TestSetModelTags_ValidatesBeforeWriting pins PUT /api/models/tags: the whole batch is checked
@@ -2890,6 +2897,8 @@ func TestSetModelTags_ValidatesBeforeWriting(t *testing.T) {
 		{name: "valid batch", body: `[{"provider":"openai","model":" gpt-5.1 ","tags":[" prod","eu","prod"]},{"provider":"openai","model":"my-finetune","tags":[]}]`, wantStatus: fasthttp.StatusNoContent,
 			wantCall: []ModelTagsEntry{{Provider: "openai", Model: "gpt-5.1", Tags: []string{"eu", "prod"}}, {Provider: "openai", Model: "my-finetune"}}},
 		{name: "invalid json", body: `{`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "unknown entry field", body: `[{"provider":"openai","model":"gpt-5.1","tags":["prod"],"tgas":["eu"]}]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "trailing json value", body: `[{"provider":"openai","model":"gpt-5.1","tags":["prod"]}] []`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "empty batch", body: `[]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "missing model", body: `[{"provider":"openai","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "missing tags", body: `[{"provider":"openai","model":"gpt-5.1"}]`, wantStatus: fasthttp.StatusBadRequest},

@@ -3,10 +3,12 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"slices"
 	"sort"
@@ -1726,9 +1728,17 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 // outside the pricing datasheet (fine-tunes, custom deployments) can be tagged too. The whole
 // batch is validated before anything is written, and written in one transaction.
 func (h *ProviderHandler) setModelTags(ctx *fasthttp.RequestCtx) {
+	// Decoded strictly, matching the ModelTagsEntry schema (additionalProperties: false): a
+	// misspelled field would otherwise be dropped silently while the rest of the entry is written.
 	var payload []ModelTagsEntry
-	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request payload: %v", err))
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid request format: multiple JSON values")
 		return
 	}
 	if len(payload) == 0 {
