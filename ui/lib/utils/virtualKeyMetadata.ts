@@ -21,6 +21,11 @@ export function virtualKeyMetadataKeyError(key: string): string | undefined {
 	return undefined;
 }
 
+/** Reports whether key is accepted as a metadata filter key (metadata_<key>), the server's filter rule. */
+export function isValidVirtualKeyMetadataFilterKey(key: string): boolean {
+	return key !== "" && key.length <= MAX_VIRTUAL_KEY_METADATA_KEY_LENGTH && METADATA_KEY_PATTERN.test(key);
+}
+
 /** Returns the first problem with a metadata map, or undefined when the server would accept it. */
 export function validateVirtualKeyMetadata(metadata: Record<string, string> | undefined): string | undefined {
 	const entries = Object.entries(metadata ?? {});

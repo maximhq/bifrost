@@ -106,7 +106,8 @@ export function HeadersTable<T extends HeaderValue>({
 
 	const handleKeyChange = (oldKey: string, newKey: string, currentValue: T, rowIndex: number) => {
 		// Check if newKey already exists (and it's not the current row's original key)
-		const isDuplicate = newKey !== "" && newKey !== oldKey && newKey in value;
+		// Own keys only: `in` also sees inherited names such as constructor or toString.
+		const isDuplicate = newKey !== "" && newKey !== oldKey && Object.hasOwn(value, newKey);
 
 		if (isDuplicate) {
 			// Duplicate detected - store conflict key locally, let user continue typing
