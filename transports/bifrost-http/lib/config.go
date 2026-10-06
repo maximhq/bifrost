@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -160,6 +162,20 @@ type ServerConfig struct {
 	// internal artifact hosts. Deploy-time only - read from config.json/environment at
 	// startup, never settable via the plugin admin API. Invalid entries fail server startup.
 	PluginDownloadPrivateAllowlist []string `json:"plugin_download_private_allowlist,omitempty"`
+
+	// A2AGRPCBaseDomain and A2AGRPCPort enable the Agent Gateway's shared gRPC
+	// listener and the per-agent hostnames advertised on served cards
+	// (<agent-name>.<base-domain>:<port>). The operator must point a wildcard DNS
+	// record for *.<base-domain> at this server; requests are routed to the agent
+	// named by the first DNS label of the dialed authority. Agent names longer
+	// than 63 characters cannot form a DNS label and are not served over gRPC.
+	// A2AGRPCPort is the advertised (public) port; when a load balancer or port
+	// mapping sits in front, the BIFROST_A2A_GRPC_LISTEN_PORT environment
+	// variable overrides the local bind port without changing what cards
+	// advertise. Deploy-time only: all values are read at startup and gRPC stays
+	// disabled while the domain or advertised port is unset.
+	A2AGRPCBaseDomain string `json:"a2a_grpc_base_domain,omitempty"`
+	A2AGRPCPort       int    `json:"a2a_grpc_port,omitempty"`
 }
 
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
@@ -189,6 +205,7 @@ type ConfigData struct {
 	FrameworkConfig   *framework.FrameworkConfig            `json:"framework,omitempty"`
 	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
 	Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
+	Agents            []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
 	Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
 	VectorStoreConfig *vectorstore.Config                   `json:"vector_store,omitempty"`
 	ConfigStoreConfig *configstore.Config                   `json:"config_store,omitempty"`
@@ -336,6 +353,74 @@ func (w *WebhookEndpointConfig) toTable() *configstoreTables.TableWebhookEndpoin
 	}
 }
 
+// AgentRegistrationFileConfig declares one Agent Gateway registration in
+// config.json. It mirrors the create API's request shape: enabled defaults to
+// true when omitted, virtual_key_ids declares the exact grant set, and
+// timestamps plus the config hash are server-managed. Auth secrets accept the
+// usual env./vault. references.
+type AgentRegistrationFileConfig struct {
+	Name                                   string                `json:"name"`
+	AgentCardURL                           string                `json:"agent_card_url"`
+	Tenant                                 string                `json:"tenant,omitempty"`
+	Enabled                                *bool                 `json:"enabled,omitempty"`
+	AllowByDefault                         bool                  `json:"allow_by_default,omitempty"`
+	ForwardAcceptedCredential              bool                  `json:"forward_accepted_credential,omitempty"`
+	ForwardAcceptedCredentialOverridesAuth bool                  `json:"forward_accepted_credential_overrides_auth,omitempty"`
+	DiscoveryAuth                          *schemas.UpstreamAuth `json:"discovery_auth,omitempty"`
+	RuntimeAuth                            *schemas.UpstreamAuth `json:"runtime_auth,omitempty"`
+	ExtensionURIs                          []string              `json:"extension_uris,omitempty"`
+	VirtualKeyIDs                          []string              `json:"virtual_key_ids,omitempty"`
+}
+
+// agentFileNamePattern matches the agent manager's name rule: a lowercase
+// URL-safe slug, because the name appears in gateway URLs and grant rows.
+var agentFileNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+// validate applies the minimal subset of the agent manager's create-time
+// validation that a file declaration must pass before touching the store.
+// The manager re-validates everything else when the gateway is initialized.
+func (a *AgentRegistrationFileConfig) validate() error {
+	name := strings.TrimSpace(a.Name)
+	if name == "" || len(name) > 255 || !agentFileNamePattern.MatchString(name) {
+		return errors.New("name must be 1-255 lowercase ASCII letters, numbers, or single hyphens, and must start and end with a letter or number")
+	}
+	parsed, err := url.ParseRequestURI(a.AgentCardURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+		return errors.New("agent_card_url must be an absolute HTTP(S) URL without user info")
+	}
+	return nil
+}
+
+// toRegistration converts a file declaration into the domain model the
+// configstore CRUD accepts. Slices are sorted to match the API create path so
+// hashing and grant writes stay deterministic.
+func (a *AgentRegistrationFileConfig) toRegistration() *schemas.AgentRegistration {
+	enabled := true
+	if a.Enabled != nil {
+		enabled = *a.Enabled
+	}
+	ids := slices.Clone(a.VirtualKeyIDs)
+	sort.Strings(ids)
+	uris := slices.Clone(a.ExtensionURIs)
+	sort.Strings(uris)
+	now := time.Now().UTC()
+	return &schemas.AgentRegistration{
+		Name:                                   strings.TrimSpace(a.Name),
+		AgentCardURL:                           a.AgentCardURL,
+		Tenant:                                 a.Tenant,
+		Enabled:                                enabled,
+		AllowByDefault:                         a.AllowByDefault,
+		ForwardAcceptedCredential:              a.ForwardAcceptedCredential,
+		ForwardAcceptedCredentialOverridesAuth: a.ForwardAcceptedCredentialOverridesAuth,
+		DiscoveryAuth:                          a.DiscoveryAuth,
+		RuntimeAuth:                            a.RuntimeAuth,
+		ExtensionURIs:                          uris,
+		VirtualKeyIDs:                          ids,
+		CreatedAt:                              now,
+		UpdatedAt:                              now,
+	}
+}
+
 // normalizeSourceOfTruth returns the configured source-of-truth mode, defaulting to split.
 func normalizeSourceOfTruth(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
@@ -375,6 +460,8 @@ func (cd *ConfigData) sectionPresent(name string) bool {
 		return cd.Providers != nil
 	case "mcp":
 		return cd.MCP != nil
+	case "agents":
+		return cd.Agents != nil
 	case "governance":
 		return cd.Governance != nil
 	case "plugins":
@@ -458,6 +545,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
 		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
 		Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
+		Agents            []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
 		Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
 		VectorStoreConfig json.RawMessage                       `json:"vector_store,omitempty"`
 		ConfigStoreConfig json.RawMessage                       `json:"config_store,omitempty"`
@@ -486,6 +574,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Providers = temp.Providers
 	cd.MCP = temp.MCP
 	cd.Webhooks = temp.Webhooks
+	cd.Agents = temp.Agents
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
@@ -577,10 +666,11 @@ type GovernanceFileSync struct {
 //   - Support for provider-specific key configurations (Azure, Vertex, Bedrock)
 //   - Lock-free plugin reads via atomic.Pointer for minimal hot-path latency
 type Config struct {
-	Mu         sync.RWMutex // Exported for direct access from handlers (governance plugin)
-	muMCP      sync.RWMutex
-	muWebhooks sync.RWMutex
-	client     *bifrost.Bifrost
+	Mu              sync.RWMutex // Exported for direct access from handlers (governance plugin)
+	muMCP           sync.RWMutex
+	muWebhooks      sync.RWMutex
+	muEnabledAgents sync.RWMutex
+	client          *bifrost.Bifrost
 
 	configPath string
 
@@ -603,6 +693,10 @@ type Config struct {
 	// decrypt per request — through one invalidation point. See
 	// GetOAuth2SigningKey.
 	oauth2SigningKey atomic.Pointer[configstoreTables.OAuth2SigningKey]
+
+	// enabledAgents mirrors MCP's config-owned allow-by-default lookup: membership
+	// means the registration is enabled and the value is AllowByDefault.
+	enabledAgents map[string]bool
 
 	// In-memory storage
 	ServerConfig     *ServerConfig
@@ -638,6 +732,7 @@ type Config struct {
 	BasePlugins          atomic.Pointer[[]schemas.BasePlugin]                      // Master list of all plugins
 	LLMPlugins           atomic.Pointer[[]schemas.LLMPlugin]                       // Derived cache (auto-rebuilt)
 	MCPPlugins           atomic.Pointer[[]schemas.MCPPlugin]                       // Derived cache (auto-rebuilt)
+	A2APlugins           atomic.Pointer[[]schemas.A2APlugin]                       // Derived cache (auto-rebuilt)
 	HTTPTransportPlugins atomic.Pointer[[]schemas.HTTPTransportPlugin]             // Derived cache (auto-rebuilt)
 	ConfigMarshallers    atomic.Pointer[map[string]schemas.ConfigMarshallerPlugin] // Derived cache (auto-rebuilt)
 	PluginLoader         plugins.PluginLoader
@@ -708,7 +803,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	EnableLogging:                   new(true),
 	DisableContentLogging:           false,
 	RetainContentInObjectStorage:    false,
-	EnforceAuthOnInference:          false,
+	EnforceAuthOnInference:          true,
 	AllowedOrigins:                  []string{"*"},
 	AllowedHeaders:                  []string{},
 	WhitelistedRoutes:               []string{},
@@ -720,6 +815,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	HideDeletedVirtualKeysInFilters: false,
 	DeleteExpiredVirtualKeys:        false,
 	RoutingChainMaxDepth:            rules.DefaultChainMaxDepth,
+	Compat:                          configstore.CompatConfig{ForceReasoningOnlyModelsToResponses: true},
 }
 
 // applyV1Compat normalizes ConfigData to restore v1.4.x allow-list semantics.
@@ -1057,6 +1153,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	loadWebhooksConfig(ctx, config, &configData)
 	// 8. Governance config
 	loadGovernanceConfig(ctx, config, &configData)
+	// 8a. Agent Gateway registrations (after governance so file-declared virtual
+	// keys exist before agent grants referencing them are written)
+	loadAgentsConfig(ctx, config, &configData)
 	// 9. Auth config
 	if err := loadAuthConfig(ctx, config, &configData); err != nil {
 		return nil, err
@@ -1358,6 +1457,10 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
 		client.MCPExternalClientURL = nil
 	}
+	if err := ValidateBaseURL(client.A2AExternalClientURL.GetValue()); err != nil {
+		logger.Warn("a2a_external_client_url %v; override will be ignored and agent card and push callback URLs will fall back to the request Host header", err)
+		client.A2AExternalClientURL = nil
+	}
 }
 
 // loadClientConfig loads and merges client config from file with store using hash-based reconciliation.
@@ -1432,15 +1535,18 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 			return fmt.Errorf("failed to hash client config: %w", err)
 		}
 		const defaultMarker = ":inference-auth-default"
-		if !fileInferenceAuthProvided && (firstAdmin ||
-			(clientConfig != nil && strings.HasSuffix(clientConfig.ConfigHash, defaultMarker))) {
+		if !fileInferenceAuthProvided && (firstAdmin || clientConfig == nil ||
+			strings.HasSuffix(clientConfig.ConfigHash, defaultMarker)) {
 			fileHash += defaultMarker
 		}
 	}
+	// An omitted enforce_auth_on_inference resolves to true for a first admin and for a
+	// fresh deployment (no stored client config). An existing deployment keeps whatever
+	// its database holds; an explicit value in the file always wins.
 	if configData.Client != nil && !fileInferenceAuthProvided {
-		if firstAdmin {
+		if firstAdmin || clientConfig == nil {
 			configData.Client.EnforceAuthOnInference = true
-		} else if clientConfig != nil {
+		} else {
 			configData.Client.EnforceAuthOnInference = clientConfig.EnforceAuthOnInference
 		}
 	}
@@ -2907,6 +3013,159 @@ func syncWebhookEndpointsFromFile(ctx context.Context, config *Config, fileEndpo
 		}
 		if err := config.ConfigStore.DeleteWebhookEndpoint(ctx, existing[i].ID); err != nil {
 			logger.Warn("failed to delete webhook endpoint %q: %v", existing[i].Name, err)
+		}
+	}
+}
+
+// loadAgentsConfig reconciles Agent Gateway registrations declared under the
+// top-level "agents" section against the config store, mirroring the webhook
+// flow: declarations are validated with a warn-and-skip policy, matched
+// against stored rows by name (the registration's primary key) using the
+// config hash for change detection, and pruned only when config.json is the
+// source of truth and the section is physically present. Only the store is
+// written here: the agent manager does not exist yet at LoadConfig time and is
+// built later (InitializeAgentGateway) from the reconciled rows. Writes go
+// through the configstore CRUD so GORM hooks encrypt secrets and grant rows
+// are kept transactional with their registration.
+func loadAgentsConfig(ctx context.Context, config *Config, configData *ConfigData) {
+	fileAgents := make([]*schemas.AgentRegistration, 0, len(configData.Agents))
+	// Every declared name, valid or not: an entry that fails validation must
+	// still protect its existing database row from the source-of-truth prune —
+	// a typo in one field must never delete a working registration.
+	declaredNames := make(map[string]bool)
+	nameCounts := make(map[string]int)
+	for _, declared := range configData.Agents {
+		if declared == nil {
+			continue
+		}
+		if name := strings.TrimSpace(declared.Name); name != "" {
+			declaredNames[name] = true
+			nameCounts[name]++
+		}
+	}
+	for _, declared := range configData.Agents {
+		if declared == nil {
+			continue
+		}
+		name := strings.TrimSpace(declared.Name)
+		if nameCounts[name] > 1 {
+			logger.Warn("skipping duplicate agent registration %q from config file", name)
+			continue
+		}
+		if err := declared.validate(); err != nil {
+			logger.Warn("skipping agent registration %q from config file: %v", declared.Name, err)
+			continue
+		}
+		fileAgents = append(fileAgents, declared.toRegistration())
+	}
+
+	if config.ConfigStore == nil {
+		if len(fileAgents) > 0 {
+			logger.Warn("config store is disabled - agent registrations from config file will not be available")
+		}
+		return
+	}
+
+	existing, err := config.ConfigStore.ListAgentRegistrations(ctx)
+	if err != nil {
+		logger.Warn("failed to load agent registrations: %v", err)
+		return
+	}
+
+	if configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("agents") {
+		syncAgentRegistrationsFromFile(ctx, config, fileAgents, declaredNames, existing)
+	} else {
+		mergeAgentRegistrations(ctx, config, fileAgents, existing)
+	}
+}
+
+// mergeAgentRegistrations reconciles file declarations additively: new names
+// are created, changed ones (by config hash) are updated — grants included,
+// since virtual_key_ids participates in the hash — and stored registrations
+// absent from the file are left alone. Best-effort with per-item warnings,
+// matching the other config-section loaders.
+func mergeAgentRegistrations(ctx context.Context, config *Config, fileAgents []*schemas.AgentRegistration, existing []schemas.AgentRegistration) {
+	existingByName := make(map[string]*schemas.AgentRegistration, len(existing))
+	for i := range existing {
+		existingByName[existing[i].Name] = &existing[i]
+	}
+	for _, agent := range fileAgents {
+		fileHash, err := configstore.GenerateAgentRegistrationHash(agent)
+		if err != nil {
+			logger.Warn("failed to hash agent registration %q: %v", agent.Name, err)
+			continue
+		}
+		agent.ConfigHash = fileHash
+		if match, ok := existingByName[agent.Name]; ok {
+			if match.ConfigHash == fileHash {
+				continue
+			}
+			if err := config.ConfigStore.UpdateAgentRegistration(ctx, agent); err != nil {
+				logger.Warn("failed to update agent registration %q: %v", agent.Name, err)
+			}
+			continue
+		}
+		if err := config.ConfigStore.CreateAgentRegistration(ctx, agent); err != nil {
+			logger.Warn("failed to create agent registration %q: %v", agent.Name, err)
+		}
+	}
+}
+
+// syncAgentRegistrationsFromFile makes the database mirror the config file:
+// declarations are created or updated as in the merge path, and stored
+// registrations not present in the file — including API-created ones — are
+// deleted, grants along with them (DeleteAgentRegistration removes the grant
+// rows in the same transaction, backed by the FK cascade). Best-effort,
+// non-transactional — each step warns and continues, and a later load
+// converges. The prune fails safe: a row is only deleted when its name appears
+// in NEITHER the applied set nor the declared set, so a declaration that
+// failed validation or hashing keeps its existing registration instead of
+// removing it.
+func syncAgentRegistrationsFromFile(ctx context.Context, config *Config, fileAgents []*schemas.AgentRegistration, declaredNames map[string]bool, existing []schemas.AgentRegistration) {
+	existingByName := make(map[string]*schemas.AgentRegistration, len(existing))
+	for i := range existing {
+		existingByName[existing[i].Name] = &existing[i]
+	}
+
+	keepNames := make(map[string]bool, len(fileAgents))
+	for _, agent := range fileAgents {
+		match := existingByName[agent.Name]
+		// Mark the matched existing registration as kept before anything that
+		// can fail, so failures keep the row rather than exposing it to the
+		// prune below.
+		if match != nil {
+			keepNames[match.Name] = true
+		}
+
+		fileHash, err := configstore.GenerateAgentRegistrationHash(agent)
+		if err != nil {
+			logger.Warn("failed to hash agent registration %q: %v", agent.Name, err)
+			continue
+		}
+		agent.ConfigHash = fileHash
+
+		if match != nil {
+			if match.ConfigHash == fileHash {
+				continue
+			}
+			if err := config.ConfigStore.UpdateAgentRegistration(ctx, agent); err != nil {
+				logger.Warn("failed to update agent registration %q: %v", agent.Name, err)
+			}
+			continue
+		}
+		if err := config.ConfigStore.CreateAgentRegistration(ctx, agent); err != nil {
+			logger.Warn("failed to create agent registration %q: %v", agent.Name, err)
+			continue
+		}
+		keepNames[agent.Name] = true
+	}
+
+	for i := range existing {
+		if keepNames[existing[i].Name] || declaredNames[existing[i].Name] {
+			continue
+		}
+		if err := config.ConfigStore.DeleteAgentRegistration(ctx, existing[i].Name); err != nil {
+			logger.Warn("failed to delete agent registration %q: %v", existing[i].Name, err)
 		}
 	}
 }
@@ -5760,22 +6019,22 @@ func ResolveFrameworkPricingConfig(
 	}
 
 	return &configstoreTables.TableFrameworkConfig{
-		ID:                     configID,
-		PricingURL:             resolvedPricingURL,
-		PricingSyncInterval:    resolvedSyncSeconds,
-		ModelParametersURL:     resolvedModelParametersURL,
-		MCPLibraryURL:          resolvedMCPLibraryURL,
-		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-		ConfigHash:             persistedHash,
-	}, &modelcatalog.Config{
-		PricingURL:             resolvedPricingURL,
-		PricingSyncInterval:    resolvedSyncSeconds,
-		ModelParametersURL:     resolvedModelParametersURL,
-		MCPLibraryURL:          resolvedMCPLibraryURL,
-		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-	}, needsDBUpdate
+			ID:                     configID,
+			PricingURL:             resolvedPricingURL,
+			PricingSyncInterval:    resolvedSyncSeconds,
+			ModelParametersURL:     resolvedModelParametersURL,
+			MCPLibraryURL:          resolvedMCPLibraryURL,
+			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+			ConfigHash:             persistedHash,
+		}, &modelcatalog.Config{
+			PricingURL:             resolvedPricingURL,
+			PricingSyncInterval:    resolvedSyncSeconds,
+			ModelParametersURL:     resolvedModelParametersURL,
+			MCPLibraryURL:          resolvedMCPLibraryURL,
+			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+		}, needsDBUpdate
 }
 
 // initFrameworkConfig initializes framework config and pricing manager from file
@@ -6185,6 +6444,16 @@ func (c *Config) GetMCPExternalClientURL() string {
 	return c.ClientConfig.MCPExternalClientURL.GetValue()
 }
 
+// GetA2AExternalClientURL returns the configured external base URL used for Agent Gateway
+// push-notification callback URLs and served agent card URLs, or empty string if not
+// configured. Resolves env var references automatically.
+func (c *Config) GetA2AExternalClientURL() string {
+	if c.ClientConfig == nil || c.ClientConfig.A2AExternalClientURL == nil {
+		return ""
+	}
+	return c.ClientConfig.A2AExternalClientURL.GetValue()
+}
+
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.
 // Lock-free via atomic pointer; safe for concurrent reads from hot paths.
 func (c *Config) GetHeaderMatcher() *HeaderMatcher {
@@ -6281,6 +6550,44 @@ func (c *Config) GetMCPClientBySlug(slug string) (clientID, clientName string, o
 		}
 	}
 	return "", "", false
+}
+
+// ReplaceEnabledAgents atomically replaces enabled registration policy state.
+func (c *Config) ReplaceEnabledAgents(agents map[string]bool) {
+	c.muEnabledAgents.Lock()
+	defer c.muEnabledAgents.Unlock()
+	c.enabledAgents = make(map[string]bool, len(agents))
+	maps.Copy(c.enabledAgents, agents)
+}
+
+// SetEnabledAgent publishes or removes one registration after a successful write.
+func (c *Config) SetEnabledAgent(name string, enabled, allowOnAll bool) {
+	c.muEnabledAgents.Lock()
+	defer c.muEnabledAgents.Unlock()
+	if !enabled {
+		delete(c.enabledAgents, name)
+		return
+	}
+	if c.enabledAgents == nil {
+		c.enabledAgents = make(map[string]bool)
+	}
+	c.enabledAgents[name] = allowOnAll
+}
+
+// DeleteEnabledAgent removes a successfully deleted registration.
+func (c *Config) DeleteEnabledAgent(name string) {
+	c.muEnabledAgents.Lock()
+	defer c.muEnabledAgents.Unlock()
+	delete(c.enabledAgents, name)
+}
+
+// GetEnabledAgents returns a copy for governance hot-path decisions.
+func (c *Config) GetEnabledAgents() map[string]bool {
+	c.muEnabledAgents.RLock()
+	defer c.muEnabledAgents.RUnlock()
+	result := make(map[string]bool, len(c.enabledAgents))
+	maps.Copy(result, c.enabledAgents)
+	return result
 }
 
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.
@@ -6513,6 +6820,15 @@ func (c *Config) GetLoadedMCPPlugins() []schemas.MCPPlugin {
 	return nil
 }
 
+// GetLoadedA2APlugins returns the current snapshot of loaded A2A (Agent Gateway)
+// plugins, with the same lock-free, read-only contract as GetLoadedMCPPlugins.
+func (c *Config) GetLoadedA2APlugins() []schemas.A2APlugin {
+	if plugins := c.A2APlugins.Load(); plugins != nil {
+		return slices.Clone(*plugins)
+	}
+	return nil
+}
+
 // GetLoadedHTTPTransportPlugins returns all loaded plugins that implement HTTPTransportPlugin interface.
 // This method returns a cached list that is updated on plugin add/reload/remove operations.
 // It is lock-free and safe for concurrent access from hot paths.
@@ -6534,9 +6850,11 @@ func (c *Config) rebuildInterfaceCaches() {
 		// Clear all caches atomically, except ConfigMarshallers which are preserved.
 		emptyLLM := []schemas.LLMPlugin{}
 		emptyMCP := []schemas.MCPPlugin{}
+		emptyA2A := []schemas.A2APlugin{}
 		emptyHTTP := []schemas.HTTPTransportPlugin{}
 		c.LLMPlugins.Store(&emptyLLM)
 		c.MCPPlugins.Store(&emptyMCP)
+		c.A2APlugins.Store(&emptyA2A)
 		c.HTTPTransportPlugins.Store(&emptyHTTP)
 		return
 	}
@@ -6544,6 +6862,7 @@ func (c *Config) rebuildInterfaceCaches() {
 	// Single pass through all plugins - check all interfaces in one iteration
 	var llm []schemas.LLMPlugin
 	var mcp []schemas.MCPPlugin
+	var a2aPlugins []schemas.A2APlugin
 	var httpTransport []schemas.HTTPTransportPlugin
 
 	for _, p := range *basePlugins {
@@ -6552,6 +6871,9 @@ func (c *Config) rebuildInterfaceCaches() {
 		}
 		if mcpPlugin, ok := p.(schemas.MCPPlugin); ok {
 			mcp = append(mcp, mcpPlugin)
+		}
+		if a2aPlugin, ok := p.(schemas.A2APlugin); ok {
+			a2aPlugins = append(a2aPlugins, a2aPlugin)
 		}
 		if httpPlugin, ok := p.(schemas.HTTPTransportPlugin); ok {
 			httpTransport = append(httpTransport, httpPlugin)
@@ -6564,6 +6886,7 @@ func (c *Config) rebuildInterfaceCaches() {
 
 	c.LLMPlugins.Store(&llm)
 	c.MCPPlugins.Store(&mcp)
+	c.A2APlugins.Store(&a2aPlugins)
 	c.HTTPTransportPlugins.Store(&httpTransport)
 }
 

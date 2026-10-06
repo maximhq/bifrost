@@ -30,6 +30,9 @@ func InferPluginTypes(plugin schemas.BasePlugin) []schemas.PluginType {
 	if _, ok := plugin.(schemas.MCPPlugin); ok {
 		types = append(types, schemas.PluginTypeMCP)
 	}
+	if _, ok := plugin.(schemas.A2APlugin); ok {
+		types = append(types, schemas.PluginTypeA2A)
+	}
 	if _, ok := plugin.(schemas.HTTPTransportPlugin); ok {
 		types = append(types, schemas.PluginTypeHTTP)
 	}
@@ -292,11 +295,12 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// 8. Compat (if any compat feature is enabled in ClientConfig)
 	cc := s.Config.ClientConfig.Compat
 	compatCfg := &compat.Config{
-		ConvertTextToChat:      cc.ConvertTextToChat,
-		ConvertChatToResponses: cc.ConvertChatToResponses,
-		ShouldDropParams:       cc.ShouldDropParams,
-		ShouldConvertParams:    cc.ShouldConvertParams,
-		AzureDeepseek:          cc.AzureDeepseek,
+		ConvertTextToChat:                   cc.ConvertTextToChat,
+		ConvertChatToResponses:              cc.ConvertChatToResponses,
+		ShouldDropParams:                    cc.ShouldDropParams,
+		ShouldConvertParams:                 cc.ShouldConvertParams,
+		AzureDeepseek:                       cc.AzureDeepseek,
+		ForceReasoningOnlyModelsToResponses: cc.ForceReasoningOnlyModelsToResponses,
 	}
 	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
 	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(8))

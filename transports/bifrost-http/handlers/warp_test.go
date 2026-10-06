@@ -9,12 +9,15 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -434,6 +437,101 @@ func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
 	require.NoError(t, err)
 	defer cancel()
 	require.Empty(t, warp.NewGrantFromContext(snapshot).Identity().Credential().Value)
+}
+
+// The grant the snapshot settles and the admission Warp asks for only matter
+// together: governance admits a user nothing grants access to because Warp's
+// context asks it to, and only for the identity the dashboard request settled.
+// So the whole path is driven here - the dashboard request's snapshot, Warp's
+// own model-call context, and the governance pre-hook the gateway client would
+// run on it - rather than each half against a hand-built stand-in for the other.
+// A grant the snapshot drops, settles without its user, or settles past a
+// presented key breaks the chat or widens it, and either shows up here.
+func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
+	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil, &configstore.GovernanceConfig{}, nil, nil)
+	require.NoError(t, err)
+	isVkMandatory := false
+	plugin, err := governance.InitFromStore(context.Background(), &governance.Config{IsVkMandatory: &isVkMandatory},
+		&mockLogger{}, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	// govern is the gateway client as far as governance is concerned: it runs
+	// the pre-hook on the context it is handed and stops at a refusal.
+	govern := func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: req})
+		require.NoError(t, err)
+		if shortCircuit != nil {
+			return nil, shortCircuit.Error
+		}
+		return &schemas.BifrostResponsesResponse{}, nil
+	}
+	chat := func(t *testing.T, ctx *fasthttp.RequestCtx) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		t.Helper()
+		snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+		require.NoError(t, err)
+		defer cancel()
+		// The agent runs after the handler returns, so the request is gone by
+		// the time the model is called.
+		ctx.ResetUserValues()
+		ctx.Request.Reset()
+		return warp.NewChat(govern, &schemas.WarpConfig{}, "conv-1")(snapshot,
+			&schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o"})
+	}
+	signedIn := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialSessionToken, "session-token"))
+		return ctx
+	}
+	requireAccessNotFound := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		require.Equal(t, 401, *bifrostErr.StatusCode)
+		require.Contains(t, bifrostErr.Error.Message, "access not found")
+	}
+
+	t.Run("a signed-in user with no access profile is served", func(t *testing.T) {
+		response, bifrostErr := chat(t, signedIn())
+
+		require.Nil(t, bifrostErr, "a profile-less user must not be refused: %+v", bifrostErr)
+		require.NotNil(t, response)
+	})
+
+	t.Run("the same grant is refused off Warp's path", func(t *testing.T) {
+		// The control: it is Warp's model-call context that admits the user, not
+		// the grant, so the same settled grant on any other request is still
+		// held to an access it does not have.
+		snapshot, cancel, err := snapshotWarpContext(signedIn(), time.Second)
+		require.NoError(t, err)
+		defer cancel()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		ctx.SetGrant(warp.NewGrantFromContext(snapshot))
+
+		_, bifrostErr := govern(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o"})
+
+		requireAccessNotFound(t, bifrostErr)
+	})
+
+	t.Run("a presented virtual key that resolves to nothing is still refused", func(t *testing.T) {
+		ctx := signedIn()
+		ctx.Request.Header.Set("x-bf-vk", "sk-bf-nobody")
+
+		_, bifrostErr := chat(t, ctx)
+
+		requireAccessNotFound(t, bifrostErr)
+	})
+
+	t.Run("an anonymous dashboard request is served as a key-less one", func(t *testing.T) {
+		// No auth on the deployment: nothing was presented, so there is nothing
+		// to admit and nothing to refuse.
+		response, bifrostErr := chat(t, &fasthttp.RequestCtx{})
+
+		require.Nil(t, bifrostErr, "%+v", bifrostErr)
+		require.NotNil(t, response)
+	})
 }
 
 // A scope that was set on the request but cannot be carried over is the
