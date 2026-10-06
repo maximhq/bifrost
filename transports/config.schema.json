@@ -3646,6 +3646,13 @@
             "additionalProperties": false
           }
         },
+        "object_storage_exclude_request_types": {
+          "type": "array",
+          "description": "Request types (log object type, e.g. list_models, embedding) whose logs are never offloaded to object storage. These logs are written to the logs database in full instead.",
+          "items": {
+            "type": "string"
+          }
+        },
         "object_storage_exclude_fields": {
           "type": "array",
           "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
