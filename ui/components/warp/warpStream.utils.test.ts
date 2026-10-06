@@ -133,12 +133,21 @@ describe("errorMessage", () => {
 		expect(detail.suggestions.join(" ")).toContain("Request Timeout");
 	});
 
+	it("does not blame the provider when governance refused the model call", () => {
+		const detail = warpErrorDetail("access_denied", "no model access is configured");
+		expect(detail.summary).toContain("access");
+		expect(detail.cause).not.toContain("unreachable");
+		expect(detail.suggestions.join(" ")).toContain("administrator");
+		expect(detail.raw).toBe("no model access is configured");
+		expect(isEncodedTurnError(encodeTurnError("access_denied", "refused"))).toBe(true);
+	});
+
 	it("keeps the raw server message", () => {
 		expect(warpErrorDetail("upstream_error", "provider exploded").raw).toBe("provider exploded");
 	});
 
 	it("has guidance for every code it recognises", () => {
-		for (const code of ["not_configured", "max_iterations", "timeout", "upstream_error", "tool_error"]) {
+		for (const code of ["not_configured", "max_iterations", "timeout", "upstream_error", "access_denied", "tool_error"]) {
 			const detail = warpErrorDetail(code, "");
 			expect(detail.summary, code).not.toBe("");
 			expect(detail.cause, code).not.toBe("");

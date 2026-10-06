@@ -310,6 +310,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
+		jsonBody, err = ApplyDefaultEagerInputStreamingToRawBody(jsonBody, cfg.Provider, capModel)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+
 		if defaults.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", defaults.AnthropicVersion)
 			if err != nil {
@@ -404,6 +409,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		// so a Bifrost alias would otherwise match none of them and skip every
 		// model-level strip. The raw path above already uses capModel.
 		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
+		applyDefaultEagerInputStreaming(reqBody, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
@@ -642,6 +648,11 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
+		jsonBody, err = ApplyDefaultEagerInputStreamingToRawBody(jsonBody, cfg.Provider, capModel)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+
 		if defaults.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", defaults.AnthropicVersion)
 			if err != nil {
@@ -717,6 +728,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		// as the responses builder: the model predicates match canonical
 		// Anthropic model names, not Bifrost aliases.
 		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
+		applyDefaultEagerInputStreaming(reqBody, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 

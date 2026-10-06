@@ -1,6 +1,9 @@
 package logstore
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // unixBucketExpr returns a SQL expression that truncates the `timestamp` column
 // to a bucket boundary and yields an integer unix-seconds value, per dialect.
@@ -73,6 +76,14 @@ func dimensionFanoutFrom(dialect, idCol string) (string, bool) {
 		return clickhouseDimensionFanoutFrom(arrIDs, arrNames, idCol, scalarName), true
 	}
 	return "", false
+}
+
+func agentDimensionFanoutFrom(dialect, idCol string) (string, bool) {
+	from, ok := dimensionFanoutFrom(dialect, idCol)
+	if !ok {
+		return "", false
+	}
+	return strings.ReplaceAll(from, "FROM logs", "FROM agent_logs"), true
 }
 
 // sqliteDimensionFanoutFrom builds the SQLite fan-out subquery using the JSON1
