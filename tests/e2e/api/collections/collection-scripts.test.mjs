@@ -777,7 +777,7 @@ function simulateRedaction(fixture, mode = "masked", existing = false, auth = fa
   }
   const pm = {
     variables: {
-      get: (name) => name === "secret_redaction_fixture" ? JSON.stringify(fixture) : name === "admin_auth_header" && auth ? "Bearer synthetic-admin" : undefined,
+      get: (name) => name === "secret_redaction_fixture" ? JSON.stringify(fixture) : name === "admin_auth_header" && auth ? "Bearer synthetic-admin" : name === "setup_token" && !auth ? "synthetic-setup-token" : undefined,
       replaceIn: (value) => value === "{{$guid}}" ? "unique-test-id" : "http://local",
     },
     response: response({ providers: existing ? [providerResponse()] : [] }),
@@ -789,6 +789,8 @@ function simulateRedaction(fixture, mode = "masked", existing = false, auth = fa
     sendRequest: (req, callback) => {
       state.calls.push(req);
       if (auth) assert.strictEqual(req.header.Authorization, "Bearer synthetic-admin");
+      // pm.sendRequest skips the collection-level prerequest, so the script must add the setup token itself.
+      else assert.strictEqual(req.header["X-Bifrost-Setup-Token"], "synthetic-setup-token");
       const path = req.url.slice("http://local".length);
       const providerPath = "/api/providers/" + fixture.provider;
       if (req.method === "POST" && path === "/api/providers") {
