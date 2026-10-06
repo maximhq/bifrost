@@ -359,8 +359,9 @@ var bucketCategory = map[string]string{
 }
 
 // MetricComponent maps one bucket to its category, mirroring the UI's overheadCategoryKey:
-// serialization phases, middleware.*, convertor(.*) and plugin.* by rule, else bucketCategory,
-// else "other" (or "plugins" for an unmatched plugin-kind span).
+// serialization phases, middleware.*, convertor(.*) and plugin.* by rule, else
+// bucketCategory, else "other". overheadBucketName guarantees the plugin.* prefix, so
+// Kind needs no fallback here.
 func MetricComponent(b logstore.OverheadBucket) string {
 	switch b.Name {
 	case "request-unmarshal", "request-marshal", "response-parse", "response-marshal":
@@ -377,9 +378,6 @@ func MetricComponent(b logstore.OverheadBucket) string {
 	}
 	if c, ok := bucketCategory[b.Name]; ok {
 		return c
-	}
-	if b.Kind == string(schemas.SpanKindPlugin) {
-		return CategoryPlugins
 	}
 	return CategoryOther
 }
