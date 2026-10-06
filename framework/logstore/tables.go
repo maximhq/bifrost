@@ -222,8 +222,10 @@ func (u *UserAgentMapping) BeforeCreate(tx *gorm.DB) error {
 // buckets gives an independent measure of overhead that does not rely on the
 // upstream socket accumulator. DurationUs is microseconds (overhead runs small).
 type OverheadBucket struct {
-	Name       string  `json:"name"` // e.g. "key.selection", "plugin.governance", "mcp", "core"
-	Kind       string  `json:"kind"` // originating span kind, for grouping/coloring
+	Name string `json:"name"` // e.g. "key.selection", "plugin.governance", "mcp", "core"
+	// Not serialized: derivable from Name (plugin spans carry the "plugin." prefix), and
+	// 27% of the persisted column. In-memory only, for MetricComponent.
+	Kind       string  `json:"-"`
 	DurationUs float64 `json:"duration_us"`
 }
 
@@ -898,10 +900,11 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if len(l.OverheadBreakdownParsed) > 0 {
-		if data, err := sonic.Marshal(l.OverheadBreakdownParsed); err != nil {
+		// Name-keyed object, not sonic.Marshal of the struct: see overheadcodec.go.
+		if data, err := marshalOverheadBreakdown(l.OverheadBreakdownParsed); err != nil {
 			return err
 		} else {
-			l.OverheadBreakdown = string(data)
+			l.OverheadBreakdown = data
 		}
 	} else {
 		l.OverheadBreakdown = ""
@@ -1266,9 +1269,8 @@ func (l *Log) DeserializeFields() error {
 	}
 
 	if l.OverheadBreakdown != "" {
-		if err := sonic.Unmarshal([]byte(l.OverheadBreakdown), &l.OverheadBreakdownParsed); err != nil {
-			l.OverheadBreakdownParsed = nil
-		}
+		// Handles both the current and the legacy stored form.
+		l.OverheadBreakdownParsed = unmarshalOverheadBreakdown(l.OverheadBreakdown)
 	}
 
 	if l.Metadata != nil && *l.Metadata != "" {

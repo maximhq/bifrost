@@ -563,11 +563,15 @@ function overheadCategoryKey(b: OverheadBucket): string {
 	if (b.name === "convertor" || b.name.startsWith("convertor.")) {
 		return "conversion";
 	}
+	// Every plugin-kind span's bucket carries this prefix (see overheadBucketName).
+	if (b.name.startsWith("plugin.")) {
+		return "plugins";
+	}
 	const mapped = OVERHEAD_BUCKET_CATEGORY[b.name];
 	if (mapped) {
 		return mapped;
 	}
-	return b.kind === "plugin" ? "plugins" : "other";
+	return "other";
 }
 
 // overheadMemberLabel renders a drill-down member with its friendly label when there is

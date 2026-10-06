@@ -713,7 +713,6 @@ export interface RedactionMapping {
 // number (which is total minus the upstream socket accumulator).
 export interface OverheadBucket {
 	name: string; // e.g. "key.selection", "plugin.governance", "transport/core"
-	kind: string; // originating span kind, for grouping/coloring
 	duration_us: number;
 }
 
