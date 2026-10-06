@@ -25,6 +25,7 @@ import (
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
@@ -994,4 +995,123 @@ func TestUpdateConfig_MCPCodeModeLimits(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	assert.Equal(t, &schemas.MCPCodeModeLimits{}, persisted(t), "empty limits must reset to the defaults")
 	assert.Equal(t, &schemas.MCPCodeModeLimits{}, recorder.limits, "the reset must be hot-reloaded")
+}
+
+// recordingCompatConfigManager records compat plugin reloads and removals.
+type recordingCompatConfigManager struct {
+	stubConfigManager
+	reloaded   []*compat.Config
+	removed    []string
+	failReload bool
+}
+
+func (m *recordingCompatConfigManager) ReloadPlugin(_ context.Context, name string, _ *string, cfg any, _ *schemas.PluginPlacement, _ *int) error {
+	if name == compat.PluginName {
+		m.reloaded = append(m.reloaded, cfg.(*compat.Config))
+		if m.failReload {
+			return errors.New("compat reload failed")
+		}
+	}
+	return nil
+}
+
+func (m *recordingCompatConfigManager) RemovePlugin(_ context.Context, name string) error {
+	m.removed = append(m.removed, name)
+	return nil
+}
+
+// TestUpdateConfig_CompatAllFlagsOffKeepsPluginLoaded pins that disabling every
+// compat flag reloads the plugin instead of removing it, so per-request compat
+// header overrides keep working.
+func TestUpdateConfig_CompatAllFlagsOffKeepsPluginLoaded(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.Compat = configstore.CompatConfig{ConvertTextToChat: true}
+	cm := &recordingCompatConfigManager{}
+	h := &ConfigHandler{store: cfg, configManager: cm}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"compat":{"convert_text_to_chat":false,"convert_chat_to_responses":false,"should_drop_params":false,"should_convert_params":false,"azure_deepseek":false,"force_reasoning_only_models_to_responses":false}}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	assert.NotContains(t, cm.removed, compat.PluginName, "compat plugin must stay loaded for per-request overrides")
+	require.Len(t, cm.reloaded, 1, "compat plugin must be reloaded with the new config")
+	assert.Equal(t, compat.Config{}, *cm.reloaded[0])
+}
+
+const compatAllOffPayload = `{"client_config":{"log_retention_days":7,"compat":{"convert_text_to_chat":false,"convert_chat_to_responses":false,"should_drop_params":false,"should_convert_params":false,"azure_deepseek":false,"force_reasoning_only_models_to_responses":false}}}`
+
+// TestUpdateConfig_CompatReloadWaitsForPersistence pins that a failed save never
+// reaches the compat plugin, so runtime compat cannot run ahead of the database.
+func TestUpdateConfig_CompatReloadWaitsForPersistence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(inferenceSetupFailureStore{store, "write"}, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.Compat = configstore.CompatConfig{ConvertTextToChat: true}
+	cm := &recordingCompatConfigManager{}
+	h := &ConfigHandler{store: cfg, configManager: cm}
+
+	ctx := putConfigCtx(compatAllOffPayload)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	assert.Empty(t, cm.reloaded, "compat plugin must not change when the save fails")
+	assert.True(t, cfg.ClientConfig.Compat.ConvertTextToChat, "in-memory compat must stay unchanged")
+}
+
+// TestUpdateConfig_CompatReloadFailureRestoresPersistedConfig pins that a failed
+// compat reload after a successful save rolls the persisted compat setting back.
+func TestUpdateConfig_CompatReloadFailureRestoresPersistedConfig(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.Compat = configstore.CompatConfig{ConvertTextToChat: true}
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	cm := &recordingCompatConfigManager{failReload: true}
+	h := &ConfigHandler{store: cfg, configManager: cm}
+
+	ctx := putConfigCtx(compatAllOffPayload)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	persisted, err := store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	assert.True(t, persisted.Compat.ConvertTextToChat, "persisted compat must be restored after a failed reload")
+	assert.True(t, cfg.ClientConfig.Compat.ConvertTextToChat, "in-memory compat must stay unchanged")
+}
+
+// failingRestoreStore fails every UpdateClientConfig after the first, so the
+// compensating restore write fails.
+type failingRestoreStore struct {
+	configstore.ConfigStore
+	writes *int
+}
+
+func (s failingRestoreStore) UpdateClientConfig(ctx context.Context, c *configstore.ClientConfig) error {
+	*s.writes++
+	if *s.writes > 1 {
+		return errors.New("restore write failed")
+	}
+	return s.ConfigStore.UpdateClientConfig(ctx, c)
+}
+
+// TestUpdateConfig_CompatReloadFailureReportsFailedRestore pins that a failed restore
+// is reported as a server error instead of the clean-rollback 400.
+func TestUpdateConfig_CompatReloadFailureReportsFailedRestore(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	writes := 0
+	cfg := newTestOAuth2Config(failingRestoreStore{store, &writes}, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.Compat = configstore.CompatConfig{ConvertTextToChat: true}
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	cm := &recordingCompatConfigManager{failReload: true}
+	h := &ConfigHandler{store: cfg, configManager: cm}
+
+	ctx := putConfigCtx(compatAllOffPayload)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "could not be restored")
+	assert.Equal(t, 2, writes, "the handler must attempt the restore write")
+	assert.True(t, cfg.ClientConfig.Compat.ConvertTextToChat, "in-memory compat must stay unchanged")
 }

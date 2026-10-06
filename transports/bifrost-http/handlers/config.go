@@ -691,34 +691,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MaxRequestBodySizeMB = payload.ClientConfig.MaxRequestBodySizeMB
 	}
 
-	// Handle compat plugin toggle
+	// Compat plugin reload is applied after the save below
 	newCompat := payload.ClientConfig.Compat
-	oldCompat := currentConfig.Compat
-	if newCompat != oldCompat {
-		newEnabled := newCompat.ConvertTextToChat || newCompat.ConvertChatToResponses || newCompat.ShouldDropParams || newCompat.ShouldConvertParams ||
-			newCompat.AzureDeepseek
-		if newEnabled {
-			compatCfg := &compat.Config{
-				ConvertTextToChat:      newCompat.ConvertTextToChat,
-				ConvertChatToResponses: newCompat.ConvertChatToResponses,
-				ShouldDropParams:       newCompat.ShouldDropParams,
-				ShouldConvertParams:    newCompat.ShouldConvertParams,
-				AzureDeepseek:          newCompat.AzureDeepseek,
-			}
-			if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
-				logger.Warn("failed to load compat plugin: %v", err)
-				SendError(ctx, 400, "Failed to load compat plugin")
-				return
-			}
-		} else {
-			disabledCtx := context.WithValue(ctx, PluginDisabledKey, true)
-			if err := h.configManager.RemovePlugin(disabledCtx, compat.PluginName); err != nil {
-				logger.Warn("failed to remove compat plugin: %v", err)
-				SendError(ctx, 400, "Failed to remove compat plugin")
-				return
-			}
-		}
-	}
+	shouldReloadCompat := newCompat != currentConfig.Compat
 	updatedConfig.Compat = newCompat
 	// Only update MCP fields if explicitly provided (non-zero) to avoid clearing stored values
 	if payload.ClientConfig.MCPAgentDepth > 0 {
@@ -815,6 +790,27 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		logger.Warn("failed to save configuration: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save configuration: %v", err))
 		return
+	}
+
+	if shouldReloadCompat {
+		compatCfg := &compat.Config{
+			ConvertTextToChat:                   newCompat.ConvertTextToChat,
+			ConvertChatToResponses:              newCompat.ConvertChatToResponses,
+			ShouldDropParams:                    newCompat.ShouldDropParams,
+			ShouldConvertParams:                 newCompat.ShouldConvertParams,
+			AzureDeepseek:                       newCompat.AzureDeepseek,
+			ForceReasoningOnlyModelsToResponses: newCompat.ForceReasoningOnlyModelsToResponses,
+		}
+		if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
+			logger.Warn("failed to load compat plugin: %v", err)
+			if rollbackErr := h.store.ConfigStore.UpdateClientConfig(ctx, currentConfig); rollbackErr != nil {
+				logger.Error("failed to restore configuration after compat plugin reload failure, stored config now differs from the running gateway: %v", rollbackErr)
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to load compat plugin (%v) and the previous configuration could not be restored (%v); stored settings now differ from the running gateway, retry the save or restart", err, rollbackErr))
+				return
+			}
+			SendError(ctx, 400, "Failed to load compat plugin")
+			return
+		}
 	}
 
 	// Apply the in-memory change only after persistence succeeds, copying
