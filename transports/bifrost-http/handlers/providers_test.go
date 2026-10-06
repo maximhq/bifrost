@@ -42,6 +42,8 @@ type mockModelsManager struct {
 	access       schemas.Access
 	resolveCalls int
 	narrowCalls  int
+	// reloadNew is, for each reload, whether it was told the provider was just added.
+	reloadNew []bool
 }
 
 func (m *mockModelsManager) ResolveAccess(_ *schemas.BifrostContext) (schemas.Access, error) {
@@ -66,7 +68,8 @@ func (m *mockModelsManager) NarrowListModelsProviders(bifrostCtx *schemas.Bifros
 	bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, providers)
 }
 
-func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error) {
+func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.ModelProvider, isNew bool) (*configstoreTables.TableProvider, error) {
+	m.reloadNew = append(m.reloadNew, isNew)
 	m.reloadCalls = append(m.reloadCalls, provider)
 	if m.reloadErr != nil {
 		return nil, m.reloadErr
@@ -682,6 +685,84 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 				t.Fatalf("stored network config got base_url=%q allow_private_network=%v, want %q/%v", stored.NetworkConfig.BaseURL, stored.NetworkConfig.AllowPrivateNetwork, tc.baseURL, tc.allowPrivateNetwork)
 			}
 		})
+	}
+}
+
+// TestProviderWrites_TellTheReloadWhetherTheyAdded pins that the reload after an update, keyless or
+// not, is told the provider is not new, and the add endpoint's reload is told it is.
+func TestProviderWrites_TellTheReloadWhetherTheyAdded(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	keyless := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
+	sizes := schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 4}
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		body     providerUpdatePayload
+		isNew    bool
+	}{
+		{name: "edit of a provider with keys", provider: schemas.OpenAI, body: providerUpdatePayload{ConcurrencyAndBufferSize: sizes}, isNew: false},
+		{name: "edit of a keyless provider", provider: "mock-openai", body: providerUpdatePayload{ConcurrencyAndBufferSize: sizes, CustomProviderConfig: keyless}, isNew: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := &mockModelsManager{}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					ClientConfig: &configstore.ClientConfig{},
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						schemas.OpenAI: {
+							Keys:                     []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-stored"), Weight: 1}},
+							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+						},
+						"mock-openai": {
+							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+							CustomProviderConfig:     keyless,
+						},
+					},
+				},
+				modelsManager: mgr,
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			body, err := sonic.Marshal(tc.body)
+			if err != nil {
+				t.Fatalf("failed to marshal request body: %v", err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			ctx.Request.SetRequestURI("/api/providers/" + string(tc.provider))
+			ctx.Request.SetBody(body)
+			ctx.SetUserValue("provider", string(tc.provider))
+
+			h.updateProvider(ctx)
+
+			if ctx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if len(mgr.reloadNew) != 1 || mgr.reloadNew[0] != tc.isNew {
+				t.Fatalf("reloads told the provider is new: got %v, want [%v]", mgr.reloadNew, tc.isNew)
+			}
+		})
+	}
+
+	mgr := &mockModelsManager{}
+	h := &ProviderHandler{inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}}, modelsManager: mgr}
+	body, err := sonic.Marshal(providerCreatePayload{Provider: "mock-new", CustomProviderConfig: keyless})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+	h.addProvider(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("add status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(mgr.reloadNew) != 1 || !mgr.reloadNew[0] {
+		t.Fatalf("an added provider's reload must be told it is new, got %v", mgr.reloadNew)
 	}
 }
 

@@ -44,7 +44,9 @@ func validateProviderBaseURLShape(raw string) error {
 
 // ModelsManager defines the interface for managing provider models
 type ModelsManager interface {
-	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
+	// ReloadProvider reloads a provider after a write; isNew is set when the add endpoint created
+	// it, and unset when the update endpoint edited it.
+	ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
@@ -697,7 +699,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	if payload.CustomProviderConfig != nil && payload.CustomProviderConfig.IsKeyLess {
 		ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if _, reloadErr := h.modelsManager.ReloadProvider(ctxWithTimeout, provider); reloadErr != nil {
+		if _, reloadErr := h.modelsManager.ReloadProvider(ctxWithTimeout, provider, false); reloadErr != nil {
 			logger.Warn("ReloadProvider failed for keyless provider %s: %v", provider, reloadErr)
 		}
 	} else {
@@ -1517,11 +1519,12 @@ func (h *ProviderHandler) reloadProviderAfterCreate(ctx *fasthttp.RequestCtx, pr
 	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
+	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider, true)
 	return err
 }
 
-// attemptModelDiscovery performs model discovery with timeout
+// attemptModelDiscovery performs model discovery with timeout. It runs after an update, which edits
+// a provider the add endpoint created, so the reload is told the provider is not new.
 func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provider schemas.ModelProvider, customProviderConfig *schemas.CustomProviderConfig) error {
 	// Determine if we should attempt model discovery
 	shouldDiscoverModels := customProviderConfig == nil ||
@@ -1535,7 +1538,7 @@ func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provid
 	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
+	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider, false)
 	if err != nil {
 		return err
 	}
