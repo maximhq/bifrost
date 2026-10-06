@@ -119,6 +119,7 @@ type Bifrost struct {
 	account             schemas.Account                     // account interface
 	llmPlugins          atomic.Pointer[[]schemas.LLMPlugin] // list of llm plugins
 	mcpPlugins          atomic.Pointer[[]schemas.MCPPlugin] // list of mcp plugins
+	a2aPlugins          atomic.Pointer[[]schemas.A2APlugin] // list of a2a (agent gateway) plugins
 	providers           atomic.Pointer[[]schemas.Provider]  // list of providers
 	requestQueues       sync.Map                            // provider request queues (thread-safe), stores *ProviderQueue
 	waitGroups          sync.Map                            // wait groups for each provider (thread-safe)
@@ -220,6 +221,7 @@ func (pq *ProviderQueue) isClosing() bool {
 type PluginPipeline struct {
 	llmPlugins []schemas.LLMPlugin
 	mcpPlugins []schemas.MCPPlugin
+	a2aPlugins []schemas.A2APlugin
 	logger     schemas.Logger
 	tracer     schemas.Tracer
 
@@ -286,6 +288,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		account:       config.Account,
 		llmPlugins:    atomic.Pointer[[]schemas.LLMPlugin]{},
 		mcpPlugins:    atomic.Pointer[[]schemas.MCPPlugin]{},
+		a2aPlugins:    atomic.Pointer[[]schemas.A2APlugin]{},
 		requestQueues: sync.Map{},
 		waitGroups:    sync.Map{},
 		keySelector:   config.KeySelector,
@@ -302,8 +305,12 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	if config.MCPPlugins == nil {
 		config.MCPPlugins = make([]schemas.MCPPlugin, 0)
 	}
+	if config.A2APlugins == nil {
+		config.A2APlugins = make([]schemas.A2APlugin, 0)
+	}
 	bifrost.llmPlugins.Store(&config.LLMPlugins)
 	bifrost.mcpPlugins.Store(&config.MCPPlugins)
+	bifrost.a2aPlugins.Store(&config.A2APlugins)
 
 	// Initialize providers slice
 	bifrost.providers.Store(&[]schemas.Provider{})
@@ -3705,6 +3712,11 @@ func (bifrost *Bifrost) RemovePlugin(name string, pluginTypes []schemas.PluginTy
 			if err != nil {
 				return err
 			}
+		case schemas.PluginTypeA2A:
+			err := bifrost.removeA2APlugin(name)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -3782,6 +3794,42 @@ func (bifrost *Bifrost) removeMCPPlugin(name string) error {
 	}
 }
 
+// removeA2APlugin removes an A2A plugin from the server.
+func (bifrost *Bifrost) removeA2APlugin(name string) error {
+	for {
+		oldPlugins := bifrost.a2aPlugins.Load()
+		if oldPlugins == nil {
+			return nil
+		}
+		var pluginToCleanup schemas.A2APlugin
+		found := false
+		// Create new slice without the plugin to remove
+		newPlugins := make([]schemas.A2APlugin, 0, len(*oldPlugins))
+		for _, p := range *oldPlugins {
+			if p.GetName() == name {
+				pluginToCleanup = p
+				bifrost.logger.Debug("removing A2A plugin %s", name)
+				found = true
+			} else {
+				newPlugins = append(newPlugins, p)
+			}
+		}
+		if !found {
+			return nil
+		}
+		// Atomic compare-and-swap
+		if bifrost.a2aPlugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			// Cleanup the old plugin
+			err := pluginToCleanup.Cleanup()
+			if err != nil {
+				bifrost.logger.Warn("failed to cleanup old A2A plugin %s: %v", pluginToCleanup.GetName(), err)
+			}
+			return nil
+		}
+		// Retrying as swapping did not work
+	}
+}
+
 // ReloadPlugin reloads a plugin with new instance
 // During the reload - it's stop the world phase where we take a global lock on the plugin mutex
 func (bifrost *Bifrost) ReloadPlugin(plugin schemas.BasePlugin, pluginTypes []schemas.PluginType) error {
@@ -3802,6 +3850,15 @@ func (bifrost *Bifrost) ReloadPlugin(plugin schemas.BasePlugin, pluginTypes []sc
 				return fmt.Errorf("plugin %s is not an MCPPlugin", plugin.GetName())
 			}
 			err := bifrost.reloadMCPPlugin(mcpPlugin)
+			if err != nil {
+				return err
+			}
+		case schemas.PluginTypeA2A:
+			a2aPlugin, ok := plugin.(schemas.A2APlugin)
+			if !ok {
+				return fmt.Errorf("plugin %s is not an A2APlugin", plugin.GetName())
+			}
+			err := bifrost.reloadA2APlugin(a2aPlugin)
 			if err != nil {
 				return err
 			}
@@ -3899,7 +3956,49 @@ func (bifrost *Bifrost) reloadMCPPlugin(plugin schemas.MCPPlugin) error {
 	}
 }
 
-// ReorderPlugins reorders all plugin slices (LLM, MCP) to match the given
+// reloadA2APlugin reloads an A2A plugin with new instance
+func (bifrost *Bifrost) reloadA2APlugin(plugin schemas.A2APlugin) error {
+	for {
+		var pluginToCleanup schemas.A2APlugin
+		found := false
+		oldPlugins := bifrost.a2aPlugins.Load()
+		if oldPlugins == nil {
+			return nil
+		}
+		// Create new slice with replaced plugin
+		newPlugins := make([]schemas.A2APlugin, len(*oldPlugins))
+		copy(newPlugins, *oldPlugins)
+		for i, p := range newPlugins {
+			if p.GetName() == plugin.GetName() {
+				// Cleaning up old plugin before replacing it
+				pluginToCleanup = p
+				bifrost.logger.Debug("replacing A2A plugin %s with new instance", plugin.GetName())
+				newPlugins[i] = plugin
+				found = true
+				break
+			}
+		}
+		if !found {
+			// This means that user is adding a new plugin
+			bifrost.logger.Debug("adding new A2A plugin %s", plugin.GetName())
+			newPlugins = append(newPlugins, plugin)
+		}
+		// Atomic compare-and-swap
+		if bifrost.a2aPlugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			// Cleanup the old plugin
+			if found && pluginToCleanup != nil {
+				err := pluginToCleanup.Cleanup()
+				if err != nil {
+					bifrost.logger.Warn("failed to cleanup old A2A plugin %s: %v", pluginToCleanup.GetName(), err)
+				}
+			}
+			return nil
+		}
+		// Retrying as swapping did not work
+	}
+}
+
+// ReorderPlugins reorders all plugin slices (LLM, MCP, A2A) to match the given
 // base plugin name ordering. This should be called after SortAndRebuildPlugins
 // on the config layer to sync the core's execution order.
 // Plugins not in the ordering are appended at the end (defensive).
@@ -3910,9 +4009,10 @@ func (bifrost *Bifrost) ReorderPlugins(orderedNames []string) {
 	}
 	reorderAtomicSlice(&bifrost.llmPlugins, pos)
 	reorderAtomicSlice(&bifrost.mcpPlugins, pos)
+	reorderAtomicSlice(&bifrost.a2aPlugins, pos)
 }
 
-// pluginWithName is satisfied by both LLMPlugin and MCPPlugin.
+// pluginWithName is satisfied by LLMPlugin, MCPPlugin, and A2APlugin.
 type pluginWithName interface {
 	GetName() string
 }
@@ -9167,6 +9267,171 @@ func (p *PluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *s
 	return mcpResp, nil
 }
 
+// RunA2APreHooks executes A2A PreHooks in order for all registered A2A plugins.
+// It is the Agent Gateway counterpart of RunMCPPreHooks and follows the identical
+// contract: plugins may mutate the envelope, a returned Go error is non-blocking
+// (logged, appended, execution continues), and only a non-nil short-circuit aborts.
+// The returned count is how many pre-hooks ran, so the short-circuiting plugin
+// still receives its post-hook.
+func (p *PluginPipeline) RunA2APreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest, entered func(int)) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, int) {
+	// If the skip plugin pipeline flag is set, skip the plugin pipeline
+	if skipPluginPipeline, ok := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); ok && skipPluginPipeline {
+		return req, nil, 0
+	}
+	var shortCircuit *schemas.A2APluginShortCircuit
+	var err error
+	ctx.BlockRestrictedWrites()
+	defer ctx.UnblockRestrictedWrites()
+	for i, plugin := range p.a2aPlugins {
+		pluginName := plugin.GetName()
+		p.logger.Debug("running A2A pre-hook for plugin %s", pluginName)
+		// Start span for this plugin's PreA2AHook
+		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.a2a_prehook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		// Update pluginCtx with span context for nested operations
+		if spanCtx != nil {
+			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
+				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
+			}
+		}
+
+		pluginCtx := ctx.WithPluginScope(&pluginName)
+		if entered != nil {
+			entered(i + 1)
+		}
+		func() {
+			defer pluginCtx.ReleasePluginScope()
+			req, shortCircuit, err = plugin.PreA2AHook(pluginCtx, req)
+		}()
+
+		// End span with appropriate status
+		if err != nil {
+			p.tracer.SetAttribute(handle, "error", err.Error())
+			p.tracer.EndSpan(handle, schemas.SpanStatusError, err.Error())
+			p.preHookErrors = append(p.preHookErrors, err)
+			p.logger.Warn("error in PreA2AHook for plugin %s: %s", pluginName, err.Error())
+		} else if shortCircuit != nil {
+			p.tracer.SetAttribute(handle, "short_circuit", true)
+			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "short-circuit")
+		} else {
+			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+		}
+
+		p.executedPreHooks = i + 1
+		if shortCircuit != nil {
+			return req, shortCircuit, p.executedPreHooks // short-circuit: only plugins up to and including i ran
+		}
+	}
+	return req, nil, p.executedPreHooks
+}
+
+// RunA2APostHooks executes A2A PostHooks in reverse order for the plugins whose
+// PreA2AHook ran, mirroring RunMCPPostHooks. A plugin may recover an error by
+// nilling it and supplying a response, or invalidate a response by nilling it and
+// setting an error; an entirely empty error is treated as a recovery.
+func (p *PluginPipeline) RunA2APostHooks(ctx *schemas.BifrostContext, a2aResp *schemas.BifrostA2AResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostA2AResponse, *schemas.BifrostError) {
+	// If the skip plugin pipeline flag is set, skip the plugin pipeline
+	if skipPluginPipeline, ok := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); ok && skipPluginPipeline {
+		return a2aResp, bifrostErr
+	}
+	// Defensive: ensure count is within valid bounds
+	if runFrom < 0 {
+		runFrom = 0
+	}
+	if runFrom > len(p.a2aPlugins) {
+		runFrom = len(p.a2aPlugins)
+	}
+	ctx.BlockRestrictedWrites()
+	defer ctx.UnblockRestrictedWrites()
+	var err error
+	for i := runFrom - 1; i >= 0; i-- {
+		plugin := p.a2aPlugins[i]
+		pluginName := plugin.GetName()
+		p.logger.Debug("running A2A post-hook for plugin %s", pluginName)
+		// Create span per plugin
+		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.a2a_posthook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		// Update pluginCtx with span context for nested operations
+		if spanCtx != nil {
+			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
+				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
+			}
+		}
+
+		pluginCtx := ctx.WithPluginScope(&pluginName)
+		panicked := false
+		func() {
+			defer pluginCtx.ReleasePluginScope()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					panicked = true
+					panicErr := fmt.Errorf("panic in A2A post-hook for plugin %s: %v", pluginName, recovered)
+					p.tracer.SetAttribute(handle, "error", panicErr.Error())
+					p.tracer.EndSpan(handle, schemas.SpanStatusError, panicErr.Error())
+					p.postHookErrors = append(p.postHookErrors, panicErr)
+					p.logger.Warn("%v", panicErr)
+					bifrostErr = &schemas.BifrostError{
+						IsBifrostError: true,
+						StatusCode:     schemas.Ptr(500),
+						Error:          &schemas.ErrorField{Message: panicErr.Error(), Error: panicErr},
+					}
+				}
+			}()
+			a2aResp, bifrostErr, err = plugin.PostA2AHook(pluginCtx, a2aResp, bifrostErr)
+		}()
+
+		// End span with appropriate status
+		if panicked {
+			continue
+		}
+		if err != nil {
+			p.tracer.SetAttribute(handle, "error", err.Error())
+			p.tracer.EndSpan(handle, schemas.SpanStatusError, err.Error())
+			p.postHookErrors = append(p.postHookErrors, err)
+			p.logger.Warn("error in PostA2AHook for plugin %s: %v", pluginName, err)
+		} else {
+			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+		}
+	}
+	// Final logic: if both are set, error takes precedence, unless error is nil
+	if bifrostErr != nil {
+		if a2aResp != nil && bifrostErr.StatusCode == nil && bifrostErr.Error != nil && bifrostErr.Error.Type == nil &&
+			bifrostErr.Error.Message == "" && bifrostErr.Error.Error == nil {
+			// Defensive: treat as recovery if error is empty
+			return a2aResp, nil
+		}
+		return a2aResp, bifrostErr
+	}
+	return a2aResp, nil
+}
+
+// ObserveA2AEvent dispatches an immutable event observation only to optional
+// observers in the already-entered operation pipeline generation. This is not a
+// hook phase: it cannot mutate, govern, short-circuit, or affect forwarding.
+func (p *PluginPipeline) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent, runThrough int) {
+	if ctx == nil || event == nil {
+		return
+	}
+	if runThrough > len(p.a2aPlugins) {
+		runThrough = len(p.a2aPlugins)
+	}
+	for i := 0; i < runThrough; i++ {
+		observer, ok := p.a2aPlugins[i].(schemas.A2AEventObserver)
+		if !ok {
+			continue
+		}
+		pluginName := p.a2aPlugins[i].GetName()
+		pluginCtx := ctx.WithPluginScope(&pluginName)
+		func() {
+			defer pluginCtx.ReleasePluginScope()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					p.logger.Warn("panic in A2A event observer for plugin %s: %v", pluginName, recovered)
+				}
+			}()
+			observer.ObserveA2AEvent(pluginCtx, event)
+		}()
+	}
+}
+
 // RunMCPPreConnectionHooks executes typed Connect PreHooks in order for plugins
 // implementing MCPConnectionPlugin. Plugins that only implement MCPPlugin (no typed
 // Connect methods) are silently skipped — they cannot observe or intercept the
@@ -9293,6 +9558,7 @@ func (p *PluginPipeline) resetPluginPipeline() {
 	// only affects GC hygiene — important when plugins are hot-swapped.
 	p.llmPlugins = nil
 	p.mcpPlugins = nil
+	p.a2aPlugins = nil
 	p.executedPreHooks = 0
 	clear(p.preHookErrors)
 	p.preHookErrors = p.preHookErrors[:0]
@@ -9472,6 +9738,7 @@ func (bifrost *Bifrost) getPluginPipeline() *PluginPipeline {
 	pipeline := bifrost.pluginPipelinePool.Get().(*PluginPipeline)
 	pipeline.llmPlugins = *bifrost.llmPlugins.Load()
 	pipeline.mcpPlugins = *bifrost.mcpPlugins.Load()
+	pipeline.a2aPlugins = *bifrost.a2aPlugins.Load()
 	pipeline.logger = bifrost.logger
 	pipeline.tracer = bifrost.getTracer()
 	return pipeline
@@ -9483,6 +9750,25 @@ func (bifrost *Bifrost) getPluginPipeline() *PluginPipeline {
 func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
 	pipeline.resetPluginPipeline()
 	bifrost.pluginPipelinePool.Put(pipeline)
+}
+
+// AcquirePluginPipeline hands out a configured PluginPipeline from the pool for
+// callers outside this package that run a typed hook phase themselves — today the
+// Agent Gateway's A2A gate. Every acquired pipeline must be handed back through
+// ReleasePluginPipeline. It is the exported analogue of the provider closures the
+// MCP manager receives through MCPConfig.
+func (bifrost *Bifrost) AcquirePluginPipeline() *PluginPipeline {
+	return bifrost.getPluginPipeline()
+}
+
+// ReleasePluginPipeline returns a pipeline acquired through AcquirePluginPipeline
+// to the pool, resetting it first. It is nil-safe so callers can defer it
+// unconditionally.
+func (bifrost *Bifrost) ReleasePluginPipeline(pipeline *PluginPipeline) {
+	if pipeline == nil {
+		return
+	}
+	bifrost.releasePluginPipeline(pipeline)
 }
 
 // POOL & RESOURCE MANAGEMENT
