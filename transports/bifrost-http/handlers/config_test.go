@@ -458,6 +458,34 @@ func TestGetPasswordPolicyFailures(t *testing.T) {
 	}
 }
 
+func TestUpdateConfig_A2AExternalClientURLPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.A2AExternalClientURL = schemas.NewSecretVar("https://bifrost.example.com")
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	require.NotNil(t, cfg.ClientConfig.A2AExternalClientURL)
+	assert.Equal(t, "https://bifrost.example.com", cfg.ClientConfig.A2AExternalClientURL.GetValue())
+	persisted, err := store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted.A2AExternalClientURL)
+	assert.Equal(t, "https://bifrost.example.com", persisted.A2AExternalClientURL.GetValue())
+
+	cleared := putConfigCtx(`{"client_config":{"log_retention_days":8,"a2a_external_client_url":null}}`)
+	h.updateConfig(cleared)
+	require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
+	assert.Nil(t, cfg.ClientConfig.A2AExternalClientURL)
+	persisted, err = store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted.A2AExternalClientURL)
+	assert.Empty(t, persisted.A2AExternalClientURL.GetValue())
+}
+
 // TestUpdateConfig_EmptyDatasheetURLsResetToDefaults pins the regression where
 // PUT /api/config rejected an empty pricing_url with "URL cannot be empty".
 // The custom pricing page sends "" when the user clears the field; an empty

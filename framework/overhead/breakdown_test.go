@@ -5,7 +5,17 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/logstore"
 )
+
+func TestPushDatabaseProcessingCategory(t *testing.T) {
+	for _, phase := range []string{"authenticate", "bind", "enqueue", "config", "outcome", "local", "save", "delete", "list-due", "prune"} {
+		name := "a2a.push.db." + phase
+		if got := MetricComponent(logstore.OverheadBucket{Name: name, Kind: string(schemas.SpanKindInternal)}); got != CategoryProcessing {
+			t.Errorf("%s: got %s, want processing", name, got)
+		}
+	}
+}
 
 // span builds a finished span at the given millisecond offsets from base.
 func span(base time.Time, id, parent, name string, kind schemas.SpanKind, startMs, endMs int) *schemas.Span {
@@ -364,4 +374,47 @@ func overheadForTest(trace *schemas.Trace) map[string]float64 {
 		return map[string]float64{}
 	}
 	return got
+}
+
+// The A2A layout: the op span (excluded from buckets) is a direct child of the
+// a2a.dispatch span, so the upstream wait inside it subtracts from dispatch
+// self-time instead of surfacing as dispatch overhead.
+func TestComputeOverheadBreakdown_A2ADispatchExcludesOperationWindow(t *testing.T) {
+	base := time.Now()
+	trace := &schemas.Trace{Spans: []*schemas.Span{
+		span(base, "root", "", "/agents/a2a/x/json-rpc", schemas.SpanKindHTTPRequest, 0, 110),
+		span(base, "dispatch", "root", "a2a.dispatch", schemas.SpanKindInternal, 2, 108),
+		span(base, "pre", "dispatch", "plugin.governance.a2a_prehook", schemas.SpanKindPlugin, 3, 5),
+		span(base, "op", "dispatch", "a2a.message.x", schemas.SpanKindA2AOperation, 5, 105),
+	}}
+
+	got := bucketMap(t, trace, 8, true)
+
+	// dispatch self-time = 106 - 2 (prehook) - 100 (op window) = 4ms; the op's
+	// upstream wait must not be attributed to dispatch.
+	if got["a2a.dispatch"] != 4000 {
+		t.Errorf("a2a.dispatch = %v us, want 4000", got["a2a.dispatch"])
+	}
+	if _, ok := got["a2a.message.x"]; ok {
+		t.Errorf("op span must not produce a bucket: %v", got)
+	}
+}
+
+// The A2A agent-gateway phase buckets must map to their categories (kept in sync
+// with OVERHEAD_BUCKET_CATEGORY in ui/components/logs/overheadBreakdown.tsx), not
+// fall through to "other".
+func TestMetricComponent_A2APhaseBuckets(t *testing.T) {
+	want := map[string]string{
+		"a2a.normalize": CategorySerialization,
+		"a2a.auth":      CategoryMiddleware,
+		"a2a.prepare":   CategoryProcessing,
+		"a2a.encode":    CategorySerialization,
+		"a2a.dispatch":  CategoryProtocolSDK,
+	}
+	for name, category := range want {
+		got := MetricComponent(logstore.OverheadBucket{Name: name, Kind: string(schemas.SpanKindInternal)})
+		if got != category {
+			t.Errorf("MetricComponent(%q) = %q, want %q", name, got, category)
+		}
+	}
 }

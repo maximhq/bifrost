@@ -4,7 +4,7 @@ package schemas
 //
 // BifrostRoutingMetadata is the request-scoped accounting handoff for internal
 // calls made by the routing plugin: a semantic classification embed, an llm
-// classifier chat completion, a Jev decision, or a semantic embed followed by
+// classifier chat completion, a decision-model call, or a semantic embed followed by
 // one configured classifier fallback. It is not general routing-decision
 // metadata such as the selected tier, rule, provider, or model.
 //

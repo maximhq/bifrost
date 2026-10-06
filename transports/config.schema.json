@@ -24,6 +24,14 @@
             "type": "string"
           },
           "description": "Hostnames, IP addresses, or CIDR ranges that custom plugin (.so) downloads are allowed to reach even when they resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted internal artifact hosts. Deploy-time only - read from config.json/environment at startup, never settable via the plugin admin API."
+        },
+        "a2a_grpc_base_domain": {
+          "type": "string",
+          "description": "Base domain for the Agent Gateway's shared gRPC listener. Served agent cards advertise per-agent hostnames (<agent-name>.<base-domain>:<port>); a wildcard DNS record for *.<base-domain> must point at this server, and requests are routed by the first DNS label of the dialed authority. Deploy-time only; gRPC stays disabled while this or a2a_grpc_port is unset."
+        },
+        "a2a_grpc_port": {
+          "type": "integer",
+          "description": "Advertised (public) port for the Agent Gateway's shared gRPC listener. When a load balancer or port mapping sits in front, the BIFROST_A2A_GRPC_LISTEN_PORT environment variable overrides the local bind port without changing what agent cards advertise. Deploy-time only; gRPC stays disabled while this or a2a_grpc_base_domain is unset."
         }
       },
       "required": [
@@ -394,6 +402,40 @@
             }
           ],
           "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax: \"env.MY_VAR\"."
+        },
+        "a2a_external_client_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "plain_text",
+                    "env",
+                    "vault"
+                  ]
+                },
+                "env_var": {
+                  "type": "string"
+                },
+                "from_env": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Bifrost's public base URL for the Agent Gateway, used in served agent cards and push-notification callback URLs. If unset, served agent cards fall back to the incoming Host header and A2A push notifications are disabled. Supports env var syntax: \"env.MY_VAR\"."
         },
         "mcp_server_auth_mode": {
           "type": "string",
@@ -1269,6 +1311,13 @@
                 "items": {
                   "$ref": "#/$defs/virtual_key_mcp_config"
                 }
+              },
+              "agent_grants": {
+                "type": "array",
+                "description": "Agent grants directly assigned to this virtual key (empty array means no agents allowed, deny-by-default)",
+                "items": {
+                  "$ref": "#/$defs/virtual_key_agent_grant"
+                }
               }
             },
             "required": [
@@ -2075,6 +2124,72 @@
           "name",
           "url",
           "events"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "agents": {
+      "type": "array",
+      "description": "Declarative A2A agent registrations reconciled into the config store at startup. Matching is by name with hash-based change detection: entries are created if new and updated if changed. In 'split' source-of-truth mode other stored registrations are left untouched; in 'config.json' mode stored registrations absent from this list are pruned.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique registration name (URL-safe slug). Forms the gateway routes /agents/a2a/<name>/... and the gRPC hostname label."
+          },
+          "agent_card_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
+            "description": "Absolute http(s) URL of the upstream agent's Agent Card (typically .../.well-known/agent-card.json)."
+          },
+          "tenant": {
+            "type": "string",
+            "description": "Optional tenant label for the registration."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the agent is enabled (default: true when omitted)."
+          },
+          "allow_by_default": {
+            "type": "boolean",
+            "description": "Allow access for any identified caller without an explicit virtual-key grant (default: false)."
+          },
+          "forward_accepted_credential": {
+            "type": "boolean",
+            "description": "Forward the accepted Bifrost credential to the upstream agent so its callback LLM/MCP requests route back through Bifrost (default: false)."
+          },
+          "forward_accepted_credential_overrides_auth": {
+            "type": "boolean",
+            "description": "When forwarding the accepted credential, replace the configured runtime auth Authorization header with it instead of sending it alongside (default: false)."
+          },
+          "discovery_auth": {
+            "$ref": "#/$defs/agent_upstream_auth",
+            "description": "Authentication used when fetching the upstream Agent Card."
+          },
+          "runtime_auth": {
+            "$ref": "#/$defs/agent_upstream_auth",
+            "description": "Authentication attached to proxied upstream agent requests."
+          },
+          "extension_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A2A extension URIs to activate for this agent."
+          },
+          "virtual_key_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Virtual key IDs granted access to this agent. Declares the exact grant set: changes here are reconciled like any other field."
+          }
+        },
+        "required": [
+          "name",
+          "agent_card_url"
         ],
         "additionalProperties": false
       }
@@ -4969,7 +5084,7 @@
       },
       "additionalProperties": false
     },
-    "complexity_jev_tier_criteria": {
+    "complexity_decision_tier_criteria": {
       "type": "object",
       "properties": {
         "definition": {
@@ -5533,6 +5648,22 @@
       ],
       "additionalProperties": false
     },
+    "virtual_key_agent_grant": {
+      "type": "object",
+      "description": "Agent grant for a virtual key",
+      "properties": {
+        "virtual_key_id": {
+          "type": "string",
+          "description": "Associated virtual key ID"
+        },
+        "agent_name": {
+          "type": "string",
+          "description": "Registered agent name granted to this virtual key"
+        }
+      },
+      "required": ["agent_name"],
+      "additionalProperties": false
+    },
     "virtual_key_mcp_config": {
       "type": "object",
       "description": "MCP configuration for a virtual key",
@@ -5690,7 +5821,7 @@
     },
     "complexity_analyzer_config": {
       "type": "object",
-      "description": "Runtime configuration for complexity_tier CEL routing with Semantic or Typesafe Jev classification",
+      "description": "Runtime configuration for complexity_tier CEL routing with semantic or decision-model classification",
       "properties": {
         "tier_boundaries": {
           "$ref": "#/$defs/complexity_tier_boundaries"
@@ -5702,7 +5833,7 @@
           "type": "string",
           "enum": [
             "semantic",
-            "jev"
+            "decision"
           ],
           "default": "semantic",
           "description": "Primary complexity classifier. Defaults to semantic."
@@ -5710,8 +5841,8 @@
         "semantic": {
           "$ref": "#/$defs/complexity_semantic_config"
         },
-        "jev": {
-          "$ref": "#/$defs/complexity_jev_config"
+        "decision": {
+          "$ref": "#/$defs/complexity_decision_config"
         },
         "llm": {
           "$ref": "#/$defs/complexity_llm_config"
@@ -5747,7 +5878,7 @@
               ],
               "properties": {
                 "classifier": {
-                  "const": "jev"
+                  "const": "decision"
                 }
               }
             }
@@ -5857,9 +5988,9 @@
           "enum": [
             "none",
             "llm",
-            "jev"
+            "decision"
           ],
-          "description": "What answers when semantic classification produces no tier: none (default), the configured llm classifier, or Typesafe Jev."
+          "description": "What answers when semantic classification produces no tier: none (default), the configured llm classifier, or the configured decision model."
         }
       },
       "required": [
@@ -7544,6 +7675,143 @@
         "keys"
       ],
       "additionalProperties": false
+    },
+    "agent_upstream_auth": {
+      "type": "object",
+      "description": "Authentication for upstream A2A agent requests. Secret values support env.<VAR> and vault.<key> references.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "none",
+            "headers",
+            "oauth"
+          ],
+          "description": "Authentication type."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Headers to attach (for type 'headers'). Values can use env. or vault. prefix."
+        },
+        "oauth": {
+          "type": "object",
+          "description": "OAuth client-credentials configuration (for type 'oauth').",
+          "properties": {
+            "provider_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
+            },
+            "discovery_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
+            },
+            "token_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
+            },
+            "client_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "OAuth client ID (can use env. or vault. prefix)."
+            },
+            "client_secret": {
+              "type": "string",
+              "minLength": 1,
+              "description": "OAuth client secret (can use env. or vault. prefix)."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "resource": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "security_schemes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Agent Card security scheme names this auth satisfies."
+        },
+        "advanced": {
+          "type": "boolean"
+        },
+        "tls": {
+          "type": "object",
+          "description": "Upstream TLS overrides.",
+          "properties": {
+            "insecure_skip_verify": {
+              "type": "boolean"
+            },
+            "ca_cert_pem": {
+              "type": "string"
+            },
+            "client_cert_pem": {
+              "type": "string"
+            },
+            "client_key_pem": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "oauth"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "oauth"
+            ],
+            "properties": {
+              "oauth": {
+                "required": [
+                  "client_id",
+                  "client_secret"
+                ],
+                "anyOf": [
+                  {
+                    "required": [
+                      "provider_url"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "discovery_url"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "token_url"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "mcp_client_config": {
       "type": "object",
@@ -12145,10 +12413,18 @@
         "additionalProperties": false
       }
     },
-    "complexity_jev_config": {
+    "complexity_decision_config": {
       "type": "object",
-      "description": "Typesafe Jev complexity-classifier request settings. Uses the configured Typesafe provider credentials.",
+      "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
       "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider serving the decision model, e.g. typesafe, or a custom provider with base_provider_type typesafe (Laya, Nimble, Clef). Set together with model; leave both empty for typesafe/jev-latest."
+        },
+        "model": {
+          "type": "string",
+          "description": "Decision model to call on the provider, e.g. jev-latest, nimble-latest, english, clef. Set together with provider; leave both empty for typesafe/jev-latest."
+        },
         "previous_message_count": {
           "type": "integer",
           "minimum": 0,
@@ -12157,7 +12433,7 @@
           "description": "Number of preceding user messages sent with the current request. Assistant messages are excluded."
         },
         "timeout": {
-          "description": "Maximum Jev classification latency (duration string or milliseconds as a number; default 1500ms).",
+          "description": "Maximum decision-model classification latency (duration string or milliseconds as a number; default 1500ms).",
           "oneOf": [
             {
               "type": "string",
@@ -12172,11 +12448,11 @@
         },
         "criteria": {
           "type": "object",
-          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+          "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
           "properties": {
-            "SIMPLE": { "$ref": "#/$defs/complexity_jev_tier_criteria" },
-            "MEDIUM": { "$ref": "#/$defs/complexity_jev_tier_criteria" },
-            "COMPLEX": { "$ref": "#/$defs/complexity_jev_tier_criteria" }
+            "SIMPLE": { "$ref": "#/$defs/complexity_decision_tier_criteria" },
+            "MEDIUM": { "$ref": "#/$defs/complexity_decision_tier_criteria" },
+            "COMPLEX": { "$ref": "#/$defs/complexity_decision_tier_criteria" }
           },
           "additionalProperties": false
         }

@@ -1807,3 +1807,44 @@ func TestResponsesMessageUnmarshalReasoningWrapperSummary(t *testing.T) {
 		assert.Nil(t, msg.ResponsesReasoning)
 	})
 }
+
+// An output_text history block that omits logprobs must not gain "logprobs": null on
+// re-marshal (strict upstreams 400 on it), while an explicit empty array stays an array.
+func TestResponsesOutputTextLogProbsNotNulled(t *testing.T) {
+	for _, tc := range []struct {
+		name, in string
+		want     string // raw logprobs JSON expected on the wire, "" = absent
+	}{
+		{"annotations_without_logprobs", `{"type":"output_text","text":"Previous answer.","annotations":[]}`, ""},
+		{"empty_logprobs_preserved", `{"type":"output_text","text":"Previous answer.","annotations":[],"logprobs":[]}`, "[]"},
+		{"populated_logprobs_preserved", `{"type":"output_text","text":"a","annotations":[],"logprobs":[{"bytes":[97],"logprob":-0.1,"token":"a","top_logprobs":[]}]}`, `[{"bytes":[97],"logprob":-0.1,"token":"a","top_logprobs":[]}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var block ResponsesMessageContentBlock
+			require.NoError(t, Unmarshal([]byte(tc.in), &block))
+			out, err := MarshalSorted(block)
+			require.NoError(t, err)
+			var got map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(out, &got))
+			raw, present := got["logprobs"]
+			if tc.want == "" {
+				assert.False(t, present, "logprobs must stay absent, got %s", out)
+				return
+			}
+			require.True(t, present, "logprobs must be present, got %s", out)
+			assert.JSONEq(t, tc.want, string(raw))
+		})
+	}
+
+	// Egress still emits the empty array that OpenAI-compliant output_text carries.
+	out, err := MarshalSorted(ResponsesMessageContentBlock{
+		Type: ResponsesOutputMessageContentTypeText,
+		Text: Ptr("hi"),
+		ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+			Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+			LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+		},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"logprobs":[]`)
+}

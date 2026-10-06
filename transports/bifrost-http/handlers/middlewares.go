@@ -1054,6 +1054,22 @@ func fasthttpResponseToHTTPResponse(ctx *fasthttp.RequestCtx, resp *schemas.HTTP
 	if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
 		return
 	}
+	// Same rule for any handler that installed a body stream directly without the
+	// defer-trace flag, e.g. the Agent Gateway SSE bridge. Body() on a body-stream
+	// response blocks until upstream EOF and drains the stream into memory, so the
+	// downstream client would receive nothing until the stream ended.
+	//
+	// Such handlers intentionally do not use DeferTraceCompletion: that flag exists
+	// for LLM/MCP streaming, whose authoritative telemetry (trace completion,
+	// transport post-hooks) is produced by this middleware chain and must therefore
+	// be deferred until the stream drains. The Agent Gateway records its telemetry
+	// in the A2A plugin pipeline instead (per-event rows during the stream, and the
+	// aggregate row with full-stream latency in PostA2A at stream end), so it needs
+	// nothing deferred here — only this guard, so the post-hook body capture never
+	// touches a live stream.
+	if ctx.Response.IsBodyStream() {
+		return
+	}
 	// Skip response body copy when large payload/response mode is active — the response is
 	// streamed directly to the client and materializing it here would spike memory.
 	if isLargePayload, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {

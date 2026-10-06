@@ -142191,6 +142191,339 @@
               }
             }
           ]
+        },
+        {
+          "name": "azure/gpt-5.6-luna /bedrock converse turn 2: replayed redactedContent keeps its upstream reasoning item id, no strip-and-retry (#7729) - converse-redacted-reasoning",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('converseReasoningItemIdRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Azure binds encrypted reasoning to the item id it issued it under. Converse has no field",
+                  "// for that id, so it must ride inside the redactedContent blob Bifrost wraps. Without it the",
+                  "// replay minted rs_<UnixNano>, Azure answered 400 \"Encrypted content item_id did not match the",
+                  "// target item id\", and the strip-and-retry fail-soft answered 200 with the reasoning dropped.",
+                  "// The row above only sees that 200, so this row reads the provider-bound request back from the",
+                  "// log. The unit test TestConverseRedactedContentReplayKeepsReasoningItemID pins the exact id.",
+                  "var body = pm.response.text() || '';",
+                  "var reqId = pm.variables.get('converseReasoningItemIdRequestId');",
+                  "var BIFROST_MINTED = /^rs_[0-9]{19}$/;",
+                  "pm.test('capture turn produced a conversation to replay', function () {",
+                  "  pm.expect(pm.request.body.raw.indexOf('{{'), 'turn 1 did not set bedrockConverseForeignRedactedMessages, so nothing was replayed').to.equal(-1);",
+                  "});",
+                  "pm.test('replayed turn answered', function () {",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "});",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = null;",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      row = res.json();",
+                  "      rr = row.raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var trail = row.attempt_trail || [];",
+                  "      var engine = String(row.routing_engine_logs || '');",
+                  "      pm.test('the replay reached Azure on the first attempt, with no strip-and-retry', function () {",
+                  "        var failed = trail.filter(function (a) { return a && a.fail_reason; });",
+                  "        pm.expect(failed, 'an attempt failed before the answer, so Azure rejected the replayed reasoning: ' + JSON.stringify(trail)).to.be.empty;",
+                  "        pm.expect(engine, 'Bifrost stripped the reasoning and retried, so the model answered without it: ' + engine.slice(0, 400)).to.not.include('Stripped unverifiable encrypted reasoning');",
+                  "      });",
+                  "      pm.test('the reasoning item reached Azure under its upstream id', function () {",
+                  "        var input = Array.isArray(rr.input) ? rr.input : [];",
+                  "        var reasoning = input.filter(function (i) { return i && i.type === 'reasoning' && i.encrypted_content; });",
+                  "        pm.expect(reasoning.length, 'no reasoning item with encrypted_content reached Azure: ' + JSON.stringify(rr).slice(0, 400)).to.be.above(0);",
+                  "        reasoning.forEach(function (i) {",
+                  "          pm.expect(BIFROST_MINTED.test(String(i.id)), 'the replay carried Bifrost-minted id ' + i.id + ' instead of the id Azure bound the token to').to.be.false;",
+                  "        });",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-5.6-luna",
+                "converse"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":{{bedrockConverseForeignRedactedMessages}},\"inferenceConfig\":{\"maxTokens\":2048},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"none\",\"toolConfig\":{\"tools\":[{\"toolSpec\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"inputSchema\":{\"json\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}}],\"toolChoice\":{\"auto\":{}}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "azure/gpt-5.6-luna /bedrock converse turn 1: summarized reasoning comes back as signed reasoningText (#7730) - converse-redacted-reasoning",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// When Azure returns a reasoning item with a summary, the Converse response carries the",
+                  "// summary as reasoningText and the encrypted token as its signature. The next row replays",
+                  "// that block unchanged, so this row must prove one came back.",
+                  "var body = pm.response.text() || '';",
+                  "var j = null;",
+                  "var signed = [];",
+                  "pm.test('capture turn returns signed reasoningText', function () {",
+                  "  pm.expect(pm.response.code, 'capture request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  j = pm.response.json();",
+                  "  var content = ((j.output || {}).message || {}).content || [];",
+                  "  signed = content.filter(function (c) { return c && c.reasoningContent && c.reasoningContent.reasoningText && c.reasoningContent.reasoningText.signature; });",
+                  "  pm.expect(signed.length, 'no reasoningText with a signature came back, so the replay row would test nothing - Azure returned no summary, or the token was dropped: ' + body.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "// Save the conversation only when the capture proved what turn 2 needs, so a failed",
+                  "// capture fails here instead of cascading into a misleading replay error. The replay",
+                  "// carries output.message exactly as Bifrost sent it: its source text is cut out of the",
+                  "// response body rather than re-serialized from the parsed copy, so no escape or number",
+                  "// is rewritten on the way back. The parsed copy only drives the assertions above.",
+                  "function rawJsonAt(text, path) {",
+                  "  var i = 0;",
+                  "  function ws() { while (i < text.length && ' \\t\\n\\r'.indexOf(text[i]) !== -1) { i++; } }",
+                  "  function str() { var s = i; i++; while (i < text.length && text[i] !== '\"') { if (text[i] === '\\\\') { i++; } i++; } i++; return text.slice(s, i); }",
+                  "  function skip() {",
+                  "    ws();",
+                  "    if (text[i] === '\"') { str(); return; }",
+                  "    if (text[i] === '{' || text[i] === '[') {",
+                  "      var depth = 0;",
+                  "      do {",
+                  "        if (text[i] === '\"') { str(); continue; }",
+                  "        if (text[i] === '{' || text[i] === '[') { depth++; } else if (text[i] === '}' || text[i] === ']') { depth--; }",
+                  "        i++;",
+                  "      } while (depth > 0 && i < text.length);",
+                  "      return;",
+                  "    }",
+                  "    while (i < text.length && ',}] \\t\\n\\r'.indexOf(text[i]) === -1) { i++; }",
+                  "  }",
+                  "  for (var p = 0; p < path.length; p++) {",
+                  "    ws();",
+                  "    if (text[i] !== '{') { return null; }",
+                  "    i++;",
+                  "    for (;;) {",
+                  "      ws();",
+                  "      if (i >= text.length || text[i] === '}') { return null; }",
+                  "      var key = JSON.parse(str());",
+                  "      ws();",
+                  "      i++;",
+                  "      if (key === path[p]) { break; }",
+                  "      skip();",
+                  "      ws();",
+                  "      if (text[i] === ',') { i++; }",
+                  "    }",
+                  "  }",
+                  "  ws();",
+                  "  var start = i;",
+                  "  skip();",
+                  "  return text.slice(start, i);",
+                  "}",
+                  "try {",
+                  "  var rawMsg = rawJsonAt(body, ['output', 'message']);",
+                  "  if (rawMsg && signed.length) {",
+                  "    // The signature is brid_<id>:<token> when Bifrost carries the upstream id inside it.",
+                  "    var sig = String(signed[0].reasoningContent.reasoningText.signature);",
+                  "    var m = /^brid_([^:]+):([\\s\\S]*)$/.exec(sig);",
+                  "    pm.collectionVariables.set('bedrockConverseReasoningTextToken', m ? m[2] : sig);",
+                  "    pm.collectionVariables.set('bedrockConverseReasoningTextItemId', m ? m[1] : '');",
+                  "    pm.collectionVariables.set(",
+                  "      'bedrockConverseReasoningTextMessages',",
+                  "      '[{\"role\":\"user\",\"content\":[{\"text\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]},' +",
+                  "        rawMsg +",
+                  "        ',{\"role\":\"user\",\"content\":[{\"text\":\"Now restate the meeting time in one sentence.\"}]}]'",
+                  "    );",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-5.6-luna",
+                "converse"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}],\"inferenceConfig\":{\"maxTokens\":2048},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"detailed\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "azure/gpt-5.6-luna /bedrock converse turn 2: replayed reasoningText reaches Azure as encrypted_content under its upstream id (#7730) - converse-redacted-reasoning",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('converseReasoningTextReplayRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Replayed unchanged, the reasoningText signature used to stay a content-block signature",
+                  "// only: encrypted_content stayed empty, the OpenAI converter dropped the content-only item,",
+                  "// and Azure answered 200 without the earlier reasoning. The token must reach Azure as",
+                  "// encrypted_content, under the id Azure bound it to. A 200 alone proves none of that, so",
+                  "// this row reads the provider-bound request back from the log. The unit test",
+                  "// TestConverseReasoningTextReplayReachesOpenAIUpstream pins the exact bytes.",
+                  "var body = pm.response.text() || '';",
+                  "var reqId = pm.variables.get('converseReasoningTextReplayRequestId');",
+                  "var token = pm.collectionVariables.get('bedrockConverseReasoningTextToken');",
+                  "var BIFROST_MINTED = /^rs_[0-9]{19}$/;",
+                  "pm.test('capture turn produced a conversation to replay', function () {",
+                  "  pm.expect(pm.request.body.raw.indexOf('{{'), 'turn 1 did not set bedrockConverseReasoningTextMessages, so nothing was replayed').to.equal(-1);",
+                  "});",
+                  "pm.test('replayed turn answered', function () {",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "});",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = null;",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      row = res.json();",
+                  "      rr = row.raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var trail = row.attempt_trail || [];",
+                  "      var engine = String(row.routing_engine_logs || '');",
+                  "      pm.test('the replay reached Azure on the first attempt, with no strip-and-retry', function () {",
+                  "        var failed = trail.filter(function (a) { return a && a.fail_reason; });",
+                  "        pm.expect(failed, 'an attempt failed before the answer, so Azure rejected the replayed reasoning: ' + JSON.stringify(trail)).to.be.empty;",
+                  "        pm.expect(engine, 'Bifrost stripped the reasoning and retried, so the model answered without it: ' + engine.slice(0, 400)).to.not.include('Stripped unverifiable encrypted reasoning');",
+                  "      });",
+                  "      pm.test('the reasoningText signature reached Azure as encrypted_content under its upstream id', function () {",
+                  "        var input = Array.isArray(rr.input) ? rr.input : [];",
+                  "        var reasoning = input.filter(function (i) { return i && i.type === 'reasoning' && i.encrypted_content; });",
+                  "        pm.expect(reasoning.length, 'no reasoning item with encrypted_content reached Azure - the replayed reasoningText was dropped: ' + JSON.stringify(rr).slice(0, 400)).to.be.above(0);",
+                  "        pm.expect(reasoning.some(function (i) { return i.encrypted_content === token; }), 'the token Azure issued did not come back byte for byte').to.be.true;",
+                  "        var wantId = pm.collectionVariables.get('bedrockConverseReasoningTextItemId');",
+                  "        pm.expect(wantId, 'turn 1 carried no upstream id in its reasoningText signature, so the id never reached the client').to.be.a('string').and.not.empty;",
+                  "        pm.expect(reasoning.some(function (i) { return i.encrypted_content === token && i.id === wantId; }), 'the token did not reach Azure under upstream id ' + wantId + ', got ' + JSON.stringify(reasoning.map(function (i) { return i.id; }))).to.be.true;",
+                  "        reasoning.forEach(function (i) {",
+                  "          pm.expect(BIFROST_MINTED.test(String(i.id)), 'the replay carried Bifrost-minted id ' + i.id + ' instead of the id Azure bound the token to').to.be.false;",
+                  "        });",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-5.6-luna",
+                "converse"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":{{bedrockConverseReasoningTextMessages}},\"inferenceConfig\":{\"maxTokens\":1024},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"detailed\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -172733,8 +173066,10 @@
                   "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
                   "});",
                   "if (!rr) { return; }",
-                  "pm.test('115.3 Sol preserves reasoning_effort none on the wire', function () {",
-                  "  pm.expect(rr.reasoning_effort).to.eql('none');",
+                  "pm.test('115.3 Sol chat is routed to Responses and keeps reasoning effort none on the wire', function () {",
+                  "  pm.expect((body.extra_fields || {}).converted_request_type, 'compat force_reasoning_only_models_to_responses should route Sol chat to Responses: ' + pm.response.text()).to.eql('responses');",
+                  "  pm.expect(rr.reasoning, 'reasoning missing on the Responses body: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('none');",
                   "});",
                   "pm.test('115.3 Sol returns the required function call while reasoning is disabled', function () {",
                   "  var msg = body.choices && body.choices[0] && body.choices[0].message;",
@@ -202201,6 +202536,1347 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "175. Converse additionalModelRequestFields store reaches the outbound request (#7720) (converse-store)",
+      "description": "The AWS SDK's ConverseInput has no store field, so a caller who needs zero data retention on an OpenAI model served over the Responses API (openai, azure, bedrock_mantle, the Bedrock OpenAI surface, openrouter) and routed through the /bedrock drop-in puts store:false in additionalModelRequestFields. BedrockConverseRequest.ToBifrostResponsesRequest (core/providers/bedrock/responses.go) only copied that map into ExtraParams[\"additionalModelRequestFieldPaths\"], which only the Bedrock egress reads, so the outbound Responses body had no store and the provider applied its store:true default without any error. Each case sends store:false in additionalModelRequestFields and reads the logged raw_request (the harness profile stores raw requests) to assert the outbound body carries store:false. Red before the fix: raw_request has no store key. The Go-level pin is TestConverseAdditionalModelRequestFieldsStoreReachesParams.",
+      "item": [
+        {
+          "name": "/bedrock converse -> azure/gpt-4o-mini additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse store azure: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse store azure: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse store azure: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse store azure: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  },\n  \"additionalModelRequestFields\": {\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-4o-mini/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-4o-mini",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/bedrock converse -> openai/gpt-4o-mini additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse store openai: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse store openai: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse store openai: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse store openai: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  },\n  \"additionalModelRequestFields\": {\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/openai%2Fgpt-4o-mini/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "openai%2Fgpt-4o-mini",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/bedrock converse-stream -> azure/gpt-4o-mini additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse-stream store azure: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse-stream store azure: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse-stream store azure: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse-stream store azure: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  },\n  \"additionalModelRequestFields\": {\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-4o-mini/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-4o-mini",
+                "converse-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/bedrock converse -> bedrock_mantle/openai.gpt-5.6-luna additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse store bedrock_mantle: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse store bedrock_mantle: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse store bedrock_mantle: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse store bedrock_mantle: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"What is 17*23? Answer briefly.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 512\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\"\n    },\n    \"output_config\": {\n      \"effort\": \"low\"\n    },\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/bedrock_mantle%2Fopenai.gpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "bedrock_mantle%2Fopenai.gpt-5.6-luna",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/bedrock converse -> bedrock_openai_ep/us.openai.gpt-5.6-terra additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse store bedrock_openai_ep: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse store bedrock_openai_ep: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse store bedrock_openai_ep: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse store bedrock_openai_ep: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"What is 17*23? Answer briefly.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 512\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\"\n    },\n    \"output_config\": {\n      \"effort\": \"low\"\n    },\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/bedrock_openai_ep%2Fus.openai.gpt-5.6-terra/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "bedrock_openai_ep%2Fus.openai.gpt-5.6-terra",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/bedrock converse -> openrouter/openai/gpt-5 additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse store openrouter: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse store openrouter: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse store openrouter: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse store openrouter: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"What is 17*23? Answer briefly.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 512\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\"\n    },\n    \"output_config\": {\n      \"effort\": \"low\"\n    },\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/openrouter%2Fopenai%2Fgpt-5/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "openrouter%2Fopenai%2Fgpt-5",
+                "converse"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "167. DeepSeek served-model pricing (served-model)",
+      "description": "DeepSeek keeps accepting retired model ids (deepseek-v4-flash) but serves deepseek-flash behind them and bills at its price. The DeepSeek provider stamps the served model on routing_info.server_side_fallback_model, which pricing resolves ahead of the requested model. Two sources feed it: on the default (OpenAI-compatible) endpoint the response `model` names deepseek-flash, so the stamp must equal the response model; DeepSeek's Anthropic endpoint echoes the requested id back, so there the stamp comes from the datasheet entry's server_side_model and must equal deepseek-flash. The Anthropic rows go through the harness profile's deepseek-v4-flash-anthropic alias (use_anthropic_endpoints). Each endpoint is pinned on chat and Responses, non-streaming (body field plus the x-bifrost-routing-info-server-side-fallback-model header) and streaming (the terminal usage chunk / response.completed event, which is what pricing reads). The default-endpoint text completion stream case pins the final chunk, which Bifrost builds with the requested id and must still carry the served model.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash chat non-stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var body = pm.response.json();",
+                  "var model = body.model;",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('DeepSeek served a newer model than requested', function () {",
+                  "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+                  "});",
+                  "pm.test('server_side_fallback_model names the served model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+                  "});",
+                  "pm.test('served-model header matches routing_info', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash chat stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var target = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { return; }",
+                  "  var ev;",
+                  "  try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "  if (ev.usage) { target = ev; }",
+                  "});",
+                  "pm.test('stream carried the usage chunk', function () {",
+                  "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+                  "});",
+                  "var model = (target || {}).model;",
+                  "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+                  "pm.test('DeepSeek served a newer model than requested', function () {",
+                  "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+                  "});",
+                  "pm.test('server_side_fallback_model names the served model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash text completion stream reports served model on the final chunk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var target = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { return; }",
+                  "  var ev;",
+                  "  try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "  if (ev.usage) { target = ev; }",
+                  "});",
+                  "pm.test('stream carried the usage chunk', function () {",
+                  "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+                  "});",
+                  "var model = (target || {}).model;",
+                  "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+                  "pm.test('DeepSeek served a newer model than requested', function () {",
+                  "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+                  "});",
+                  "pm.test('server_side_fallback_model names the served model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"prompt\": \"Hello\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash responses non-stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var body = pm.response.json();",
+                  "var model = body.model;",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('DeepSeek served a newer model than requested', function () {",
+                  "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+                  "});",
+                  "pm.test('server_side_fallback_model names the served model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+                  "});",
+                  "pm.test('served-model header matches routing_info', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash responses stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var target = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { return; }",
+                  "  var ev;",
+                  "  try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "  if (ev.type === 'response.completed' || ev.type === 'response.incomplete') { target = ev; }",
+                  "});",
+                  "pm.test('stream carried a terminal response.completed or response.incomplete event', function () {",
+                  "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+                  "});",
+                  "var model = ((target || {}).response || {}).model;",
+                  "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+                  "pm.test('DeepSeek served a newer model than requested', function () {",
+                  "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+                  "});",
+                  "pm.test('server_side_fallback_model names the served model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic chat non-stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var body = pm.response.json();",
+                  "var model = body.model;",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+                  "});",
+                  "pm.test('served-model header matches routing_info', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic chat stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var target = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { return; }",
+                  "  var ev;",
+                  "  try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "  if (ev.usage) { target = ev; }",
+                  "});",
+                  "pm.test('stream carried the usage chunk', function () {",
+                  "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+                  "});",
+                  "var model = (target || {}).model;",
+                  "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+                  "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic responses non-stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var body = pm.response.json();",
+                  "var model = body.model;",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+                  "});",
+                  "pm.test('served-model header matches routing_info', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic responses stream reports served model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var target = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { return; }",
+                  "  var ev;",
+                  "  try { ev = JSON.parse(data); } catch (e) { return; }",
+                  "  if (ev.type === 'response.completed' || ev.type === 'response.incomplete') { target = ev; }",
+                  "});",
+                  "pm.test('stream carried a terminal response.completed or response.incomplete event', function () {",
+                  "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+                  "});",
+                  "var model = ((target || {}).response || {}).model;",
+                  "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+                  "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+                  "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "168. Reasoning-only models forced to Responses (reasoning-only-to-responses)",
+      "description": "The compat toggle force_reasoning_only_models_to_responses (on by default) routes /v1/chat/completions requests to the Responses API for models whose datasheet sets supports_reasoning_with_tool_calls: false, such as GPT-6 Sol. Before it existed, compat kept these requests on chat completions and turned reasoning off (dropped, or set to none) whenever tools were present. The plugin marks ChangeRequestType=ResponsesRequest whether or not tools are attached; core converts with ToResponsesRequest(), sets reasoning.summary to auto so the converted response carries readable reasoning, calls OpenAI Responses, and maps the result back to chat. Every case sends the targeted x-bf-compat header and reads extra_fields.raw_request to check what Bifrost sent.\n\n168.1 pins the non-streaming tool route: converted, effort high kept, summary auto requested, tool call mapped back. 168.2 is the streaming variant. 168.3 pins conversion without tools. 168.4 pins that a model without the flag (gpt-4o-mini) stays on chat completions.",
+      "item": [
+        {
+          "name": "168.1 openai/gpt-6-sol chat with tools is routed to Responses with reasoning kept - reasoning-only-to-responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('168.1 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('168.1 outbound request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "pm.test('168.1 chat request was routed to Responses', function () {",
+                  "  pm.expect(ef.converted_request_type, 'expected responses: ' + pm.response.text()).to.eql('responses');",
+                  "  pm.expect(rr.input, 'outbound body is not Responses-shaped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('array');",
+                  "  pm.expect(rr.reasoning_effort, 'chat-shaped reasoning_effort leaked: ' + JSON.stringify(rr).slice(0, 800)).to.equal(undefined);",
+                  "});",
+                  "pm.test('168.1 reasoning effort high survives and a summary is requested', function () {",
+                  "  pm.expect(rr.reasoning, 'reasoning was dropped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('high');",
+                  "  pm.expect(rr.reasoning.summary).to.eql('auto');",
+                  "});",
+                  "pm.test('168.1 required get_weather call comes back as a chat tool call', function () {",
+                  "  var msg = body.choices && body.choices[0] && body.choices[0].message;",
+                  "  pm.expect(msg, 'assistant message missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(msg.tool_calls, 'tool_calls missing: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(msg.tool_calls[0].function.name).to.eql('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris. Do not answer directly.\"\n    }\n  ],\n  \"reasoning_effort\": \"high\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "168.2 openai/gpt-6-sol chat stream with tools is routed to Responses - reasoning-only-to-responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('168.2 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var text = pm.response.text();",
+                  "var converted = false, toolName = null, sawDone = false, rr = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { sawDone = true; return; }",
+                  "  var chunk;",
+                  "  try { chunk = JSON.parse(data); } catch (e) { return; }",
+                  "  if ((chunk.extra_fields || {}).converted_request_type === 'responses') { converted = true; }",
+                  "  if ((chunk.extra_fields || {}).raw_request) { rr = chunk.extra_fields.raw_request; }",
+                  "  (chunk.choices || []).forEach(function (ch) {",
+                  "    ((ch.delta || {}).tool_calls || []).forEach(function (t) {",
+                  "      if (t.function && t.function.name) { toolName = t.function.name; }",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.test('168.2 stream chunks report the Responses conversion', function () {",
+                  "  pm.expect(converted, 'no chunk carried converted_request_type=responses: ' + text.slice(0, 1500)).to.equal(true);",
+                  "});",
+                  "pm.test('168.2 required get_weather call streams back as a chat tool-call delta', function () {",
+                  "  pm.expect(toolName, 'no tool-call delta: ' + text.slice(0, 1500)).to.eql('get_weather');",
+                  "});",
+                  "pm.test('168.2 stream terminates with [DONE]', function () {",
+                  "  pm.expect(sawDone, 'missing [DONE]: ' + text.slice(-800)).to.equal(true);",
+                  "});",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('168.2 outbound request captured on the stream', function () {",
+                  "  pm.expect(rr, 'raw_request missing from every chunk: ' + text.slice(-1500)).to.be.an('object');",
+                  "});",
+                  "pm.test('168.2 reasoning effort high survives and a summary is requested', function () {",
+                  "  pm.expect(rr && rr.input, 'outbound body is not Responses-shaped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('array');",
+                  "  pm.expect(rr && rr.reasoning, 'reasoning was dropped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('high');",
+                  "  pm.expect(rr.reasoning.summary).to.eql('auto');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris. Do not answer directly.\"\n    }\n  ],\n  \"reasoning_effort\": \"high\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_completion_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "168.3 openai/gpt-6-sol chat without tools is still routed to Responses - reasoning-only-to-responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('168.3 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('168.3 outbound request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "pm.test('168.3 chat request was routed to Responses', function () {",
+                  "  pm.expect(ef.converted_request_type, 'expected responses: ' + pm.response.text()).to.eql('responses');",
+                  "  pm.expect(rr.input, 'outbound body is not Responses-shaped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('array');",
+                  "  pm.expect(rr.reasoning_effort, 'chat-shaped reasoning_effort leaked: ' + JSON.stringify(rr).slice(0, 800)).to.equal(undefined);",
+                  "});",
+                  "pm.test('168.3 reasoning effort low survives and a summary is requested', function () {",
+                  "  pm.expect(rr.reasoning, 'reasoning was dropped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('low');",
+                  "  pm.expect(rr.reasoning.summary).to.eql('auto');",
+                  "});",
+                  "pm.test('168.3 assistant text returned', function () {",
+                  "  var msg = body.choices && body.choices[0] && body.choices[0].message;",
+                  "  pm.expect(msg && msg.content, 'content missing: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with only OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "168.4 openai/gpt-4o-mini chat with tools stays on chat completions - reasoning-only-to-responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('168.4 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "pm.test('168.4 model without the datasheet flag is not converted', function () {",
+                  "  pm.expect(ef.converted_request_type, 'unexpected conversion: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris. Do not answer directly.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "176. Responses history output_text keeps logprobs absent (#7990) (responses-history-logprobs)",
+      "description": "Gateway regression for #7990. A client (Pi, via the OpenAI-compatible Responses route) replays an assistant output_text history block with `annotations: []` and no `logprobs`. Bifrost decoded the block into ResponsesOutputMessageContentText, whose LogProbs field had no omit tag, so the re-marshaled provider body carried `logprobs: null`; strict Responses backends reject it with `Invalid type for 'input[N].content[0].logprobs': expected an array ... got null`. Real OpenAI may tolerate the null, so the cases read the outbound body via x-bf-send-back-raw-request instead of relying on an upstream 400. Cases: (1) /openai/v1/responses, the reporter's route: raw_request input[0].content[0] has no logprobs key (pre-fix: logprobs null); (2) /v1/responses with an explicit `logprobs: []`: it stays an empty array (guards against an omitempty over-correction); (3) /openai/v1/responses streaming, Pi's actual shape: the replay completes. Run with FEATURE=responses-history-logprobs.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai/gpt-4o-mini /openai/v1/responses history output_text without logprobs is not nulled - responses-history-logprobs - #7990",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Previous answer.\",\n          \"annotations\": []\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('176.1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('176.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "var blk = ((((((rr || {}).input) || [])[0] || {}).content || [])[0]) || {};",
+                  "pm.test('176.1 history block reached the provider as output_text', function () {",
+                  "  pm.expect(blk.type, 'input[0].content[0]: ' + JSON.stringify(blk).slice(0, 400)).to.equal('output_text');",
+                  "  pm.expect(blk.annotations, 'annotations must stay an array: ' + JSON.stringify(blk)).to.be.an('array');",
+                  "});",
+                  "pm.test('176.1 omitted logprobs stays omitted on the wire (pre-fix: logprobs null) - #7990', function () {",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(blk, 'logprobs'), 'history output_text gained logprobs=' + JSON.stringify(blk.logprobs) + ': ' + JSON.stringify(blk)).to.equal(false);",
+                  "});",
+                  "pm.test('176.1 the model answered', function () {",
+                  "  pm.expect(body.output, 'no output: ' + pm.response.text().slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai/gpt-4o-mini /v1/responses history output_text logprobs [] stays an array - responses-history-logprobs - #7990",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Previous answer.\",\n          \"annotations\": [],\n          \"logprobs\": []\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('176.2: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('176.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "var blk = ((((((rr || {}).input) || [])[0] || {}).content || [])[0]) || {};",
+                  "pm.test('176.2 history block reached the provider as output_text', function () {",
+                  "  pm.expect(blk.type, 'input[0].content[0]: ' + JSON.stringify(blk).slice(0, 400)).to.equal('output_text');",
+                  "  pm.expect(blk.annotations, 'annotations must stay an array: ' + JSON.stringify(blk)).to.be.an('array');",
+                  "});",
+                  "pm.test('176.2 explicit empty logprobs stays an empty array - #7990', function () {",
+                  "  pm.expect(blk.logprobs, 'logprobs: ' + JSON.stringify(blk)).to.be.an('array').that.is.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai/gpt-4o-mini /openai/v1/responses streaming history replay completes - responses-history-logprobs - #7990",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 16,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Previous answer.\",\n          \"annotations\": []\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('176.3: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('176.3 streamed history replay completes without an error event - #7990', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'no response.completed: ' + raw.slice(0, 800)).to.include('response.completed');",
+                  "  pm.expect(raw.indexOf('\"type\":\"error\"'), 'stream carried an error event: ' + raw.slice(0, 800)).to.equal(-1);",
+                  "  pm.expect(raw.indexOf('logprobs\\': expected an array'), 'upstream rejected logprobs: ' + raw.slice(0, 800)).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

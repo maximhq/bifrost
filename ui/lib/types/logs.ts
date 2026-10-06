@@ -631,7 +631,7 @@ export interface RoutingCall {
 }
 
 export interface RoutingMetadata {
-	// One entry per billable semantic embed or classifier call, including Jev decisions.
+	// One entry per billable semantic embed or classifier call, including decision-model calls.
 	calls?: RoutingCall[];
 }
 
@@ -760,7 +760,7 @@ export interface LogEntry {
 	routing_rule_id?: string;
 	routing_rule_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
-	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "jev", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
+	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
 	session_id?: string; // Raw opaque session ID resolved by Bifrost for key stickiness and request correlation
 	routing_engine_logs?: string; // Human-readable routing decision logs
@@ -875,8 +875,10 @@ export interface LogFilters {
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	tool_call_names?: string[]; // Requests whose response called any of these function names
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, jev, llm, session, skipped)
+	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
+	agent_names?: string[]; // Registered Agents whose context IDs correlate the matching logs
 	session_id?: string; // Exact session ID used for key stickiness and request correlation
+	agent_correlation_id?: string; // Exact Agent correlation ID shared across related protocol activity
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
@@ -1444,6 +1446,7 @@ export interface MCPToolLogEntry {
 	source?: string;
 	id: string;
 	llm_request_id?: string; // Links to the LLM request that triggered this tool call
+	session_id?: string;
 	timestamp: string; // ISO string format
 	tool_name: string;
 	server_label?: string; // MCP server that provided the tool
@@ -1478,6 +1481,9 @@ export interface MCPToolLogFilters {
 	status?: string[];
 	virtual_key_ids?: string[];
 	llm_request_ids?: string[];
+	agent_names?: string[];
+	session_id?: string;
+	agent_correlation_id?: string;
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
 	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time

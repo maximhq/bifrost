@@ -10,7 +10,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-const maxMCPToolInputPreviewRunes = 200
+const (
+	maxMCPToolInputPreviewRunes = 200
+	maxA2APayloadPreviewRunes   = 2048
+	a2aObjectSchemaVersion      = 1
+)
 
 // payloadFields lists the DB column names of large TEXT fields that are
 // offloaded to object storage in hybrid mode. These fields are never needed
@@ -56,6 +60,7 @@ var payloadFields = []string{
 	"passthrough_request_body",
 	"passthrough_response_body",
 	"routing_engine_logs",
+	"plugin_logs",
 }
 
 // ExtractPayload reads the serialized TEXT payload fields from a Log into a map.
@@ -101,6 +106,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["passthrough_request_body"] = l.PassthroughRequestBody
 	m["passthrough_response_body"] = l.PassthroughResponseBody
 	m["routing_engine_logs"] = l.RoutingEngineLogs
+	m["plugin_logs"] = l.PluginLogs
 	// Metadata is written to the snapshot so consumers reading objects
 	// directly see custom attributes, but it is deliberately NOT part of
 	// payloadFields: it must always stay DB-resident as well (filters,
@@ -247,6 +253,7 @@ func ClearPayload(l *Log) {
 	l.PassthroughRequestBody = ""
 	l.PassthroughResponseBody = ""
 	l.RoutingEngineLogs = ""
+	l.PluginLogs = ""
 
 	// Clear Parsed virtual fields so GORM's SerializeFields won't re-serialize them.
 	l.InputHistoryParsed = nil
@@ -410,6 +417,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	if v, ok := m["routing_engine_logs"]; ok && v != "" {
 		l.RoutingEngineLogs = v
 	}
+	if v, ok := m["plugin_logs"]; ok && v != "" {
+		l.PluginLogs = v
+	}
 	// Metadata is intentionally NOT restored from the snapshot: the copy
 	// written there (see ExtractPayload) is for external object consumers
 	// only, and the DB row stays authoritative.
@@ -454,6 +464,61 @@ func ClearPayloadFiltered(l *Log, excluded map[string]struct{}) {
 
 func MarshalPayload(payload map[string]string) ([]byte, error) {
 	return sonic.Marshal(payload)
+}
+
+type a2aPayloadV1 struct {
+	SchemaVersion int     `json:"schema_version"`
+	RequestBody   *string `json:"request_body,omitempty"`
+	ResponseBody  *string `json:"response_body,omitempty"`
+	EventBody     *string `json:"event_body,omitempty"`
+}
+
+func MarshalAgentLogPayload(l *AgentLog) ([]byte, error) {
+	return sonic.Marshal(a2aPayloadV1{
+		SchemaVersion: a2aObjectSchemaVersion,
+		RequestBody:   l.RequestBody,
+		ResponseBody:  l.ResponseBody,
+		EventBody:     l.EventBody,
+	})
+}
+
+func MergeAgentLogPayloadFromJSON(l *AgentLog, data []byte) error {
+	var payload a2aPayloadV1
+	if err := sonic.Unmarshal(data, &payload); err != nil {
+		return fmt.Errorf("logstore: unmarshal A2A log payload: %w", err)
+	}
+	if payload.SchemaVersion != a2aObjectSchemaVersion {
+		return fmt.Errorf("logstore: unsupported A2A object schema version %d", payload.SchemaVersion)
+	}
+	l.RequestBody = payload.RequestBody
+	l.ResponseBody = payload.ResponseBody
+	l.EventBody = payload.EventBody
+	return nil
+}
+
+func PrepareAgentLogDBEntry(l *AgentLog, objectKey string) {
+	if l.ContentHidden {
+		l.RequestBody = nil
+		l.ResponseBody = nil
+		l.EventBody = nil
+	} else {
+		l.RequestBody = truncateStringPointer(l.RequestBody, maxA2APayloadPreviewRunes)
+		l.ResponseBody = truncateStringPointer(l.ResponseBody, maxA2APayloadPreviewRunes)
+		l.EventBody = truncateStringPointer(l.EventBody, maxA2APayloadPreviewRunes)
+	}
+	l.PayloadReference = &objectKey
+}
+
+func truncateStringPointer(value *string, maxRunes int) *string {
+	if value == nil {
+		return nil
+	}
+	preview := truncateRunes(*value, maxRunes)
+	return &preview
+}
+
+func AgentLogHasPayload(l *AgentLog) bool {
+	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil || l.EventBody != nil)
 }
 
 // MarshalMCPToolLogPayload serializes a full MCP tool log for object storage.
@@ -777,6 +842,31 @@ func BuildMCPToolTags(l *MCPToolLog) map[string]string {
 	return tags
 }
 
+func BuildAgentLogTags(l *AgentLog) map[string]string {
+	tags := make(map[string]string, 7)
+	if l.AgentName != "" {
+		tags["agent_name"] = truncateTag(l.AgentName, 256)
+	}
+	if l.Operation != "" {
+		tags["operation"] = truncateTag(l.Operation, 256)
+	}
+	if l.RecordKind != "" {
+		tags["record_kind"] = truncateTag(l.RecordKind, 256)
+	}
+	if l.Status != "" {
+		tags["status"] = truncateTag(l.Status, 256)
+	}
+	if l.VirtualKeyID != nil && *l.VirtualKeyID != "" {
+		tags["virtual_key_id"] = truncateTag(*l.VirtualKeyID, 256)
+	}
+	tags["has_error"] = "false"
+	if l.Status == "error" {
+		tags["has_error"] = "true"
+	}
+	tags["date"] = l.Timestamp.UTC().Format("2006-01-02")
+	return tags
+}
+
 // ObjectKey constructs the S3 object key for a log entry.
 func ObjectKey(prefix string, timestamp time.Time, logID string) string {
 	ts := timestamp.UTC()
@@ -791,6 +881,15 @@ func ObjectKey(prefix string, timestamp time.Time, logID string) string {
 func MCPToolObjectKey(prefix string, timestamp time.Time, logID string) string {
 	ts := timestamp.UTC()
 	return fmt.Sprintf("%s/mcp-logs/%04d/%02d/%02d/%02d/%s.json.gz",
+		prefix,
+		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
+		logID,
+	)
+}
+
+func AgentLogObjectKey(prefix string, timestamp time.Time, logID string) string {
+	ts := timestamp.UTC()
+	return fmt.Sprintf("%s/agent-logs/%04d/%02d/%02d/%02d/%s.json.gz",
 		prefix,
 		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
 		logID,
@@ -980,6 +1079,8 @@ func clearPayloadField(l *Log, name string) {
 		l.PassthroughResponseBody = ""
 	case "routing_engine_logs":
 		l.RoutingEngineLogs = ""
+	case "plugin_logs":
+		l.PluginLogs = ""
 	}
 }
 
