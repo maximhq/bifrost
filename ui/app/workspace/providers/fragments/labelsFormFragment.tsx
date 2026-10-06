@@ -9,7 +9,7 @@ import { providerLabelsFormSchema, type ProviderLabelsFormSchema } from "@/lib/t
 import { normalizeTags } from "@/lib/utils/metadataTags";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { buildProviderUpdatePayload } from "../views/utils";
@@ -27,6 +27,12 @@ export function LabelsFormFragment({ provider }: LabelsFormFragmentProps) {
 	const dispatch = useAppDispatch();
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
+	// A duplicate key is shown in the table but never reaches the form value, so saving would
+	// silently drop that visible edit.
+	const [hasDuplicateKeys, setHasDuplicateKeys] = useState(false);
+	// Fields are read-only while a save is in flight: the success path resets the form to the
+	// submitted labels, which would discard edits made in the meantime.
+	const readOnly = !hasUpdateProviderAccess || isUpdatingProvider;
 	const form = useForm<ProviderLabelsFormSchema>({
 		resolver: zodResolver(providerLabelsFormSchema),
 		mode: "onChange",
@@ -74,7 +80,7 @@ export function LabelsFormFragment({ provider }: LabelsFormFragmentProps) {
 									placeholder="e.g., prod, eu, approved-for-pii"
 									value={field.value ?? []}
 									onValueChange={field.onChange}
-									readOnly={!hasUpdateProviderAccess}
+									readOnly={readOnly}
 								/>
 							</FormControl>
 							<p className="text-muted-foreground text-xs">
@@ -97,7 +103,8 @@ export function LabelsFormFragment({ provider }: LabelsFormFragmentProps) {
 								keyPlaceholder="e.g., owner"
 								valuePlaceholder="e.g., platform-team"
 								useSecretVarInput={false}
-								disabled={!hasUpdateProviderAccess}
+								disabled={readOnly}
+								onDuplicateKeysChange={setHasDuplicateKeys}
 							/>
 							<p className="text-muted-foreground text-xs">
 								Key/value details such as owner, region or cost center. Keys use letters, digits, &quot;.&quot;, &quot;_&quot; and
@@ -111,7 +118,9 @@ export function LabelsFormFragment({ provider }: LabelsFormFragmentProps) {
 					<Button
 						type="submit"
 						data-testid="provider-labels-save-button"
-						disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess || isUpdatingProvider}
+						disabled={
+							!form.formState.isDirty || !form.formState.isValid || hasDuplicateKeys || !hasUpdateProviderAccess || isUpdatingProvider
+						}
 						isLoading={isUpdatingProvider}
 					>
 						Save Metadata &amp; Tags

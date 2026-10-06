@@ -5,7 +5,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { SecretVar } from "@/lib/types/mcp";
 import { cn } from "@/lib/utils";
 import { Trash } from "lucide-react";
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 // Support both plain string values and SecretVar objects
 type HeaderValue = string | SecretVar;
@@ -25,6 +25,11 @@ interface HeadersTableProps<T extends HeaderValue> {
 	valuePlaceholder?: string;
 	label?: string;
 	disabled?: boolean;
+	/**
+	 * Called with true while a row shows an unresolved duplicate key and false once none does.
+	 * A duplicate edit is shown but not passed to onChange, so forms can block saving meanwhile.
+	 */
+	onDuplicateKeysChange?: (hasDuplicates: boolean) => void;
 	useSecretVarInput?: boolean;
 	/**
 	 * When provided, the table renders exactly these keys as read-only,
@@ -74,12 +79,17 @@ export function HeadersTable<T extends HeaderValue>({
 	fixedKeys,
 	renderKeyInput,
 	renderValueInput,
+	onDuplicateKeysChange,
 }: HeadersTableProps<T>) {
 	// Use explicit prop if provided, otherwise detect from existing values
 	const isSecretVarMode = useSecretVarInput ?? Object.values(value || {}).some((v) => isSecretVar(v));
 
 	// Track duplicate key conflicts: maps rowIndex -> attempted duplicate key
 	const [duplicateConflicts, setDuplicateConflicts] = useState<Map<number, string>>(new Map());
+	const hasDuplicateConflicts = duplicateConflicts.size > 0;
+	useEffect(() => {
+		onDuplicateKeysChange?.(hasDuplicateConflicts);
+	}, [hasDuplicateConflicts, onDuplicateKeysChange]);
 	// Track which row to highlight (for scroll-to-existing behavior)
 	const [highlightedRow, setHighlightedRow] = useState<number | null>(null);
 	// Refs for each table row to enable scrolling

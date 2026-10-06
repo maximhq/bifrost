@@ -43,7 +43,9 @@ describe("normalizeTags", () => {
 		expect(normalizeTags(["t".repeat(MAX_TAG_LENGTH + 1)]).error).toMatch(/Invalid tag/);
 		const tooMany = Array.from({ length: MAX_TAGS + 1 }, (_, i) => `t${i}`);
 		expect(normalizeTags(tooMany).error).toMatch(/At most/);
-		expect(normalizeTags([...tooMany.slice(0, MAX_TAGS), "t0"]).error).toBeUndefined();
+		// The server caps the list as sent, duplicates included, so the client must too.
+		expect(normalizeTags([...tooMany.slice(0, MAX_TAGS), "t0"]).error).toMatch(/At most/);
+		expect(normalizeTags(tooMany.slice(0, MAX_TAGS)).error).toBeUndefined();
 	});
 });
 
