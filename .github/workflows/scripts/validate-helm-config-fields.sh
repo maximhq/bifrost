@@ -1465,6 +1465,76 @@ assert_field_value 'logs_store.object_storage.secret_access_key (env)' '.logs_st
 assert_field_value 'logs_store.object_storage.session_token (env)' '.logs_store.object_storage.session_token' '"env.BIFROST_OBJECT_STORAGE_SESSION_TOKEN"'
 assert_field_value 'logs_store.object_storage.role_arn (env)' '.logs_store.object_storage.role_arn' '"env.BIFROST_OBJECT_STORAGE_ROLE_ARN"'
 
+# R2 uses a distinct backend type with inline or existing Secret credentials.
+cat > "$TMPDIR/values-objstore-r2.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: r2
+      bucket: bifrost-r2
+      endpoint: https://account.r2.cloudflarestorage.com
+      accessKeyId: r2-access-key
+      secretAccessKey: r2-secret-key
+      compress: true
+bifrost:
+  auditLogs:
+    objectStorage:
+      type: r2
+      bucket: bifrost-audit-r2
+      endpoint: https://account.eu.r2.cloudflarestorage.com
+      accessKeyId: env.R2_ACCESS_KEY_ID
+      secretAccessKey: env.R2_SECRET_ACCESS_KEY
+VALS
+render_config "$TMPDIR/values-objstore-r2.yaml"
+assert_field_value 'R2 backend' '.logs_store.object_storage.type' '"r2"'
+assert_field_value 'R2 endpoint' '.logs_store.object_storage.endpoint' '"https://account.r2.cloudflarestorage.com"'
+assert_field_value 'R2 access key' '.logs_store.object_storage.access_key_id' '"r2-access-key"'
+assert_field_value 'R2 secret key' '.logs_store.object_storage.secret_access_key' '"r2-secret-key"'
+assert_field_value 'R2 compression' '.logs_store.object_storage.compress' 'true'
+assert_field_value 'R2 audit backend' '.audit_logs.object_storage.type' '"r2"'
+assert_field_value 'R2 audit endpoint' '.audit_logs.object_storage.endpoint' '"https://account.eu.r2.cloudflarestorage.com"'
+assert_field_value 'R2 audit access key' '.audit_logs.object_storage.access_key_id' '"env.R2_ACCESS_KEY_ID"'
+assert_field_value 'R2 audit secret key' '.audit_logs.object_storage.secret_access_key' '"env.R2_SECRET_ACCESS_KEY"'
+cat >> "$TMPDIR/values-objstore-r2-secret.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: r2
+      bucket: bifrost-r2
+      endpoint: https://account.r2.cloudflarestorage.com
+      existingSecret: r2-credentials
+      sessionTokenKey: token
+VALS
+render_config "$TMPDIR/values-objstore-r2-secret.yaml"
+assert_field_value 'R2 access key (env)' '.logs_store.object_storage.access_key_id' '"env.BIFROST_OBJECT_STORAGE_ACCESS_KEY_ID"'
+assert_field_value 'R2 secret key (env)' '.logs_store.object_storage.secret_access_key' '"env.BIFROST_OBJECT_STORAGE_SECRET_ACCESS_KEY"'
+assert_field_value 'R2 session token (env)' '.logs_store.object_storage.session_token' '"env.BIFROST_OBJECT_STORAGE_SESSION_TOKEN"'
+if python3 - "$TMPDIR/rendered.yaml" << 'PYR2'
+import sys, yaml
+for doc in yaml.safe_load_all(open(sys.argv[1])):
+    if doc and doc.get('kind') in ('Deployment', 'StatefulSet'):
+        env = {entry['name']: entry for entry in doc['spec']['template']['spec']['containers'][0]['env']}
+        for name, key in [('ACCESS_KEY_ID', 'access-key-id'), ('SECRET_ACCESS_KEY', 'secret-access-key'), ('SESSION_TOKEN', 'token')]:
+            ref = env['BIFROST_OBJECT_STORAGE_' + name]['valueFrom']['secretKeyRef']
+            assert ref['name'] == 'r2-credentials' and ref['key'] == key
+        break
+else:
+    raise AssertionError('Pod workload not found')
+PYR2
+then
+  report_result 'R2 workload Secret references' 0
+else
+  report_result 'R2 workload Secret references' 1
+fi
+
 # GCS — exercises project_id + credentials_json mapping
 cat > "$TMPDIR/values-objstore-gcs.yaml" << 'VALS'
 image:

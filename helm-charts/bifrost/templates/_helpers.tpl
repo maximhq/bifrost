@@ -1138,6 +1138,21 @@ false
 {{- $_ := set $osConfig "force_path_style" true }}
 {{- end }}
 {{- end }}
+{{- if eq $os.type "r2" }}
+{{- if or $os.roleArn $os.roleArnKey }}{{- fail "R2 object storage does not support roleArn" }}{{- end }}
+{{- $_ := set $osConfig "endpoint" (required "R2 object storage requires endpoint" $os.endpoint) }}
+{{- with $os.region }}{{- $_ := set $osConfig "region" . }}{{- end }}
+{{- if $os.existingSecret }}
+{{- $_ := set $osConfig "access_key_id" "env.BIFROST_OBJECT_STORAGE_ACCESS_KEY_ID" }}
+{{- $_ := set $osConfig "secret_access_key" "env.BIFROST_OBJECT_STORAGE_SECRET_ACCESS_KEY" }}
+{{- if $os.sessionTokenKey }}{{- $_ := set $osConfig "session_token" "env.BIFROST_OBJECT_STORAGE_SESSION_TOKEN" }}{{- end }}
+{{- else }}
+{{- $_ := set $osConfig "access_key_id" (required "R2 object storage requires accessKeyId" $os.accessKeyId) }}
+{{- $_ := set $osConfig "secret_access_key" (required "R2 object storage requires secretAccessKey" $os.secretAccessKey) }}
+{{- with $os.sessionToken }}{{- $_ := set $osConfig "session_token" . }}{{- end }}
+{{- end }}
+{{- if $os.forcePathStyle }}{{- $_ := set $osConfig "force_path_style" true }}{{- end }}
+{{- end }}
 {{- if eq $os.type "gcs" }}
 {{- if $os.projectId }}
 {{- $_ := set $osConfig "project_id" $os.projectId }}
@@ -2022,13 +2037,19 @@ false
 {{- if .Values.bifrost.auditLogs.objectStorage }}
 {{- $aos := .Values.bifrost.auditLogs.objectStorage }}
 {{- $aosConfig := dict "type" $aos.type "bucket" $aos.bucket }}
+{{- if eq $aos.type "r2" }}
+{{- if $aos.roleArn }}{{- fail "R2 object storage does not support roleArn" }}{{- end }}
+{{- $_ := required "R2 audit storage requires endpoint" $aos.endpoint }}
+{{- $_ := required "R2 audit storage requires accessKeyId" $aos.accessKeyId }}
+{{- $_ := required "R2 audit storage requires secretAccessKey" $aos.secretAccessKey }}
+{{- end }}
 {{- if $aos.prefix }}
 {{- $_ := set $aosConfig "prefix" $aos.prefix }}
 {{- end }}
 {{- if $aos.compress }}
 {{- $_ := set $aosConfig "compress" true }}
 {{- end }}
-{{- if eq $aos.type "s3" }}
+{{- if or (eq $aos.type "s3") (eq $aos.type "r2") }}
 {{- if $aos.region }}
 {{- $_ := set $aosConfig "region" $aos.region }}
 {{- end }}

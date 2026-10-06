@@ -599,6 +599,28 @@ storage:
       roleArn: "arn:aws:iam::123456789012:role/BifrostS3Role"
 ```
 
+### Cloudflare R2
+
+Set `storage.logsStore.objectStorage.type: r2`. Bifrost automatically omits object tags, selects required-only request checksums for R2-compatible gzip uploads, and defaults the region to `auto`.
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: r2
+      bucket: "bifrost-logs"
+      endpoint: "https://<account-id>.r2.cloudflarestorage.com"
+      existingSecret: "r2-credentials"
+      accessKeyIdKey: "access-key-id"
+      secretAccessKeyKey: "secret-access-key"
+      compress: true
+```
+
+Create `r2-credentials` with your R2 S3 API credentials before deploying. Alternatively, set `accessKeyId` and `secretAccessKey` to environment references injected through `bifrost.providerSecrets`. For temporary credentials, also set `sessionTokenKey` in the existing Secret, or `sessionToken` for inline configuration. Use the endpoint shown in your R2 dashboard, including a jurisdiction-specific endpoint when applicable.
+
+New R2 objects have no object tags; use bucket or prefix-based lifecycle rules. See [Object Storage for Logs](/deployment-guides/config-json/storage#cloudflare-r2) for details.
+
 ### Google Cloud Storage
 
 ```bash

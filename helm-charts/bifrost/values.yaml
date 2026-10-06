@@ -1587,18 +1587,18 @@ bifrost:
     # archiveGracePeriod: "15m"     # Delay before a window closes, to absorb clock skew (< archiveInterval)
     # archiveMaxObjectBytes: 134217728  # Roll a new part at this many uncompressed bytes (128MiB; ~2x peak mem when compress: true)
     # objectStorage:
-    #   type: s3        # Options: s3, gcs
+    #   type: s3        # Options: s3, gcs, r2
     #   bucket: ""      # Bucket name
     #   prefix: bifrost # Base key path (audit-logs/ is appended under it)
     #   compress: false # Enable gzip compression for stored objects
     #
-    #   # S3 configuration (when type is s3)
-    #   region: us-east-1
-    #   endpoint: ""          # Custom endpoint for MinIO/R2
-    #   accessKeyId: ""       # Leave empty to use default AWS credential chain
+    #   # S3 API configuration (when type is s3 or r2)
+    #   region: us-east-1 # R2 defaults to auto
+    #   endpoint: ""          # Custom endpoint; required for R2
+    #   accessKeyId: ""       # Required for R2; optional for the S3 default credential chain
     #   secretAccessKey: ""
-    #   sessionToken: ""      # AWS STS session token (optional)
-    #   roleArn: ""           # AWS IAM role ARN to assume via STS
+    #   sessionToken: ""      # Temporary S3/R2 session token (optional)
+    #   roleArn: ""           # S3-only IAM role ARN to assume via STS
     #   forcePathStyle: false # Set true for MinIO
     #
     #   # GCS configuration (when type is gcs)
@@ -1680,9 +1680,9 @@ storage:
     #   # AWS Secrets Manager
     #   aws:
     #     region: us-east-1
-    #     accessKeyId: ""           # Leave empty to use default AWS credential chain
+    #     accessKeyId: ""           # Required for R2; optional for the S3 default credential chain
     #     secretAccessKey: ""
-    #     sessionToken: ""          # AWS STS session token (optional)
+    #     sessionToken: ""          # Temporary S3/R2 session token (optional)
     #     roleArn: ""               # IAM role ARN to assume via STS
     #     kmsKeyId: ""              # Customer-managed KMS key for encryption
     #
@@ -1769,22 +1769,22 @@ storage:
     objectStorageExcludeFields: []
 
     # Object storage for offloading large log payloads (optional)
-    # When enabled, request/response payloads are stored in S3/GCS
+    # When enabled, request/response payloads are stored in S3/GCS/R2
     # while the DB keeps only lightweight index data for fast analytics.
     objectStorage:
       enabled: false
-      # type: s3        # Options: s3, gcs
+      # type: s3        # Options: s3, gcs, r2
       # bucket: ""      # Bucket name
       # prefix: bifrost # Key prefix for stored objects
       # compress: false  # Enable gzip compression for stored objects
 
-      # S3 configuration (when type is s3)
-      # region: us-east-1
-      # endpoint: ""         # Custom endpoint for MinIO/R2
-      # accessKeyId: ""      # Leave empty to use default AWS credential chain
+      # S3 API configuration (when type is s3 or r2)
+      # region: us-east-1 # R2 defaults to auto
+      # endpoint: ""         # Custom endpoint; required for R2
+      # accessKeyId: ""      # Required for R2; optional for the S3 default credential chain
       # secretAccessKey: ""  # (instance role, env vars, shared credentials, etc.)
-      # sessionToken: ""     # AWS STS session token (optional)
-      # roleArn: ""          # AWS IAM role ARN to assume via STS (works with static creds or instance role)
+      # sessionToken: ""     # Temporary S3/R2 session token (optional)
+      # roleArn: ""          # S3-only IAM role ARN to assume via STS (works with static creds or instance role)
       # forcePathStyle: false # Set true for MinIO
 
       # GCS configuration (when type is gcs)
