@@ -83,7 +83,7 @@ func semanticSearchLogsTool() Tool {
 			if deps.semantic == nil {
 				return nil, fmt.Errorf("semantic log search is not configured")
 			}
-			filters, err := filterArg(args, Now(), deps.scope)
+			filters, err := filterArg(args, deps.now(), deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -140,7 +140,7 @@ func queryLogsTool() Tool {
   "required": ["filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
@@ -255,7 +255,7 @@ func countLogsTool() Tool {
   "required": ["filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
@@ -345,7 +345,7 @@ func queryMetricsTool() Tool {
   "required": ["filters", "metrics"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
@@ -957,7 +957,7 @@ func queryUsageByTool() Tool {
 				return nil, fmt.Errorf("unknown dimension %q; supported: %s", raw, strings.Join(enumValues, ", "))
 			}
 
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, rankingScope(deps.scope, string(dimension)))
 			if err != nil {
 				return nil, err
@@ -1033,7 +1033,7 @@ func queryModelsTool() Tool {
   "required": ["filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err

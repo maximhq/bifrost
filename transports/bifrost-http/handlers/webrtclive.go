@@ -101,11 +101,13 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
+	admission.meter.setTransport("webrtc")
 	body, err := rewriteLiveModels(body, create.Session, admission.key, target.voiceModel, target.backendModel)
 	if err != nil {
-		admission.meter.finish(0)
+		bifrostErr := newRealtimeWireBifrostError(500, "server_error", "failed to prepare the session: "+err.Error())
+		admission.meter.abort(bifrostErr)
 		admission.cancel()
-		SendBifrostError(ctx, newRealtimeWireBifrostError(500, "server_error", "failed to prepare the session: "+err.Error()))
+		SendBifrostError(ctx, bifrostErr)
 		return
 	}
 
@@ -134,7 +136,7 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 	})
 	if bifrostErr != nil {
 		// A relay that failed before it existed has not billed or released its admission yet.
-		admission.meter.finish(0)
+		admission.meter.abort(bifrostErr)
 		admission.cancel()
 		SendBifrostError(ctx, bifrostErr)
 		return
@@ -222,5 +224,10 @@ func (m *liveWebRTCMessages) browserGone(_ *webrtcRelay) {
 
 // closed bills what OpenAI last reported when the relay ends before session.closed.
 func (m *liveWebRTCMessages) closed() {
+	// A relay closed during setup never ran a session: establishment then fails and the create
+	// handler aborts the meter with the failure, instead of finish billing a minimum as a success.
+	if m.relay.closedDuringSetup() {
+		return
+	}
 	m.upstreamEnded()
 }

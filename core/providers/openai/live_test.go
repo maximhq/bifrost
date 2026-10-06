@@ -1,11 +1,17 @@
 package openai
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -172,8 +178,15 @@ func TestLiveSessionContent(t *testing.T) {
 	if bifrostErr != nil {
 		t.Fatalf("LiveSessionContent() error = %v", bifrostErr.Error)
 	}
-	if content.ContentType != "audio/wav" || string(content.Content) != string(wav) {
-		t.Fatalf("LiveSessionContent() = %q %q", content.ContentType, content.Content)
+	body, err := io.ReadAll(content.Body)
+	if err != nil {
+		t.Fatalf("read recording: %v", err)
+	}
+	if err := content.Body.Close(); err != nil {
+		t.Fatalf("close recording: %v", err)
+	}
+	if content.SessionID != "live_123" || content.ContentType != "audio/wav" || content.ContentLength != int64(len(wav)) || string(body) != string(wav) {
+		t.Fatalf("LiveSessionContent() = %q %q %d %q", content.SessionID, content.ContentType, content.ContentLength, body)
 	}
 
 	status = http.StatusNotFound
@@ -185,5 +198,134 @@ func TestLiveSessionContent(t *testing.T) {
 
 	if _, bifrostErr = provider.LiveSessionContent(newCtx(), key, "../files"); bifrostErr == nil {
 		t.Fatal("an unsafe session id must be refused before any request is made")
+	}
+}
+
+// TestLiveSessionContentStalledUpstreamTimesOut: a recording whose upstream stops mid-body must
+// fail after the stream idle timeout instead of holding the download open.
+func TestLiveSessionContentStalledUpstreamTimesOut(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("RIFF"))
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	t.Cleanup(func() {
+		close(release)
+		srv.Close()
+	})
+
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 200*time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() {
+		content, bifrostErr := provider.LiveSessionContent(ctx, key, "live_123")
+		if bifrostErr != nil {
+			done <- errors.New(bifrostErr.Error.Message)
+			return
+		}
+		done <- readLiveContent(content)
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a stalled upstream must surface an error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a stalled upstream held the download open")
+	}
+}
+
+// readLiveContent drains a recording the way the transport does.
+func readLiveContent(content *schemas.LiveContentResponse) error {
+	defer content.Body.Close()
+	_, err := io.ReadAll(content.Body)
+	return err
+}
+
+// TestLiveSessionContentStreamsWithoutBuffering: a recording is handed over as a stream, so draining
+// a large one allocates a few buffers, not the recording. A buffered implementation allocates at
+// least the whole body.
+func TestLiveSessionContentStreamsWithoutBuffering(t *testing.T) {
+	const recordingBytes = 64 << 20
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Header().Set("Content-Length", strconv.Itoa(recordingBytes))
+		w.WriteHeader(http.StatusOK)
+		chunk := make([]byte, 1<<20)
+		for written := 0; written < recordingBytes; written += len(chunk) {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	content, bifrostErr := provider.LiveSessionContent(ctx, key, "live_123")
+	if bifrostErr != nil {
+		t.Fatalf("LiveSessionContent() error = %v", bifrostErr.Error)
+	}
+	drained, err := io.CopyBuffer(io.Discard, content.Body, make([]byte, 64<<10))
+	if err != nil {
+		t.Fatalf("drain recording: %v", err)
+	}
+	_ = content.Body.Close()
+	runtime.ReadMemStats(&after)
+
+	if drained != recordingBytes || content.ContentLength != recordingBytes {
+		t.Fatalf("drained %d bytes, content length %d, want %d", drained, content.ContentLength, recordingBytes)
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	if allocated > 16<<20 {
+		t.Fatalf("draining a %d MiB recording allocated %d MiB; the body is being buffered", recordingBytes>>20, allocated>>20)
+	}
+}
+
+// TestLiveSessionContentGzipBodyHasNoStatedLength: a gzip-encoded recording is decoded on the way
+// through, so the compressed Content-Length must not be reported as the body's length.
+func TestLiveSessionContentGzipBodyHasNoStatedLength(t *testing.T) {
+	t.Parallel()
+
+	wav := []byte("RIFF....WAVEfmt ")
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	_, _ = gz.Write(wav)
+	_ = gz.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Length", strconv.Itoa(compressed.Len()))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(compressed.Bytes())
+	}))
+	t.Cleanup(srv.Close)
+
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
+	content, bifrostErr := provider.LiveSessionContent(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, "live_123")
+	if bifrostErr != nil {
+		t.Fatalf("LiveSessionContent() error = %v", bifrostErr.Error)
+	}
+	body, err := io.ReadAll(content.Body)
+	_ = content.Body.Close()
+	if err != nil || string(body) != string(wav) {
+		t.Fatalf("decoded body = %q err = %v, want the recording", body, err)
+	}
+	if content.ContentLength != 0 {
+		t.Fatalf("ContentLength = %d for a gzip body, want 0 (unknown once decoded)", content.ContentLength)
 	}
 }
