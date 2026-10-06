@@ -540,6 +540,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Realtime
 	case LiveRequest:
 		return ar.Live
+	case LiveContentRequest:
+		return ar.Live
 	case CachedContentCreateRequest:
 		return ar.CachedContentCreate
 	case CachedContentListRequest:

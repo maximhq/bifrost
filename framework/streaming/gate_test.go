@@ -2245,7 +2245,9 @@ func TestGate_TransformInPlaceMutationIsRepriced(t *testing.T) {
 	err := a.TransformPausedStreamBuffer(traceID, func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
 		pt := buffered[0].BifrostPassthroughResponse
 		pt.Body = append(pt.Body, bytes.Repeat([]byte("z"), grow)...) // in-place, same pointer
-		return schemas.PausedStreamBufferTransformResult{Chunks: buffered, ReleaseCount: len(buffered)}, nil
+		// Release nothing here: releasing wakes the flusher, which can drain the entry
+		// before the size checks below read gateReplayBuf[0]. ResumeStream releases it.
+		return schemas.PausedStreamBufferTransformResult{Chunks: buffered, ReleaseCount: 0}, nil
 	})
 	if err != nil {
 		t.Fatalf("in-place transform rejected: %v", err)

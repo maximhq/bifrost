@@ -63,6 +63,14 @@ var chColumnOverrides = map[string]string{
 	"inc_number": "`inc_number` Int64 DEFAULT CAST(generateSnowflakeID() AS Int64)",
 }
 
+func clickhouseModelColumnOverride(model any, column string) (string, bool) {
+	if _, ok := model.(*AgentLog); ok && column == "created_at" {
+		return "`created_at` DateTime64(3) DEFAULT now64(3)", true
+	}
+	override, ok := chColumnOverrides[column]
+	return override, ok
+}
+
 // clickhouseColumnDefs parses the GORM schema for model and returns column
 // definitions ("`name` Type") for every persisted field, in struct order.
 func clickhouseColumnDefs(db *gorm.DB, model any) ([]string, error) {
@@ -75,7 +83,7 @@ func clickhouseColumnDefs(db *gorm.DB, model any) ([]string, error) {
 		if f.DBName == "" || f.IgnoreMigration {
 			continue
 		}
-		if override, ok := chColumnOverrides[f.DBName]; ok {
+		if override, ok := clickhouseModelColumnOverride(model, f.DBName); ok {
 			cols = append(cols, override)
 			continue
 		}
@@ -212,13 +220,31 @@ func clickhouseReconcileColumns(ctx context.Context, db *gorm.DB, model any, tab
 			continue
 		}
 		columnDef := fmt.Sprintf("`%s` %s", f.DBName, clickhouseColumnType(f))
-		if override, ok := chColumnOverrides[f.DBName]; ok {
+		if override, ok := clickhouseModelColumnOverride(model, f.DBName); ok {
 			columnDef = override
 		}
 		stmt := fmt.Sprintf("ALTER TABLE `%s`%s ADD COLUMN IF NOT EXISTS %s", table, onCluster, columnDef)
 		logger.Info("[logstore] clickhouse: adding column %s.%s", table, f.DBName)
 		if err := db.WithContext(ctx).Exec(stmt).Error; err != nil {
 			return fmt.Errorf("clickhouse: add column %s.%s: %w", table, f.DBName, err)
+		}
+	}
+	return nil
+}
+
+// clickhouseReconcileSkipIndexes ensures skip indexes exist on an already
+// created table. CREATE TABLE IF NOT EXISTS never adds indexes to an existing
+// table, so indexes introduced after a table shipped need this ALTER path.
+func clickhouseReconcileSkipIndexes(ctx context.Context, db *gorm.DB, table, cluster string, skipIndexes []string, logger schemas.Logger) error {
+	onCluster := ""
+	if cluster != "" {
+		onCluster = fmt.Sprintf(" ON CLUSTER `%s`", chEscapeIdentifier(cluster))
+	}
+	for _, index := range skipIndexes {
+		stmt := fmt.Sprintf("ALTER TABLE `%s`%s ADD INDEX IF NOT EXISTS %s", table, onCluster, strings.TrimPrefix(index, "INDEX "))
+		logger.Info("[logstore] clickhouse: ensuring skip index on %s", table)
+		if err := db.WithContext(ctx).Exec(stmt).Error; err != nil {
+			return fmt.Errorf("clickhouse: add skip index on %s: %w", table, err)
 		}
 	}
 	return nil
@@ -314,7 +340,7 @@ type clickhouseMigrationStep func(ctx context.Context, db *gorm.DB, cluster stri
 // the Log struct.
 func migrationClickHouseLogsTable(ctx context.Context, db *gorm.DB, cluster string, retentionDays int, logger schemas.Logger) error {
 	logger.Info("[logstore] clickhouse: creating table logs")
-	if err := clickhouseCreateTable(ctx, db, &Log{}, chTableOpts{
+	opts := chTableOpts{
 		table:       "logs",
 		partitionBy: "toYYYYMM(timestamp)",
 		orderBy:     "(timestamp, id)",
@@ -327,21 +353,59 @@ func migrationClickHouseLogsTable(ctx context.Context, db *gorm.DB, cluster stri
 			"INDEX idx_logs_virtual_key_id virtual_key_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_logs_user_id user_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_logs_selected_key_id selected_key_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_logs_agent_correlation_id agent_correlation_id TYPE bloom_filter GRANULARITY 1",
 		},
-	}, cluster); err != nil {
+	}
+	if err := clickhouseCreateTable(ctx, db, &Log{}, opts, cluster); err != nil {
 		return fmt.Errorf("clickhouse: create logs table: %w", err)
 	}
 	if err := clickhouseReconcileColumns(ctx, db, &Log{}, "logs", cluster, logger); err != nil {
 		return err
 	}
+	if err := clickhouseReconcileSkipIndexes(ctx, db, "logs", cluster, opts.skipIndexes, logger); err != nil {
+		return err
+	}
 	return clickhouseReconcileTTL(ctx, db, "logs", cluster, chLogsTTL(retentionDays), logger)
+}
+
+// migrationClickHouseAgentLogsTable creates the append-only Agent observability table.
+func migrationClickHouseAgentLogsTable(ctx context.Context, db *gorm.DB, cluster string, retentionDays int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating table agent_logs")
+	opts := chTableOpts{
+		table:       "agent_logs",
+		partitionBy: "toYYYYMM(timestamp)",
+		orderBy:     "(timestamp, id)",
+		ttl:         chLogsTTL(retentionDays),
+		skipIndexes: []string{
+			"INDEX idx_agent_logs_agent_name agent_name TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_virtual_key_id virtual_key_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_request_id request_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_task_id task_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_context_id context_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_request_message_id request_message_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_response_message_id response_message_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_operation operation TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_status status TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_record_kind record_kind TYPE bloom_filter GRANULARITY 1",
+		},
+	}
+	if err := clickhouseCreateTable(ctx, db, &AgentLog{}, opts, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create agent_logs table: %w", err)
+	}
+	if err := clickhouseReconcileColumns(ctx, db, &AgentLog{}, "agent_logs", cluster, logger); err != nil {
+		return err
+	}
+	if err := clickhouseReconcileSkipIndexes(ctx, db, "agent_logs", cluster, opts.skipIndexes, logger); err != nil {
+		return err
+	}
+	return clickhouseReconcileTTL(ctx, db, "agent_logs", cluster, chLogsTTL(retentionDays), logger)
 }
 
 // migrationClickHouseMCPToolLogsTable creates the mcp_tool_logs table and
 // reconciles it with the MCPToolLog struct.
 func migrationClickHouseMCPToolLogsTable(ctx context.Context, db *gorm.DB, cluster string, retentionDays int, logger schemas.Logger) error {
 	logger.Info("[logstore] clickhouse: creating table mcp_tool_logs")
-	if err := clickhouseCreateTable(ctx, db, &MCPToolLog{}, chTableOpts{
+	opts := chTableOpts{
 		table:       "mcp_tool_logs",
 		partitionBy: "toYYYYMM(timestamp)",
 		orderBy:     "(timestamp, id)",
@@ -350,11 +414,17 @@ func migrationClickHouseMCPToolLogsTable(ctx context.Context, db *gorm.DB, clust
 			"INDEX idx_mcp_logs_status status TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_mcp_logs_virtual_key_id virtual_key_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_mcp_logs_tool_name tool_name TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_mcp_logs_session_id session_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_mcp_logs_agent_correlation_id agent_correlation_id TYPE bloom_filter GRANULARITY 1",
 		},
-	}, cluster); err != nil {
+	}
+	if err := clickhouseCreateTable(ctx, db, &MCPToolLog{}, opts, cluster); err != nil {
 		return fmt.Errorf("clickhouse: create mcp_tool_logs table: %w", err)
 	}
 	if err := clickhouseReconcileColumns(ctx, db, &MCPToolLog{}, "mcp_tool_logs", cluster, logger); err != nil {
+		return err
+	}
+	if err := clickhouseReconcileSkipIndexes(ctx, db, "mcp_tool_logs", cluster, opts.skipIndexes, logger); err != nil {
 		return err
 	}
 	return clickhouseReconcileTTL(ctx, db, "mcp_tool_logs", cluster, chLogsTTL(retentionDays), logger)
@@ -450,6 +520,7 @@ func migrationClickHouseWarpConversationTables(ctx context.Context, db *gorm.DB,
 // mirroring logstoreMigrationSteps for the SQL stores.
 var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseLogsTable,
+	migrationClickHouseAgentLogsTable,
 	migrationClickHouseMCPToolLogsTable,
 	migrationClickHouseAsyncJobsTable,
 	migrationClickHouseWebhookDeliveriesTable,

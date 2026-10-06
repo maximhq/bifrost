@@ -472,6 +472,7 @@ WarpSessionResponse:
           type: string
           enum:
             - upstream_error
+            - access_denied
             - max_iterations
             - timeout
             - cancelled

@@ -481,6 +481,9 @@ type BedrockToolSpec struct {
 	// DeferLoading carries Anthropic's per-tool defer_loading across the invoke
 	// ingress. Converse has no such field, so json:"-" keeps it off that wire.
 	DeferLoading *bool `json:"-"`
+	// EagerInputStreaming carries Anthropic's per-tool eager_input_streaming
+	// across the invoke ingress; json:"-" for the same reason.
+	EagerInputStreaming *bool `json:"-"`
 }
 
 // BedrockToolInputSchema represents the input schema for a tool (union type)

@@ -72,8 +72,14 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.complexity_mechanisms && filters.complexity_mechanisms.length > 0) {
 		params.complexity_mechanisms = filters.complexity_mechanisms.join(",");
 	}
+	if (filters.agent_names && filters.agent_names.length > 0) {
+		params.agent_names = filters.agent_names.join(",");
+	}
 	if (filters.session_id) {
 		params.session_id = filters.session_id;
+	}
+	if (filters.agent_correlation_id) {
+		params.agent_correlation_id = filters.agent_correlation_id;
 	}
 	if (filters.period) {
 		params.period = filters.period;

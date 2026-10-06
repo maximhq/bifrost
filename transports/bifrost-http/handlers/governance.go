@@ -403,7 +403,10 @@ type CreateVirtualKeyRequest struct {
 	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 	// Metadata is free-form key/value attribution (cost center, owner, ...). See
 	// configstoreTables.ValidateVirtualKeyMetadata for the rules.
-	Metadata map[string]string `json:"metadata,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	AgentGrants []struct {
+		AgentName string `json:"agent_name" validate:"required"`
+	} `json:"agent_grants,omitempty"` // Empty means no agents allowed (deny-by-default)
 }
 
 // vkModelBudgetRequest is one per-model budget/rate-limit group under a provider config
@@ -461,7 +464,10 @@ type UpdateVirtualKeyRequest struct {
 	DisableContentLogging schemas.OptionalJSON[bool] `json:"disable_content_logging,omitempty"`
 	// Metadata replaces the key's metadata as a whole: omitted (or null) leaves it unchanged,
 	// {} clears it, and any other object becomes the new metadata.
-	Metadata *map[string]string `json:"metadata,omitempty"`
+	Metadata    *map[string]string `json:"metadata,omitempty"`
+	AgentGrants []struct {
+		AgentName string `json:"agent_name" validate:"required"`
+	} `json:"agent_grants,omitempty"` // Omitted leaves grants unchanged; [] clears all grants
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to more than one of Team, Customer or Business Unit")
@@ -2114,6 +2120,13 @@ func virtualKeyMatchesMetadataFilters(vk *configstoreTables.TableVirtualKey, fil
 	return true
 }
 
+func classifyAgentGrantReplacementError(err error) error {
+	if errors.Is(err, configstore.ErrInvalidAgentGrant) {
+		return &badRequestError{err: err}
+	}
+	return err
+}
+
 // createVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key
 func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	var req CreateVirtualKeyRequest
@@ -2322,6 +2335,24 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				}, tx); err != nil {
 					return err
 				}
+			}
+		}
+		if req.AgentGrants != nil {
+			// Check for duplicate AgentName values before processing
+			seenAgentNames := make(map[string]bool)
+			agentNames := make([]string, 0, len(req.AgentGrants))
+			for _, ag := range req.AgentGrants {
+				if seenAgentNames[ag.AgentName] {
+					return &badRequestError{err: fmt.Errorf("duplicate agent_name: %s", ag.AgentName)}
+				}
+				seenAgentNames[ag.AgentName] = true
+				agentNames = append(agentNames, ag.AgentName)
+			}
+			// Grants are written in the same transaction as the rest of the key, and the
+			// store validates the names before deleting anything, so unknown or empty
+			// names are the caller's fault and surface as 400.
+			if err := h.configStore.ReplaceVirtualKeyAgentGrants(ctx, vk.ID, agentNames, tx); err != nil {
+				return classifyAgentGrantReplacementError(err)
 			}
 		}
 		return nil
@@ -2918,6 +2949,26 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						return err
 					}
 				}
+			}
+		}
+
+		// A nil AgentGrants slice means the caller omitted the field, which preserves
+		// existing grants; an explicit empty list reaches the store and clears them.
+		if req.AgentGrants != nil {
+			// Check for duplicate AgentName values among all grants before processing
+			seenAgentNames := make(map[string]bool)
+			agentNames := make([]string, 0, len(req.AgentGrants))
+			for _, ag := range req.AgentGrants {
+				if seenAgentNames[ag.AgentName] {
+					return &badRequestError{err: fmt.Errorf("duplicate agent_name: %s", ag.AgentName)}
+				}
+				seenAgentNames[ag.AgentName] = true
+				agentNames = append(agentNames, ag.AgentName)
+			}
+			// Only this VK's grants are replaced, inside the same transaction as the
+			// rest of the update, with validation performed before any deletion.
+			if err := h.configStore.ReplaceVirtualKeyAgentGrants(ctx, vk.ID, agentNames, tx); err != nil {
+				return classifyAgentGrantReplacementError(err)
 			}
 		}
 

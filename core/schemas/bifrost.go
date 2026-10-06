@@ -27,6 +27,7 @@ type BifrostConfig struct {
 	Account            Account
 	LLMPlugins         []LLMPlugin
 	MCPPlugins         []MCPPlugin
+	A2APlugins         []A2APlugin
 	OAuth2Provider     OAuth2Provider
 	MCPHeadersProvider MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
 	Logger             Logger
@@ -206,6 +207,7 @@ const (
 	WebSocketResponsesRequest      RequestType = "websocket_responses"
 	RealtimeRequest                RequestType = "realtime"
 	LiveRequest                    RequestType = "live"
+	LiveContentRequest             RequestType = "live_content"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.
@@ -244,14 +246,15 @@ const (
 
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
-	BifrostContextKeySessionToken      BifrostContextKey = "bifrost-session-token" // string (session token for authentication - set by auth middleware)
-	BifrostContextKeyVirtualKey        BifrostContextKey = "x-bf-vk"               // string
-	BifrostContextKeyAPIKeyName        BifrostContextKey = "x-bf-api-key"          // string (explicit key name selection)
-	BifrostContextKeyAPIKeyID          BifrostContextKey = "x-bf-api-key-id"       // string (explicit key ID selection, takes priority over name)
-	BifrostContextKeyDirectKey         BifrostContextKey = "x-bf-direct-key"       // schemas.Key (raw key supplied via x-bf-direct-key: true header; bypasses registered key pool)
-	BifrostContextKeyRequestID         BifrostContextKey = "request-id"            // string
-	BifrostContextKeyFallbackRequestID BifrostContextKey = "fallback-request-id"   // string
-	BifrostContextKeyBillingNonce      BifrostContextKey = "bifrost-billing-nonce" // string (internally minted per physical HTTP request; makes the billing-idempotency key unforgeable since request-id may be caller-supplied via x-request-id. Never read from headers, never echoed to the caller - DO NOT SET THIS MANUALLY)
+	BifrostContextKeySessionToken       BifrostContextKey = "bifrost-session-token" // string (session token for authentication - set by auth middleware)
+	BifrostContextKeyAcceptedCredential BifrostContextKey = "bifrost-accepted-credential"
+	BifrostContextKeyVirtualKey         BifrostContextKey = "x-bf-vk"               // string
+	BifrostContextKeyAPIKeyName         BifrostContextKey = "x-bf-api-key"          // string (explicit key name selection)
+	BifrostContextKeyAPIKeyID           BifrostContextKey = "x-bf-api-key-id"       // string (explicit key ID selection, takes priority over name)
+	BifrostContextKeyDirectKey          BifrostContextKey = "x-bf-direct-key"       // schemas.Key (raw key supplied via x-bf-direct-key: true header; bypasses registered key pool)
+	BifrostContextKeyRequestID          BifrostContextKey = "request-id"            // string
+	BifrostContextKeyFallbackRequestID  BifrostContextKey = "fallback-request-id"   // string
+	BifrostContextKeyBillingNonce       BifrostContextKey = "bifrost-billing-nonce" // string (internally minted per physical HTTP request; makes the billing-idempotency key unforgeable since request-id may be caller-supplied via x-request-id. Never read from headers, never echoed to the caller - DO NOT SET THIS MANUALLY)
 
 	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
 	// If "*" is present, all clients/tools are included, and [] means no clients/tools are included.
@@ -329,9 +332,16 @@ const (
 	BifrostContextKeyApp                                 BifrostContextKey = "app"                                              // string (canonical app key such as claude-code; set by plugins)
 	BifrostContextKeySkipBudgetAndRateLimits             BifrostContextKey = "bifrost-skip-budget-and-rate-limits"              // bool (set by bifrost for read-only requests like list models that don't consume quota)
 	BifrostContextKeySessionContinuation                 BifrostContextKey = "bifrost-session-continuation"                     // bool (a billing unit of an already-admitted session, e.g. a GPT Live window; not checked or counted as a request)
+	BifrostContextKeyLiveSessionID                       BifrostContextKey = "bifrost-live-session-id"                          // string (set by the live transport on every billing unit: the session the unit belongs to; logging folds units into one row per session)
+	BifrostContextKeyLiveUnit                            BifrostContextKey = "bifrost-live-unit"                                // string (set by the live transport: "voice" for a window of voice seconds, "backend" for one delegated Responses call)
+	BifrostContextKeyLiveSessionStart                    BifrostContextKey = "bifrost-live-session-start"                       // bool (set by the live transport on the unit that opens the session)
+	BifrostContextKeyLiveSessionEnd                      BifrostContextKey = "bifrost-live-session-end"                         // bool (set by the live transport on the unit that closes the session; its response output is the transcript)
+	BifrostContextKeyLiveDelegationID                    BifrostContextKey = "bifrost-live-delegation-id"                       // string (set by the live transport on a backend unit: the delegation its response ran)
+	BifrostContextKeyLiveDelegationStartMs               BifrostContextKey = "bifrost-live-delegation-start-ms"                 // int64 (set by the live transport on a backend unit: when its delegation began, on the session timeline)
 	BifrostContextKeySkipProviderCheck                   BifrostContextKey = "bifrost-skip-provider-check"                      // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the provider is the intercepted upstream rather than an operator choice; skips the virtual key and access profile provider allowlists)
 	BifrostContextKeySkipModelCheck                      BifrostContextKey = "bifrost-skip-model-check"                         // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the model is the intercepted upstream model rather than an operator grant; skips the virtual key and access profile model allowlists)
 	BifrostContextKeySkipVirtualKeyUsageTracking         BifrostContextKey = "bifrost-skip-virtual-key-usage-tracking"          // bool (set by governance callers to skip VK usage while preserving VK auth/attribution)
+	BifrostContextKeyAdmitUngrantedUser                  BifrostContextKey = "bifrost-admit-ungranted-user"                     // bool (set by Warp: a signed-in user nothing grants access to is served ungoverned, as a key-less request is, instead of refused; a presented virtual key is still held to what it resolves to)
 	BifrostContextKeyTraceID                             BifrostContextKey = "bifrost-trace-id"                                 // string (per-request trace store handle - set by tracing middleware or stream pre-hooks; use BifrostContextKeyExportTraceID for the W3C trace ID)
 	BifrostContextKeyExportTraceID                       BifrostContextKey = "bifrost-export-trace-id"                          // string (W3C trace ID advertised to the caller via the x-bifrost-trace-id response header; equals the store handle when no traceparent was inherited - set by tracing middleware)
 	BifrostContextKeySpanID                              BifrostContextKey = "bifrost-span-id"                                  // string (current span ID for child span creation - set by tracer)
@@ -380,6 +390,9 @@ const (
 	BifrostContextKeyRealtimeSource                      BifrostContextKey = "bifrost-realtime-source"                          // string ("ei" or "lm")
 	BifrostContextKeyRealtimeEventType                   BifrostContextKey = "bifrost-realtime-event-type"                      // string
 	BifrostContextKeyRealtimeTransport                   BifrostContextKey = "bifrost-realtime-transport"                       // string ("websocket" or "webrtc")
+	BifrostContextKeyA2ADownstreamTransport              BifrostContextKey = "bifrost-a2a-downstream-transport"                 // string (A2A binding accepted by the gateway)
+	BifrostContextKeyA2ARequestOrigin                    BifrostContextKey = "bifrost-a2a-request-origin"                       // string (absolute HTTP origin used to reach the Agent Gateway)
+	BifrostContextKeyA2AUpstreamTransport                BifrostContextKey = "bifrost-a2a-upstream-transport"                   // string (A2A binding selected for the upstream agent)
 	BifrostContextKeyRealtimeVoice                       BifrostContextKey = "bifrost-realtime-voice"                           // string
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
@@ -445,15 +458,17 @@ const (
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"          // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldConvertParams           BifrostContextKey = "bifrost-compat-should-convert-params"       // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatAzureDeepseek                 BifrostContextKey = "bifrost-compat-azure-deepseek"              // bool (per-request override from x-bf-compat header)
+	BifrostContextKeyCompatForceReasoningOnlyToResponses BifrostContextKey = "bifrost-compat-reasoning-only-to-responses" // bool (per-request override from x-bf-compat header)
 	BifrostContextKeySupportsAssistantPrefill            BifrostContextKey = "bifrost-supports-assistant-prefill"         // bool (set by compat plugin) - if model supports assistant prefill
 	BifrostContextKeyCompatDroppedParams                 BifrostContextKey = "bifrost-compat-dropped-params"              // []string (set by compat plugin) - params stripped from the request because the model catalog did not allowlist them; read back in PostLLMHook to populate extra_fields.dropped_compat_plugin_params
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
 	BifrostContextKeyDimensions                          BifrostContextKey = "bifrost-dimensions"                         // map[string]string (set by HTTP transport from x-bf-dim-* headers) BifrostContextKeyDimensions holds per-request key/value dimensions supplied via x-bf-dim-<key> request headers. These dimensions are forwarded to internal logs (as metadata)
 	BifrostContextKeyLoadBalancerAttempt                 BifrostContextKey = "bifrost-lb-attempt"                         // map[string]string (set by the enterprise load balancer plugin - DO NOT SET THIS MANUALLY) - flat, string-valued routing decision for the current attempt, every key prefixed with LoadBalancerMetadataPrefix; the logging plugin merges it into the log row's metadata, and a key-selection decision overwrites the previous attempt's value on the shared context
 	IsAPIKeyAuthContextKey                               BifrostContextKey = "is_api_key_auth"
-	IsLocalAdminContextKey                               BifrostContextKey = "is_local_admin"                // bool (set by auth middleware when password-based auth succeeds - local admin user bypasses RBAC)
-	BifrostContextKeyAuthBypassed                        BifrostContextKey = "bifrost-auth-bypassed"         // bool (set by auth middleware ONLY when dashboard/admin auth is unconfigured or disabled and the request was let through without any credential check - distinct from IsLocalAdminContextKey, which is also set on genuinely authenticated sessions; handlers gating especially dangerous capabilities (e.g. native plugin/subprocess loading) should check this, not IsLocalAdminContextKey)
-	BifrostContextKeyPassthroughOverridesPresent         BifrostContextKey = "passthrough_overrides_present" // bool (set by HTTP transport) - passthrough raw request requested
+	IsLocalAdminContextKey                               BifrostContextKey = "is_local_admin"                    // bool (set by auth middleware when password-based auth succeeds - local admin user bypasses RBAC)
+	BifrostContextKeyAuthBypassed                        BifrostContextKey = "bifrost-auth-bypassed"             // bool (set by auth middleware ONLY when dashboard/admin auth is unconfigured or disabled and the request was let through without any credential check - distinct from IsLocalAdminContextKey, which is also set on genuinely authenticated sessions; handlers gating especially dangerous capabilities (e.g. native plugin/subprocess loading) should check this, not IsLocalAdminContextKey)
+	BifrostContextKeySetupTokenAuthenticated             BifrostContextKey = "bifrost-setup-token-authenticated" // bool (set by the OSS setup-lock middleware when dashboard auth is not active and the request carried the operator's setup token - a real credential check, so handlers treat it as genuine auth rather than the fail-open bypass)
+	BifrostContextKeyPassthroughOverridesPresent         BifrostContextKey = "passthrough_overrides_present"     // bool (set by HTTP transport) - passthrough raw request requested
 	BifrostContextKeyConnectionClosed                    BifrostContextKey = "connection_closed"
 	BifrostContextKeyStreamBodyExhausted                 BifrostContextKey = "stream_body_exhausted"          // bool (set by bifrost - DO NOT SET THIS MANUALLY) - upstream body was read to EOF, so cleanup must not drain it again
 	BifrostContextKeyStreamParkedAfterFinish             BifrostContextKey = "stream_parked_after_finish"     // bool (set by bifrost - DO NOT SET THIS MANUALLY) - reader stopped on a heartbeat after finish_reason with the body still open, so cleanup must abandon the connection instead of draining it
@@ -657,6 +672,7 @@ type BifrostRequest struct {
 	FileRetrieveRequest          *BifrostFileRetrieveRequest
 	FileDeleteRequest            *BifrostFileDeleteRequest
 	FileContentRequest           *BifrostFileContentRequest
+	LiveContentRequest           *BifrostLiveContentRequest
 	CachedContentCreateRequest   *BifrostCachedContentCreateRequest
 	CachedContentListRequest     *BifrostCachedContentListRequest
 	CachedContentRetrieveRequest *BifrostCachedContentRetrieveRequest
@@ -762,6 +778,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 			return br.FileContentRequest.Provider, *br.FileContentRequest.Model, nil
 		}
 		return br.FileContentRequest.Provider, "", nil
+	case br.LiveContentRequest != nil:
+		return br.LiveContentRequest.Provider, "", nil
 	case br.CachedContentCreateRequest != nil:
 		return br.CachedContentCreateRequest.Provider, br.CachedContentCreateRequest.Model, nil
 	case br.CachedContentListRequest != nil:
@@ -1224,12 +1242,14 @@ type BifrostResponse struct {
 	VideoGenerationResponse       *BifrostVideoGenerationResponse
 	VideoDownloadResponse         *BifrostVideoDownloadResponse
 	VideoListResponse             *BifrostVideoListResponse
+	LiveSession                   *LiveSessionLog // GPT Live: what a session's closing unit reports for its log row
 	VideoDeleteResponse           *BifrostVideoDeleteResponse
 	FileUploadResponse            *BifrostFileUploadResponse
 	FileListResponse              *BifrostFileListResponse
 	FileRetrieveResponse          *BifrostFileRetrieveResponse
 	FileDeleteResponse            *BifrostFileDeleteResponse
 	FileContentResponse           *BifrostFileContentResponse
+	LiveContentResponse           *LiveContentResponse
 	CachedContentCreateResponse   *BifrostCachedContentCreateResponse
 	CachedContentListResponse     *BifrostCachedContentListResponse
 	CachedContentRetrieveResponse *BifrostCachedContentRetrieveResponse
@@ -1306,6 +1326,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.FileDeleteResponse.ExtraFields
 	case r.FileContentResponse != nil:
 		return &r.FileContentResponse.ExtraFields
+	case r.LiveContentResponse != nil:
+		return &r.LiveContentResponse.ExtraFields
 	case r.VideoGenerationResponse != nil:
 		return &r.VideoGenerationResponse.ExtraFields
 	case r.VideoDownloadResponse != nil:
@@ -1635,6 +1657,11 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.FileContentResponse.ExtraFields.Provider = provider
 		r.FileContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.FileContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.LiveContentResponse != nil:
+		r.LiveContentResponse.ExtraFields.RequestType = requestType
+		r.LiveContentResponse.ExtraFields.Provider = provider
+		r.LiveContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.LiveContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	case r.BatchCreateResponse != nil:
 		r.BatchCreateResponse.ExtraFields.RequestType = requestType
 		r.BatchCreateResponse.ExtraFields.Provider = provider
@@ -2264,9 +2291,14 @@ type BifrostErrorExtraFields struct {
 	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
 	// RoutingInfo.Model. Still populated for backward compatibility; new
 	// consumers should read from RoutingInfo.
-	ResolvedModelUsed         string                `json:"resolved_model_used,omitempty"`
-	RequestType               RequestType           `json:"request_type,omitempty"`
-	MCPRequestType            MCPRequestType        `json:"mcp_request_type,omitempty"`
+	ResolvedModelUsed string         `json:"resolved_model_used,omitempty"`
+	RequestType       RequestType    `json:"request_type,omitempty"`
+	MCPRequestType    MCPRequestType `json:"mcp_request_type,omitempty"`
+	// A2ARequestType and A2AAgentName are stamped by the Agent Gateway plugin gate
+	// on every wrapped error so PostA2AHook can discriminate the operation and its
+	// authorization resource from the failure path too, exactly as MCPRequestType does.
+	A2ARequestType            A2ARequestType        `json:"a2a_request_type,omitempty"`
+	A2AAgentName              string                `json:"a2a_agent_name,omitempty"`
 	RawRequest                interface{}           `json:"raw_request,omitempty"`
 	RawResponse               interface{}           `json:"raw_response,omitempty"`
 	ConvertedRequestType      RequestType           `json:"converted_request_type,omitempty"`

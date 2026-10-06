@@ -13,6 +13,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -76,7 +77,7 @@ func chTestTargetIsDedicated(cfg *ClickHouseConfig, overridden bool) bool {
 func requireDedicatedClickHouseTestDB(t *testing.T, cfg *ClickHouseConfig) {
 	t.Helper()
 	if !chTestTargetIsDedicated(cfg, chTestOverridden()) {
-		t.Fatalf("refusing to run destructive ClickHouse tests against database %q: BIFROST_TEST_CLICKHOUSE_* overrides must point at a database whose name contains \"test\" (the suite truncates logs, mcp_tool_logs, async_jobs and webhook_deliveries and rewrites their TTL)", cfg.Database.GetValue())
+		t.Fatalf("refusing to run destructive ClickHouse tests against database %q: BIFROST_TEST_CLICKHOUSE_* overrides must point at a database whose name contains \"test\" (the suite truncates logs, mcp_tool_logs, agent_logs, async_jobs and webhook_deliveries and rewrites their TTL)", cfg.Database.GetValue())
 	}
 }
 
@@ -108,7 +109,7 @@ func trySetupClickHouseStore(t *testing.T) *ClickHouseLogStore {
 		t.Skipf("ClickHouse not available, skipping test: %v", err)
 	}
 	ch := store.(*ClickHouseLogStore)
-	for _, table := range []string{"logs", "mcp_tool_logs", "async_jobs", "webhook_deliveries"} {
+	for _, table := range []string{"logs", "mcp_tool_logs", "agent_logs", "async_jobs", "webhook_deliveries"} {
 		require.NoError(t, ch.db.Exec("TRUNCATE TABLE "+table).Error)
 	}
 	t.Cleanup(func() { _ = ch.Close(context.Background()) })
@@ -285,6 +286,26 @@ func TestChServerVersionSupported(t *testing.T) {
 		_, err := chServerVersionSupported(bad)
 		assert.Error(t, err, bad)
 	}
+}
+
+func TestClickHouseReconcileAgentCorrelation(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	taskID, contextID := "task-clickhouse", "context-clickhouse"
+	request := &AgentLog{ID: "ch-a2a-request", Timestamp: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "ch-request-id"}
+	event := &AgentLog{ID: "ch-a2a-event", Timestamp: now.Add(time.Millisecond), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "ch-request-id", TaskID: &taskID, ContextID: &contextID}
+
+	_, err := store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{request})
+	require.NoError(t, err)
+	require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{request}))
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{event})))
+	require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{event}))
+
+	found, err := store.FindAgentLog(ctx, request.ID)
+	require.NoError(t, err)
+	require.Equal(t, taskID, *found.TaskID)
+	require.Equal(t, contextID, *found.ContextID)
 }
 
 func TestChTTLDays(t *testing.T) {
@@ -685,6 +706,28 @@ func TestClickHouseDeleteLogs(t *testing.T) {
 		_, err := store.FindByID(ctx, id)
 		assert.ErrorIs(t, err, ErrNotFound, "log %s should be deleted", id)
 	}
+}
+
+func TestClickHouseDeleteAgentLogsAppliesScopeToRequestedAndCorrelatedRows(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	alice, bob := "alice", "bob"
+	rows := []*AgentLog{
+		{ID: "ch-alice-request", Timestamp: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "ch-shared-request", UserID: &alice},
+		{ID: "ch-alice-event", Timestamp: now.Add(time.Millisecond), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "ch-shared-request", UserID: &alice},
+		{ID: "ch-bob-shared-event", Timestamp: now.Add(2 * time.Millisecond), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "ch-shared-request", UserID: &bob},
+		{ID: "ch-bob-request", Timestamp: now.Add(3 * time.Millisecond), RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "ch-bob-request", UserID: &bob},
+	}
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(context.Background(), rows)))
+	ctx := queryscope.WithQueryScope(context.Background(), func(db *gorm.DB) *gorm.DB {
+		return db.Where("user_id = ?", alice)
+	})
+
+	require.NoError(t, store.DeleteAgentLogs(ctx, []string{"ch-alice-request", "ch-bob-request"}))
+
+	var remaining []string
+	require.NoError(t, store.db.Model(&AgentLog{}).Order("id").Pluck("id", &remaining).Error)
+	require.Equal(t, []string{"ch-bob-request", "ch-bob-shared-event"}, remaining)
 }
 
 func TestClickHouseDeleteLogsBatch(t *testing.T) {

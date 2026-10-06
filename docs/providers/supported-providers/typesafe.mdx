@@ -91,6 +91,30 @@ The custom provider is addressed by its own name: `typesafe-eu/jev-latest` on `/
 
 To list a custom provider's models on the native `/typesafe/v1/models` route, send `x-bf-model-provider: typesafe-eu`. Model names come back bare (`jev-latest`), as on the standard provider. The pinned jev catalog is only merged in when no `base_url` is set.
 
+#### Cloudflare Clef
+
+Cloudflare serves its Jev-compatible Clef models on per-model Workers AI URLs and wraps responses in its REST envelope (`{"result": ..., "success": ..., "errors": [...]}`). Bifrost unwraps the envelope and reads `errors[].message`, so Clef works as a custom TypeSafe provider. Use one custom provider per model, because the model in the URL must match the `model` in the request body:
+
+```json
+{
+  "providers": {
+    "clef": {
+      "keys": [{ "name": "Cloudflare", "value": "env.CLOUDFLARE_API_TOKEN", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "https://api.cloudflare.com" },
+      "custom_provider_config": {
+        "base_provider_type": "typesafe",
+        "allowed_requests": { "decisions": true },
+        "request_path_overrides": {
+          "decisions": "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run/@cf/cloudflare/clef"
+        }
+      }
+    }
+  }
+}
+```
+
+Call it as `clef/clef`. For `clef-flash`, add a second provider whose override ends in `@cf/cloudflare/clef-flash` and call it as `<provider>/clef-flash`.
+
 ## Decisions API
 
 `POST /v1/decisions` evaluates state against named questions. Each question has a `kind`, `instructions` (string or structured data), and kind-specific `criteria`:

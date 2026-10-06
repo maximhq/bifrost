@@ -26,7 +26,12 @@ func (r *BifrostResponsesRequest) ExtractAnthropicBillingHeader() {
 	if r == nil || r.anthropicBillingHeader != nil || len(r.Input) == 0 {
 		return
 	}
-	message := &r.Input[0] // Messages ingress puts top-level system content first.
+	// Messages ingress puts top-level system content first, after any effort-only items.
+	at := firstContentIndex(r.Input)
+	if at == len(r.Input) {
+		return
+	}
+	message := &r.Input[at]
 	content := message.Content
 	if message.Role == nil || *message.Role != ResponsesInputMessageRoleSystem || content == nil {
 		return
@@ -34,7 +39,7 @@ func (r *BifrostResponsesRequest) ExtractAnthropicBillingHeader() {
 	if content.ContentStr != nil {
 		if isStandaloneBillingHeader(*content.ContentStr) {
 			r.anthropicBillingHeader = &anthropicBillingHeader{text: content.ContentStr}
-			r.Input = r.Input[1:]
+			r.Input = removeInputAt(r.Input, at)
 		}
 		return
 	}
@@ -54,7 +59,7 @@ func (r *BifrostResponsesRequest) ExtractAnthropicBillingHeader() {
 		content.ContentBlocks = kept
 		if len(kept) == 0 {
 			r.anthropicBillingHeader.system = nil
-			r.Input = r.Input[1:]
+			r.Input = removeInputAt(r.Input, at)
 		}
 	}
 }
@@ -95,11 +100,33 @@ func (r *BifrostResponsesRequest) WithAnthropicBillingHeader() *BifrostResponses
 		copy.Input = slices.Clone(r.Input)
 		copy.Input[index].Content = content
 	} else {
+		at := firstContentIndex(r.Input)
 		copy.Input = make([]ResponsesMessage, 0, len(r.Input)+1)
+		copy.Input = append(copy.Input, r.Input[:at]...)
 		copy.Input = append(copy.Input, ResponsesMessage{Role: Ptr(ResponsesInputMessageRoleSystem), Content: content})
-		copy.Input = append(copy.Input, r.Input...)
+		copy.Input = append(copy.Input, r.Input[at:]...)
 	}
 	return &copy
+}
+
+// firstContentIndex returns the index of the first input item that is not an effort-only
+// system item. Such items (Anthropic's per-message output_config) carry no prompt text, so
+// a billing header right after them is still the leading system content and must be found.
+func firstContentIndex(input []ResponsesMessage) int {
+	i := 0
+	for i < len(input) && input[i].IsEffortOnlySystemItem() {
+		i++
+	}
+	return i
+}
+
+// removeInputAt drops input[at] without writing to the shared backing array. Removing the
+// first item stays a reslice; any other position copies into a new slice.
+func removeInputAt(input []ResponsesMessage, at int) []ResponsesMessage {
+	if at == 0 {
+		return input[1:]
+	}
+	return append(input[:at:at], input[at+1:]...)
 }
 
 // Match an entire metadata line so mixed instruction blocks are left intact.
