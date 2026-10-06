@@ -432,6 +432,27 @@ func TestClampMaxTokensCeiling(t *testing.T) {
 			t.Errorf("got %v, want 32000 (datasheet ceiling)", got)
 		}
 	})
+	// An application inference profile alias with no ModelName resolves to its
+	// opaque model_id, which carries no "claude" substring for the static table
+	// to match on — the same gap TestClampMaxTokensRecognisesAliasedProfile
+	// covers for the floor. Without falling back to the alias key, a request
+	// retargeted from Opus (max_tokens > 64000) onto this alias forwarded the
+	// oversized value and Bedrock rejected it with a 400 (#8060).
+	t.Run("opaque profile alias is recognised from the alias key", func(t *testing.T) {
+		ctx := withAlias("claude-haiku-4-5", "3dnkdwuaalc7", appProfileARN)
+		caps := schemas.ResolveModelCaps(schemas.Bedrock, schemas.ResolveCanonicalModel(ctx, "3dnkdwuaalc7"))
+		given := 200000
+		if got := clampMaxTokens(ctx, &given, caps); got == nil || *got != 64000 {
+			t.Errorf("got %v, want 64000 (ceiling found via alias key)", got)
+		}
+	})
+	t.Run("opaque id with no alias still has no ceiling to find", func(t *testing.T) {
+		given := 200000
+		caps := schemas.ResolveModelCaps(schemas.Bedrock, "3dnkdwuaalc7")
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 200000 {
+			t.Errorf("got %v, want 200000 (nothing identifies the model)", got)
+		}
+	})
 }
 
 // ---- Converse reasoning shape ----

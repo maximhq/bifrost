@@ -2719,10 +2719,28 @@ func clampMaxTokens(ctx *schemas.BifrostContext, maxTokens *int, caps schemas.Mo
 	if floor := caps.MinOutputTokens(fallback); floor > 0 && *maxTokens < floor {
 		return schemas.Ptr(floor)
 	}
-	if ceiling := caps.MaxOutputTokens(providerUtils.KnownClaudeMaxOutputTokens(caps.Model())); ceiling > 0 && *maxTokens > ceiling {
+	if ceiling := caps.MaxOutputTokens(claudeOutputCeiling(ctx, caps.Model())); ceiling > 0 && *maxTokens > ceiling {
 		return schemas.Ptr(ceiling)
 	}
 	return maxTokens
+}
+
+// claudeOutputCeiling finds the static Claude max_output_tokens ceiling for
+// the current attempt. caps.Model() alone misses it when an alias resolves to
+// an opaque wire id with no "claude" substring (e.g. a Bedrock application
+// inference profile) and sets no ModelName either — the same gap
+// IsOpenAIModelFamily above closes for the floor by walking the alias chain
+// down to its user-facing Key. KeyAliases is keyed by that name, so it is
+// typically the real Claude model string even when ModelID and ModelName
+// are not.
+func claudeOutputCeiling(ctx *schemas.BifrostContext, model string) int {
+	if m := providerUtils.KnownClaudeMaxOutputTokens(model); m > 0 {
+		return m
+	}
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil {
+		return providerUtils.KnownClaudeMaxOutputTokens(ra.Key)
+	}
+	return 0
 }
 
 // convertInferenceConfig converts Bifrost parameters to Bedrock inference config
