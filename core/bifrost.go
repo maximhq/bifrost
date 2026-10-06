@@ -6655,6 +6655,7 @@ func executeRequestWithRetries[T any](
 	// True iff the previous attempt failed on rejected encrypted reasoning and we stripped
 	// it. Used to skip backoff: the payload changed, so there is nothing to wait out.
 	lastWasEncryptedContentStrip := false
+	var retryAfter time.Time
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
@@ -6849,6 +6850,9 @@ func executeRequestWithRetries[T any](
 			stage := "before retry dispatch"
 			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip) {
 				backoff := calculateBackoff(attempts-1, config)
+				if !retryAfter.IsZero() {
+					backoff = max(backoff, time.Until(retryAfter))
+				}
 				logger.Debug("sleeping for %s before retry", backoff)
 				ctxEnded = waitRetryBackoff(ctx, backoff)
 				stage = "during retry backoff"
@@ -6981,6 +6985,9 @@ func executeRequestWithRetries[T any](
 		}
 
 		// Attempt the request
+		// Headers belong to one attempt; a failure before receiving a new response
+		// must not inherit Retry-After from an earlier retry or fallback provider.
+		ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
 		result, bifrostError = requestHandler(currentKey)
 
 		// Detect errors carried inside HTTP 200 streams before returning success.
@@ -7223,6 +7230,22 @@ func executeRequestWithRetries[T any](
 		}
 		lastWasPerKeyFailure = isPerKeyFailure
 		lastWasPermanentKeyFailure = isPermanentKeyFailure
+		retryAfter = time.Time{}
+		if !lastWasPermanentKeyFailure && !lastWasEncryptedContentStrip && attempts < config.NetworkConfig.MaxRetries+extraAttempts {
+			// The error belongs to this attempt. Reading response headers back from ctx
+			// would make the retry schedule depend on another concurrent request when a
+			// caller reuses a mutable BifrostContext.
+			if delay := time.Duration(bifrostError.ExtraFields.RetryAfter) * time.Millisecond; delay > 0 {
+				retryAfter = time.Now().Add(delay)
+				deadline, hasDeadline := ctx.Deadline()
+				if delay > config.NetworkConfig.RetryBackoffMax || (hasDeadline && !retryAfter.Before(deadline)) {
+					// Do not shorten the provider's minimum wait or exceed the caller's
+					// budget. Preserve the upstream error for the existing fallback policy.
+					ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, "Stopped retries: provider Retry-After exceeds the backoff or request budget")
+					break
+				}
+			}
+		}
 		// Remember the key used on this attempt so the next iteration's backoff check
 		// can detect whether key selection genuinely picked a different credential.
 		previousKeyID = currentKey.ID
