@@ -2737,6 +2737,17 @@ func TestProviderLabels_CreateUpdateAndListFilters(t *testing.T) {
 	assert.Contains(t, string(ctx.Response.Body()), "at most 50 entries, got 51")
 	assert.Equal(t, []string{"eu", "prod"}, store.Providers["mock-c"].Tags, "a refused update must write nothing")
 
+	// null clears, and must reach the store as an explicit empty value: the store keeps labels
+	// for nil (an update that does not carry them).
+	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`,"tags":null,"metadata":null}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.NotNil(t, store.Providers["mock-c"].Tags, "null tags must be an explicit clear")
+	assert.Empty(t, store.Providers["mock-c"].Tags)
+	assert.NotNil(t, store.Providers["mock-c"].Metadata, "null metadata must be an explicit clear")
+	assert.Empty(t, store.Providers["mock-c"].Metadata)
+	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`,"tags":["eu","prod"],"metadata":{"owner":"team-a"}}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
 	list := func(query string) ([]string, int) {
 		ctx := call(fasthttp.MethodGet, "/api/providers"+query, "", "")
 		if ctx.Response.StatusCode() != fasthttp.StatusOK {
@@ -2765,6 +2776,9 @@ func TestProviderLabels_CreateUpdateAndListFilters(t *testing.T) {
 		{query: "?metadata_owner=team-a&metadata_region=eu", want: []string{"mock-a"}},
 		{query: "?metadata_owner=team-a&tags=prod", want: []string{"mock-a", "mock-c"}},
 		{query: "?tags=a%20b", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?tags=", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?tags=,", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?tags=prod,", wantStatus: fasthttp.StatusBadRequest},
 		{query: "?metadata_bad%20key=x", wantStatus: fasthttp.StatusBadRequest},
 		{query: "?metadata_=x", wantStatus: fasthttp.StatusBadRequest},
 		{query: "?metadata_owner=team-a&metadata_=x", wantStatus: fasthttp.StatusBadRequest},
