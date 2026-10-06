@@ -31,10 +31,41 @@ var loginAttempts sync.Map // IP -> *loginAttemptEntry
 const (
 	loginRateLimitWindow      = 60 * time.Second
 	loginRateLimitMaxAttempts = 5
+	loginRateLimitMaxEntries  = 10000
+	loginRateLimitEvictPeriod = 5 * time.Minute
 )
+
+func init() {
+	go func() {
+		for range time.Tick(loginRateLimitEvictPeriod) {
+			now := time.Now()
+			loginAttempts.Range(func(key, value any) bool {
+				entry := value.(*loginAttemptEntry)
+				entry.mu.Lock()
+				expired := now.Sub(entry.windowStart) > loginRateLimitWindow
+				entry.mu.Unlock()
+				if expired {
+					loginAttempts.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
+}
 
 func checkLoginRateLimit(ip string) bool {
 	now := time.Now()
+
+	// Hard cap: if the map is too large, reject to prevent memory exhaustion.
+	count := 0
+	loginAttempts.Range(func(_, _ any) bool {
+		count++
+		return count < loginRateLimitMaxEntries
+	})
+	if count >= loginRateLimitMaxEntries {
+		return false
+	}
+
 	val, _ := loginAttempts.LoadOrStore(ip, &loginAttemptEntry{windowStart: now})
 	entry := val.(*loginAttemptEntry)
 	entry.mu.Lock()
