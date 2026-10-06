@@ -3164,6 +3164,55 @@ func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
 	}
 }
 
+// A kept output_config.effort snaps onto the model's ladder: Opus 4.5 takes
+// low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+ add xhigh. Claude Code
+// defaults to xhigh, which a retargeted request carries onto older models.
+func TestStripUnsupportedFields_EffortLevelClamp(t *testing.T) {
+	tests := []struct {
+		model, effort, want string
+	}{
+		{"claude-opus-4-5", "xhigh", "high"},
+		{"claude-opus-4-5", "max", "high"},
+		{"claude-opus-4-5-20251101", "medium", "medium"},
+		{"claude-opus-4-6", "xhigh", "max"},
+		{"claude-sonnet-4-6", "max", "max"},
+		{"claude-opus-4-7", "xhigh", "xhigh"},
+		{"claude-opus-5-5", "max", "max"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model+"/"+tt.effort+"/raw", func(t *testing.T) {
+			body := []byte(`{"model":"` + tt.model + `","output_config":{"effort":"` + tt.effort + `"}}`)
+			out, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, tt.model)
+			if err != nil {
+				t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+			}
+			if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != tt.want {
+				t.Errorf("output_config.effort = %q, want %q; body=%s", got, tt.want, out)
+			}
+		})
+		t.Run(tt.model+"/"+tt.effort+"/typed", func(t *testing.T) {
+			req := &AnthropicMessageRequest{Model: tt.model, OutputConfig: &AnthropicOutputConfig{Effort: new(tt.effort)}}
+			stripUnsupportedAnthropicFields(req, schemas.Anthropic, tt.model)
+			if req.OutputConfig == nil || req.OutputConfig.Effort == nil || *req.OutputConfig.Effort != tt.want {
+				t.Errorf("OutputConfig = %+v, want effort %q", req.OutputConfig, tt.want)
+			}
+		})
+	}
+
+	t.Run("datasheet_ladder_wins", func(t *testing.T) {
+		model := "claude-opus-4-5-ladder-override"
+		setOverride(t, model, schemas.ModelCapabilities{ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh"}})
+		body := []byte(`{"model":"` + model + `","output_config":{"effort":"xhigh"}}`)
+		out, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, model)
+		if err != nil {
+			t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+		}
+		if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != "xhigh" {
+			t.Errorf("output_config.effort = %q, want \"xhigh\" from the row's ladder; body=%s", got, out)
+		}
+	})
+}
+
 func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 	tests := []struct {
 		name            string

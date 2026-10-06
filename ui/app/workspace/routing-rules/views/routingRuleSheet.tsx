@@ -32,12 +32,20 @@ import {
 	RoutingRuleFormData,
 	RoutingTargetFormData,
 } from "@/lib/types/routingRules";
-import { denormalizeFallback, MAX_TTFT_TIMEOUT_MS, normalizeFallback, parseTTFTTimeoutInput } from "@/lib/utils/routingRules";
+import {
+	denormalizeFallback,
+	MAX_TTFT_TIMEOUT_MS,
+	normalizeFallback,
+	parseTTFTTimeoutInput,
+	resolveTargetTTFTMs,
+	summarizeTargetsTTFT,
+	summarizeTTFTDisplay,
+} from "@/lib/utils/routingRules";
 import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/utils/celConverterRouting";
 import { isValidRuleGroupType, normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Plus, Trash2, X } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { RuleGroupType } from "react-querybuilder";
 import { toast } from "sonner";
@@ -113,6 +121,10 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		defaultValues: DEFAULT_ROUTING_RULE_FORM_DATA,
 	});
 
+	// The TTFT input text as loaded from the rule; lets submit tell "untouched" from "edited".
+	const loadedTTFTInput = useRef("");
+	const [ttftEdited, setTtftEdited] = useState(false); // set once the user types in the field
+
 	const isEditing = !!editingRule;
 	const isLoading = isCreating || isUpdating;
 	const canCreate = useRbac(RbacResource.RoutingRules, RbacOperation.Create);
@@ -128,6 +140,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const UserPicker = getUserPicker();
 	const fallbacks = watch("fallbacks");
 	const ttftTimeoutInput = watch("ttft_timeout_ms");
+	const ttftDisplay = summarizeTTFTDisplay(editingRule?.targets, ttftTimeoutInput, ttftEdited);
 	const hasCompleteFallback = (fallbacks || []).some((fb) => (fb.provider ?? "").trim().length > 0);
 
 	// The selector lists the configured providers on its own. These are the extras: a
@@ -166,7 +179,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			setValue("description", editingRule.description);
 			setValue("cel_expression", editingRule.cel_expression);
 			setValue("fallbacks", (editingRule.fallbacks || []).map(normalizeFallback));
-			setValue("ttft_timeout_ms", editingRule.ttft_timeout_ms ? String(editingRule.ttft_timeout_ms) : "");
+			loadedTTFTInput.current = summarizeTargetsTTFT(editingRule.targets).ms?.toString() ?? "";
+			setTtftEdited(false);
+			setValue("ttft_timeout_ms", loadedTTFTInput.current);
 			setValue("scope", editingRule.scope);
 			setValue("scope_id", editingRule.scope_id || "");
 			setValue("priority", editingRule.priority);
@@ -180,6 +195,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						model: t.model || "",
 						key_id: t.key_id || "",
 						weight: t.weight,
+						ttft_timeout_ms: t.ttft_timeout_ms || undefined,
 					})),
 				);
 			} else {
@@ -191,6 +207,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			setBuilderKey((prev) => prev + 1);
 			setCelError(null);
 		} else {
+			loadedTTFTInput.current = "";
+			setTtftEdited(false);
 			reset();
 			setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 			setQuery(defaultQuery);
@@ -302,15 +320,16 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			name: data.name,
 			description: data.description,
 			cel_expression: data.cel_expression,
-			targets: targets.map(({ provider, model, key_id, weight }) => ({
+			targets: targets.map(({ provider, model, key_id, weight, ttft_timeout_ms }) => ({
 				provider: provider || undefined,
 				model: model || undefined,
 				key_id: key_id || undefined,
 				weight,
+				// The API stores the deadline per target. Untouched input keeps each target's own value;
+				// an edit applies to all of them. 0 turns it off, and clears a stored one on update.
+				ttft_timeout_ms: resolveTargetTTFTMs(data.ttft_timeout_ms, loadedTTFTInput.current, ttft_timeout_ms, ttftEdited),
 			})),
 			fallbacks: validFallbacks,
-			// 0 turns the deadline off, and clears a stored one on update.
-			ttft_timeout_ms: parseTTFTTimeoutInput(data.ttft_timeout_ms) ?? 0,
 			scope: data.scope,
 			scope_id: data.scope === "global" ? undefined : data.scope_id || undefined,
 			priority: data.priority,
@@ -624,11 +643,14 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								id="ttft_timeout_ms"
 								type="text"
 								inputMode="numeric"
-								placeholder="Off"
+								placeholder={ttftDisplay.mixed ? "Mixed" : "Off"}
 								aria-invalid={errors.ttft_timeout_ms ? true : undefined}
 								aria-describedby={errors.ttft_timeout_ms ? "ttft_timeout_ms-error" : undefined}
 								data-testid="routing-rule-ttft-timeout-input"
 								{...register("ttft_timeout_ms", {
+									onChange: () => {
+										setTtftEdited(true);
+									},
 									validate: (value) =>
 										parseTTFTTimeoutInput(value) !== null || `Enter a whole number from 1 to ${MAX_TTFT_TIMEOUT_MS}, or leave it empty`,
 								})}
@@ -641,7 +663,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									{errors.ttft_timeout_ms.message}
 								</p>
 							)}
-							{!errors.ttft_timeout_ms && typeof parseTTFTTimeoutInput(ttftTimeoutInput) === "number" && !hasCompleteFallback && (
+							{!errors.ttft_timeout_ms && ttftDisplay.active && !hasCompleteFallback && (
 								<p className="text-sm text-amber-600 dark:text-amber-500" data-testid="routing-rule-ttft-timeout-no-fallback-warning">
 									This rule has no fallbacks, so the cutoff only applies when the request brings its own.
 								</p>

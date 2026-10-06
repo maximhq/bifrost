@@ -26,6 +26,7 @@ const REQUEST_TYPE_TO_CATEGORY: Record<string, GroupKey> = {
 	rerank: "rerank",
 	speech: "audio",
 	transcription: "audio",
+	live: "audio",
 	image_generation: "image",
 	image_variation: "image",
 	image_edit: "image",

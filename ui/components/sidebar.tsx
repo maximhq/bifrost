@@ -46,6 +46,7 @@ import {
 	Telescope,
 	ToolCase,
 	TrendingUp,
+	TriangleAlert,
 	UserRoundCheck,
 	Users,
 	Wallet,
@@ -1031,6 +1032,13 @@ export default function AppSidebar() {
 						url: "/workspace/adaptive-routing",
 						icon: ChartColumnBig,
 						description: "Adaptive routing metrics",
+						hasAccess: isAdaptiveRoutingAllowed,
+					},
+					{
+						title: "Incidents",
+						url: "/workspace/adaptive-routing/incidents",
+						icon: TriangleAlert,
+						description: "Adaptive routing incidents",
 						hasAccess: isAdaptiveRoutingAllowed,
 					},
 					{
