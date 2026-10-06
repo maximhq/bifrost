@@ -5558,14 +5558,19 @@ func (s *RDBLogStore) GetAgentFilterData(ctx context.Context, dimensions []strin
 		rows := []AgentFilterKeyPair{}
 		queryID, queryName := idColumn, nameColumn
 		q := s.ScopedDB(ctx).Model(&AgentLog{})
+		var src dimensionReadSource
 		if from, ok := agentDimensionFanoutFrom(s.db.Dialector.Name(), idColumn); ok {
 			q = s.ScopedDB(ctx).Table("?", gorm.Expr(from))
 			q.Statement.Table = "logs"
 			queryID, queryName = "dim_id", "dim_name"
+			src.FannedOut = true
 			q = q.Where("record_kind = ?", "request")
 		}
 		q = q.Select("DISTINCT " + queryID + " AS id, " + queryName + " AS name").
 			Where(queryID + " IS NOT NULL AND " + queryID + " != '' AND " + queryName + " IS NOT NULL AND " + queryName + " != ''")
+		// Same bound as the LLM log dropdowns: a row the caller may read can still
+		// carry an organisation it may not be shown the name of.
+		q = applyDimensionCeiling(ctx, q, src, idColumn)
 		if query != "" {
 			if s.db.Dialector.Name() == "postgres" {
 				q = q.Where(queryName+" ILIKE ?", "%"+search+"%")
@@ -6522,7 +6527,10 @@ func applyDimensionCeiling(ctx context.Context, q *gorm.DB, src dimensionReadSou
 	if len(allowed) == 0 {
 		return q.Where(unowned)
 	}
-	return q.Where(fmt.Sprintf("%s IN ? OR %s", col, unowned), allowed)
+	// One bind for the whole list: a widened caller's member set can exceed the
+	// per-statement parameter limit as an "IN ?" list.
+	rhs, arg := queryscope.InSet(q, allowed)
+	return q.Where(fmt.Sprintf("%s %s OR %s", col, rhs, unowned), arg)
 }
 
 // dimensionRankingRow is one grouped row of a dimension ranking query.
