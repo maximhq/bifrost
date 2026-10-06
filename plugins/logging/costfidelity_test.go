@@ -1468,6 +1468,24 @@ func TestCalculateVideoAggregateCost_KeepsProviderReportedCost(t *testing.T) {
 	assert.NotEqual(t, 0.5*4, cost, "the catalog rate must not override the provider's own figure")
 }
 
+// A provider configured to ignore its reported cost reprices the saved video from the catalog.
+func TestCalculateVideoAggregateCost_IgnoredProviderCostReprices(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	plugin.pricingManager.SetIgnoreProviderCost(schemas.OpenAI, true)
+	providerCost := 0.0432
+	entry := videoSettlementRow("v-ignored", &schemas.VideoAccountingDebug{
+		Seconds:      new(4),
+		Size:         "1792x1024",
+		OutputCount:  1,
+		RequestType:  schemas.VideoGenerationRequest,
+		ProviderCost: &providerCost,
+	}, schemas.VideoStatusCompleted)
+
+	cost, _, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "catalog rate applies", cost, 0.5*4)
+}
+
 // A failed generation settled at a real price of zero. Repricing must not turn that
 // into an error and park it in the backfill for every MissingCostOnly pass to retry.
 func TestCalculateVideoAggregateCost_FailedStaysZero(t *testing.T) {
