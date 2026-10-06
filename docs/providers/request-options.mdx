@@ -190,6 +190,10 @@ A direct key is **not** authentication. If [`enforce_auth_on_inference`](../depl
 A direct key only replaces the provider credential — it bypasses the **key pool**: no weighted selection, no rotation or fallback across alternate keys, and no per-key model restrictions. **Governance still applies:** with a virtual key alongside it, that key's budgets, rate limits, allow-lists, and routing are enforced and the spend counts against its budget. Enable `allow_direct_keys` only when callers should manage their own provider credentials.
 </Warning>
 
+<Note>
+A direct key belongs to one provider, so listing models with one never fans out to every provider. The drop-in model routes list only their own provider (`/openai/v1/models` lists OpenAI, `/anthropic/v1/models` Anthropic, `/genai/v1beta/models` Gemini), and answer `400` when that provider is not configured; `x-bf-model-provider` names another one. `GET /v1/models` must name the provider with `?provider=`, and a listing across all providers (`/v1/models` without one, or `x-bf-model-provider: all`) is refused with `400`.
+</Note>
+
 <Tabs>
 <Tab title="Gateway (cURL)">
 ```bash
