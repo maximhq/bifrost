@@ -99,7 +99,7 @@ Scope identifiers are exclusive to their scope kind - you cannot mix them. For e
 
 ## Providers that report their own cost
 
-Some providers return a `usage.cost` with each response, and Bifrost uses it in place of catalog pricing, so overrides don't apply to them. If that figure is in another unit or currency, as with Cortecs credits, enable `ignore_provider_cost` on the provider. Bifrost then prices those requests from the catalog and your overrides. See [Ignore provider-reported cost](../quickstart/gateway/provider-configuration#ignore-provider-reported-cost).
+Some providers return a `usage.cost` with each response, and Bifrost uses it in place of catalog pricing whenever it is above zero, so overrides don't apply to them. If that figure is in another unit or currency, as with Cortecs credits, enable `ignore_provider_cost` on the provider. Bifrost then prices those requests from the catalog and your overrides. See [Ignore provider-reported cost](../quickstart/gateway/provider-configuration#ignore-provider-reported-cost).
 
 ---
 
