@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -28,6 +29,12 @@ import (
 )
 
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev/"}
+
+// accessLogQuietPaths lists path prefixes whose successful requests are not
+// access-logged; their 4xx and 5xx responses still are. It is read from
+// BIFROST_ACCESS_LOG_QUIET_PATHS, a comma-separated list, and suits endpoints
+// polled by probes.
+var accessLogQuietPaths = parseAccessLogPaths(os.Getenv("BIFROST_ACCESS_LOG_QUIET_PATHS"))
 var realtimeTransportPaths = buildRealtimeTransportPathSet()
 
 // SecurityHeadersMiddleware sets security-related HTTP headers on every response.
@@ -47,6 +54,18 @@ func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
 			next(ctx)
 		}
 	}
+}
+
+// parseAccessLogPaths splits a comma-separated list of path prefixes,
+// dropping empty entries.
+func parseAccessLogPaths(raw string) []string {
+	var paths []string
+	for _, path := range strings.Split(raw, ",") {
+		if path = strings.TrimSpace(path); path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 // clientForwardedIP returns the client-supplied originating IP from reverse-proxy
@@ -130,9 +149,15 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				return strings.HasPrefix(string(ctx.RequestURI()), path)
 			}) == -1
 			if shouldLog {
+				quietOnSuccess := slices.IndexFunc(accessLogQuietPaths, func(path string) bool {
+					return strings.HasPrefix(string(ctx.RequestURI()), path)
+				}) != -1
 				startTime := time.Now()
 				defer func() {
 					statusCode := ctx.Response.Header.StatusCode()
+					if quietOnSuccess && statusCode < 400 {
+						return
+					}
 					level := schemas.LogLevelInfo
 					if statusCode >= 500 {
 						level = schemas.LogLevelError
