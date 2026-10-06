@@ -228,13 +228,215 @@ func TestConverseRedactedContentSurvivesSDKReplay(t *testing.T) {
 	}
 }
 
+// OpenAI and Azure bind encrypted reasoning to the item id they issued it under and
+// reject a replay under any other id ("Encrypted content item_id did not match the
+// target item id"). Converse has no field for that id, so it must ride inside the
+// redactedContent blob Bifrost wraps, or the next turn mints a fresh rs_<nanos> id
+// and the upstream rejects the token (#7729).
+func TestConverseRedactedContentReplayKeepsReasoningItemID(t *testing.T) {
+	const upstreamID = "rs_0d858eaabfe10a85016abb467322cc8193b7c99f03fac32cce"
+	nativeBlob := "cnNuXzVaVnJpZjRKMGJYSXFtV2RsZWRqN1FJRmVGZWdz"
+
+	for name, tc := range map[string]struct {
+		token   string
+		keepsID bool
+	}{
+		"foreign token":       {token: foreignReasoningToken, keepsID: true},
+		"native bedrock blob": {token: nativeBlob, keepsID: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, err := ToBedrockConverseResponse(&schemas.BifrostResponsesResponse{
+				Model: "gpt-5.6-luna",
+				Output: []schemas.ResponsesMessage{
+					{
+						ID:   schemas.Ptr(upstreamID),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+						ResponsesReasoning: &schemas.ResponsesReasoning{
+							Summary:          []schemas.ResponsesReasoningSummary{},
+							EncryptedContent: schemas.Ptr(tc.token),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("call_1"),
+							Name:      schemas.Ptr("get_weather"),
+							Arguments: schemas.Ptr(`{"city":"Paris"}`),
+						},
+					},
+				},
+			})
+			require.NoError(t, err)
+			content := resp.Output.Message.Content
+			require.Len(t, content, 2, "reasoning block then toolUse block, got %+v", content)
+			require.NotNil(t, content[0].ReasoningContent)
+			require.NotNil(t, content[0].ReasoningContent.RedactedContent)
+			redacted := *content[0].ReasoningContent.RedactedContent
+			if !tc.keepsID {
+				require.Equal(t, nativeBlob, redacted, "a native Bedrock blob must reach the client byte-identical")
+			}
+
+			sdkBytes, err := base64.StdEncoding.DecodeString(redacted)
+			require.NoError(t, err, "the SDK rejects a non-base64 blob, got %q", redacted)
+			replayed := base64.StdEncoding.EncodeToString(sdkBytes)
+
+			req := &BedrockConverseRequest{
+				ModelID: "azure/gpt-5.6-luna",
+				Messages: []BedrockMessage{
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("weather in Paris?")}}},
+					{Role: BedrockMessageRoleAssistant, Content: []BedrockContentBlock{
+						{ReasoningContent: &BedrockReasoningContent{RedactedContent: &replayed}},
+						{ToolUse: &BedrockToolUse{ToolUseID: "call_1", Name: "get_weather", Input: json.RawMessage(`{"city":"Paris"}`)}},
+					}},
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{
+						{ToolResult: &BedrockToolResult{ToolUseID: "call_1", Content: []BedrockContentBlock{{Text: schemas.Ptr("sunny")}}}},
+					}},
+				},
+			}
+			bifrostReq, err := req.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+			require.NoError(t, err)
+			var reasoning *schemas.ResponsesMessage
+			for i := range bifrostReq.Input {
+				if msg := &bifrostReq.Input[i]; msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning {
+					reasoning = msg
+				}
+			}
+			require.NotNil(t, reasoning, "the replayed turn must carry a reasoning item")
+			require.NotNil(t, reasoning.ResponsesReasoning)
+			require.NotNil(t, reasoning.ResponsesReasoning.EncryptedContent)
+			require.Equal(t, tc.token, *reasoning.ResponsesReasoning.EncryptedContent, "the upstream must get back exactly the token it minted")
+			require.NotNil(t, reasoning.ID)
+			if tc.keepsID {
+				require.Equal(t, upstreamID, *reasoning.ID, "the encrypted token must replay under the id the upstream bound it to")
+			} else {
+				require.NotEqual(t, upstreamID, *reasoning.ID, "a native blob carries no id; Bedrock ignores reasoning item ids")
+			}
+		})
+	}
+}
+
+// A foreign token is not always recognisable by its characters: one that happens to
+// be canonical standard base64 looks exactly like a native Bedrock blob. Whether the
+// id must travel is a property of who served the response, not of the token's
+// alphabet, so a non-Bedrock upstream's reasoning id is carried either way.
+func TestConverseCanonicalForeignTokenKeepsReasoningItemID(t *testing.T) {
+	const upstreamID = "rs_0d858eaabfe10a85016abb467322cc8193b7c99f03fac32cce"
+	canonicalToken := base64.StdEncoding.EncodeToString([]byte("opaque reasoning state"))
+
+	for name, tc := range map[string]struct {
+		provider schemas.ModelProvider
+		keepsID  bool
+	}{
+		"served by azure":   {provider: schemas.Azure, keepsID: true},
+		"served by bedrock": {provider: schemas.Bedrock, keepsID: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, err := ToBedrockConverseResponse(&schemas.BifrostResponsesResponse{
+				Model:       "gpt-5.6-luna",
+				ExtraFields: schemas.BifrostResponseExtraFields{RoutingInfo: schemas.RoutingInfo{Provider: tc.provider}},
+				Output: []schemas.ResponsesMessage{
+					{
+						ID:   schemas.Ptr(upstreamID),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+						ResponsesReasoning: &schemas.ResponsesReasoning{
+							Summary:          []schemas.ResponsesReasoningSummary{},
+							EncryptedContent: schemas.Ptr(canonicalToken),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("hello")},
+							},
+						},
+					},
+				},
+			})
+			require.NoError(t, err)
+			content := resp.Output.Message.Content
+			require.Len(t, content, 2, "reasoning block then text block, got %+v", content)
+			require.NotNil(t, content[0].ReasoningContent)
+			require.NotNil(t, content[0].ReasoningContent.RedactedContent)
+			redacted := *content[0].ReasoningContent.RedactedContent
+			if !tc.keepsID {
+				require.Equal(t, canonicalToken, redacted, "a Bedrock-served blob must reach the client byte-identical")
+			}
+
+			sdkBytes, err := base64.StdEncoding.DecodeString(redacted)
+			require.NoError(t, err, "the SDK rejects a non-base64 blob, got %q", redacted)
+			replayed := base64.StdEncoding.EncodeToString(sdkBytes)
+
+			req := &BedrockConverseRequest{
+				ModelID: "azure/gpt-5.6-luna",
+				Messages: []BedrockMessage{
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("hi")}}},
+					{Role: BedrockMessageRoleAssistant, Content: []BedrockContentBlock{
+						{ReasoningContent: &BedrockReasoningContent{RedactedContent: &replayed}},
+						{Text: schemas.Ptr("hello")},
+					}},
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("and then?")}}},
+				},
+			}
+			bifrostReq, err := req.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+			require.NoError(t, err)
+			var reasoning *schemas.ResponsesMessage
+			for i := range bifrostReq.Input {
+				if msg := &bifrostReq.Input[i]; msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning {
+					reasoning = msg
+				}
+			}
+			require.NotNil(t, reasoning, "the replayed turn must carry a reasoning item")
+			require.NotNil(t, reasoning.ResponsesReasoning.EncryptedContent)
+			require.Equal(t, canonicalToken, *reasoning.ResponsesReasoning.EncryptedContent, "the upstream must get back exactly the token it minted")
+			require.NotNil(t, reasoning.ID)
+			if tc.keepsID {
+				require.Equal(t, upstreamID, *reasoning.ID, "a non-Bedrock upstream's token must replay under the id it was bound to")
+			} else {
+				require.NotEqual(t, upstreamID, *reasoning.ID, "a native blob carries no id; Bedrock ignores reasoning item ids")
+			}
+		})
+	}
+}
+
+// Clients may still hold blobs rendered before the id was carried; those must keep
+// decoding to the bare token. A native blob never carries an id, since wrapping it
+// would break its byte-identical replay to Bedrock.
+func TestConverseRedactedContentIDWrapperCompatibility(t *testing.T) {
+	id := schemas.Ptr("rs_0d858eaabfe10a85016abb467322cc8193b7c99f03fac32cce")
+
+	t.Run("blob wrapped without an id", func(t *testing.T) {
+		legacy := base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + foreignReasoningToken))
+		gotID, token := decodeRedactedContentFromConverse(legacy)
+		require.Nil(t, gotID)
+		require.Equal(t, foreignReasoningToken, token)
+		require.Equal(t, legacy, encodeRedactedContentForConverse(nil, foreignReasoningToken), "an id-less item must render the same bytes as before")
+	})
+
+	t.Run("foreign token round-trips its id", func(t *testing.T) {
+		gotID, token := decodeRedactedContentFromConverse(encodeRedactedContentForConverse(id, foreignReasoningToken))
+		require.NotNil(t, gotID)
+		require.Equal(t, *id, *gotID)
+		require.Equal(t, foreignReasoningToken, token)
+	})
+
+	t.Run("native blob ignores the id", func(t *testing.T) {
+		native := "cnNuXzVaVnJpZjRKMGJYSXFtV2RsZWRqN1FJRmVGZWdz"
+		require.Equal(t, native, encodeRedactedContentForConverse(id, native))
+		gotID, token := decodeRedactedContentFromConverse(native)
+		require.Nil(t, gotID)
+		require.Equal(t, native, token)
+	})
+}
+
 func TestConverseResponseSummarySignatureIsNotRedactedContent(t *testing.T) {
 	blocks := convertBifrostReasoningToConverseResponseReasoning(&schemas.ResponsesMessage{
 		ResponsesReasoning: &schemas.ResponsesReasoning{
 			Summary:          []schemas.ResponsesReasoningSummary{{Text: "summary"}},
 			EncryptedContent: schemas.Ptr("summary-signature"),
 		},
-	})
+	}, false)
 	require.Len(t, blocks, 1, "summary encrypted_content is its signature, not a second opaque block")
 	require.Equal(t, "summary-signature", *blocks[0].ReasoningContent.ReasoningText.Signature)
 	require.Nil(t, blocks[0].ReasoningContent.RedactedContent)
