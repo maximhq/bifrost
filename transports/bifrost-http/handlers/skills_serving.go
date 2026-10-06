@@ -933,11 +933,9 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 		return
 	}
 
-	// Bind to request context with a timeout so stalled git processes
-	// don't outlive a client disconnect or server shutdown. 30s is generous —
-	// upload-pack on these in-memory repos completes in <1s normally, but we
-	// allow headroom for large all-skills repos under load.
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Bound the git process so a stalled upload-pack cannot hang the worker.
+	// Never derive from the RequestCtx: see skillsServingWorkContext.
+	cmdCtx, cancel := skillsServingWorkContext()
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, gitBinaryPath, "upload-pack", "--stateless-rpc", "--advertise-refs", ".") //nolint:gosec // gitBinaryPath is from exec.LookPath
 	cmd.Dir = repoDir
@@ -965,11 +963,9 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 // serveUploadPack handles POST /git-upload-pack by piping the request body
 // into `git upload-pack --stateless-rpc` and streaming the output back.
 func serveUploadPack(ctx *fasthttp.RequestCtx, repoDir, label string) {
-	// Bind to request context with a timeout so stalled git processes
-	// don't outlive a client disconnect or server shutdown. 30s is generous —
-	// upload-pack on these in-memory repos completes in <1s normally, but we
-	// allow headroom for large all-skills repos under load.
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Bound the git process so a stalled upload-pack cannot hang the worker.
+	// Never derive from the RequestCtx: see skillsServingWorkContext.
+	cmdCtx, cancel := skillsServingWorkContext()
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, gitBinaryPath, "upload-pack", "--stateless-rpc", ".") //nolint:gosec // gitBinaryPath is from exec.LookPath
 	cmd.Dir = repoDir

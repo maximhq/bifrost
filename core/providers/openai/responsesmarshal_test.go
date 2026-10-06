@@ -10,6 +10,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 func TestOpenAIResponsesRequest_MarshalJSON_ReasoningMaxTokensAbsent(t *testing.T) {
@@ -2616,5 +2617,38 @@ func TestToOpenAIResponsesRequest_InjectedToolOutputMarkerReachesWire(t *testing
 	}
 	if opts, ok := m["prompt_cache_options"].(map[string]any); !ok || opts["mode"] != "explicit" {
 		t.Errorf("request must be in explicit mode; raw=%s", raw)
+	}
+}
+
+// Assistant history with output_text "annotations": [] but no logprobs must reach the
+// provider without "logprobs": null, which strict Responses backends reject with a 400.
+func TestOpenAIResponsesRequest_MarshalJSON_HistoryOutputTextDoesNotGainNullLogProbs(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-4o",
+		"input": [
+			{"type": "message", "role": "assistant", "content": [
+				{"type": "output_text", "text": "Previous answer.", "annotations": []}
+			]},
+			{"role": "user", "content": "Continue."}
+		],
+		"stream": true
+	}`)
+	var req OpenAIResponsesRequest
+	if err := sonic.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	out, err := providerUtils.MarshalProviderRequest(&req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	block := gjson.GetBytes(out, "input.0.content.0")
+	if !block.Exists() {
+		t.Fatalf("history block missing from provider body: %s", out)
+	}
+	if lp := block.Get("logprobs"); lp.Exists() {
+		t.Fatalf("history output_text gained logprobs=%s; want it omitted. block=%s", lp.Raw, block.Raw)
+	}
+	if ann := block.Get("annotations"); !ann.IsArray() {
+		t.Fatalf("annotations must stay an array, got %q. block=%s", ann.Raw, block.Raw)
 	}
 }
