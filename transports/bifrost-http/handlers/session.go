@@ -52,9 +52,7 @@ func setSetupSessionCookie(ctx *fasthttp.RequestCtx, value string, expires time.
 	cookie.SetPath("/")
 	cookie.SetHTTPOnly(true)
 	cookie.SetSameSite(fasthttp.CookieSameSiteStrictMode)
-	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		cookie.SetSecure(true)
-	}
+	cookie.SetSecure(true)
 	ctx.Response.Header.SetCookie(cookie)
 }
 
@@ -236,10 +234,7 @@ func (h *SessionHandler) login(ctx *fasthttp.RequestCtx) {
 	cookie.SetPath("/")
 	cookie.SetHTTPOnly(true)
 	cookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
-	// Check if source is https then set secure
-	if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		cookie.SetSecure(true)
-	}
+	cookie.SetSecure(true)
 	ctx.Response.Header.SetCookie(cookie)
 
 	SendJSON(ctx, map[string]any{
@@ -271,10 +266,7 @@ func (h *SessionHandler) logout(ctx *fasthttp.RequestCtx) {
 	cookie.SetPath("/")
 	cookie.SetHTTPOnly(true)
 	cookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
-	// Check if source is https then set secure
-	if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		cookie.SetSecure(true)
-	}
+	cookie.SetSecure(true)
 	ctx.Response.Header.SetCookie(cookie)
 
 	// Drop any setup session as well, so a later return to the setup lock (auth disabled
