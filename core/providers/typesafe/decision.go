@@ -270,10 +270,15 @@ func ToBifrostDecisionResponse(resp *TypesafeDecisionResponse, request *schemas.
 		}
 
 		answer := schemas.DecisionAnswer{
-			Kind:          question.Kind,
-			Confidence:    native.Confidence,
-			Probabilities: native.Probabilities,
-			Legend:        native.Legend,
+			Kind:                question.Kind,
+			Confidence:          native.Confidence,
+			Probabilities:       native.Probabilities,
+			Legend:              native.Legend,
+			AnswerConfidence:    native.AnswerConfidence,
+			Action:              native.Action,
+			Abstention:          native.Abstention,
+			AbstentionThreshold: native.AbstentionThreshold,
+			LowConfidence:       native.LowConfidence,
 		}
 		switch question.Kind {
 		case schemas.DecisionKindNoul:
@@ -301,15 +306,39 @@ func ToBifrostDecisionResponse(resp *TypesafeDecisionResponse, request *schemas.
 	response := &schemas.BifrostDecisionResponse{
 		Model:   resp.Model,
 		Answers: answers,
+		Routing: resp.Routing,
 	}
 	if resp.Usage != nil {
 		response.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			PromptTokens:       resp.Usage.InputTokens,
+			CompletionTokens:   resp.Usage.OutputTokens,
+			TotalTokens:        resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			StateTokens:        resp.Usage.StateTokens,
+			StateTokensDropped: resp.Usage.StateTokensDropped,
+			Truncated:          resp.Usage.Truncated,
+			TruncatedQuestions: resp.Usage.TruncatedQuestions,
 		}
 	}
 	return response, nil
+}
+
+// unwrapResultEnvelope returns the systemone body inside a Cloudflare Workers AI
+// REST envelope ({"result": {...}, "success": true, ...}), which serves
+// Jev-compatible models such as Clef. failed is true when the envelope declares
+// success:false, even on HTTP 200, so the caller can surface errors[] instead of
+// parsing an empty or partial result. A body that already carries "answers" is
+// returned as is and never failed, so plain systemone endpoints are unaffected.
+func unwrapResultEnvelope(body []byte) (inner []byte, failed bool) {
+	if gjson.GetBytes(body, "answers").Exists() {
+		return body, false
+	}
+	if gjson.GetBytes(body, "success").Type == gjson.False {
+		return body, true
+	}
+	if result := gjson.GetBytes(body, "result"); result.IsObject() {
+		return []byte(result.Raw), false
+	}
+	return body, false
 }
 
 // ToBifrostDecisionRequest converts a native systemone request into the
@@ -359,9 +388,14 @@ func ToTypesafeNativeDecisionResponse(resp *schemas.BifrostDecisionResponse) (*T
 	answers := make(map[string]TypesafeAnswer, len(resp.Answers))
 	for name, answer := range resp.Answers {
 		native := TypesafeAnswer{
-			Confidence:    answer.Confidence,
-			Probabilities: answer.Probabilities,
-			Legend:        answer.Legend,
+			Confidence:          answer.Confidence,
+			Probabilities:       answer.Probabilities,
+			Legend:              answer.Legend,
+			AnswerConfidence:    answer.AnswerConfidence,
+			Action:              answer.Action,
+			Abstention:          answer.Abstention,
+			AbstentionThreshold: answer.AbstentionThreshold,
+			LowConfidence:       answer.LowConfidence,
 		}
 		switch answer.Kind {
 		case schemas.DecisionKindNoul:
@@ -394,11 +428,16 @@ func ToTypesafeNativeDecisionResponse(resp *schemas.BifrostDecisionResponse) (*T
 	native := &TypesafeDecisionResponse{
 		Model:   resp.Model,
 		Answers: answers,
+		Routing: resp.Routing,
 	}
 	if resp.Usage != nil {
 		native.Usage = &TypesafeUsage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
+			InputTokens:        resp.Usage.PromptTokens,
+			OutputTokens:       resp.Usage.CompletionTokens,
+			StateTokens:        resp.Usage.StateTokens,
+			StateTokensDropped: resp.Usage.StateTokensDropped,
+			Truncated:          resp.Usage.Truncated,
+			TruncatedQuestions: resp.Usage.TruncatedQuestions,
 		}
 	}
 	return native, nil

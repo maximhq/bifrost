@@ -717,6 +717,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldDropParams)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldConvertParams)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatAzureDeepseek)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses)
 			valueStr := strings.TrimSpace(string(value))
 			if valueStr == "true" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
@@ -724,6 +725,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 			} else if strings.HasPrefix(valueStr, "[") {
 				var features []string
 				if err := json.Unmarshal([]byte(valueStr), &features); err == nil {
@@ -733,6 +735,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 					} else {
 						for _, f := range features {
 							switch f {
@@ -746,6 +749,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
 							case "azure_deepseek":
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+							case "force_reasoning_only_models_to_responses":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 							}
 						}
 					}

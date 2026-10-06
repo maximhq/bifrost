@@ -232,4 +232,10 @@ func TestAllowedRequestsLive(t *testing.T) {
 	if (&AllowedRequests{Realtime: true}).IsOperationAllowed(LiveRequest) {
 		t.Fatal("realtime must not imply live")
 	}
+	if !(&AllowedRequests{Live: true}).IsOperationAllowed(LiveContentRequest) {
+		t.Fatal("a recording download is gated by the live flag")
+	}
+	if (&AllowedRequests{FileContent: true}).IsOperationAllowed(LiveContentRequest) {
+		t.Fatal("file content must not imply live content")
+	}
 }

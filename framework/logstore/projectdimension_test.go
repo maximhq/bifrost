@@ -61,6 +61,75 @@ func TestProjectFilterNarrowsTheRawQuery(t *testing.T) {
 	assert.EqualValues(t, 0, countWith(SearchFilters{ProjectIDs: []string{"proj-missing"}}))
 }
 
+func TestAgentFilterCorrelatesThroughContextsWithinTimeRange(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&Log{}, &MCPToolLog{}, &AgentLog{}))
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+
+	now := time.Now().UTC()
+	insideStart, insideEnd := now.Add(-time.Minute), now.Add(time.Minute)
+	outside := now.Add(-time.Hour)
+	for _, row := range []struct {
+		id, agent, context string
+		timestamp          time.Time
+	}{
+		{"agent-a-inside", "agent-a", "context-a", now},
+		{"agent-a-outside", "agent-a", "context-old", outside},
+		{"agent-b-inside", "agent-b", "context-b", now},
+	} {
+		contextID := row.context
+		require.NoError(t, db.Create(&AgentLog{
+			ID:         row.id,
+			Timestamp:  row.timestamp,
+			CreatedAt:  row.timestamp,
+			RecordKind: "request",
+			Operation:  "SendMessage",
+			Status:     "success",
+			AgentName:  row.agent,
+			RequestID:  row.id,
+			ContextID:  &contextID,
+		}).Error)
+	}
+
+	for _, contextID := range []string{"context-a", "context-old", "context-b", "context-unrelated"} {
+		sessionID := contextID
+		require.NoError(t, db.Create(&Log{ID: "llm-" + contextID, Timestamp: now, Status: "success", SessionID: &sessionID}).Error)
+		require.NoError(t, db.Create(&MCPToolLog{ID: "mcp-" + contextID, Timestamp: now, ToolName: "tool", SessionID: &sessionID}).Error)
+	}
+
+	llmFilters := SearchFilters{AgentNames: []string{"agent-a"}, StartTime: &insideStart, EndTime: &insideEnd}
+	mcpFilters := MCPToolLogSearchFilters{AgentNames: []string{"agent-a"}, StartTime: &insideStart, EndTime: &insideEnd}
+	var llmIDs, mcpIDs []string
+	require.NoError(t, store.applyFilters(db.Model(&Log{}), llmFilters).Pluck("id", &llmIDs).Error)
+	require.NoError(t, store.applyMCPFilters(db.Model(&MCPToolLog{}), mcpFilters).Pluck("id", &mcpIDs).Error)
+	assert.Equal(t, []string{"llm-context-a"}, llmIDs)
+	assert.Equal(t, []string{"mcp-context-a"}, mcpIDs)
+}
+
+func TestCorrelationFiltersAreExactScalars(t *testing.T) {
+	s := newProjectDimensionStore(t)
+	mcpDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, mcpDB.AutoMigrate(&MCPToolLog{}))
+	mcpStore := &RDBLogStore{db: mcpDB, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+
+	for _, row := range []struct{ id, session, agent string }{
+		{"one", "session-1", "agent-1"},
+		{"two", "session-10", "agent-10"},
+	} {
+		session, agent := row.session, row.agent
+		require.NoError(t, s.db.Create(&Log{ID: row.id, Status: "success", SessionID: &session, AgentCorrelationID: &agent}).Error)
+		require.NoError(t, mcpDB.Create(&MCPToolLog{ID: row.id, ToolName: "tool", SessionID: &session, AgentCorrelationID: &agent}).Error)
+	}
+
+	var llmCount, mcpCount int64
+	require.NoError(t, s.applyFilters(s.db.Model(&Log{}), SearchFilters{AgentCorrelationID: "agent-1"}).Count(&llmCount).Error)
+	require.NoError(t, mcpStore.applyMCPFilters(mcpDB.Model(&MCPToolLog{}), MCPToolLogSearchFilters{SessionID: "session-1", AgentCorrelationID: "agent-1"}).Count(&mcpCount).Error)
+	assert.EqualValues(t, 1, llmCount)
+	assert.EqualValues(t, 1, mcpCount)
+}
+
 // The project is stored as the resolved id plus its display name, so a row still reads correctly
 // after the project is renamed or deleted, the same reason the team and business-unit dimensions
 // keep a name column of their own.
@@ -221,14 +290,18 @@ func TestListRowsCarryTheProject(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	insertProjectLog(t, s.db, "req-1", now, "proj-a", "Atlas", 0.50)
+	agentCorrelationID := "agent-1"
+	require.NoError(t, s.db.Model(&Log{}).Where("id = ?", "req-1").Update("agent_correlation_id", agentCorrelationID).Error)
 
 	res, err := s.SearchLogs(ctx, fanoutWindow(now), PaginationOptions{Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, res.Logs, 1)
 	require.NotNil(t, res.Logs[0].ProjectID)
 	require.NotNil(t, res.Logs[0].ProjectName)
+	require.NotNil(t, res.Logs[0].AgentCorrelationID)
 	assert.Equal(t, "proj-a", *res.Logs[0].ProjectID)
 	assert.Equal(t, "Atlas", *res.Logs[0].ProjectName)
+	assert.Equal(t, agentCorrelationID, *res.Logs[0].AgentCorrelationID)
 }
 
 // ── Postgres: the matview path ──
