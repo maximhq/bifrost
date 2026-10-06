@@ -32,6 +32,9 @@ func (mc *ModelCatalog) ReloadModelTags(ctx context.Context) error {
 	defer mc.modelTagsReloadMu.Unlock()
 	stored, err := mc.configStore.GetModelTags(ctx)
 	if err != nil {
+		// Recorded under the reload lock, so a concurrent successful reload cannot be undone by
+		// a stale mark from an older failure.
+		mc.modelTagsStale.Store(true)
 		return err
 	}
 	index := make(modelTagsIndex, len(stored))
@@ -39,7 +42,30 @@ func (mc *ModelCatalog) ReloadModelTags(ctx context.Context) error {
 		index[schemas.ModelProvider(provider)] = models
 	}
 	mc.modelTags.Store(&index)
+	mc.modelTagsStale.Store(false)
 	return nil
+}
+
+// ModelTagsStale reports whether the last overlay reload failed, so the overlay may not reflect
+// every committed tag write yet. syncTick keeps retrying until a reload succeeds.
+func (mc *ModelCatalog) ModelTagsStale() bool {
+	return mc != nil && mc.modelTagsStale.Load()
+}
+
+// retryModelTagsIfNeeded reloads the tag overlay when it never loaded (the startup load and its
+// retries all failed) or when the last reload failed (for example after a tag write whose reload
+// and background retries all failed). Called on every sync tick, so a stale overlay is retried
+// until the config store answers instead of being given up after a fixed number of attempts.
+func (mc *ModelCatalog) retryModelTagsIfNeeded(ctx context.Context) {
+	if mc == nil || mc.configStore == nil {
+		return
+	}
+	if mc.modelTags.Load() != nil && !mc.modelTagsStale.Load() {
+		return
+	}
+	if err := mc.ReloadModelTags(ctx); err != nil && mc.logger != nil {
+		mc.logger.Warn("model tags overlay is still not up to date: %v", err)
+	}
 }
 
 // GetModelTags returns the operator-assigned tags of a model, or nil when it has none. The
