@@ -2653,3 +2653,139 @@ func TestStopSequence_ChatResponseEgress(t *testing.T) {
 		})
 	}
 }
+
+// TestToBifrostChatCompletionStream_ServerToolInputStaysInternal covers a turn
+// that interleaves a server tool (server_tool_use, e.g. web search) with a
+// client tool_use block. content_block_start emits nothing for the server tool
+// and assigns it no tool-call index, so its input_json_delta chunks must emit
+// nothing either. They used to be emitted as tool_calls[index 0]: before the
+// client tool they invented a phantom call whose arguments the client tool then
+// extended; after it they were appended to the client tool's arguments.
+func TestToBifrostChatCompletionStream_ServerToolInputStaysInternal(t *testing.T) {
+	serverBlock := func(idx int) []*AnthropicStreamEvent {
+		i := idx
+		return []*AnthropicStreamEvent{
+			{
+				Type:  AnthropicStreamEventTypeContentBlockStart,
+				Index: &i,
+				ContentBlock: &AnthropicContentBlock{
+					Type: AnthropicContentBlockTypeServerToolUse,
+					ID:   schemas.Ptr("srvtoolu_01"),
+					Name: schemas.Ptr("web_search"),
+				},
+			},
+			{Type: AnthropicStreamEventTypeContentBlockDelta, Index: &i, Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: schemas.Ptr("")}},
+			{Type: AnthropicStreamEventTypeContentBlockDelta, Index: &i, Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: schemas.Ptr(`{"query":`)}},
+			{Type: AnthropicStreamEventTypeContentBlockDelta, Index: &i, Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: schemas.Ptr(`"weather paris"}`)}},
+			{Type: AnthropicStreamEventTypeContentBlockStop, Index: &i},
+		}
+	}
+	clientBlock := func(idx int) []*AnthropicStreamEvent {
+		i := idx
+		return []*AnthropicStreamEvent{
+			{
+				Type:  AnthropicStreamEventTypeContentBlockStart,
+				Index: &i,
+				ContentBlock: &AnthropicContentBlock{
+					Type: AnthropicContentBlockTypeToolUse,
+					ID:   schemas.Ptr("toolu_01"),
+					Name: schemas.Ptr("get_weather"),
+				},
+			},
+			{Type: AnthropicStreamEventTypeContentBlockDelta, Index: &i, Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: schemas.Ptr("")}},
+			{Type: AnthropicStreamEventTypeContentBlockDelta, Index: &i, Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: schemas.Ptr(`{"city":`)}},
+			{Type: AnthropicStreamEventTypeContentBlockDelta, Index: &i, Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: schemas.Ptr(`"Paris"}`)}},
+			{Type: AnthropicStreamEventTypeContentBlockStop, Index: &i},
+		}
+	}
+	searchResultBlock := func(idx int) []*AnthropicStreamEvent {
+		i := idx
+		return []*AnthropicStreamEvent{
+			{
+				Type:  AnthropicStreamEventTypeContentBlockStart,
+				Index: &i,
+				ContentBlock: &AnthropicContentBlock{
+					Type:      AnthropicContentBlockTypeWebSearchToolResult,
+					ToolUseID: schemas.Ptr("srvtoolu_01"),
+				},
+			},
+			{Type: AnthropicStreamEventTypeContentBlockStop, Index: &i},
+		}
+	}
+	concat := func(parts ...[]*AnthropicStreamEvent) []*AnthropicStreamEvent {
+		var out []*AnthropicStreamEvent
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
+
+	tests := []struct {
+		name   string
+		events []*AnthropicStreamEvent
+	}{
+		{
+			name:   "server tool before client tool",
+			events: concat(serverBlock(0), searchResultBlock(1), clientBlock(2)),
+		},
+		{
+			name:   "server tool after client tool",
+			events: concat(clientBlock(0), serverBlock(1), searchResultBlock(2)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewAnthropicStreamState()
+			type call struct {
+				id, name, args string
+			}
+			calls := map[uint16]*call{}
+			for _, ev := range tt.events {
+				resp, bErr, _ := ev.ToBifrostChatCompletionStream(nil, "", state)
+				require.Nil(t, bErr)
+				if resp == nil {
+					continue
+				}
+				require.Len(t, resp.Choices, 1)
+				delta := resp.Choices[0].ChatStreamResponseChoice.Delta
+				require.NotNil(t, delta)
+				// Accumulate the way an OpenAI streaming client does: by index.
+				for _, tc := range delta.ToolCalls {
+					c, ok := calls[tc.Index]
+					if !ok {
+						c = &call{}
+						calls[tc.Index] = c
+					}
+					if tc.ID != nil {
+						c.id = *tc.ID
+					}
+					if tc.Function.Name != nil {
+						c.name = *tc.Function.Name
+					}
+					c.args += tc.Function.Arguments
+				}
+			}
+
+			require.Len(t, calls, 1, "exactly one tool call: the client tool")
+			got, ok := calls[0]
+			require.True(t, ok, "the client tool call is index 0")
+			assert.Equal(t, "toolu_01", got.id)
+			assert.Equal(t, "get_weather", got.name)
+			assert.Equal(t, `{"city":"Paris"}`, got.args)
+		})
+	}
+}
+
+// TestToBifrostChatCompletionStream_StructuredOutputToolDeltasNotToolCalls pins
+// that the converter never surfaces the structured-output tool's input as a
+// tool call: its content_block_start emits nothing, and the provider stream loop
+// turns its input_json_delta chunks into content before the converter runs.
+func TestToBifrostChatCompletionStream_StructuredOutputToolDeltasNotToolCalls(t *testing.T) {
+	state := NewAnthropicStreamState()
+	for _, ev := range structuredOutputToolStream() {
+		resp, bErr, _ := ev.ToBifrostChatCompletionStream(nil, structuredOutputToolName, state)
+		require.Nil(t, bErr)
+		assert.Nil(t, resp, "event %s must not emit a chunk", ev.Type)
+	}
+}

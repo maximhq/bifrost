@@ -1812,7 +1812,17 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 					}
 
 					// Resolve which tool-call this delta belongs to via the content-block index.
-					toolCallIdx := state.contentBlockToToolCallIdx[*chunk.Index]
+					// Only client tool_use blocks get a tool-call index (content_block_start).
+					// A block without one is a server tool (server_tool_use, e.g. web search)
+					// or the structured-output tool: its start emitted nothing, so its input
+					// stays internal too. Defaulting to index 0 here would splice the server
+					// tool's input into the first client tool call, or invent a phantom one.
+					// The structured-output tool's deltas are turned into content by the
+					// provider stream loop before this converter runs.
+					toolCallIdx, isToolBlock := state.contentBlockToToolCallIdx[*chunk.Index]
+					if !isToolBlock {
+						return nil, nil, false
+					}
 					state.sawArgsDelta[*chunk.Index] = true
 
 					// Continuation chunks must omit function.type; only the initial
