@@ -195976,7 +195976,7 @@
     },
     {
       "name": "161. Vertex endpoint selection and header forwarding (vertex endpoint fixture)",
-      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir <dir>, start an isolated gateway with -app-dir <dir> (the fixture writes its config.json: one Vertex key per region, a service account whose token_uri points at the fixture, and a proxy_config + CA so the gateway trusts the fixture), and run with vertexEndpointFixture=1; every case is skipped otherwise. The fixture is the gateway's HTTP proxy: it terminates TLS for whatever host the gateway CONNECTs to, records the decrypted request, and answers with a canned Gemini or Claude body, so the cases assert the real host, location path segment and headers the gateway sends. Keys are selected with x-bf-api-key. Covered: global, us/eu multi-region, us-east5 regional, a regional key that stays single-region for Gemini, Claude promoted to the us multi-region pool from an unpinned us-central1 key and kept on us-central1 with force_single_region, the OAuth token path for Claude, the service-tier shared-request-type header (global endpoint only, and absent on a regional key), and extra-header forwarding, which is how Vertex Provisioned Throughput spend-limit ids (x-goog-spend-limit-id) are sent.",
+      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir <dir>, start an isolated gateway with -app-dir <dir> (the fixture writes its config.json: one Vertex key per region, a service account whose token_uri points at the fixture, and a proxy_config + CA so the gateway trusts the fixture), and run with vertexEndpointFixture=1; every case is skipped otherwise. The fixture is the gateway's HTTP proxy: it terminates TLS for whatever host the gateway CONNECTs to, records the decrypted request, and answers with a canned Gemini or Claude body, so the cases assert the real host, location path segment and headers the gateway sends. Keys are selected with x-bf-api-key. Covered: global, us/eu multi-region, us-east5 regional, a regional key that stays single-region for Gemini, Claude promoted to the us multi-region pool from an unpinned us-central1 key and kept on us-central1 with force_single_region, the OAuth token path for Claude, the service-tier shared-request-type header (global endpoint only, and absent on a regional key), and extra-header forwarding, which is how Vertex Provisioned Throughput spend-limit ids (x-goog-spend-limit-id) are sent. Video retrieve and download pinned to the us-east5 key poll the region named in the operation, us-central1, since model-less polls can land on any key.",
       "item": [
         {
           "name": "161.1 vertex/gemini-2.5-flash on the global key reaches aiplatform.googleapis.com (vertex endpoint selection)",
@@ -196756,6 +196756,126 @@
                   "  var loc = (call.path.match(/locations\\/([^/]+)\\//) || [])[1];",
                   "  pm.test('x-goog-spend-limit-id reaches Vertex', function () { pm.expect(call.headers['x-goog-spend-limit-id'], JSON.stringify(call.headers)).to.equal('fx-limit-1'); });",
                   "  pm.test('the x-bf-eh-prefixed name is not leaked upstream', function () { pm.expect(Object.keys(call.headers).filter(function (h) { return h.indexOf('x-bf-') === 0; }), JSON.stringify(call.headers)).to.eql([]); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "161.13 vertex/veo-3.0-generate-001 video retrieve on the us-east5 key polls the operation's us-central1 host (vertex video poll region)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-east5"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.0-generate-001%2Foperations%2Ffixture-op:vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.0-generate-001%2Foperations%2Ffixture-op:vertex"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('the gateway answered from the fixture', function () { pm.expect(j.id, pm.response.text().slice(0, 400)).to.equal('projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.0-generate-001%2Foperations%2Ffixture-op:vertex'); pm.expect(j.status, pm.response.text().slice(0, 400)).to.equal('completed'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST' && /:fetchPredictOperation/.test(q.path); });",
+                  "  pm.test('exactly one operation poll reached Vertex', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', path: '' };",
+                  "  pm.test('host is the operation region us-central1, not the us-east5 key region', function () { pm.expect(call.host).to.equal('us-central1-aiplatform.googleapis.com'); });",
+                  "  pm.test('path is the operation model on its own project and location', function () { pm.expect(call.path).to.match(/^\\/v1\\/projects\\/fixture-project\\/locations\\/us-central1\\/publishers\\/google\\/models\\/veo-3\\.0-generate-001:fetchPredictOperation/); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "161.14 vertex/veo-3.0-generate-001 video download on the us-east5 key polls the operation's us-central1 host (vertex video poll region)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-east5"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.0-generate-001%2Foperations%2Ffixture-op:vertex/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.0-generate-001%2Foperations%2Ffixture-op:vertex",
+                "content"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the video bytes came back from the fixture', function () { pm.expect(pm.response.headers.get('Content-Type'), pm.response.text().slice(0, 400)).to.equal('video/webm'); pm.expect(pm.response.text()).to.include('fixture-video'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST' && /:fetchPredictOperation/.test(q.path); });",
+                  "  pm.test('exactly one operation poll reached Vertex', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', path: '' };",
+                  "  pm.test('host is the operation region us-central1, not the us-east5 key region', function () { pm.expect(call.host).to.equal('us-central1-aiplatform.googleapis.com'); });",
+                  "  pm.test('path is the operation model on its own project and location', function () { pm.expect(call.path).to.match(/^\\/v1\\/projects\\/fixture-project\\/locations\\/us-central1\\/publishers\\/google\\/models\\/veo-3\\.0-generate-001:fetchPredictOperation/); });",
                   "});"
                 ]
               }
