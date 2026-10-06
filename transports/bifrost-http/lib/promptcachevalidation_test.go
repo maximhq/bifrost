@@ -124,3 +124,50 @@ func TestValidatePromptCachePointEnumsMatchConfigSchema(t *testing.T) {
 		}), "schema declares role %q valid, so the API must accept it", role)
 	}
 }
+
+// key_selection is validated by config.schema.json on the file path and by
+// KeySelectionConfig.Validate on the API path; this pins the two contracts together.
+func TestKeySelectionValidateMatchesConfigSchema(t *testing.T) {
+	type bounds struct {
+		Minimum *int `json:"minimum"`
+		Maximum *int `json:"maximum"`
+	}
+	var schema struct {
+		Defs struct {
+			KeySelection struct {
+				Properties struct {
+					Strategy struct {
+						Enum []string `json:"enum"`
+					} `json:"strategy"`
+					StickyLimit     bounds `json:"sticky_limit"`
+					CooldownSeconds bounds `json:"cooldown_seconds"`
+				} `json:"properties"`
+			} `json:"key_selection"`
+		} `json:"$defs"`
+	}
+	require.NoError(t, json.Unmarshal(loadLocalSchema(t), &schema))
+	props := schema.Defs.KeySelection.Properties
+
+	strategies := make([]string, 0, len(schemas.KeySelectionStrategies))
+	for _, s := range schemas.KeySelectionStrategies {
+		strategies = append(strategies, string(s))
+	}
+	assert.ElementsMatch(t, strategies, props.Strategy.Enum, "schema strategy enum must match schemas.KeySelectionStrategies")
+	for _, s := range props.Strategy.Enum {
+		assert.NoError(t, (&schemas.KeySelectionConfig{Strategy: schemas.KeySelectionStrategy(s)}).Validate())
+	}
+	assert.Error(t, (&schemas.KeySelectionConfig{Strategy: "random"}).Validate())
+
+	require.NotNil(t, props.StickyLimit.Minimum)
+	require.NotNil(t, props.StickyLimit.Maximum)
+	assert.NoError(t, (&schemas.KeySelectionConfig{StickyLimit: *props.StickyLimit.Maximum}).Validate())
+	assert.Error(t, (&schemas.KeySelectionConfig{StickyLimit: *props.StickyLimit.Maximum + 1}).Validate())
+	assert.Error(t, (&schemas.KeySelectionConfig{StickyLimit: *props.StickyLimit.Minimum - 1}).Validate())
+
+	require.NotNil(t, props.CooldownSeconds.Minimum)
+	require.NotNil(t, props.CooldownSeconds.Maximum)
+	assert.NoError(t, (&schemas.KeySelectionConfig{CooldownSeconds: schemas.Ptr(*props.CooldownSeconds.Minimum)}).Validate())
+	assert.NoError(t, (&schemas.KeySelectionConfig{CooldownSeconds: schemas.Ptr(*props.CooldownSeconds.Maximum)}).Validate())
+	assert.Error(t, (&schemas.KeySelectionConfig{CooldownSeconds: schemas.Ptr(*props.CooldownSeconds.Maximum + 1)}).Validate())
+	assert.Error(t, (&schemas.KeySelectionConfig{CooldownSeconds: schemas.Ptr(*props.CooldownSeconds.Minimum - 1)}).Validate())
+}

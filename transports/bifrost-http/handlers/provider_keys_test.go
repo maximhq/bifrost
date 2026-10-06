@@ -771,6 +771,41 @@ func TestValidateProviderKeyGithubCopilotFormats(t *testing.T) {
 	}
 }
 
+// Antigravity and Kiro keep the whole OAuth credential in value; literal values must parse
+// so a truncated paste is rejected at save time, while env references pass unchecked.
+func TestValidateProviderKeySubscriptionCredentials(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		value    string
+		wantErr  string
+	}{
+		{"antigravity bare refresh token", schemas.Antigravity, "1//0gAbC-dEf", ""},
+		{"antigravity JSON credential", schemas.Antigravity, `{"refresh_token":"1//0g","project_id":"p","email":"a@b.c"}`, ""},
+		{"antigravity JSON without refresh_token", schemas.Antigravity, `{"project_id":"p"}`, "invalid antigravity credential"},
+		{"antigravity truncated JSON", schemas.Antigravity, `{"refresh_token":"1//0g"`, "invalid antigravity credential"},
+		{"kiro bare refresh token", schemas.Kiro, "aorAAAAAGexample", ""},
+		{"kiro IDE token file", schemas.Kiro, `{"accessToken":"a","refreshToken":"r","region":"us-east-1","authMethod":"social"}`, ""},
+		{"kiro half OIDC client", schemas.Kiro, `{"refreshToken":"r","clientId":"c"}`, "invalid kiro credential"},
+		{"kiro without refresh token", schemas.Kiro, `{"accessToken":"a"}`, "invalid kiro credential"},
+		{"env reference is not parsed", schemas.Kiro, "env.BIFROST_TEST_UNSET_KIRO_CREDENTIAL", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateProviderKeyURL(tc.provider, schemas.Key{Value: *schemas.NewSecretVar(tc.value)})
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
 // refreshHandlerForTest builds a ProviderHandler with one keyed provider and a
 // recording models manager.
 func refreshHandlerForTest(mgr *mockModelsManager) *ProviderHandler {

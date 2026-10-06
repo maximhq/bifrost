@@ -11907,6 +11907,62 @@
               ]
             }
           }
+        },
+        {
+          "name": "antigravity - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"antigravity\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "kiro - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"kiro\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
         }
       ]
     }

@@ -779,3 +779,168 @@ models-base:
               additionalProperties: true
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+oauth-subscriptions-antigravity-start:
+  post:
+    operationId: startAntigravitySignIn
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Create` | RBAC role or API key scope (same middleware chain as provider key routes) |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Start Antigravity sign-in
+    description: |
+      Starts a Google OAuth (PKCE) sign-in for an Antigravity subscription account. Open
+      `auth_url` in a browser and approve access. Google then redirects to `redirect_uri`
+      (`http://127.0.0.1:51121/callback`), which nothing listens on; copy the full URL from the
+      address bar and pass it to `/api/oauth-subscriptions/antigravity/complete`.
+      Sessions are held in memory on the node that created them, expire after 15 minutes,
+      and at most 64 are pending at once.
+    tags:
+      - Providers
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            type: object
+            description: Empty object.
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Sign-in session created
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/AntigravitySignInStartResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+oauth-subscriptions-antigravity-complete:
+  post:
+    operationId: completeAntigravitySignIn
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Create` | RBAC role or API key scope (same middleware chain as provider key routes) |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Complete Antigravity sign-in
+    description: |
+      Exchanges the authorization code for a refresh token, looks up the account email and
+      discovers the Cloud Code Assist project. Returns the credential to store as the key
+      `value` via `POST /api/providers/antigravity/keys`. Nothing is saved by this call.
+      Returns 400 for an unknown or expired session, a state mismatch, or a failed exchange.
+    tags:
+      - Providers
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/providers.yaml#/AntigravitySignInCompleteRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Sign-in completed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/AntigravitySignInCompleteResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+
+oauth-subscriptions-kiro-start:
+  post:
+    operationId: startKiroDeviceLogin
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Create` | RBAC role or API key scope (same middleware chain as provider key routes) |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Start Kiro device login
+    description: |
+      Starts a Kiro device-code login with AWS Builder ID, Google or GitHub. Show `user_code`
+      and `verification_uri` (or open `verification_uri_complete`) to the user, then call
+      `/api/oauth-subscriptions/kiro/poll` every `interval_seconds`.
+      Sessions are held in memory on the node that created them, expire after 15 minutes,
+      and at most 64 are pending at once. Returns 502 when Kiro's auth service fails.
+    tags:
+      - Providers
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/providers.yaml#/KiroDeviceLoginStartRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Device login started
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/KiroDeviceLoginStartResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '502':
+        description: Kiro's auth service rejected or failed the device authorization request
+
+oauth-subscriptions-kiro-poll:
+  post:
+    operationId: pollKiroDeviceLogin
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Create` | RBAC role or API key scope (same middleware chain as provider key routes) |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Poll Kiro device login
+    description: |
+      Checks whether the user approved the device login. Polls earlier than the session's
+      interval return `pending` without contacting Kiro; a `slow_down` from Kiro adds 5 seconds
+      to the interval. On `complete`, `credential` is the value to store as the key `value` via
+      `POST /api/providers/kiro/keys`; the session is then removed. `expired` and `error` also
+      end the session.
+    tags:
+      - Providers
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/providers.yaml#/KiroDeviceLoginPollRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Current login status
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/KiroDeviceLoginPollResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'

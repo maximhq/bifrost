@@ -1,0 +1,220 @@
+---
+title: "Kiro"
+description: "Use a Kiro subscription through Bifrost - device-code sign-in (AWS Builder ID, Google, GitHub) or Kiro IDE token import, Claude/GPT/open models, multi-account rotation"
+icon: "k"
+---
+
+## Overview
+
+The `kiro` provider sends requests to the Kiro (CodeWhisperer) runtime with the OAuth credential of a Kiro account. Each provider key is one Kiro account. Bifrost refreshes access tokens itself, writes rotated refresh tokens back to the key, and rotates across accounts with [key rotation](/providers/key-rotation).
+
+<Warning>
+The Kiro runtime API is not a public, documented API. It can change without notice, and using a subscription through a gateway may be subject to Kiro's and AWS's terms of service. You are responsible for complying with them.
+</Warning>
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `https://runtime.<region>.kiro.dev/` (event stream) |
+| Responses API | ✅ | ✅ | via Chat Completions |
+| List Models | ✅ | - | static catalog |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation / Edit | ❌ | ❌ | - |
+| Speech (TTS) / Transcriptions (STT) | ❌ | ❌ | - |
+| Files / Batch | ❌ | ❌ | - |
+| Count Tokens | ❌ | - | - |
+
+Unsupported operations return an `unsupported_operation` error. Non-streaming chat is served by reading the upstream event stream to completion.
+
+---
+
+## Credential format
+
+Everything lives in the key's `value` (encrypted at rest, redacted in API responses, `env.VAR` supported). Two forms are accepted:
+
+<Tabs>
+<Tab title="Bare refresh token">
+
+A Kiro **social** (Google/GitHub) refresh token. Implies social auth in region `us-east-1`.
+
+```text
+aorAAAAAG...
+```
+
+</Tab>
+<Tab title="JSON (Kiro IDE format)">
+
+Compatible with Kiro IDE's `~/.aws/sso/cache/kiro-auth-token.json`:
+
+```json
+{
+  "accessToken": "optional",
+  "refreshToken": "required",
+  "expiresAt": "2026-10-06T12:00:00.000Z",
+  "profileArn": "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABCDEF",
+  "region": "us-east-1",
+  "authMethod": "social",
+  "clientId": "optional (Builder ID / IdC)",
+  "clientSecret": "optional (Builder ID / IdC)"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `refreshToken` | Yes | Kiro refresh token |
+| `accessToken`, `expiresAt` | No | Used until shortly before expiry, then refreshed. `expiresAt` accepts ISO-8601 or epoch |
+| `profileArn` | No | CodeWhisperer profile; learned from refresh responses and written back when missing |
+| `region` | No | SSO/auth region, default `us-east-1` |
+| `apiRegion` | No | Runtime API region, when it differs from the auth region |
+| `authMethod` | No | `social`, `IdC` or `builder-id` |
+| `clientId`, `clientSecret` | No | When both are present, Bifrost refreshes through AWS SSO OIDC (Builder ID / IdC); otherwise through the Kiro social auth service |
+
+`clientIdHash` is accepted and ignored.
+
+</Tab>
+</Tabs>
+
+---
+
+## Setup & Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Go to **Models** > **Model Providers**, then select **Kiro** (add it with **Add New Provider** if it is not configured).
+2. Click **Add Key**.
+3. In **OAuth credential**, pick a sign-in method - **AWS Builder ID**, **Google** or **GitHub** - and click **Sign in**.
+4. Bifrost shows a user code and a verification link. Open the link, confirm the code, and approve the login.
+5. Bifrost polls in the background; when the login completes it fills the credential and a suggested key name.
+6. Save the key. Repeat for each additional account.
+
+<Note>
+The device-login session lives in memory on the Bifrost node that started it and expires after 15 minutes (or earlier, when the device code expires).
+</Note>
+
+</Tab>
+<Tab title="Import Kiro IDE token">
+
+If you are already signed in to the Kiro IDE on a machine, copy the **contents** of `~/.aws/sso/cache/kiro-auth-token.json` and paste them into the key's **OAuth credential** field (or into `value` in config.json / the API).
+
+For AWS Builder ID or IdC logins, the OIDC `clientId` and `clientSecret` live in a separate file in the same directory (named after `clientIdHash`). Add those two fields to the JSON, or the refresh falls back to the social endpoint and fails.
+
+<Warning>
+Kiro rotates refresh tokens. Once Bifrost refreshes an imported token, the copy the IDE holds may stop working (and vice versa). Use a dedicated login per consumer.
+</Warning>
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "kiro": {
+      "keys": [
+        {
+          "name": "kiro-builder-id",
+          "value": "env.KIRO_BUILDER_ID_CREDENTIAL",
+          "models": ["*"],
+          "weight": 1.0
+        },
+        {
+          "name": "kiro-github",
+          "value": "{\"refreshToken\":\"aorAAAAAG...\",\"authMethod\":\"social\",\"region\":\"us-east-1\"}",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "key_selection": {
+        "strategy": "fill_first",
+        "cooldown_seconds": 300
+      }
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+
+Obtain a credential with the [OAuth subscription endpoints](/api-reference/providers/start-kiro-device-login) (`POST /api/oauth-subscriptions/kiro/start`, then poll `.../poll` every `interval_seconds` until `status` is `complete`), then create the key with the returned `credential` as `value`:
+
+```bash
+curl -X POST http://localhost:8080/api/providers/kiro/keys \
+  -H "Content-Type: application/json" \
+  -d '{"name": "kiro-github", "value": "<credential>", "models": ["*"], "weight": 1.0}'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Kiro:
+    return []schemas.Key{{
+        ID:     "kiro-1",
+        Name:   "kiro-1",
+        Value:  *schemas.NewSecretVar("env.KIRO_CREDENTIAL"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Models
+
+Kiro has no model discovery endpoint that works for every account type, so `GET /v1/models` serves a static catalog, filtered by each key's allow/deny lists and aliases:
+
+`kiro-auto`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-6-sol`, `gpt-6-luna`, `gpt-6.1-sol`, `claude-sonnet-5.5`, `claude-sonnet-5`, `claude-opus-5.5`, `claude-opus-5`, `claude-opus-4.8`, `claude-opus-4.7`, `claude-opus-4.6`, `claude-opus-4.5`, `claude-sonnet-4.6`, `claude-sonnet-4.5`, `claude-sonnet-4.0`, `claude-haiku-4.5`, `deepseek-3.2`, `minimax-m2.5`, `minimax-m2.1`, `glm-5`, `qwen3-coder-next`
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "kiro/claude-sonnet-4.6",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+**Model id normalization.** Requested ids are lowercased and normalized before they are sent: a `kiro/` or `kiro-` prefix is dropped (`kiro-auto` is sent as `auto`, the Kiro router), date (`-20250929`) and effort (`-high`) suffixes are removed, dashed versions become dotted (`claude-sonnet-4-6` → `claude-sonnet-4.6`), and legacy order is fixed (`claude-3.7-sonnet` → `claude-sonnet-3.7`). Per-key [model aliases](/providers/aliasing-models) apply first.
+
+**Reasoning.** GPT-5.6/6/6.1 models and Claude Opus 5/5.5 receive `reasoning.effort` as a native field (`low`, `medium`, `high`, `xhigh`, `max`; `gpt-5.6-luna`/`-terra` natively only up to `high` and `max`). Other models receive emulated thinking instructions.
+
+---
+
+## Token refresh & credential write-back
+
+- A usable `accessToken` in the credential is used until shortly before `expiresAt`; then Bifrost refreshes - through AWS SSO OIDC when `clientId`/`clientSecret` are present, otherwise through the Kiro social auth service. Concurrent requests share one refresh, and an access token upstream rejects is refreshed once.
+- Failed refreshes back off; a terminal refresh failure (revoked or invalid refresh token) backs off longer.
+- When a refresh rotates the refresh token or returns a `profileArn` the credential lacked, Bifrost re-encodes the JSON credential and writes it back to the key through the config store. Only `value` changes; the key keeps its ID, name, weight and config.json hash. Without a config store the new token lives only in memory and is lost on restart - which matters because Kiro may have already invalidated the old one.
+
+<Note>
+A key whose value is `env.VAR` is never overwritten: Bifrost keeps the refreshed credential in memory and logs a warning. Kiro may rotate the refresh token on refresh, so update the environment variable with the new credential before restarting, or store the credential directly in the key (or the UI sign-in) to get automatic write-back.
+</Note>
+
+---
+
+## Rate limits & quota
+
+| Upstream signal | Bifrost error | Effect |
+|-----------------|---------------|--------|
+| 429 / `ThrottlingException` / "rate limit" | 429 `rate_limit_error` | `Retry-After` honoured; 10 s hint when absent |
+| Quota exhausted / `MONTHLY_REQUEST_COUNT` | 429 `insufficient_quota` | Current request moves to another key |
+| `TEMPORARILY_SUSPENDED` | 403 `account_suspended` | Log in to Kiro to resolve |
+| 401 / expired or invalid token | 401 `authentication_error` | Token refreshed once, then reported |
+| Content length over the context window | 400 `context_length_exceeded` | Compact the conversation |
+| `profileArn` required | 400 `kiro_profile_required` | Re-login so the profile ARN is captured |
+
+With [key rotation](/providers/key-rotation) configured, rate-limit and quota failures put the account on cooldown **for that model**, and a rejected credential cools the whole account, so later requests go to other accounts first.
+
+---
+
+## Caveats
+
+- **Unofficial API** - behaviour, model ids and quotas follow Kiro's backend and may change.
+- **Endpoints** - requests go to `https://runtime.<region>.kiro.dev/`, falling back to `https://q.<region>.amazonaws.com/` when the runtime host cannot be reached or does not serve the operation. The region comes from `apiRegion`, the `profileArn`, or `region`.
+- **Base URL** - setting `network_config.base_url` replaces the regional runtime endpoint (for example a recording proxy) and disables the legacy fallback.

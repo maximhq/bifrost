@@ -36,6 +36,8 @@ ModelProvider:
     - wafer
     - databricks
     - typesafe
+    - antigravity
+    - kiro
 
 Fallback:
   type: object

@@ -1,0 +1,138 @@
+---
+title: "Key Rotation"
+description: "Choose how Bifrost rotates across a provider's keys or subscription accounts - weighted random, round robin, least used or fill first - with sticky limits and cooldowns for rate-limited keys."
+icon: "rotate"
+---
+
+## Overview
+
+By default Bifrost picks a provider key with [weighted random selection](/features/keys-management#weighted-load-balancing) on every request. A provider-level `key_selection` block replaces that with a stateful strategy and adds **cooldowns**: a key that hits a rate limit, an exhausted quota or a rejected credential is skipped by later requests for a while.
+
+This is most useful for pools of subscription accounts (for example [Antigravity](/providers/supported-providers/antigravity) or [Kiro](/providers/supported-providers/kiro)), where each key has its own quota, but it works for every provider.
+
+```json
+"key_selection": {
+  "strategy": "round_robin",
+  "sticky_limit": 1,
+  "cooldown_seconds": 60
+}
+```
+
+| Field | Type | Default | Range | Description |
+|-------|------|---------|-------|-------------|
+| `strategy` | string | `weighted_random` | see below | Rotation rule. Empty means `weighted_random` |
+| `sticky_limit` | integer | `0` | 0-1000 | `round_robin` only: consecutive selections a key keeps before rotation advances. `0` or `1` advances every request |
+| `cooldown_seconds` | integer | `60` | 0-86400 | How long a failing key is skipped when upstream sent no retry hint. `0` disables cooldowns |
+
+Without a `key_selection` block, behaviour is unchanged from earlier releases: stateless weighted random, no cross-request cooldowns.
+
+## Strategies
+
+| Strategy | Behaviour | Uses `weight` |
+|----------|-----------|---------------|
+| `weighted_random` | Random pick per request, proportional to weight. Uses a custom Go SDK `KeySelector` when one is configured | Yes |
+| `round_robin` | Smooth weighted round robin: each key serves in proportion to its weight, interleaved rather than in bursts. Keys with weight `0` are used only if every candidate has weight `0` | Yes |
+| `least_used` | Key with the fewest attempts in flight, then the fewest attempts served so far, then the first in configured order | No |
+| `fill_first` | Always the first eligible key in configured order, until it cools down or fails; then the next one | No |
+
+### Sticky limit
+
+With `round_robin` and `sticky_limit: N`, the chosen key serves `N` consecutive selections before rotation moves on. This keeps a burst of related requests (for example one agent turn) on one account, which can help upstream prompt caches. A failure that puts the sticky key on cooldown ends its streak immediately.
+
+## Cooldowns
+
+After each attempt, Bifrost classifies the failure and updates the key's cooldown:
+
+| Failure class | Cooldown scope |
+|---------------|----------------|
+| Rate limit (429 and equivalents) | That key, **for the requested model only** |
+| Quota exhausted (402, `insufficient_quota`, quota messages) | That key, **for the requested model only** (subscription quotas are commonly per model family) |
+| Rejected credential (401, invalid key types/codes) | **The whole key**, every model |
+| Anything else (transient 5xx, bad request, ...) | No cooldown |
+
+Rules:
+
+- **Retry-After wins.** When the upstream sent a retry hint (a `Retry-After` header, or a provider-specific hint such as Google's `RetryInfo`), the cooldown lasts exactly that long. Otherwise it lasts `cooldown_seconds`.
+- **`cooldown_seconds: 0` disables cooldowns** altogether, including retry hints.
+- **Cooling keys are skipped while any other key is available.** If every eligible key is cooling down, the full pool is used, so a cooldown never fails a request on its own.
+- **Success clears.** A successful attempt on a key clears its cooldowns, for that model and key-wide.
+- Cooldowns only influence **later** requests. Within one request, the retry loop already excludes keys that failed on that request (see [Retries and Fallbacks](/features/retries-and-fallbacks)).
+
+## Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Go to **Models** > **Model Providers** and select the provider.
+2. Open the provider configuration and choose the **Key Rotation** tab.
+3. Pick a **Strategy**, and optionally set **Sticky limit** (round robin) and **Cooldown (seconds)**.
+4. Click **Save Key Rotation**.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        { "name": "primary", "value": "env.OPENAI_KEY_1", "models": ["*"], "weight": 3 },
+        { "name": "secondary", "value": "env.OPENAI_KEY_2", "models": ["*"], "weight": 1 }
+      ],
+      "key_selection": {
+        "strategy": "round_robin",
+        "sticky_limit": 4,
+        "cooldown_seconds": 120
+      }
+    }
+  }
+}
+```
+
+Here `primary` serves three of every four selections, in streaks of four.
+
+</Tab>
+<Tab title="API">
+
+`key_selection` is returned by `GET /api/providers` and `GET /api/providers/{provider}`, and accepted by `POST /api/providers` and `PUT /api/providers/{provider}`. On `PUT`, omitting the field leaves it unchanged and an explicit `null` removes it (back to stateless weighted random).
+
+```bash
+curl -X PUT http://localhost:8080/api/providers/antigravity \
+  -H "Content-Type: application/json" \
+  -d '{"key_selection": {"strategy": "fill_first", "cooldown_seconds": 300}}'
+```
+
+Invalid strategies or out-of-range values are rejected with `400`.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    cooldown := 60
+    return &schemas.ProviderConfig{
+        NetworkConfig:            schemas.DefaultNetworkConfig,
+        ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+        KeySelection: &schemas.KeySelectionConfig{
+            Strategy:        schemas.KeySelectionRoundRobin,
+            StickyLimit:     1,
+            CooldownSeconds: &cooldown,
+        },
+    }, nil
+}
+```
+
+</Tab>
+</Tabs>
+
+## Interaction with other features
+
+- **Eligibility first.** Strategies choose among keys already filtered for the request: enabled, serving the requested model (allow/deny lists, aliases, deployments), not yet failed on this request, and passed through any key pool filter.
+- **Pinned keys bypass rotation.** A key chosen explicitly with `x-bf-api-key-id` or `x-bf-api-key` (see [Custom Key Usage](/features/keys-management#custom-key-usage-by-name-or-id)) is always used, whatever the strategy or cooldowns.
+- **Session affinity bypasses rotation.** When [session affinity](/providers/session-affinity) names an eligible key for the session, that key is used for every attempt; otherwise the strategy picks as usual.
+- **Fallbacks.** Each provider in a fallback chain applies its own `key_selection`. Cooldowns never trigger a fallback by themselves; fallbacks happen when the provider's attempts fail.
+- **Weights.** `weighted_random` and `round_robin` honour key `weight`; `least_used` and `fill_first` ignore it and use configured key order for ties.
+
+<Warning>
+Rotation state - round-robin positions, in-flight and served counters, cooldowns - is **kept in memory per Bifrost process**. It survives provider config reloads, but it is not shared across nodes in a cluster and resets on restart. With several nodes, each rotates and cools keys independently.
+</Warning>

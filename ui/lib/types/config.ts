@@ -501,6 +501,21 @@ export interface PromptCacheConfig {
 	cache_control_injection_points?: CacheControlInjectionPoint[];
 }
 
+// KeySelectionStrategy picks how a provider rotates between its keys (accounts).
+export type KeySelectionStrategy = "weighted_random" | "round_robin" | "least_used" | "fill_first";
+
+// KeySelectionConfig matching Go's schemas.KeySelectionConfig. Absent means weighted_random
+// with the default 60s cooldown.
+export interface KeySelectionConfig {
+	strategy: KeySelectionStrategy;
+	// Consecutive requests a key serves before round_robin advances (1..1000). round_robin only.
+	sticky_limit?: number;
+	// Seconds a key is skipped after a rate-limit/auth failure (0..86400). Omitted = 60, 0 disables.
+	cooldown_seconds?: number;
+}
+
+export const DefaultKeySelectionCooldownSeconds = 60;
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
@@ -512,6 +527,7 @@ export interface ModelProviderConfig {
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	key_selection?: KeySelectionConfig;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -541,6 +557,7 @@ export interface AddProviderRequest {
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	key_selection?: KeySelectionConfig;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -554,6 +571,7 @@ export interface UpdateProviderRequest {
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	key_selection?: KeySelectionConfig;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}

@@ -1,0 +1,214 @@
+---
+title: "Antigravity"
+description: "Use a Google Antigravity subscription through Bifrost - Google OAuth sign-in, Gemini/Claude/GPT-OSS models over Cloud Code Assist, multi-account rotation"
+icon: "google"
+---
+
+## Overview
+
+The `antigravity` provider sends requests to the Cloud Code Assist backend used by Google Antigravity, authenticated with the OAuth credential of a Google account that holds an Antigravity subscription. Each provider key is one Google account. Bifrost refreshes access tokens itself, discovers the account's Cloud Code project, and rotates across accounts with [key rotation](/providers/key-rotation).
+
+<Warning>
+Antigravity's Cloud Code Assist API is not a public, documented API. It can change without notice, and using a subscription through a gateway may be subject to Google's terms of service. You are responsible for complying with them.
+</Warning>
+
+Key characteristics:
+
+- **Subscription credentials** - the key value is a Google OAuth refresh token (or JSON holding it), not an API key
+- **Chat completions** - unary and streaming, via `v1internal:generateContent` / `v1internal:streamGenerateContent`
+- **Responses API** - converted to chat completions internally
+- **Live model list** - `v1internal:fetchAvailableModels` per account, falling back to a built-in catalog
+- **Automatic token refresh** - with refreshed credentials written back to the key
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1internal:generateContent`, `/v1internal:streamGenerateContent?alt=sse` |
+| Responses API | ✅ | ✅ | via Chat Completions |
+| List Models | ✅ | - | `/v1internal:fetchAvailableModels` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation / Edit | ❌ | ❌ | - |
+| Speech (TTS) / Transcriptions (STT) | ❌ | ❌ | - |
+| Files / Batch | ❌ | ❌ | - |
+| Count Tokens | ❌ | - | - |
+
+Unsupported operations return an `unsupported_operation` error.
+
+---
+
+## Credential format
+
+Everything lives in the key's `value` (encrypted at rest, redacted in API responses, `env.VAR` supported). Two forms are accepted:
+
+<Tabs>
+<Tab title="Bare refresh token">
+
+```text
+1//0gAbCdEf...
+```
+
+</Tab>
+<Tab title="JSON">
+
+```json
+{
+  "refresh_token": "1//0gAbCdEf...",
+  "project_id": "optional-cloud-code-project",
+  "email": "optional@example.com"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `refresh_token` | Yes | Google OAuth refresh token |
+| `project_id` | No | Cloud Code Assist project. Discovered (`loadCodeAssist`, then `onboardUser`) and written back when missing |
+| `email` | No | Informational; filled in by the sign-in flow |
+
+</Tab>
+</Tabs>
+
+---
+
+## Setup & Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Go to **Models** > **Model Providers**, then select **Antigravity** (add it with **Add New Provider** if it is not configured).
+2. Click **Add Key**.
+3. In **OAuth credential**, click **Sign in with Google**. A Google consent page opens in a new tab.
+4. Approve access with the Google account that holds the Antigravity subscription. Google then redirects to `http://127.0.0.1:51121/callback?state=...&code=...`. Nothing listens on that port, so the page fails to load - that is expected.
+5. Copy the **full URL from the browser address bar** and paste it into the field in Bifrost (the bare `code` value also works), then complete sign-in. Bifrost exchanges the code, looks up the account email and project, and fills the credential and a suggested key name.
+6. Save the key. Repeat for each additional account.
+
+You can also paste a refresh token or the JSON form directly, or `env.MY_VAR`.
+
+<Note>
+The sign-in session lives in memory on the Bifrost node that started it and expires after 15 minutes. Complete it against the same node.
+</Note>
+
+</Tab>
+<Tab title="config.json">
+
+Multiple accounts with rotation:
+
+```json
+{
+  "providers": {
+    "antigravity": {
+      "keys": [
+        {
+          "name": "ag-work",
+          "value": "env.ANTIGRAVITY_WORK",
+          "models": ["*"],
+          "weight": 1.0
+        },
+        {
+          "name": "ag-personal",
+          "value": "{\"refresh_token\":\"1//0g...\",\"project_id\":\"my-project-123\"}",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "key_selection": {
+        "strategy": "round_robin",
+        "sticky_limit": 5,
+        "cooldown_seconds": 60
+      }
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+
+Obtain a credential with the [OAuth subscription endpoints](/api-reference/providers/start-antigravity-sign-in) (`POST /api/oauth-subscriptions/antigravity/start`, then `.../complete`), then create the key with the returned `credential` as `value`:
+
+```bash
+curl -X POST http://localhost:8080/api/providers/antigravity/keys \
+  -H "Content-Type: application/json" \
+  -d '{"name": "ag-work", "value": "<credential>", "models": ["*"], "weight": 1.0}'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Antigravity:
+    return []schemas.Key{{
+        ID:     "ag-work",
+        Name:   "ag-work",
+        Value:  *schemas.NewSecretVar("env.ANTIGRAVITY_WORK"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Models
+
+`GET /v1/models` asks each account which models it may call. If live discovery fails (8 second timeout), Bifrost serves the built-in catalog:
+
+| Model ID | Notes |
+|----------|-------|
+| `gemini-3.8-flash` | Effort maps to `gemini-3.8-flash-low` / `-medium` / `-high` |
+| `gemini-3.7-flash` | Sent as `gemini-3.7-flash-tiered` with a thinking level |
+| `gemini-3.1-pro` | `none`/`minimal`/`low` effort → `gemini-3.1-pro-low`, otherwise `gemini-pro-agent` |
+| `gemini-3.1-flash-image` | Image output |
+| `claude-sonnet-4-6` | |
+| `claude-opus-4-6-thinking` | |
+| `gpt-oss-120b-medium` | |
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "antigravity/gemini-3.1-pro",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "reasoning": {"effort": "high"}
+  }'
+```
+
+**Reasoning.** `reasoning.effort` is folded onto Antigravity's levels (`minimal`, `low`, `medium`, `high`; `xhigh`/`max` become `high`). `reasoning.max_tokens` maps to a level by budget (≤2048 low, ≤8192 medium, above high).
+
+**Aliases.** Retired Flash ids (`gemini-3.6-flash*`, `gemini-3.5-flash-*`, `gemini-3-flash-agent`) route to `gemini-3.7-flash-tiered` with a fixed level. Wire ids that already pin a variant (`gemini-3.1-pro-high`, `gemini-3.1-pro-low`, `gemini-pro-agent`, `gemini-3.8-flash-low`, ...) are sent unchanged. Per-key [model aliases](/providers/aliasing-models) work as for other providers.
+
+`max_tokens` is capped per model family (Claude 64000, GPT-OSS 32768, Gemini Pro 65535, others 65536).
+
+---
+
+## Token refresh & credential write-back
+
+- Access tokens are cached in memory per credential and refreshed shortly before expiry, or once when upstream rejects one. Concurrent requests share a single refresh.
+- A failed refresh or project discovery is replayed for 30 seconds instead of hammering Google.
+- When Bifrost learns something the stored value lacks - a discovered `project_id` or a rotated refresh token - it re-encodes the JSON credential and writes it back to the key through the config store. Only `value` changes; the key keeps its ID, name, weight and config.json hash. With no config store, the update is kept in memory only.
+
+<Note>
+A key whose value is `env.VAR` is never overwritten: Bifrost keeps the refreshed credential in memory and logs a warning, and you must update the environment variable yourself before restarting. Antigravity only writes back a newly discovered `project_id` (Google does not rotate refresh tokens), so this rarely matters here.
+</Note>
+
+---
+
+## Rate limits & quota
+
+Upstream 429 `RESOURCE_EXHAUSTED` responses are split into two classes:
+
+- **Rate limit** (`Antigravity rate limit exceeded: ...`) - a short-window limit. A `google.rpc.RetryInfo` delay in the body (or a `Retry-After` header) becomes the retry hint.
+- **Quota exhausted** (`Antigravity quota exhausted: ...`, error type `insufficient_quota`) - the account's subscription quota for the model is spent. The retry loop moves to another key for the current request instead of backing off on the same one.
+
+With [key rotation](/providers/key-rotation) configured, both classes put the account on cooldown **for that model**, and a rejected credential (for example a 401 that persists after a forced token refresh) cools the whole account, so later requests go to other accounts first. 403 responses are reported as `account validation required`, `account verification required`, `location not supported`, or `access denied`.
+
+---
+
+## Caveats
+
+- **Unofficial API** - behaviour, model ids and quotas follow Antigravity's backend and may change.
+- **Base URL** - defaults to `https://daily-cloudcode-pa.googleapis.com`. Set `network_config.base_url` to point at another Cloud Code endpoint or a recording proxy. Token refresh, project discovery and model listing use the provider's proxy, TLS and private-network settings.
+- **Sign-in redirect** - the redirect URI is fixed at `http://127.0.0.1:51121/callback` (the one registered for the Antigravity OAuth client); Bifrost does not listen on it.

@@ -16,6 +16,7 @@ import { Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 import { DeploymentsTable } from "./deploymentsTable";
+import { AntigravitySignIn, KiroSignIn, type OnOAuthCredential } from "./oauthSubscriptionSignIn";
 
 // Providers that support batch APIs
 // Vertex authentication methods offered by the key form. The backend picks the mode from which
@@ -158,12 +159,24 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isFireworks = effectiveProvider === "fireworks";
 	const isDatabricks = effectiveProvider === "databricks";
 	const isGithubCopilot = effectiveProvider === "github-copilot";
+	const isAntigravity = effectiveProvider === "antigravity";
+	const isKiro = effectiveProvider === "kiro";
+	const isOAuthSubscription = isAntigravity || isKiro;
 	// Reactive, so the App-credential labels stay truthful. Once a Copilot token is present
 	// those fields genuinely are optional, and a static "(Required)" would contradict the
 	// section note telling the operator they can leave them blank.
 	const copilotAppSuffix = hasCopilotApiToken(form.watch("key.value")) ? "(Optional)" : "(Required)";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
+
+	// A sign-in helper produced a credential: store it as the key value and, when the operator
+	// has not named the key yet, use the account the server derived from it.
+	const handleOAuthCredential: OnOAuthCredential = (credential, suggestedName) => {
+		form.setValue("key.value", { value: credential, ref: "" }, { shouldDirty: true, shouldValidate: true });
+		if (suggestedName && !String(form.getValues("key.name") ?? "").trim()) {
+			form.setValue("key.name", suggestedName, { shouldDirty: true, shouldValidate: true });
+		}
+	};
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
 	const [azureAuthType, setAzureAuthType] = useState<"api_key" | "entra_id" | "default_credential">("api_key");
@@ -350,8 +363,54 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					)}
 				/>
 			</div>
+			{isOAuthSubscription && (
+				<FormField
+					control={control}
+					name={`key.value`}
+					render={({ field }) => (
+						<FormItem className="px-0.5">
+							<FormLabel>OAuth credential</FormLabel>
+							{isAntigravity ? (
+								<FormDescription>
+									Sign in below, or paste a Google refresh token (<code>1//0g...</code>) or JSON{" "}
+									<code>{`{"refresh_token":"1//...","project_id":"optional","email":"optional"}`}</code>. Use <code>env.MY_VAR</code> to
+									read it from the environment. Bifrost refreshes access tokens itself.
+								</FormDescription>
+							) : (
+								<FormDescription>
+									Sign in below, or paste a Kiro social refresh token or the JSON from Kiro IDE&apos;s{" "}
+									<code>~/.aws/sso/cache/kiro-auth-token.json</code> (<code>refreshToken</code> required; optional{" "}
+									<code>accessToken</code>, <code>expiresAt</code>, <code>profileArn</code>, <code>region</code>, <code>authMethod</code>,{" "}
+									<code>clientId</code>/<code>clientSecret</code> for AWS Builder ID / IdC). Use <code>env.MY_VAR</code> to read it from
+									the environment.
+								</FormDescription>
+							)}
+							<FormControl>
+								<SecretVarInput
+									variant="textarea"
+									rows={4}
+									className="font-mono text-xs"
+									placeholder={
+										isAntigravity
+											? 'Refresh token, {"refresh_token":"..."} JSON, or env.MY_VAR'
+											: 'Refresh token, {"refreshToken":"..."} JSON, or env.MY_VAR'
+									}
+									data-testid={`apikey-credential-textarea-${effectiveProvider}`}
+									{...field}
+								/>
+							</FormControl>
+							<FormMessage />
+							{isAntigravity ? (
+								<AntigravitySignIn onCredential={handleOAuthCredential} />
+							) : (
+								<KiroSignIn onCredential={handleOAuthCredential} />
+							)}
+						</FormItem>
+					)}
+				/>
+			)}
 			{/* Hide API Key field for providers with dedicated auth tabs */}
-			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && (
+			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && !isOAuthSubscription && (
 				<FormField
 					control={control}
 					name={`key.value`}

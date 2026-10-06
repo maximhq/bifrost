@@ -2,6 +2,7 @@
 package schemas
 
 import (
+	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,13 @@ type KeySelector func(ctx *BifrostContext, keys []Key, providerKey ModelProvider
 // KeyPoolFilter is an optional hook called before key selection to veto keys
 // from the available pool.
 type KeyPoolFilter func(ctx *BifrostContext, provider ModelProvider, model string, keys []Key) ([]Key, error)
+
+// KeyCredentialUpdater persists a credential that a provider refreshed on its own,
+// such as a rotated OAuth refresh token of a subscription provider (Kiro, Antigravity).
+// value is the complete new Key.Value for the key identified by keyID. Providers call
+// it only when the stored credential would otherwise go stale; a nil updater keeps
+// the refreshed credential in memory for the life of the process only.
+type KeyCredentialUpdater func(ctx context.Context, provider ModelProvider, keyID string, value string) error
 
 // BifrostConfig represents the configuration for initializing a Bifrost instance.
 // It contains the necessary components for setting up the system including account details,
@@ -40,6 +48,9 @@ type BifrostConfig struct {
 	KVStore            KVStore         // shared KV store for clustering/session stickiness; nil = disabled
 	SessionAffinity    SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
 	ModelCatalog       ModelInfoProvider
+	// KeyCredentialUpdater receives credentials refreshed by OAuth subscription providers
+	// so they survive restarts; nil = refreshed credentials live in memory only.
+	KeyCredentialUpdater KeyCredentialUpdater
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -79,6 +90,8 @@ const (
 	GithubCopilot ModelProvider = "github-copilot"
 	Databricks    ModelProvider = "databricks"
 	Typesafe      ModelProvider = "typesafe"
+	Antigravity   ModelProvider = "antigravity" // Google Antigravity (Cloud Code Assist) OAuth subscription
+	Kiro          ModelProvider = "kiro"        // AWS Kiro (CodeWhisperer) OAuth subscription
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -128,6 +141,8 @@ var StandardProviders = []ModelProvider{
 	GithubCopilot,
 	Databricks,
 	Typesafe,
+	Antigravity,
+	Kiro,
 }
 
 // RequestType represents the type of request being made to a provider.

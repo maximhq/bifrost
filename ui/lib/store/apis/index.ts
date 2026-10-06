@@ -19,6 +19,7 @@ export * from "./sidekiqApi";
 export * from "./oauth2ConsentApi";
 export * from "./warpApi";
 export * from "./oauth2SessionsApi";
+export * from "./oauthSubscriptionsApi";
 export * from "./pluginsApi";
 export * from "./providersApi";
 export * from "./promptsApi";

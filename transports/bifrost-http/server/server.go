@@ -2847,6 +2847,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// lib.ChainMiddlewares chains multiple middlewares together
 	healthHandler := handlers.NewHealthHandler(s.Config)
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
+	oauthSubscriptionHandler := handlers.NewOAuthSubscriptionHandler(s.Config)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
 	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler, callbacks)
 	// Virtual MCP routes read the config store on every call; skip them when persistence is disabled
@@ -2881,6 +2882,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	oauth2ConsentHandler.RegisterRoutes(s.Router, middlewares...)
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
+	oauthSubscriptionHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	if virtualMCPHandler != nil {
 		virtualMCPHandler.RegisterRoutes(s.Router, middlewares...)
@@ -3252,18 +3254,19 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// The account interface now benefits from ultra-fast config access times via in-memory storage
 	account := lib.NewBaseAccount(s.Config)
 	s.Client, err = bifrost.Init(ctx, schemas.BifrostConfig{
-		Account:            account,
-		InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
-		DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
-		LLMPlugins:         s.Config.GetLoadedLLMPlugins(),
-		MCPPlugins:         s.Config.GetLoadedMCPPlugins(),
-		A2APlugins:         s.Config.GetLoadedA2APlugins(),
-		MCPConfig:          mcpConfig,
-		OAuth2Provider:     s.Config.OAuthProvider,
-		MCPHeadersProvider: s.Config.MCPHeadersProvider,
-		Logger:             logger,
-		KVStore:            s.Config.KVStore,
-		ModelCatalog:       s.Config.ModelCatalog,
+		Account:              account,
+		InitialPoolSize:      s.Config.ClientConfig.InitialPoolSize,
+		DropExcessRequests:   s.Config.ClientConfig.DropExcessRequests,
+		LLMPlugins:           s.Config.GetLoadedLLMPlugins(),
+		MCPPlugins:           s.Config.GetLoadedMCPPlugins(),
+		A2APlugins:           s.Config.GetLoadedA2APlugins(),
+		MCPConfig:            mcpConfig,
+		OAuth2Provider:       s.Config.OAuthProvider,
+		MCPHeadersProvider:   s.Config.MCPHeadersProvider,
+		Logger:               logger,
+		KVStore:              s.Config.KVStore,
+		ModelCatalog:         s.Config.ModelCatalog,
+		KeyCredentialUpdater: s.Config.UpdateProviderKeyCredential,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)

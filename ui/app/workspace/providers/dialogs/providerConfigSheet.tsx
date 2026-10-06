@@ -12,6 +12,7 @@ import {
 	ProxyFormFragment,
 } from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
+import { KeySelectionFormFragment } from "../fragments/keySelectionFormFragment";
 import { PromptCacheFormFragment } from "../fragments/promptCacheFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
@@ -43,6 +44,10 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 	tabs.push({
 		id: "performance",
 		label: "Performance",
+	});
+	tabs.push({
+		id: "key-selection",
+		label: "Key Rotation",
 	});
 	if (hasGovernanceAccess) {
 		tabs.push({
@@ -145,6 +150,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							</TabsContent>
 							<TabsContent value="performance">
 								<PerformanceFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="key-selection">
+								<KeySelectionFormFragment provider={provider} />
 							</TabsContent>
 							<TabsContent value="governance">
 								<GovernanceFormFragment provider={provider} />

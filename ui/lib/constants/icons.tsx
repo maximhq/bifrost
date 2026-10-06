@@ -907,6 +907,36 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	// Antigravity: a stylised upward chevron ("lift-off") over a gravity well, in Google's
+	// four brand colours so it stays recognisable on both themes.
+	antigravity: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg width={resolvedSize} height={resolvedSize} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+				<title>Antigravity</title>
+				<path d="M12 3 4.5 15.5h4L12 9.6l3.5 5.9h4L12 3Z" fill="#4285F4" />
+				<path d="M12 9.6 8.5 15.5h7L12 9.6Z" fill="#34A853" />
+				<ellipse cx="12" cy="19" rx="7.5" ry="1.6" fill="#FBBC04" />
+				<ellipse cx="12" cy="19" rx="3.5" ry="0.8" fill="#EA4335" />
+			</svg>
+		);
+	},
+	// Kiro: a rounded ghost-like mark in Kiro's purple; eyes are cut out so the shape reads on
+	// both themes without a theme branch.
+	kiro: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg width={resolvedSize} height={resolvedSize} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+				<title>Kiro</title>
+				<path
+					fillRule="evenodd"
+					clipRule="evenodd"
+					d="M12 2.5c-4.4 0-7.5 3.3-7.5 7.8v9.4c0 .9 1 1.4 1.7.8l1.4-1.2 1.6 1.4c.4.3.9.3 1.3 0L12 19.3l1.5 1.4c.4.3.9.3 1.3 0l1.6-1.4 1.4 1.2c.7.6 1.7.1 1.7-.8v-9.4c0-4.5-3.1-7.8-7.5-7.8Zm-2.6 6.3a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm5.2 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Z"
+					fill="#7B3FE4"
+				/>
+			</svg>
+		);
+	},
 } as const;
 
 // Routing Engine Icons

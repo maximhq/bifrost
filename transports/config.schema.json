@@ -643,6 +643,12 @@
         },
         "github-copilot": {
           "$ref": "#/$defs/provider_with_github_copilot_config"
+        },
+        "antigravity": {
+          "$ref": "#/$defs/provider"
+        },
+        "kiro": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -1545,6 +1551,9 @@
               },
               "prompt_cache": {
                 "$ref": "#/$defs/prompt_cache"
+              },
+              "key_selection": {
+                "$ref": "#/$defs/key_selection"
               }
             },
             "required": [
@@ -6338,6 +6347,35 @@
       },
       "additionalProperties": false
     },
+    "key_selection": {
+      "type": "object",
+      "description": "How requests pick among this provider's keys/accounts. Keys that hit a rate limit or auth failure are cooled down across requests.",
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "weighted_random",
+            "round_robin",
+            "least_used",
+            "fill_first"
+          ],
+          "description": "weighted_random (default) picks by key weight; round_robin rotates through keys; least_used picks the key with the fewest in-flight/recent requests; fill_first uses the first healthy key until it is cooled down."
+        },
+        "sticky_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "round_robin only: consecutive requests served by a key before rotating. 0 or 1 rotates every request."
+        },
+        "cooldown_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400,
+          "description": "Seconds a failing key is skipped. Omit for the default (60); 0 disables cooldown."
+        }
+      },
+      "additionalProperties": false
+    },
     "concurrency_and_buffer_size": {
       "type": "object",
       "properties": {
@@ -7134,6 +7172,9 @@
         },
         "prompt_cache": {
           "$ref": "#/$defs/prompt_cache"
+        },
+        "key_selection": {
+          "$ref": "#/$defs/key_selection"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
@@ -11861,7 +11902,9 @@
             "fireworks",
             "sarvam",
             "wafer",
-            "typesafe"
+            "typesafe",
+            "antigravity",
+            "kiro"
           ],
           "description": "Base provider type to extend"
         },

@@ -16,6 +16,8 @@ import (
 
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/providers/antigravity"
+	"github.com/maximhq/bifrost/core/providers/kiro"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -203,6 +205,16 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 			if strings.TrimSpace(field.value) == "" {
 				return fmt.Errorf("github_copilot_key_config.%s is required", field.name)
 			}
+		}
+	case schemas.Antigravity:
+		// The whole OAuth credential lives in Key.Value: a refresh token or its JSON form.
+		if _, err := antigravity.ParseCredentials(key.Value.GetValue()); err != nil {
+			return err
+		}
+	case schemas.Kiro:
+		// The whole OAuth credential lives in Key.Value: a refresh token or Kiro's token JSON.
+		if _, err := kiro.ParseCredentials(key.Value.GetValue()); err != nil {
+			return err
 		}
 	case schemas.Databricks:
 		// The workspace URL is not required here: an SDK caller may set it once as the

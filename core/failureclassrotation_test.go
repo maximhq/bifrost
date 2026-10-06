@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/keyselectors"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -618,5 +620,112 @@ func TestExecuteRequestWithRetries_SelectorFailureIsInternal(t *testing.T) {
 	}
 	if got := schemas.ClassifyErrorType(err, schemas.ChatCompletionRequest); got != schemas.ErrorTypeBifrostInternal {
 		t.Errorf("ClassifyErrorType() = %q, want %q", got, schemas.ErrorTypeBifrostInternal)
+	}
+}
+
+// strategyKeyProvider mirrors requestWorker's rotating closure with a key_selection config:
+// the pool minus used/dead keys goes through selectKeyWithStrategy.
+func strategyKeyProvider(b *Bifrost, config *schemas.ProviderConfig, keys []schemas.Key, provider schemas.ModelProvider, model string) func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+	return func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+		available := make([]schemas.Key, 0, len(keys))
+		for _, k := range keys {
+			if !deadKeyIDs[k.ID] && !usedKeyIDs[k.ID] {
+				available = append(available, k)
+			}
+		}
+		if len(available) == 0 {
+			return schemas.Key{}, errAllKeysDead
+		}
+		return b.selectKeyWithStrategy(nil, config, available, provider, model)
+	}
+}
+
+// With fill_first, a key that answered 429 is skipped by the NEXT request for the upstream's
+// Retry-After, instead of every request paying a failed attempt on it first.
+func TestExecuteRequestWithRetries_KeySelectionCooldownCarriesAcrossRequests(t *testing.T) {
+	b := &Bifrost{keyRotator: keyselectors.NewRotator(), keySelector: keyselectors.WeightedRandom}
+	config := createTestConfig(1, 0, 0)
+	config.KeySelection = &schemas.KeySelectionConfig{Strategy: schemas.KeySelectionFillFirst}
+	keys := []schemas.Key{rotationKeyA, rotationKeyB}
+
+	var served []string
+	handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+		served = append(served, k.ID)
+		if k.ID == rotationKeyA.ID {
+			limited := providerError(429, "rate_limit_error", "rate_limit_exceeded", "Rate limit reached")
+			limited.ExtraFields.RetryAfter = 60_000
+			return "", limited
+		}
+		return "ok", nil
+	}
+
+	for range 2 {
+		ctx := rotationTestContext()
+		ctx.SetValue(keyAttemptObserverContextKey{}, b.newKeyAttemptObserver(config, schemas.Antigravity, "gemini-3.1-pro"))
+		result, err := executeRequestWithRetries(ctx, config, handler,
+			strategyKeyProvider(b, config, keys, schemas.Antigravity, "gemini-3.1-pro"),
+			schemas.ChatCompletionRequest, schemas.Antigravity, "gemini-3.1-pro", nil, NewDefaultLogger(schemas.LogLevelError))
+		if err != nil || result != "ok" {
+			t.Fatalf("expected key-b to serve, got %q %v", result, err)
+		}
+	}
+	if fmt.Sprint(served) != "[key-a key-b key-b]" {
+		t.Fatalf("served %v, want [key-a key-b key-b]: the second request must skip the cooling key", served)
+	}
+}
+
+// least_used counts a stream as in flight until it is drained, not just until the provider
+// returned the channel: long agent streams are exactly the load it has to spread.
+func TestExecuteRequestWithRetries_KeySelectionStreamStaysInFlightUntilDrained(t *testing.T) {
+	b := &Bifrost{keyRotator: keyselectors.NewRotator(), keySelector: keyselectors.WeightedRandom}
+	config := createTestConfig(0, 0, 0)
+	config.KeySelection = &schemas.KeySelectionConfig{Strategy: schemas.KeySelectionLeastUsed}
+	keys := []schemas.Key{rotationKeyA, rotationKeyB}
+	model := "claude-sonnet-4.5"
+
+	source := make(chan *schemas.BifrostStreamChunk, 2)
+	source <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "chunk-1"}}
+	handler := func(k schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		return source, nil
+	}
+	ctx := rotationTestContext()
+	ctx.SetValue(keyAttemptObserverContextKey{}, b.newKeyAttemptObserver(config, schemas.Kiro, model))
+	stream, err := executeRequestWithRetries(ctx, config, handler,
+		strategyKeyProvider(b, config, keys, schemas.Kiro, model),
+		schemas.ChatCompletionStreamRequest, schemas.Kiro, model, nil, NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("stream setup failed: %v", err)
+	}
+	if ctx.Value(schemas.BifrostContextKeySelectedKeyID) != rotationKeyA.ID {
+		t.Fatalf("first stream should run on key-a, got %v", ctx.Value(schemas.BifrostContextKeySelectedKeyID))
+	}
+
+	// While the key-a stream is open every pick goes to key-b, even once key-b has served
+	// more requests than key-a: in-flight load outranks the served count.
+	next := func() string {
+		k, err := b.selectKeyWithStrategy(nil, config, keys, schemas.Kiro, model)
+		if err != nil {
+			t.Fatalf("select: %v", err)
+		}
+		return k.ID
+	}
+	for i := range 3 {
+		if got := next(); got != rotationKeyB.ID {
+			t.Fatalf("pick %d with key-a streaming: got %s, want key-b", i, got)
+		}
+	}
+
+	<-stream
+	close(source)
+	for range stream {
+	}
+	// The release runs on its own goroutine once the forwarder finishes. key-b holds no
+	// load, so the first key-a pick proves key-a was released.
+	deadline := time.Now().Add(2 * time.Second)
+	for next() != rotationKeyA.ID {
+		if time.Now().After(deadline) {
+			t.Fatal("key-a still counted in flight after its stream was drained")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

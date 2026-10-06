@@ -22391,3 +22391,70 @@ func TestValidateCustomProvider_BaseProviderTypes(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported base_provider_type")
 }
+
+// TestUpdateProviderKeyCredential pins the write-back a subscription provider uses for a
+// rotated OAuth credential: only the value changes (stored as plain text), in memory and in
+// the store, and every other key field, the config.json hash included, survives.
+func TestUpdateProviderKeyCredential(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	original := schemas.Key{
+		ID:          "k-kiro",
+		Name:        "kiro-builder-id",
+		Value:       *schemas.NewSecretVar(`{"refreshToken":"old"}`),
+		Models:      schemas.WhiteList{"claude-sonnet-4"},
+		Weight:      2,
+		Enabled:     new(true),
+		Description: "team account",
+		ConfigHash:  "file-hash",
+	}
+	require.NoError(t, store.AddProvider(ctx, schemas.Kiro, configstore.ProviderConfig{Keys: []schemas.Key{original}}))
+	stored, err := store.GetProviderKey(ctx, schemas.Kiro, original.ID)
+	require.NoError(t, err)
+	config := &Config{ConfigStore: store, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Kiro: {Keys: []schemas.Key{*stored}},
+	}}
+
+	// A cancelled request context must not lose an already-rotated credential.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	require.NoError(t, config.UpdateProviderKeyCredential(cancelled, schemas.Kiro, original.ID, `{"refreshToken":"new"}`))
+
+	check := func(t *testing.T, key schemas.Key) {
+		t.Helper()
+		assert.Equal(t, `{"refreshToken":"new"}`, key.Value.GetValue())
+		assert.Equal(t, schemas.SecretTypePlainText, key.Value.Type())
+		assert.Equal(t, original.Name, key.Name)
+		assert.Equal(t, original.Models, key.Models)
+		assert.Equal(t, original.Weight, key.Weight)
+		assert.Equal(t, original.Description, key.Description)
+		require.NotNil(t, key.Enabled)
+		assert.True(t, *key.Enabled)
+	}
+	inMemory, err := config.GetProviderKeyRaw(schemas.Kiro, original.ID)
+	require.NoError(t, err)
+	check(t, *inMemory)
+	persisted, err := store.GetProviderKey(ctx, schemas.Kiro, original.ID)
+	require.NoError(t, err)
+	check(t, *persisted)
+	assert.Equal(t, stored.ConfigHash, persisted.ConfigHash, "config.json hash must survive a credential refresh")
+
+	assert.ErrorIs(t, config.UpdateProviderKeyCredential(ctx, schemas.Kiro, "missing", "x"), ErrNotFound)
+	assert.ErrorIs(t, config.UpdateProviderKeyCredential(ctx, schemas.Antigravity, original.ID, "x"), ErrNotFound)
+	assert.Error(t, config.UpdateProviderKeyCredential(ctx, schemas.Kiro, original.ID, ""))
+
+	// An env-backed value is never replaced by a stored literal.
+	t.Setenv("KIRO_SMOKE_CREDENTIAL", `{"refreshToken":"from-env"}`)
+	envKey := schemas.Key{ID: "k-env", Name: "kiro-env", Value: *schemas.NewSecretVar("env.KIRO_SMOKE_CREDENTIAL"), Models: schemas.WhiteList{"*"}}
+	require.NoError(t, store.CreateProviderKey(ctx, schemas.Kiro, envKey))
+	storedEnv, err := store.GetProviderKey(ctx, schemas.Kiro, envKey.ID)
+	require.NoError(t, err)
+	kiroConfig := config.Providers[schemas.Kiro]
+	kiroConfig.Keys = append(kiroConfig.Keys, *storedEnv)
+	config.Providers[schemas.Kiro] = kiroConfig
+	assert.ErrorIs(t, config.UpdateProviderKeyCredential(ctx, schemas.Kiro, envKey.ID, `{"refreshToken":"rotated"}`), ErrCredentialFromEnv)
+	persistedEnv, err := store.GetProviderKey(ctx, schemas.Kiro, envKey.ID)
+	require.NoError(t, err)
+	assert.True(t, persistedEnv.Value.IsFromEnv(), "the stored key must keep its env reference")
+}

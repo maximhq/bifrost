@@ -113,6 +113,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if config.PromptCache != nil {
 		providerConfig.PromptCache = config.PromptCache
 	}
+	if config.KeySelection != nil {
+		providerConfig.KeySelection = config.KeySelection
+	}
 	return providerConfig, nil
 }
 

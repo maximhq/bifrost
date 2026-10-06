@@ -2393,6 +2393,29 @@
                         }
                       }
                     }
+                  },
+                  "key_selection": {
+                    "type": "object",
+                    "description": "How requests pick among this provider's keys/accounts; failing keys are cooled down across requests.",
+                    "properties": {
+                      "strategy": {
+                        "type": "string",
+                        "enum": ["weighted_random", "round_robin", "least_used", "fill_first"]
+                      },
+                      "sticky_limit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000,
+                        "description": "round_robin only: consecutive requests per key before rotating"
+                      },
+                      "cooldown_seconds": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 86400,
+                        "description": "Seconds a failing key is skipped; omit for 60, 0 disables"
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "required": ["name"]
@@ -6549,6 +6572,29 @@
               }
             }
           }
+        },
+        "key_selection": {
+          "type": "object",
+          "description": "How requests pick among this provider's keys/accounts; failing keys are cooled down across requests.",
+          "properties": {
+            "strategy": {
+              "type": "string",
+              "enum": ["weighted_random", "round_robin", "least_used", "fill_first"]
+            },
+            "sticky_limit": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000,
+              "description": "round_robin only: consecutive requests per key before rotating"
+            },
+            "cooldown_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 86400,
+              "description": "Seconds a failing key is skipped; omit for 60, 0 disables"
+            }
+          },
+          "additionalProperties": false
         },
         "custom_provider_config": {
           "type": "object",

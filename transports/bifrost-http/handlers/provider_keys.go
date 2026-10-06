@@ -15,6 +15,8 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/antigravity"
+	"github.com/maximhq/bifrost/core/providers/kiro"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/tidwall/gjson"
@@ -1010,6 +1012,22 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		}
 		if hasClientID != hasClientSecret {
 			return fmt.Errorf("databricks_key_config.client_id and databricks_key_config.client_secret must be set together")
+		}
+	case schemas.Antigravity, schemas.Kiro:
+		// The whole OAuth credential lives in value. Check literal values parse, so a
+		// truncated paste fails here instead of at the first token refresh; env and
+		// vault references cannot be resolved here and are left to the provider.
+		if !key.Value.IsSet() || key.Value.IsFromSecret() {
+			return nil
+		}
+		var parseErr error
+		if provider == schemas.Antigravity {
+			_, parseErr = antigravity.ParseCredentials(key.Value.GetValue())
+		} else {
+			_, parseErr = kiro.ParseCredentials(key.Value.GetValue())
+		}
+		if parseErr != nil {
+			return fmt.Errorf("invalid %s credential in value: %w", provider, parseErr)
 		}
 	}
 	return nil

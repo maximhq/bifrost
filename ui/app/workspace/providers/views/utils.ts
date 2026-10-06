@@ -15,5 +15,6 @@ export const buildProviderUpdatePayload = (provider: ModelProvider, updates: Par
 		custom_provider_config: updates.custom_provider_config ?? provider.custom_provider_config,
 		openai_config: updates.openai_config ?? provider.openai_config,
 		prompt_cache: updates.prompt_cache ?? provider.prompt_cache,
+		key_selection: updates.key_selection ?? provider.key_selection,
 	};
 };

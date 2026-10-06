@@ -31,6 +31,7 @@ func savedConfig() configstore.ProviderConfig {
 		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic},
 		OpenAIConfig:         &schemas.OpenAIConfig{DisableStore: true},
 		PromptCache:          &schemas.PromptCacheConfig{AutoInject: true, TTL: schemas.Ptr("1h")},
+		KeySelection:         &schemas.KeySelectionConfig{Strategy: schemas.KeySelectionRoundRobin, StickyLimit: 3, CooldownSeconds: schemas.Ptr(30)},
 	}
 }
 
@@ -48,11 +49,14 @@ func TestApplyProviderConfigUpdates_OmittedBlocksArePreserved(t *testing.T) {
 	assert.True(t, config.PromptCache.AutoInject)
 	require.NotNil(t, config.PromptCache.TTL)
 	assert.Equal(t, "1h", *config.PromptCache.TTL)
+	require.NotNil(t, config.KeySelection, "an omitted key_selection must survive")
+	assert.Equal(t, schemas.KeySelectionRoundRobin, config.KeySelection.Strategy)
+	assert.Equal(t, 3, config.KeySelection.StickyLimit)
 }
 
 func TestApplyProviderConfigUpdates_ExplicitNullClears(t *testing.T) {
 	config := savedConfig()
-	payload, fields := decodeUpdate(t, `{"proxy_config":null,"custom_provider_config":null,"openai_config":null,"prompt_cache":null}`)
+	payload, fields := decodeUpdate(t, `{"proxy_config":null,"custom_provider_config":null,"openai_config":null,"prompt_cache":null,"key_selection":null}`)
 
 	applyProviderConfigUpdates(&config, payload, fields)
 
@@ -60,6 +64,7 @@ func TestApplyProviderConfigUpdates_ExplicitNullClears(t *testing.T) {
 	assert.Nil(t, config.CustomProviderConfig)
 	assert.Nil(t, config.OpenAIConfig)
 	assert.Nil(t, config.PromptCache)
+	assert.Nil(t, config.KeySelection)
 }
 
 func TestApplyProviderConfigUpdates_PresentBlocksAreReplaced(t *testing.T) {
@@ -72,4 +77,33 @@ func TestApplyProviderConfigUpdates_PresentBlocksAreReplaced(t *testing.T) {
 	assert.False(t, config.PromptCache.AutoInject, "a supplied block replaces the saved one wholesale")
 	assert.Nil(t, config.PromptCache.TTL, "replacement is not a field-level merge")
 	assert.NotNil(t, config.ProxyConfig, "the blocks this request did not mention are untouched")
+}
+
+func TestApplyProviderConfigUpdates_KeySelectionReplacedWholesale(t *testing.T) {
+	config := savedConfig()
+	payload, fields := decodeUpdate(t, `{"key_selection":{"strategy":"fill_first"}}`)
+	require.NoError(t, payload.KeySelection.Validate())
+
+	applyProviderConfigUpdates(&config, payload, fields)
+
+	require.NotNil(t, config.KeySelection)
+	assert.Equal(t, schemas.KeySelectionFillFirst, config.KeySelection.Strategy)
+	assert.Zero(t, config.KeySelection.StickyLimit, "replacement is not a field-level merge")
+	assert.Nil(t, config.KeySelection.CooldownSeconds)
+	require.NotNil(t, config.PromptCache, "the blocks this request did not mention are untouched")
+}
+
+// key_selection from the stored config must surface in GET /api/providers responses.
+func TestProviderResponseCarriesKeySelection(t *testing.T) {
+	resp := (&ProviderHandler{}).getProviderResponseFromConfig(schemas.OpenAI, savedConfig(), ProviderStatusActive)
+	data, err := sonic.Marshal(resp)
+	require.NoError(t, err)
+	var decoded struct {
+		KeySelection *schemas.KeySelectionConfig `json:"key_selection"`
+	}
+	require.NoError(t, sonic.Unmarshal(data, &decoded))
+	require.NotNil(t, decoded.KeySelection)
+	assert.Equal(t, schemas.KeySelectionRoundRobin, decoded.KeySelection.Strategy)
+	require.NotNil(t, decoded.KeySelection.CooldownSeconds)
+	assert.Equal(t, 30, *decoded.KeySelection.CooldownSeconds)
 }

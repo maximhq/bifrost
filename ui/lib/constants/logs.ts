@@ -33,6 +33,8 @@ export const KnownProvidersNames = [
 	"databricks",
 	"github-copilot",
 	"typesafe",
+	"antigravity",
+	"kiro",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -180,6 +182,8 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	databricks: "Databricks",
 	"github-copilot": "GitHub Copilot",
 	typesafe: "TypeSafe",
+	antigravity: "Antigravity (Google OAuth)",
+	kiro: "Kiro (AWS OAuth)",
 } as const;
 
 // Helper function to get provider label, supporting custom providers

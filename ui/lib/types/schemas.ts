@@ -834,6 +834,27 @@ export const promptCacheFormSchema = z.object({
 
 export type PromptCacheFormSchema = z.infer<typeof promptCacheFormSchema>;
 
+// Key rotation tab
+export const keySelectionStrategySchema = z.enum(["weighted_random", "round_robin", "least_used", "fill_first"]);
+
+export const keySelectionFormSchema = z.object({
+	strategy: keySelectionStrategySchema,
+	sticky_limit: z
+		.number({ message: "Sticky limit must be a number" })
+		.int("Sticky limit must be a whole number")
+		.min(1, "Sticky limit must be at least 1")
+		.max(1000, "Sticky limit must be at most 1000")
+		.optional(),
+	cooldown_seconds: z
+		.number({ message: "Cooldown must be a number" })
+		.int("Cooldown must be a whole number of seconds")
+		.min(0, "Cooldown cannot be negative")
+		.max(86400, "Cooldown must be at most 86400 seconds (24h)")
+		.optional(),
+});
+
+export type KeySelectionFormSchema = z.infer<typeof keySelectionFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -968,6 +989,7 @@ export const addProviderRequestSchema = z.object({
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
+	key_selection: keySelectionFormSchema.optional(),
 });
 
 // Update provider request schema
@@ -982,6 +1004,7 @@ export const updateProviderRequestSchema = z.object({
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
+	key_selection: keySelectionFormSchema.optional(),
 });
 
 // Cache config schema

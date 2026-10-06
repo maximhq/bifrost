@@ -754,6 +754,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
 			PromptCache:              providerConfig.PromptCache,
+			KeySelection:             providerConfig.KeySelection,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -1037,6 +1038,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
 	dbProvider.PromptCache = configCopy.PromptCache
+	dbProvider.KeySelection = configCopy.KeySelection
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -1232,6 +1234,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
 		PromptCache:              configCopy.PromptCache,
+		KeySelection:             configCopy.KeySelection,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -1412,6 +1415,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
 			PromptCache:              dbProvider.PromptCache,
+			KeySelection:             dbProvider.KeySelection,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -1446,6 +1450,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
 		PromptCache:              dbProvider.PromptCache,
+		KeySelection:             dbProvider.KeySelection,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,

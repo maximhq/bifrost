@@ -122,6 +122,7 @@ type ProviderResponse struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
+	KeySelection             *schemas.KeySelectionConfig      `json:"key_selection,omitempty"`          // Key/account rotation strategy
 	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
 	Description              string                           `json:"description,omitempty"`            // Error/status description
@@ -151,6 +152,7 @@ type providerCreatePayload struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	KeySelection             *schemas.KeySelectionConfig       `json:"key_selection,omitempty"` // Key/account rotation strategy
 }
 
 type providerUpdatePayload struct {
@@ -163,6 +165,7 @@ type providerUpdatePayload struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	KeySelection             *schemas.KeySelectionConfig      `json:"key_selection,omitempty"` // Key/account rotation strategy
 }
 
 // applyProviderConfigUpdates copies onto config only the nested config blocks the
@@ -199,6 +202,9 @@ func applyProviderConfigUpdates(config *configstore.ProviderConfig, payload *pro
 	}
 	if carried("prompt_cache") {
 		config.PromptCache = payload.PromptCache
+	}
+	if carried("key_selection") {
+		config.KeySelection = payload.KeySelection
 	}
 }
 
@@ -413,6 +419,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
 		PromptCache:              payload.PromptCache,
+		KeySelection:             payload.KeySelection,
 	}
 	if requireGenuineAuthForInterception(ctx, configstore.ProviderConfig{}, config) {
 		return
@@ -427,6 +434,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	// and then rejected by the provider at request time instead.
 	if err := lib.ValidatePromptCache(config.PromptCache); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
+		return
+	}
+	if err := config.KeySelection.Validate(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid key selection config: %v", err))
 		return
 	}
 	// Add provider to store (env vars will be processed by store)
@@ -467,6 +478,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
+			KeySelection:             config.KeySelection,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -563,6 +575,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
 		PromptCache:              oldConfigRaw.PromptCache,
+		KeySelection:             oldConfigRaw.KeySelection,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
 		Description:              oldConfigRaw.Description,
@@ -591,6 +604,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 	if err := lib.ValidatePromptCache(payload.PromptCache); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
+		return
+	}
+	if err := payload.KeySelection.Validate(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid key selection config: %v", err))
 		return
 	}
 
@@ -716,6 +733,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
+			KeySelection:             config.KeySelection,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -1552,6 +1570,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
 		PromptCache:              config.PromptCache,
+		KeySelection:             config.KeySelection,
 		ProviderStatus:           status,
 		Status:                   config.Status,
 		Description:              config.Description,

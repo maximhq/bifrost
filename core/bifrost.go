@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/core/mcp/codemode/starlark"
 	"github.com/maximhq/bifrost/core/mcp/credstore"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/antigravity"
 	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
@@ -34,6 +35,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/githubcopilot"
 	"github.com/maximhq/bifrost/core/providers/groq"
 	"github.com/maximhq/bifrost/core/providers/huggingface"
+	"github.com/maximhq/bifrost/core/providers/kiro"
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
@@ -144,6 +146,8 @@ type Bifrost struct {
 	keyPoolFilter       schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
 	kvStore             schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
 	sessionAffinity     schemas.SessionAffinity             // decides which key a session stays on; never nil after Init
+	keyRotator          *keyselectors.Rotator               // cross-request state for provider-level key_selection strategies (round robin, least used, fill first, cooldowns)
+	credentialUpdater   schemas.KeyCredentialUpdater        // persists credentials refreshed by OAuth subscription providers (nil = memory only)
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -297,6 +301,9 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		logger:        config.Logger,
 		kvStore:       config.KVStore,
 		modelCatalog:  config.ModelCatalog,
+		keyRotator:    keyselectors.NewRotator(),
+
+		credentialUpdater: config.KeyCredentialUpdater,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
@@ -4938,6 +4945,10 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return opencode.NewOpencodeZenProvider(config, bifrost.logger)
 	case schemas.GithubCopilot:
 		return githubcopilot.NewGithubCopilotProvider(config, bifrost.logger)
+	case schemas.Antigravity:
+		return antigravity.NewAntigravityProvider(config, bifrost.logger, bifrost.credentialUpdater)
+	case schemas.Kiro:
+		return kiro.NewKiroProvider(config, bifrost.logger, bifrost.credentialUpdater)
 	case schemas.SGL:
 		return sgl.NewSGLProvider(config, bifrost.logger)
 	case schemas.Parasail:
@@ -5104,7 +5115,8 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 	if len(supportedKeys) == 1 {
 		return supportedKeys[0], nil
 	}
-	return bifrost.keySelector(ctx, supportedKeys, providerKey, model)
+	config, _ := bifrost.account.GetConfigForProvider(providerKey)
+	return bifrost.selectKeyWithStrategy(ctx, config, supportedKeys, providerKey, model)
 }
 
 // KeySupportsModel reports whether key may serve model under the same rules key selection applies.
@@ -6741,6 +6753,9 @@ func executeRequestWithRetries[T any](
 		}
 	}()
 
+	// Set by requestWorker when the provider has a key_selection config; nil otherwise, and
+	// every method on a nil observer is a no-op.
+	keyObserver := keyAttemptObserverFromContext(ctx)
 	var currentKey schemas.Key
 	var usedKeyIDs map[string]bool
 	var deadKeyIDs map[string]bool
@@ -7107,8 +7122,11 @@ func executeRequestWithRetries[T any](
 			ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
 		}
 
-		// Attempt the request
+		// Attempt the request. With a key_selection strategy configured the attempt counts as
+		// in flight on its key until it settles (for streams: until the stream is drained).
+		releaseKey := keyObserver.begin(currentKey)
 		result, bifrostError = requestHandler(currentKey)
+		var keyStreamDone <-chan struct{}
 
 		// Detect errors carried inside HTTP 200 streams before returning success.
 		// Azure and OpenAI upstreams (including custom providers built on them,
@@ -7168,8 +7186,17 @@ func executeRequestWithRetries[T any](
 					result = any(closedCh).(T)
 				} else {
 					result = any(checkedStream).(T)
+					keyStreamDone = drainDone
 				}
 			}
+		}
+		if keyObserver != nil && keyStreamDone != nil && bifrostError == nil {
+			go func(done <-chan struct{}, release func()) {
+				<-done
+				release()
+			}(keyStreamDone, releaseKey)
+		} else {
+			releaseKey()
 		}
 		if attemptAbort != nil {
 			bifrostError = settleAttemptAbort(ctx, attemptAbort, bifrostError, providerKey, model)
@@ -7229,6 +7256,9 @@ func executeRequestWithRetries[T any](
 		logger.Debug("request %s for provider %s completed", requestType, providerKey)
 
 		// Check if successful or if we should retry
+		if bifrostError == nil {
+			keyObserver.succeeded(currentKey)
+		}
 		if bifrostError == nil ||
 			bifrostError.IsBifrostError ||
 			(bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled) {
@@ -7241,6 +7271,7 @@ func executeRequestWithRetries[T any](
 		// same key will not help. A permanent per-key failure also excludes the key for the
 		// rest of the request, without backoff.
 		class := ClassifyFailure(bifrostError)
+		keyObserver.failed(currentKey, class, bifrostError.ExtraFields.RetryAfter)
 		isPerKeyFailure := class.IsPerKey()
 		// Without a key provider there is nothing to rotate to, so the failure earns only
 		// the same-key retry it has always earned.
@@ -7746,8 +7777,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 							return fixedKey, nil
 						}
 					} else {
-						// Rotating pool: weighted selection with per-cycle exclusion.
-						// Captures supportedKeys, bifrost.keySelector, provider/model by value.
+						// Rotating pool: the provider's key_selection strategy (weighted random
+						// when unset) with per-cycle exclusion. Captures supportedKeys, config,
+						// provider/model by value.
 						pool := supportedKeys
 						provKey := provider.GetProviderKey()
 						mdl := model
@@ -7795,7 +7827,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 									delete(usedKeyIDs, id)
 								}
 							}
-							return bifrost.keySelector(req.Context, available, provKey, mdl)
+							return bifrost.selectKeyWithStrategy(req.Context, config, available, provKey, mdl)
 						}
 					}
 				}
@@ -7838,6 +7870,14 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// goroutines' defers — passed via the postHookSpanFinalizer parameter directly to
 		// handleProviderStreamRequest, never via the shared req.Context.
 		var lastAttemptFinalizer func(context.Context)
+
+		// Feed attempt outcomes to the provider's key_selection state. Always set or cleared:
+		// the context is shared with fallback attempts on other providers.
+		if observer := bifrost.newKeyAttemptObserver(config, provider.GetProviderKey(), model); observer != nil && keyProvider != nil {
+			req.Context.SetValue(keyAttemptObserverContextKey{}, observer)
+		} else {
+			req.Context.ClearValue(keyAttemptObserverContextKey{})
+		}
 
 		// Execute request with retries. For streaming, the plugin pipeline,
 		// postHookRunner, and finalizer are allocated per-attempt inside the

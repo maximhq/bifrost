@@ -129,6 +129,7 @@
                 "pages": [
                   "providers/supported-providers/overview",
                   "providers/supported-providers/anthropic",
+                  "providers/supported-providers/antigravity",
                   "providers/supported-providers/azure",
                   "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/bedrock",
@@ -143,6 +144,7 @@
                   "providers/supported-providers/github-copilot",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
+                  "providers/supported-providers/kiro",
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",
@@ -166,6 +168,7 @@
               "providers/routing-rules",
               "providers/provider-routing",
               "providers/session-affinity",
+              "providers/key-rotation",
               "providers/aliasing-models",
               "providers/reasoning",
               "providers/performance",

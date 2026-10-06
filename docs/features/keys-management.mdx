@@ -32,6 +32,8 @@ Random selection ensures statistical distribution over time
 In Bifrost Enterprise, [Adaptive Load Balancing](/enterprise/adaptive-load-balancing) replaces the static weights with measured ones while key selection is on. Either way, it holds a key the provider refused until one request checks it again, and editing a key releases every hold on it, since the provider's answers applied to the key as it was. See [Held Keys](/enterprise/adaptive-load-balancing#held-keys).
 </Note>
 
+Weighted random is the default. To rotate keys with round robin, least used or fill first, and to skip keys that recently hit a rate limit or quota, set a provider-level `key_selection` block. See [Key Rotation](/providers/key-rotation).
+
 ## Model Whitelisting and Filtering
 
 Keys can be restricted to specific models for access control and cost management:

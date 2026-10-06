@@ -23,6 +23,7 @@ type TableProvider struct {
 	CustomProviderConfigJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
 	OpenAIConfigJSON         string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.OpenAIConfig
 	PromptCacheJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.PromptCacheConfig
+	KeySelectionJSON         string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.KeySelectionConfig
 	SendBackRawRequest       bool      `json:"send_back_raw_request"`
 	SendBackRawResponse      bool      `json:"send_back_raw_response"`
 	StoreRawRequestResponse  bool      `json:"store_raw_request_response"`
@@ -41,6 +42,7 @@ type TableProvider struct {
 	CustomProviderConfig *schemas.CustomProviderConfig `gorm:"-" json:"custom_provider_config,omitempty"`
 	OpenAIConfig         *schemas.OpenAIConfig         `gorm:"-" json:"openai_config,omitempty"`
 	PromptCache          *schemas.PromptCacheConfig    `gorm:"-" json:"prompt_cache,omitempty"`
+	KeySelection         *schemas.KeySelectionConfig   `gorm:"-" json:"key_selection,omitempty"`
 
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
@@ -120,6 +122,15 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 	} else {
 		p.PromptCacheJSON = ""
 	}
+	if p.KeySelection != nil {
+		data, err := json.Marshal(p.KeySelection)
+		if err != nil {
+			return err
+		}
+		p.KeySelectionJSON = string(data)
+	} else {
+		p.KeySelectionJSON = ""
+	}
 	// Validate governance fields
 	if p.BudgetID != nil && strings.TrimSpace(*p.BudgetID) == "" {
 		return fmt.Errorf("budget_id cannot be an empty string")
@@ -197,6 +208,14 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		p.PromptCache = &promptCache
+	}
+
+	if p.KeySelectionJSON != "" {
+		var keySelection schemas.KeySelectionConfig
+		if err := json.Unmarshal([]byte(p.KeySelectionJSON), &keySelection); err != nil {
+			return err
+		}
+		p.KeySelection = &keySelection
 	}
 
 	return nil

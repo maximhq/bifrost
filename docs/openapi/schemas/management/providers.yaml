@@ -389,6 +389,8 @@ ProviderResponse:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    key_selection:
+      $ref: '#/KeySelectionConfig'
     provider_status:
       $ref: '#/ProviderStatus'
     status:
@@ -436,6 +438,8 @@ AddProviderRequest:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    key_selection:
+      $ref: '#/KeySelectionConfig'
 
 CacheControlInjectionPoint:
   type: object
@@ -490,6 +494,8 @@ UpdateProviderRequest:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    key_selection:
+      $ref: '#/KeySelectionConfig'
 
 ListProviderKeysResponse:
   type: object
@@ -591,3 +597,120 @@ ListModelDetailsResponse:
         $ref: '#/ModelDetailsResponse'
     total:
       type: integer
+
+KeySelectionConfig:
+  type: object
+  nullable: true
+  description: >-
+    Provider-level key rotation. When absent, keys are chosen by stateless weighted random
+    selection. On PUT /api/providers/{provider}, omitting the field leaves it unchanged and an
+    explicit null removes it. Rotation state is kept in memory per Bifrost process.
+  properties:
+    strategy:
+      type: string
+      enum: [weighted_random, round_robin, least_used, fill_first]
+      description: Rotation rule. Empty means weighted_random.
+    sticky_limit:
+      type: integer
+      minimum: 0
+      maximum: 1000
+      description: round_robin only. Consecutive selections a key keeps before rotation advances; 0 or 1 advances every request.
+    cooldown_seconds:
+      type: integer
+      minimum: 0
+      maximum: 86400
+      description: >-
+        How long a key that hit a rate limit or exhausted quota (for that model) or a rejected
+        credential (whole key) is skipped by later requests when upstream sent no Retry-After.
+        Defaults to 60 when omitted; 0 disables cooldowns.
+
+AntigravitySignInStartResponse:
+  type: object
+  properties:
+    session_id:
+      type: string
+    auth_url:
+      type: string
+      description: Google consent URL to open in a browser.
+    redirect_uri:
+      type: string
+      example: http://127.0.0.1:51121/callback
+    expires_at:
+      type: string
+      format: date-time
+
+AntigravitySignInCompleteRequest:
+  type: object
+  required:
+    - session_id
+    - callback_url
+  properties:
+    session_id:
+      type: string
+    callback_url:
+      type: string
+      description: The full redirected URL copied from the browser address bar, or the bare authorization code.
+
+AntigravitySignInCompleteResponse:
+  type: object
+  properties:
+    credential:
+      type: string
+      description: JSON credential to store as the antigravity key value.
+    email:
+      type: string
+    project_id:
+      type: string
+    suggested_name:
+      type: string
+
+KiroDeviceLoginStartRequest:
+  type: object
+  required:
+    - method
+  properties:
+    method:
+      type: string
+      enum: [builder-id, google, github]
+
+KiroDeviceLoginStartResponse:
+  type: object
+  properties:
+    session_id:
+      type: string
+    user_code:
+      type: string
+    verification_uri:
+      type: string
+    verification_uri_complete:
+      type: string
+    expires_at:
+      type: string
+      format: date-time
+    interval_seconds:
+      type: integer
+
+KiroDeviceLoginPollRequest:
+  type: object
+  required:
+    - session_id
+  properties:
+    session_id:
+      type: string
+
+KiroDeviceLoginPollResponse:
+  type: object
+  properties:
+    status:
+      type: string
+      enum: [pending, complete, expired, error]
+    credential:
+      type: string
+      description: Present when status is complete. JSON credential to store as the kiro key value.
+    suggested_name:
+      type: string
+    error:
+      type: string
+    interval_seconds:
+      type: integer
+      description: Seconds to wait before the next poll.

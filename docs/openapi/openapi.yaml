@@ -795,6 +795,14 @@ paths:
     $ref: "./paths/management/providers.yaml#/provider-keys"
   /api/providers/{provider}/keys/{key_id}:
     $ref: "./paths/management/providers.yaml#/provider-key-by-id"
+  /api/oauth-subscriptions/antigravity/start:
+    $ref: "./paths/management/providers.yaml#/oauth-subscriptions-antigravity-start"
+  /api/oauth-subscriptions/antigravity/complete:
+    $ref: "./paths/management/providers.yaml#/oauth-subscriptions-antigravity-complete"
+  /api/oauth-subscriptions/kiro/start:
+    $ref: "./paths/management/providers.yaml#/oauth-subscriptions-kiro-start"
+  /api/oauth-subscriptions/kiro/poll:
+    $ref: "./paths/management/providers.yaml#/oauth-subscriptions-kiro-poll"
   /api/keys:
     $ref: "./paths/management/providers.yaml#/keys"
   /api/models:
