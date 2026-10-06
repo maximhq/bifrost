@@ -54,6 +54,9 @@ type ModelCatalog struct {
 	// modelTagsReloadMu serializes ReloadModelTags from the store read through publication, so
 	// an older snapshot cannot be published after a newer one.
 	modelTagsReloadMu sync.Mutex
+	// modelTagsStale is set when the last ReloadModelTags failed, so the published overlay (if
+	// any) may predate committed tag writes; syncTick keeps retrying until a reload succeeds.
+	modelTagsStale atomic.Bool
 
 	// MCP library sync configuration (protected by syncMu)
 	mcpLibraryURL          string
@@ -472,13 +475,7 @@ func (mc *ModelCatalog) syncWorker(ctx context.Context) {
 }
 
 func (mc *ModelCatalog) syncTick(ctx context.Context) {
-	// A tag overlay that never loaded (the startup load and its retries all failed) is retried on
-	// every tick until it does.
-	if mc.configStore != nil && mc.modelTags.Load() == nil {
-		if err := mc.ReloadModelTags(ctx); err != nil && mc.logger != nil {
-			mc.logger.Warn("model tags are still not loaded: %v", err)
-		}
-	}
+	mc.retryModelTagsIfNeeded(ctx)
 	pricingDue := time.Since(mc.datasheet.LastSyncedAt()) >= mc.datasheet.SyncInterval()
 	mcpLibraryDue := mc.isMCPLibrarySyncDue()
 	if !pricingDue && !mcpLibraryDue {

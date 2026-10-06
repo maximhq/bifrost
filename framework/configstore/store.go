@@ -571,8 +571,9 @@ type ConfigStore interface {
 	// GetModelTags returns the tags of every tagged model as provider name -> model name -> tags.
 	GetModelTags(ctx context.Context) (map[string]map[string][]string, error)
 	// SetModelTags replaces the tags of one model of a configured provider (any model name).
-	// Empty tags remove the model's override row. Returns ErrNotFound when the provider does not
-	// exist and a validation error when a tag is invalid.
+	// Empty tags clear the tags (stored as NULL) and keep the model's row, which may carry other
+	// data. Returns ErrNotFound when the provider does not exist and a validation error when a
+	// tag is invalid.
 	SetModelTags(ctx context.Context, provider, model string, tags []string, tx ...*gorm.DB) error
 
 	// Governance pricing overrides CRUD

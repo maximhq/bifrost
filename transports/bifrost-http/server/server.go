@@ -2333,7 +2333,9 @@ var modelTagsReloadTimeout = 10 * time.Second
 // change: a tag write, or a provider delete whose model rows go with it. The reload is detached
 // from the request's cancellation, since the change has already taken effect, but bounded by
 // modelTagsReloadTimeout so a stalled store read cannot hold the request. A failed or timed-out
-// reload is retried in the background; until it succeeds listings may show the previous tags.
+// reload is retried in the background, and it marks the overlay stale so the model catalog's
+// periodic sync keeps retrying after those retries run out; until a reload succeeds listings may
+// show the previous tags.
 func refreshModelTagsOverlay(ctx context.Context, catalog *modelcatalog.ModelCatalog, change string) {
 	reloadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), modelTagsReloadTimeout)
 	defer cancel()
@@ -2356,7 +2358,7 @@ func retryModelTagsReload(catalog *modelcatalog.ModelCatalog, delays []time.Dura
 			return
 		}
 	}
-	logger.Error("model tags overlay is stale: reload after a committed tag write kept failing: %v", err)
+	logger.Error("model tags overlay is stale: reload after a committed tag write kept failing, the model catalog sync keeps retrying: %v", err)
 }
 
 // ReloadProxyConfig reloads the proxy configuration
