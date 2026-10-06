@@ -1566,6 +1566,16 @@ func TestVirtualKeyMetadata_PersistsThroughCreateAndUpdate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, result.Metadata, "an update must replace the metadata")
 
+	// An update that does not set metadata (nil), such as a config.json sync of an entry without a
+	// metadata field, keeps what is stored; only an explicit empty map clears it.
+	vk.Metadata = nil
+	vk.Description = "edited elsewhere"
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, result.Metadata, "a nil metadata must keep the stored value")
+	assert.Equal(t, "edited elsewhere", result.Description)
+
 	vk.Metadata = map[string]string{}
 	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
 	var raw *string
