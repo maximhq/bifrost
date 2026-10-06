@@ -760,17 +760,18 @@ func (provider *RunwareProvider) ContainerFileDelete(_ *schemas.BifrostContext, 
 // passthrough path is stripped to avoid duplicating it — both /runware_passthrough and
 // /runware_passthrough/v1 therefore map to the base endpoint.
 func (provider *RunwareProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) (string, error) {
-	baseURL := provider.networkConfig.BaseURL.GetValue()
-	if req.UpstreamURL != "" {
-		baseURL = req.UpstreamURL
-	}
 	// Collapse a leading /v1 only as a whole segment: /v1 and /v1/... map onto the base
 	// endpoint, while /v1beta/... merely shares the prefix and is forwarded as sent.
 	path := req.Path
 	if path == "/v1" || strings.HasPrefix(path, "/v1/") {
 		path = strings.TrimPrefix(path, "/v1")
 	}
-	return providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
+	// A caller-supplied upstream URL is the caller's own value, so it stays in any
+	// error; the configured base_url may have been resolved from a secret.
+	if req.UpstreamURL != "" {
+		return providerUtils.BuildPassthroughURL(req.UpstreamURL, path, req.RawQuery)
+	}
+	return providerUtils.BuildPassthroughURLFromSecret(provider.networkConfig.BaseURL, path, req.RawQuery)
 }
 
 // Passthrough forwards a raw request to Runware's unified endpoint and returns the untouched
