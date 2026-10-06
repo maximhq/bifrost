@@ -204224,6 +204224,305 @@
           }
         }
       ]
+    },
+    {
+      "name": "168. Weights must be valid: provider keys, virtual key provider configs and routing rule targets (weight-validation)",
+      "description": "Weighted selection happens in three places, and each now refuses a weight it cannot draw by.\n\n1. Provider keys. Key selection used to sum key weights as ints, so a negative weight, or one too large for an int, drove the total below zero and rand.Intn panicked inside the provider's request worker, which has no recover: one request on such a pool took the whole gateway down. The selector now counts a negative or non-finite weight as zero, and the key API rejects one. The row runs on a run-scoped OpenAI-backed custom provider that never serves a request.\n2. Virtual key provider configs. A negative weight pulled the load balancer's summed weight below the draw, so the pick fell through to the first configured provider whatever the weights said. Load balancing now counts it as zero, and the virtual key API rejects one on create and update.\n3. Routing rule targets. config.json's schema and the dashboard require every target weight to be greater than 0, but the API accepted 0, a target that is never drawn. The API now rejects it too.\n\nThe selector and load-balancer halves are unit-tested. Every request here is a management call. Run with FEATURE=\"weight-validation\".",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai custom provider: a key with a negative weight is rejected - key-weight-validation",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function errorMessage(json) { return ((json || {}).error || {}).message || ''; }",
+                  "var PREFIX = 'harness-keyweight-';",
+                  "// Providers left by an aborted earlier run carry their run timestamp in their names. Only ones older",
+                  "// than ten minutes are swept, so a parallel shard's live provider is never touched.",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var provider = PREFIX + 'run-' + Date.now();",
+                  "pm.collectionVariables.set('keyWeightProvider', provider);",
+                  "pm.collectionVariables.unset('keyWeightKey');",
+                  "call('GET', '/api/providers', null, function (res, j) {",
+                  "  var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  var i = 0;",
+                  "  (function next() {",
+                  "    if (i < stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); }",
+                  "    // The provider never serves a request: a key with a negative weight accepted by a build without",
+                  "    // the check stays on this throwaway provider, which is deleted by the test script.",
+                  "    call('POST', '/api/providers', { provider: provider, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (r1) {",
+                  "      if (!expectOk('setup: created the run-scoped OpenAI-backed provider', r1)) { return; }",
+                  "      call('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', { name: provider + '-A', value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }, function (r2, k) {",
+                  "        if (!expectOk('setup: created key A with weight 1', r2)) { return; }",
+                  "        pm.collectionVariables.set('keyWeightKey', JSON.stringify({ id: k.id, name: k.name }));",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function errorMessage(json) { return ((json || {}).error || {}).message || ''; }",
+                  "var mainJson = {}; try { mainJson = pm.response.json() || {}; } catch (e) { mainJson = {}; }",
+                  "var provider = pm.collectionVariables.get('keyWeightProvider');",
+                  "var keyA = JSON.parse(pm.collectionVariables.get('keyWeightKey') || 'null');",
+                  "pm.test('a key created with a negative weight is rejected with 400', function () {",
+                  "  pm.expect(pm.response.code, 'a negative weight must never be stored: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('the error names the weight', function () {",
+                  "  pm.expect(errorMessage(mainJson), pm.response.text()).to.include('weight');",
+                  "});",
+                  "function finish() { call('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (res) { expectOk('cleanup: deleted the run-scoped provider', res); }); }",
+                  "// Setup already failed loudly in the prerequest when key A is missing.",
+                  "if (!keyA) { finish(); return; }",
+                  "call('PUT', '/api/providers/' + encodeURIComponent(provider) + '/keys/' + encodeURIComponent(keyA.id), { name: keyA.name, weight: -0.5 }, function (res) {",
+                  "  pm.test('an update to a negative weight is rejected with 400', function () {",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(400);",
+                  "  });",
+                  "  call('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (r2, j) {",
+                  "    var keys = (j && j.keys) || [];",
+                  "    pm.test('only key A is stored, still at weight 1', function () {",
+                  "      pm.expect(keys.map(function (k) { return k.name + '=' + k.weight; }), r2 ? r2.text() : '').to.eql([keyA.name + '=1']);",
+                  "    });",
+                  "    finish();",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{keyWeightProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{keyWeightProvider}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{keyWeightProvider}}-negative\",\n  \"value\": \"env.OPENAI_API_KEY\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": -1\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai virtual key: a provider config with a negative weight is rejected - weight-validation",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('weightVkRun', 'run-' + Date.now());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function errorMessage(json) { return ((json || {}).error || {}).message || ''; }",
+                  "var mainJson = {}; try { mainJson = pm.response.json() || {}; } catch (e) { mainJson = {}; }",
+                  "var run = pm.collectionVariables.get('weightVkRun');",
+                  "pm.test('a virtual key provider config with a negative weight is rejected with 400', function () {",
+                  "  pm.expect(pm.response.code, 'a negative weight must never be stored: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('the error names the weight', function () {",
+                  "  pm.expect(errorMessage(mainJson), pm.response.text()).to.include('weight');",
+                  "});",
+                  "function del(id, cb) { if (!id) { return cb(); } call('DELETE', '/api/governance/virtual-keys/' + id, null, function (res) { expectOk('cleanup: deleted a run-scoped virtual key', res); cb(); }); }",
+                  "var leaked = (mainJson.virtual_key || {}).id;",
+                  "del(leaked, function () {",
+                  "  call('POST', '/api/governance/virtual-keys', { name: 'harness-weight-vk-ok-' + run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], weight: 1 }] }, function (res, j) {",
+                  "    if (!expectOk('setup: created a virtual key with weight 1', res)) { return; }",
+                  "    var vk = (j || {}).virtual_key || {}; var pc = (vk.provider_configs || [])[0] || {};",
+                  "    call('PUT', '/api/governance/virtual-keys/' + vk.id, { provider_configs: [{ id: pc.id, provider: 'openai', allowed_models: ['*'], weight: -0.5 }] }, function (r2, j2) {",
+                  "      pm.test('an update to a negative provider-config weight is rejected with 400', function () {",
+                  "        pm.expect(r2 && r2.code, r2 ? r2.text() : 'no response').to.eql(400);",
+                  "        pm.expect(errorMessage(j2), r2 ? r2.text() : '').to.include('weight');",
+                  "      });",
+                  "      call('GET', '/api/governance/virtual-keys/' + vk.id, null, function (r3, j3) {",
+                  "        var stored = (((j3 || {}).virtual_key || {}).provider_configs || []).map(function (p) { return p.weight; });",
+                  "        pm.test('the stored provider-config weight is still 1', function () {",
+                  "          pm.expect(stored, r3 ? r3.text() : '').to.eql([1]);",
+                  "        });",
+                  "        del(vk.id, function () {});",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness-weight-vk-negative-{{weightVkRun}}\",\n  \"provider_configs\": [\n    {\n      \"provider\": \"openai\",\n      \"allowed_models\": [\n        \"*\"\n      ],\n      \"weight\": -1\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai routing rule: a target with a zero weight is rejected - weight-validation",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var run = 'run-' + Date.now();",
+                  "pm.collectionVariables.set('weightRuleRun', run);",
+                  "// Priorities must be distinct within a scope; derive one from the clock so runs and shards never collide.",
+                  "pm.collectionVariables.set('weightRulePriority', String(700000 + (Date.now() % 90000)));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function errorMessage(json) { return ((json || {}).error || {}).message || ''; }",
+                  "var mainJson = {}; try { mainJson = pm.response.json() || {}; } catch (e) { mainJson = {}; }",
+                  "pm.test('a routing rule with a zero-weight target is rejected with 400', function () {",
+                  "  pm.expect(pm.response.code, 'every target weight must be greater than 0: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('the error says the weight must be greater than 0', function () {",
+                  "  pm.expect(errorMessage(mainJson), pm.response.text()).to.include('greater than 0');",
+                  "});",
+                  "var leaked = (mainJson.rule || {}).id;",
+                  "if (leaked) { call('DELETE', '/api/governance/routing-rules/' + leaked, null, function (res) { expectOk('cleanup: deleted the accepted rule', res); }); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/routing-rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Harness weight validation {{weightRuleRun}}\",\n  \"description\": \"Provider harness, rejected at create; deleted by the same row if a build accepts it.\",\n  \"priority\": {{weightRulePriority}},\n  \"cel_expression\": \"\\\"x-harness-weight-run\\\" in headers && headers[\\\"x-harness-weight-run\\\"] == \\\"{{weightRuleRun}}\\\"\",\n  \"scope\": \"global\",\n  \"targets\": [\n    {\n      \"provider\": \"openai\",\n      \"model\": \"gpt-4o-mini\",\n      \"weight\": 1\n    },\n    {\n      \"provider\": \"openai\",\n      \"model\": \"gpt-4o\",\n      \"weight\": 0\n    }\n  ]\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

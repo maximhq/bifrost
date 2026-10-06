@@ -267,15 +267,15 @@ func validateRoutingScope(scope string) error {
 	return nil
 }
 
-// validateRoutingTargets checks that all weights are positive, that no two
-// targets share the same (provider, model, key_id) identity, and that all
-// weights sum to 1.
+// validateRoutingTargets checks that every weight is greater than 0 (as
+// config.schema.json and the dashboard form require), that no two targets share
+// the same (provider, model, key_id) identity, and that all weights sum to 1.
 func validateRoutingTargets(targets []RoutingTarget) error {
 	seen := make(map[string]struct{}, len(targets))
 	total := 0.0
 	for _, t := range targets {
-		if t.Weight < 0 {
-			return fmt.Errorf("each target weight must be positive")
+		if !(t.Weight > 0) {
+			return fmt.Errorf("each target weight must be greater than 0, got %v", t.Weight)
 		}
 		if t.KeyID != nil && *t.KeyID != "" && (t.Provider == nil || *t.Provider == "") {
 			return fmt.Errorf("key_id requires provider to be set")
