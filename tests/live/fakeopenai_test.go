@@ -388,14 +388,19 @@ func (s *fakeSession) startedFrame() []byte {
 }
 
 func (s *fakeSession) sessionFrameLocked(typ string) []byte {
+	frame, _ := json.Marshal(map[string]any{"type": typ, "event_id": fmt.Sprintf("evt_%d", time.Now().UnixNano()), "session": s.sessionObjectLocked()})
+	return frame
+}
+
+// sessionObjectLocked is the resolved session as OpenAI echoes it on started, updated and closed.
+func (s *fakeSession) sessionObjectLocked() map[string]any {
 	session := map[string]any{"id": s.id, "model": s.model, "expires_at": s.createdAt.Add(time.Hour).Unix(), "instructions": s.marker, "store": s.store}
 	if s.client {
 		session["delegation"] = map[string]any{"type": "client"}
 	} else if s.backend != "" {
 		session["delegation"] = map[string]any{"type": "responses", "responses": map[string]any{"model": s.backend}}
 	}
-	frame, _ := json.Marshal(map[string]any{"type": typ, "event_id": fmt.Sprintf("evt_%d", time.Now().UnixNano()), "session": session})
-	return frame
+	return session
 }
 
 func (s *fakeSession) readLoop(conn *websocket.Conn, c fakeConn) {
@@ -434,6 +439,8 @@ func (s *fakeSession) handleInbound(frame []byte) {
 		s.broadcast([]byte(`{"type":"session.commentary.appended","event_id":"evt_commentary","client_event_id":"` + gjson.GetBytes(frame, "event_id").Str + `"}`))
 	case "session.instructions.append":
 		s.broadcast([]byte(`{"type":"session.instructions.appended","event_id":"evt_appended","client_event_id":"` + gjson.GetBytes(frame, "event_id").Str + `"}`))
+	case "session.thinking.append":
+		s.broadcast([]byte(`{"type":"session.thinking.appended","event_id":"evt_thinking","client_event_id":"` + gjson.GetBytes(frame, "event_id").Str + `"}`))
 	case "session.close":
 		s.mu.Lock()
 		seconds := s.seconds
@@ -473,8 +480,10 @@ func (s *fakeSession) Close(reason string, seconds float64) {
 	s.closed = true
 	s.seconds = seconds
 	conns := append([]fakeConn(nil), s.conns...)
+	session := s.sessionObjectLocked()
 	s.mu.Unlock()
-	frame := []byte(fmt.Sprintf(`{"type":"session.closed","reason":%q,"usage":{"seconds":%g}}`, reason, seconds))
+	// session.closed carries the final session snapshot with the usage, as OpenAI's does.
+	frame, _ := json.Marshal(map[string]any{"type": "session.closed", "event_id": fmt.Sprintf("evt_%d", time.Now().UnixNano()), "reason": reason, "session": session, "usage": map[string]any{"seconds": seconds}})
 	for _, c := range conns {
 		_ = c.send(frame)
 	}

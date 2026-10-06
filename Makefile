@@ -1989,7 +1989,7 @@ test-live: install-gotestsum ## Run GPT Live e2e tests against a running gateway
 	fi; \
 	RUN_FLAG=""; \
 	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; elif [ -n "$(PATTERN)" ]; then RUN_FLAG="-run .*$(PATTERN).*"; \
-	elif [ "$${LIVE_UPSTREAM:-fake}" = "real" ]; then RUN_FLAG="-run ^TestReal"; fi; \
+	elif [ "$${LIVE_UPSTREAM:-fake}" = "real" ]; then RUN_FLAG="-run ^Test(Real|SDK)"; fi; \
 	REPORT_FILE="$(TEST_REPORTS_DIR)/live.xml"; \
 	cd tests/live && GOWORK=off gotestsum \
 		--format=$(GOTESTSUM_FORMAT) \

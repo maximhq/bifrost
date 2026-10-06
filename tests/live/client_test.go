@@ -479,6 +479,21 @@ func (c *liveClient) CloseSession() gjson.Result {
 	return c.WaitFor("session.closed")
 }
 
+// CloseSessionOrDrop asks the session to end and reports whether the provider confirmed it.
+// OpenAI sometimes closes a long session's socket without session.closed; the gateway then
+// tells the client and hangs up, and bills the last usage it was given.
+func (c *liveClient) CloseSessionOrDrop() (gjson.Result, bool) {
+	c.t.Helper()
+	c.Send(`{"type":"session.close"}`)
+	frame := c.WaitForAny("session.closed", "error")
+	if frame.Get("type").Str == "session.closed" {
+		return frame, true
+	}
+	c.t.Logf("the provider dropped the session on close: %s", errorMessage(frame))
+	c.WaitGone()
+	return frame, false
+}
+
 // ---- WebRTC ----
 
 // opusSilence is one 20 ms Opus frame of silence: the microphone of an app that says nothing.
