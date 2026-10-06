@@ -377,6 +377,18 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeySSEReaderFactory)
 }
 
+// restoreProviderResponseHeaders puts headers, the primary attempt's provider response headers,
+// back on ctx before the primary's error is returned once every fallback failed. Each fallback
+// attempt replaces them with its own provider's, so without this the transport forwards the last
+// fallback's headers (its request-id, rate-limit headers) with the primary's error body.
+func restoreProviderResponseHeaders(ctx *schemas.BifrostContext, headers map[string]string) {
+	if headers == nil {
+		ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
+}
+
 // ClearContextForInternalRequest clears context state that is specific to the
 // caller's original request, so a context derived from it can carry an
 // internal sub-request (e.g. a plugin generating an embedding for its own
