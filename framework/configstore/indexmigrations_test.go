@@ -145,3 +145,48 @@ func TestIndexHelpersNeverDropAnotherTablesIndex(t *testing.T) {
 		})
 	}
 }
+
+// TestMigrationAddOAuth2AuthorizeRequestsDeviceCodeColumns pins that upgraded
+// databases get the device_code_hash and user_code_hash columns with the unique
+// indexes a fresh install builds from the struct tags, built concurrently on
+// Postgres (so the migration runs outside a transaction), that the migration is
+// safe to re-run, and that its rollback drops the indexes and columns and is
+// safe to re-run.
+func TestMigrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(t *testing.T) {
+	const id = "add_oauth2_authorize_requests_device_code_columns"
+	const table = "oauth2_authorize_requests"
+	indexes := map[string]string{
+		"device_code_hash": "idx_oauth2_authorize_requests_device_code_hash",
+		"user_code_hash":   "idx_oauth2_authorize_requests_user_code_hash",
+	}
+
+	fresh, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "fresh.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, fresh.Migrator().CreateTable(&tables.TableOAuth2AuthorizeRequest{}))
+	for _, index := range indexes {
+		require.True(t, fresh.Migrator().HasIndex(table, index), "a fresh install must build %s from the struct tags", index)
+	}
+
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			require.NoError(t, db.Exec(`CREATE TABLE `+table+` (id VARCHAR(255) PRIMARY KEY)`).Error)
+			run := func(ctx context.Context, db *gorm.DB) error {
+				return migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(ctx, db, testMigrationLogger)
+			}
+			runIndexMigrationTwice(t, db, id, run, table, indexes["device_code_hash"])
+			for column, index := range indexes {
+				require.True(t, db.Migrator().HasColumn(table, column), "column %s must exist after the migration", column)
+				require.True(t, indexExists(t, db, table, index), "index %s must exist after the migration", index)
+			}
+
+			rollback := oauth2AuthorizeRequestsDeviceCodeColumnsMigration(context.Background(), id, testMigrationLogger).Rollback
+			require.NoError(t, rollback(db))
+			for column, index := range indexes {
+				require.False(t, indexExists(t, db, table, index), "index %s must not exist after the rollback", index)
+				require.False(t, db.Migrator().HasColumn(table, column), "column %s must not exist after the rollback", column)
+			}
+			require.NoError(t, rollback(db))
+		})
+	}
+}

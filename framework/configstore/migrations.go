@@ -15290,28 +15290,41 @@ func migrationBackfillCompatForceReasoningOnlyModelsToResponses(ctx context.Cont
 // authorization (the Claude Code gateway sign-in) through the same consent and
 // single-use consume path as an authorization-code request. Both are nullable:
 // existing and authorization-code rows keep NULL, which the unique indexes
-// treat as distinct.
+// treat as distinct. The indexes are built concurrently on postgres so the
+// upgrade never blocks writes, which needs a migration without a transaction;
+// each step is idempotent, so an interrupted run is safe to repeat.
 func migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_oauth2_authorize_requests_device_code_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
-	fields := []struct{ column, field string }{
-		{"device_code_hash", "DeviceCodeHash"},
-		{"user_code_hash", "UserCodeHash"},
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, oauth2AuthorizeRequestsDeviceCodeColumnsMigration(ctx, migrationName, logger)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: migrationName,
+	return nil
+}
+
+// oauth2AuthorizeRequestsDeviceCodeColumnsMigration builds the migration applied
+// by migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns, so tests exercise the
+// same Migrate and Rollback callbacks the upgrade runs. The index names are the
+// ones the struct tags give a fresh install.
+func oauth2AuthorizeRequestsDeviceCodeColumnsMigration(ctx context.Context, id string, logger schemas.Logger) *migrator.Migration {
+	const table = "oauth2_authorize_requests"
+	columns := []struct{ column, index string }{
+		{"device_code_hash", "idx_oauth2_authorize_requests_device_code_hash"},
+		{"user_code_hash", "idx_oauth2_authorize_requests_user_code_hash"},
+	}
+	return &migrator.Migration{
+		ID: id,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			for _, f := range fields {
-				if err := addColumnIfNotExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, f.column); err != nil {
-					return fmt.Errorf("failed to add column %s: %w", f.column, err)
+			for _, c := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, c.column); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", c.column, err)
 				}
-				if !mg.HasIndex(&tables.TableOAuth2AuthorizeRequest{}, f.field) {
-					if err := mg.CreateIndex(&tables.TableOAuth2AuthorizeRequest{}, f.field); err != nil {
-						return fmt.Errorf("failed to create index on %s: %w", f.column, err)
-					}
+				if err := ensureIndexConcurrently(tx, table, c.index, c.column, true); err != nil {
+					return fmt.Errorf("failed to create index on %s: %w", c.column, err)
 				}
 			}
 			return nil
@@ -15320,22 +15333,15 @@ func migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(ctx context.Context, d
 			// The columns only hold short-lived sign-in state (rows expire within
 			// minutes and are swept), so dropping them loses nothing durable.
 			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			for _, f := range fields {
-				if mg.HasIndex(&tables.TableOAuth2AuthorizeRequest{}, f.field) {
-					if err := mg.DropIndex(&tables.TableOAuth2AuthorizeRequest{}, f.field); err != nil {
-						return fmt.Errorf("failed to drop index on %s: %w", f.column, err)
-					}
+			for _, c := range columns {
+				if err := dropIndexConcurrently(tx, table, c.index); err != nil {
+					return fmt.Errorf("failed to drop index on %s: %w", c.column, err)
 				}
-				if err := dropColumnIfExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, f.column); err != nil {
-					return fmt.Errorf("failed to drop column %s: %w", f.column, err)
+				if err := dropColumnIfExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, c.column); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", c.column, err)
 				}
 			}
 			return nil
 		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
-	return nil
 }
