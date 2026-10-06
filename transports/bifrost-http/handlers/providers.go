@@ -119,6 +119,7 @@ type ProviderResponse struct {
 	SendBackRawRequest       bool                             `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                             `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
+	IgnoreProviderCost       bool                             `json:"ignore_provider_cost"`             // Ignore provider-reported usage.cost and price from Bifrost's catalog
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
@@ -148,6 +149,7 @@ type providerCreatePayload struct {
 	SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`
 	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`
 	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
+	IgnoreProviderCost       *bool                             `json:"ignore_provider_cost,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
@@ -160,6 +162,7 @@ type providerUpdatePayload struct {
 	SendBackRawRequest       *bool                            `json:"send_back_raw_request,omitempty"`
 	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"`
 	StoreRawRequestResponse  *bool                            `json:"store_raw_request_response,omitempty"`
+	IgnoreProviderCost       *bool                            `json:"ignore_provider_cost,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
@@ -410,6 +413,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendBackRawRequest:       payload.SendBackRawRequest != nil && *payload.SendBackRawRequest,
 		SendBackRawResponse:      payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
 		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
+		IgnoreProviderCost:       payload.IgnoreProviderCost != nil && *payload.IgnoreProviderCost,
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
 		PromptCache:              payload.PromptCache,
@@ -464,6 +468,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
+			IgnoreProviderCost:       config.IgnoreProviderCost,
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
@@ -564,6 +569,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
 		PromptCache:              oldConfigRaw.PromptCache,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
+		IgnoreProviderCost:       oldConfigRaw.IgnoreProviderCost,
 		Status:                   oldConfigRaw.Status,
 		Description:              oldConfigRaw.Description,
 	}
@@ -655,6 +661,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	if payload.StoreRawRequestResponse != nil {
 		config.StoreRawRequestResponse = *payload.StoreRawRequestResponse
 	}
+	if payload.IgnoreProviderCost != nil {
+		config.IgnoreProviderCost = *payload.IgnoreProviderCost
+	}
 
 	// Add provider to store if it doesn't exist (upsert behavior)
 	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
@@ -713,6 +722,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
+			IgnoreProviderCost:       config.IgnoreProviderCost,
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
@@ -1549,6 +1559,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		SendBackRawRequest:       config.SendBackRawRequest,
 		SendBackRawResponse:      config.SendBackRawResponse,
 		StoreRawRequestResponse:  config.StoreRawRequestResponse,
+		IgnoreProviderCost:       config.IgnoreProviderCost,
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
 		PromptCache:              config.PromptCache,
