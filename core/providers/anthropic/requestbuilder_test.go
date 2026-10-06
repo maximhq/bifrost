@@ -2289,12 +2289,17 @@ func TestOtherModelsAreByteUnchanged(t *testing.T) {
 		},
 		{
 			// Pre-adaptive generation: budget-token thinking is the only mode,
-			// and an "adaptive" ask is converted DOWN to a budget.
+			// and an "adaptive" ask is converted DOWN to a budget. Since
+			// upstream #7732 the raw path rewrites adaptive the same way, and
+			// drops thinking outright when max_tokens (1024 here) leaves no
+			// room for a budget -- so the raw column is the absent wire, not a
+			// verbatim passthrough. Both columns are stock behaviour: this
+			// change never touches a model outside the Sonnet 5.5 spellings.
 			model:         "claude-3-5-sonnet",
 			betweenTools:  [2]string{wDisabled, wDisabled},
 			enabledBudget: [2]string{wEnabled, wEnabled},
 			sampling:      [2]string{wSampleTyp, wSampleAll},
-			adaptive:      [2]string{`thinking={"type":"enabled","budget_tokens":1024} effort=- temperature=- top_p=- top_k=-`, wAdaptBare},
+			adaptive:      [2]string{`thinking={"type":"enabled","budget_tokens":1024} effort=- temperature=- top_p=- top_k=-`, wAbsent},
 			disabled:      [2]string{wDisabled, wDisabled},
 			countBetween:  wDisabled,
 		},
