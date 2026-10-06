@@ -224,8 +224,8 @@ func captureAnthropicMountBody(t *testing.T, request *schemas.BifrostChatRequest
 // ignored (https://api-docs.deepseek.com/guides/anthropic_api), so an effort
 // request must carry output_config.effort verbatim — and must not dress the
 // intent up as a synthesized thinking.budget_tokens, the field this incident
-// showed silently carrying no meaning upstream. Thinking stays absent: DeepSeek
-// enables thinking by default, so effort alone is the canonical request shape.
+// showed silently carrying no meaning upstream. Thinking stays enabled without a budget: DeepSeek
+// ignores budget_tokens, and effort must never silently turn reasoning off.
 func TestChatCompletion_AnthropicEndpointForwardsEffort(t *testing.T) {
 	t.Parallel()
 
@@ -271,9 +271,15 @@ func TestChatCompletion_AnthropicEndpointForwardsEffort(t *testing.T) {
 			if got := outputConfig["effort"]; got != tc.wantWire {
 				t.Fatalf("output_config.effort = %v, want %q", got, tc.wantWire)
 			}
-			if thinking, ok := captured["thinking"]; ok {
-				t.Fatalf("thinking must be absent when the caller only asked for effort "+
-					"(DeepSeek defaults thinking on and ignores budget_tokens), got %#v", thinking)
+			thinking, ok := captured["thinking"].(map[string]any)
+			if !ok {
+				t.Fatalf("outbound body missing thinking for an effort-only request: %#v", captured)
+			}
+			if got := thinking["type"]; got != "enabled" {
+				t.Fatalf("thinking.type = %v, want enabled (effort must keep thinking on)", got)
+			}
+			if _, ok := thinking["budget_tokens"]; ok {
+				t.Fatalf("no synthesized budget_tokens may reach the wire, got %#v", thinking)
 			}
 		})
 	}

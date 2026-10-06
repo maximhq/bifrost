@@ -813,10 +813,17 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					// effort alone: Model Studio rejects effort + thinking_budget
 					// together and engages thinking itself from the effort value
 					// (verified live 2026-08-23); DeepSeek ignores budget_tokens
-					// outright, so a synthesized one means nothing upstream —
-					// see forwardsEffortWithoutThinkingBudget.
+					// outright, so no budget is synthesized — thinking stays on
+					// explicitly, without one.
 					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, effort)
-					if !forwardsEffortWithoutThinkingBudget(bifrostReq.Provider) {
+					if forwardsEffortWithoutThinkingBudget(bifrostReq.Provider) {
+						if bifrostReq.Provider == schemas.DeepSeek {
+							// DeepSeek ignores budget_tokens, so no budget is synthesized — but
+							// effort must keep thinking explicitly on rather than relying on the
+							// server default.
+							anthropicReq.Thinking = &AnthropicThinking{Type: "enabled"}
+						}
+					} else {
 						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 						if err != nil {
 							return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
