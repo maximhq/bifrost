@@ -289,22 +289,22 @@ func TestListAllProviderModelPages(t *testing.T) {
 	assert.Contains(t, bifrostErr.Error.Message, fmt.Sprintf("%d pages", schemas.MaxPaginationRequests))
 }
 
-// closeTrackingReader records whether the handler released a streamed large-response body.
-type closeTrackingReader struct {
+// largeResponseCloseTracker records whether the handler released a streamed large-response body.
+type largeResponseCloseTracker struct {
 	io.Reader
 	closed bool
 }
 
-func (r *closeTrackingReader) Close() error { r.closed = true; return nil }
+func (r *largeResponseCloseTracker) Close() error { r.closed = true; return nil }
 
 // TestRejectTagFilteredLargeResponse pins that a tag-filtered listing which came back in
 // large-response mode (streamed straight through, never parsed) is refused with a 400 and its
 // stream released, instead of sending the whole unfiltered list as if it were filtered.
 func TestRejectTagFilteredLargeResponse(t *testing.T) {
 	SetLogger(&mockLogger{})
-	newCtx := func(large bool) (*schemas.BifrostContext, *closeTrackingReader) {
+	newCtx := func(large bool) (*schemas.BifrostContext, *largeResponseCloseTracker) {
 		bctx := schemas.NewBifrostContext(context.Background(), time.Time{})
-		reader := &closeTrackingReader{Reader: strings.NewReader(`{"data":[]}`)}
+		reader := &largeResponseCloseTracker{Reader: strings.NewReader(`{"data":[]}`)}
 		if large {
 			bctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
 			bctx.SetValue(schemas.BifrostContextKeyLargeResponseReader, io.ReadCloser(reader))
