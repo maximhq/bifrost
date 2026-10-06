@@ -15263,6 +15263,9 @@ func migrationAddProviderMetadataAndTagsColumns(ctx context.Context, db *gorm.DB
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
 			for _, column := range []string{"metadata", "tags"} {
 				if err := addColumnIfNotExists(tx, logger, &tables.TableProvider{}, column); err != nil {
 					return fmt.Errorf("failed to add %s column: %w", column, err)
@@ -15290,6 +15293,9 @@ func migrationAddModelTagsColumn(ctx context.Context, db *gorm.DB, logger schema
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
 			if err := addColumnIfNotExists(tx, logger, &tables.TableModel{}, "tags"); err != nil {
 				return fmt.Errorf("failed to add tags column: %w", err)
 			}
