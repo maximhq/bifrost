@@ -12,6 +12,7 @@ The LiteLLM compatibility plugin provides two transformations:
 2. **Chat-to-Responses Conversion** - Automatically converts chat completion requests to responses format for models that only support responses APIs
 3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them
 4. **Unsupported Parameter Conversion** - Automatically converts unsupported parameters to their supported equivalents
+5. **Reasoning-Only Models to Responses** - Routes chat completion requests to the Responses API for models that cannot reason alongside tool calls on chat completions
 
 When either transformation is applied, responses include `extra_fields.converted_request_type: <transformed_request_type>`. If request parameters are dropped, the keys are added in `extra_fields.dropped_compat_plugin_params`.
 
@@ -88,6 +89,20 @@ C --> G[Chat Completion Response]
 F --> G
 ```
 
+## 3. Reasoning-Only Models to Responses
+
+Some models (for example several GPT-5 series models) do not support reasoning together with tool calls on the chat completions API. Their datasheet entry sets `supports_reasoning_with_tool_calls: false`. For any chat completion request on such a model, with or without tools, Bifrost:
+
+1. Calls the Responses API instead, where reasoning and tools work together
+2. Transforms the response back to chat completion format
+
+With `force_reasoning_only_models_to_responses` off, the request stays on chat completions. What happens to reasoning then depends on `should_drop_params`:
+
+- **`should_drop_params` on**: when the request carries tools, reasoning is turned off (dropped, or set to `none` when the model supports it).
+- **`should_drop_params` off**: the request is sent with its reasoning setting unchanged.
+
+Controlled by `force_reasoning_only_models_to_responses` (on by default).
+
 ## Enabling LiteLLM Compatibility
 
 <Tabs group="litellm-compat">
@@ -102,6 +117,7 @@ F --> G
    - **Drop Unsupported Params** - drops unsupported parameters based on model catalog allowlist
    - **Convert Unsupported Params Values** - converts parameter values the model cannot accept, such as a token cap above the model limit, to values it can. See the list of [supported parameters](#supported-parameters) below.
    - **Azure DeepSeek** - converts Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses
+   - **Reasoning-only models to Responses** - routes chat completion requests to the Responses API for models that cannot reason with tool calls on chat completions
 4. Save your configuration
 
 ![Compatibility Settings](../media/compatibility-settings.png)
@@ -118,7 +134,8 @@ F --> G
       "convert_chat_to_responses": true,
       "should_drop_params": true,
       "should_convert_params": true,
-      "azure_deepseek": true
+      "azure_deepseek": true,
+      "force_reasoning_only_models_to_responses": true
     }
   }
 }
@@ -214,7 +231,7 @@ When errors occur on transformed requests:
 
 To enable compat plugins per request, you can use `x-bf-compat` header:
 - When `x-bf-compat: true` or `x-bf-compat: ["*"]`, enables all compat plugins options
-- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`, `azure_deepseek`)
+- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`, `azure_deepseek`, `force_reasoning_only_models_to_responses`)
 
 ## What's Preserved
 

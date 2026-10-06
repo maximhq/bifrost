@@ -114378,6 +114378,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses"
+                  },
+                  "force_reasoning_only_models_to_responses": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Convert chat completion requests to responses for models whose datasheet sets supports_reasoning_with_tool_calls to false, so reasoning is kept instead of being forced off"
                   }
                 },
                 "additionalProperties": false
@@ -114799,6 +114804,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses"
+                  },
+                  "force_reasoning_only_models_to_responses": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Convert chat completion requests to responses for models whose datasheet sets supports_reasoning_with_tool_calls to false, so reasoning is kept instead of being forced off"
                   }
                 },
                 "additionalProperties": false
