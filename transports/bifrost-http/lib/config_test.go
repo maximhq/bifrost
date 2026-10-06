@@ -22431,6 +22431,23 @@ func TestProviderSync_KeepsStoredLabelsWhenFileOmitsThem(t *testing.T) {
 	processAuthoritativeProvider("openai", file(nil, nil), stored, true, providers)
 	assert.Equal(t, map[string]string{"owner": "team-a"}, providers[schemas.OpenAI].Metadata, "authoritative sync must keep omitted metadata")
 	assert.Equal(t, []string{"prod"}, providers[schemas.OpenAI].Tags)
+
+	// Adding an explicit empty value to a file that omitted labels leaves the provider's config
+	// hash unchanged, so the clear must also apply when the stored hash matches the file.
+	hashed := map[schemas.ModelProvider]configstore.ProviderConfig{}
+	require.NoError(t, processProvider(nil, "openai", file(map[string]string{}, []string{}), hashed))
+	matching := stored
+	matching.ConfigHash = hashed[schemas.OpenAI].ConfigHash
+	providers = map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: matching}
+	require.NoError(t, processProvider(nil, "openai", file(map[string]string{}, []string{}), providers))
+	assert.Empty(t, providers[schemas.OpenAI].Metadata, "an explicit clear must apply when the hash matches")
+	assert.Empty(t, providers[schemas.OpenAI].Tags, "an explicit clear must apply when the hash matches")
+	assert.NotNil(t, providers[schemas.OpenAI].Metadata, "the clear must stay explicit so the store writes it")
+
+	providers = map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: matching}
+	require.NoError(t, processProvider(nil, "openai", file(nil, nil), providers))
+	assert.Equal(t, map[string]string{"owner": "team-a"}, providers[schemas.OpenAI].Metadata, "omitted labels must keep the stored value when the hash matches")
+	assert.Equal(t, []string{"prod"}, providers[schemas.OpenAI].Tags)
 }
 
 func TestProcessProvider_NormalizesLabelsBeforeHashing(t *testing.T) {
