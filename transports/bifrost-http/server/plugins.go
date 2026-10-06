@@ -30,6 +30,9 @@ func InferPluginTypes(plugin schemas.BasePlugin) []schemas.PluginType {
 	if _, ok := plugin.(schemas.MCPPlugin); ok {
 		types = append(types, schemas.PluginTypeMCP)
 	}
+	if _, ok := plugin.(schemas.A2APlugin); ok {
+		types = append(types, schemas.PluginTypeA2A)
+	}
 	if _, ok := plugin.(schemas.HTTPTransportPlugin); ok {
 		types = append(types, schemas.PluginTypeHTTP)
 	}
