@@ -36,4 +36,4 @@
 
 ## 🗄️ Database Migrations
 
-- No new database migrations in this release.
+- `add_virtual_key_metadata_column` - adds the nullable `metadata` column to `governance_virtual_keys`. Existing keys keep NULL. Non-rollbackable: dropping the column would delete every key's metadata; older binaries ignore it.
