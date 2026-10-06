@@ -11798,6 +11798,9 @@
             "realtime": {
               "type": "boolean"
             },
+            "live": {
+              "type": "boolean"
+            },
             "cached_content_create": {
               "type": "boolean"
             },

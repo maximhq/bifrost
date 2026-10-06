@@ -256,6 +256,21 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			req.OutputConfig = nil
 		}
 	}
+	// Pre-adaptive Claude (Haiku 4.5, Sonnet 4.5, Opus 4.5) 400s on adaptive thinking; rewrite to extended thinking.
+	// Runs before the effort strip below, which removes the effort the budget is derived from.
+	if req.Thinking != nil && req.Thinking.Type == "adaptive" && schemas.IsAnthropicModel(caps.Model()) &&
+		!caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model())) {
+		var effort *string
+		if req.OutputConfig != nil {
+			effort = req.OutputConfig.Effort
+		}
+		if budget, ok := fitThinkingBudget(req.Thinking.BudgetTokens, effort, req.MaxTokens); ok {
+			req.Thinking.Type = "enabled"
+			req.Thinking.BudgetTokens = &budget
+		} else {
+			req.Thinking = nil
+		}
+	}
 	// output_config.effort — model-gated per
 	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
 	// outside the supported set return: "This model does not support the
@@ -265,6 +280,10 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
 			req.OutputConfig = nil
 		}
+	}
+	// A kept effort snaps onto the model's ladder (xhigh/max on Opus 4.5, xhigh on 4.6 400 otherwise).
+	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && schemas.IsAnthropicModel(caps.Model()) {
+		req.OutputConfig.Effort = new(caps.NormalizeReasoningEffort(*req.OutputConfig.Effort, DefaultEffortControl(caps.Model())))
 	}
 	// thinking.type — model-gated. Adaptive-only models (Opus 4.7+, Sonnet 5+,
 	// Fable/Mythos) removed extended thinking and reject the legacy shape with:
@@ -659,6 +678,38 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		}
 	}
 
+	// thinking.type:"adaptive" on pre-adaptive Claude — mirrors the typed path, before the effort strip below.
+	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "adaptive" && schemas.IsAnthropicModel(caps.Model()) &&
+		!caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model())) {
+		var budget *int
+		if b := providerUtils.GetJSONField(jsonBody, "thinking.budget_tokens"); b.Exists() {
+			budget = new(int(b.Int()))
+		}
+		var effort *string
+		if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
+			effort = new(e.String())
+		}
+		maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, caps.Model(), AnthropicDefaultMaxTokens)
+		if m := providerUtils.GetJSONField(jsonBody, "max_tokens"); m.Exists() {
+			maxTokens = int(m.Int())
+		}
+		if b, ok := fitThinkingBudget(budget, effort, maxTokens); ok {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "enabled")
+			if err != nil {
+				return nil, fmt.Errorf("rewrite raw thinking.type to enabled: %w", err)
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.budget_tokens", b)
+			if err != nil {
+				return nil, fmt.Errorf("set raw thinking.budget_tokens: %w", err)
+			}
+		} else {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking")
+			if err != nil {
+				return nil, fmt.Errorf("strip raw thinking: %w", err)
+			}
+		}
+	}
+
 	// output_config.effort — model-gated per
 	// https://platform.claude.com/docs/en/build-with-claude/effort.
 	// Mirrors the typed path; same cleanup of an empty parent.
@@ -672,6 +723,15 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw output_config: %w", err)
+			}
+		}
+	}
+	// A kept effort snaps onto the model's ladder — mirrors the typed path.
+	if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() && schemas.IsAnthropicModel(caps.Model()) {
+		if normalized := caps.NormalizeReasoningEffort(e.String(), DefaultEffortControl(caps.Model())); normalized != e.String() {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "output_config.effort", normalized)
+			if err != nil {
+				return nil, fmt.Errorf("normalize raw output_config.effort: %w", err)
 			}
 		}
 	}
@@ -1120,6 +1180,56 @@ func DefaultSupportsAdaptiveThinking(model string) bool {
 		return false
 	}
 	return strings.Contains(m, "opus") || strings.Contains(m, "sonnet")
+}
+
+// DefaultEffortControl: the output_config.effort ladder per family, for rows that publish none.
+// Opus 4.5 takes low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+/Sonnet 5+/Fable add xhigh.
+func DefaultEffortControl(model string) *schemas.EffortControl {
+	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
+	switch {
+	case IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model):
+		levels = append(levels, schemas.ReasoningEffortXHigh, schemas.ReasoningEffortMax)
+	case DefaultSupportsAdaptiveThinking(model):
+		levels = append(levels, schemas.ReasoningEffortMax)
+	}
+	return &schemas.EffortControl{Levels: levels}
+}
+
+// fitThinkingBudget returns an enabled-thinking budget_tokens valid under maxTokens:
+// the caller's budget if it fits [1024, maxTokens), else one from effort (default "high"); false when maxTokens leaves no room.
+func fitThinkingBudget(budget *int, effort *string, maxTokens int) (int, bool) {
+	if budget != nil && *budget >= MinimumReasoningMaxTokens && *budget < maxTokens {
+		return *budget, true
+	}
+	if maxTokens <= MinimumReasoningMaxTokens {
+		return 0, false
+	}
+	level := "high"
+	if effort != nil {
+		level = MapBifrostEffortToAnthropic(*effort)
+	}
+	b, err := providerUtils.GetBudgetTokensFromReasoningEffort(level, MinimumReasoningMaxTokens, maxTokens)
+	return b, err == nil
+}
+
+// fitRawThinkingBudget refits an enabled thinking budget that a just-clamped max_tokens no longer covers.
+func fitRawThinkingBudget(jsonBody []byte, maxTokens int) ([]byte, error) {
+	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() != "enabled" {
+		return jsonBody, nil
+	}
+	b := providerUtils.GetJSONField(jsonBody, "thinking.budget_tokens")
+	if !b.Exists() || b.Int() < int64(maxTokens) {
+		return jsonBody, nil
+	}
+	var effort *string
+	if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
+		effort = new(e.String())
+	}
+	fitted, ok := fitThinkingBudget(nil, effort, maxTokens)
+	if !ok {
+		return jsonBody, nil
+	}
+	return providerUtils.SetJSONField(jsonBody, "thinking.budget_tokens", fitted)
 }
 
 // DefaultAdaptiveOnlyThinking: models where budget_tokens thinking is removed
@@ -2702,6 +2812,14 @@ func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]strin
 		}
 	}
 	return all
+}
+
+// clampToModelOutputCeiling lowers maxTokens to the target model's max_output_tokens: the datasheet row, else the static Claude table.
+func clampToModelOutputCeiling(caps schemas.ModelCaps, maxTokens int) int {
+	if ceiling := caps.MaxOutputTokens(providerUtils.KnownClaudeMaxOutputTokens(caps.Model())); ceiling > 0 && maxTokens > ceiling {
+		return ceiling
+	}
+	return maxTokens
 }
 
 // FilterBetaHeadersForProvider validates that all beta headers are supported by the given provider.

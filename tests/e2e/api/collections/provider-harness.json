@@ -166,6 +166,9 @@
           "    } else if (__u.indexOf('/api/session/is-auth-enabled') !== -1 && typeof j.inference_auth_enforced === 'boolean') {",
           "        shape = 'session-auth-status';",
           "        hasContent = typeof j.is_auth_enabled === 'boolean';",
+          "    } else if (j.object === 'model' || (j.extra_fields && j.extra_fields.request_type === 'model_retrieve')) {",
+          "        shape = 'model-object';",
+          "        hasContent = typeof j.id === 'string' && j.id.length > 0;",
           "    } else if (Array.isArray(j.data)) {",
           "        shape = 'list-data';",
           "        hasContent = j.data.length >= 0;",
@@ -199352,7 +199355,1388 @@
       ]
     },
     {
-      "name": "171. Virtual key metadata on the management API (PR #7935) (vk-metadata-api)",
+      "name": "127. Retrieve model (GET /v1/models/{model})",
+      "description": "Pins the OpenAI-spec Retrieve model endpoint (GET /v1/models/{model}) requested by a customer integration that validates a model before use. Positive rows cover every provider with a native retrieve that the harness profile configures (OpenAI, Groq, xAI, Mistral, Anthropic, Gemini, Cohere; Ollama is not in the profile) on the native route, where the path carries provider/model and the body is served by the model_retrieve request type. The /openai drop-in row asserts the OpenAI Model object shape (object, id, created, owned_by). Anthropic resolves an alias to its dated id. Negative rows pin that an unknown model surfaces the provider 404 rather than an unsupported error, and that a provider without a retrieve endpoint (DeepSeek) returns 400 unsupported_operation. Encoded rows send the id the way OpenAI SDKs do (provider%2Fmodel), which the route must decode once before parsing, while an encoded ../ is still refused.",
+      "item": [
+        {
+          "name": "Retrieve model: openai/gpt-4o-mini (native /v1)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"OpenAI model metadata is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, body).to.equal('openai/gpt-4o-mini');",
+                  "  pm.expect(j.created, 'created must be a unix timestamp: ' + body).to.be.a('number');",
+                  "  pm.expect(j.owned_by, body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai/gpt-4o-mini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai",
+                "gpt-4o-mini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: gpt-4o-mini via /openai drop-in (OpenAI spec shape)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Response matches the OpenAI Model object\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.object, 'object must be \"model\": ' + body).to.equal('model');",
+                  "  pm.expect(j.id, body).to.be.a('string');",
+                  "  pm.expect(j.id.slice(-'gpt-4o-mini'.length), body).to.equal('gpt-4o-mini');",
+                  "  pm.expect(j.created, 'created must be a unix timestamp: ' + body).to.be.a('number');",
+                  "  pm.expect(j.owned_by, body).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/models/gpt-4o-mini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models",
+                "gpt-4o-mini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: groq/openai/gpt-oss-120b (namespaced id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Groq model metadata is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, 'namespaced id must reach Groq as two path segments: ' + body).to.equal('groq/openai/gpt-oss-120b');",
+                  "  pm.expect(j.created, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/groq/openai/gpt-oss-120b",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "groq",
+                "openai",
+                "gpt-oss-120b"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: xai/grok-4-0709",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"xAI model metadata is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id.indexOf('xai/grok-4'), 'unexpected id: ' + body).to.equal(0);",
+                  "  pm.expect(j.created, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/xai/grok-4-0709",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "xai",
+                "grok-4-0709"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: mistral/mistral-small-latest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Mistral model card is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id.indexOf('mistral/mistral-small'), 'unexpected id: ' + body).to.equal(0);",
+                  "  pm.expect(j.context_length, body).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/mistral/mistral-small-latest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "mistral",
+                "mistral-small-latest"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: anthropic/claude-haiku-4-5 resolves the alias to a dated id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Anthropic resolves the alias to a dated model id\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, 'alias was not resolved to a dated id: ' + body).to.match(/^anthropic\\/claude-haiku-4-5-\\d{8}$/);",
+                  "  pm.expect(j.created, 'created_at must be converted to a unix timestamp: ' + body).to.be.above(0);",
+                  "  pm.expect(j.name, body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/anthropic/claude-haiku-4-5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "anthropic",
+                "claude-haiku-4-5"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: gemini/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Gemini models.get metadata is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, body).to.equal('gemini/gemini-2.5-flash');",
+                  "  pm.expect(j.max_input_tokens, body).to.be.above(0);",
+                  "  pm.expect(j.context_length, 'context window must be the input limit, not input+output: ' + body).to.equal(j.max_input_tokens);",
+                  "  pm.expect(j.supported_methods, body).to.include('generateContent');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/gemini/gemini-2.5-flash",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "gemini",
+                "gemini-2.5-flash"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: cohere/command-a-03-2025",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Cohere model metadata is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, body).to.equal('cohere/command-a-03-2025');",
+                  "  pm.expect(j.context_length, body).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/cohere/command-a-03-2025",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "cohere",
+                "command-a-03-2025"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] Retrieve model: openai unknown model surfaces the upstream 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"An unknown model is reported as not found, not unsupported\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'expected the upstream 404: ' + body).to.equal(404);",
+                  "  pm.expect(body.indexOf('unsupported_operation'), 'must reach the provider, not be refused as unsupported: ' + body).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai/bifrost-harness-no-such-model",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai",
+                "bifrost-harness-no-such-model"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] Retrieve model: deepseek/deepseek-v4-flash is reported unsupported",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"A provider without a retrieve endpoint returns unsupported_operation\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'expected 400 unsupported_operation: ' + body).to.equal(400);",
+                  "  pm.expect(body, 'expected an unsupported_operation error: ' + body).to.include('unsupported_operation');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/deepseek/deepseek-v4-flash",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "deepseek",
+                "deepseek-v4-flash"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: openai%2Fgpt-4o-mini, encoded the way OpenAI SDKs send it (native /v1)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"An SDK-encoded provider/model id is decoded before routing\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, body).to.equal('openai/gpt-4o-mini');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai%2Fgpt-4o-mini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai%2Fgpt-4o-mini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: anthropic%2Fclaude-haiku-4-5 encoded via /openai drop-in",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"An SDK-encoded id on the drop-in reaches its provider\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.object, body).to.equal('model');",
+                  "  pm.expect(j.id, 'alias was not resolved to a dated id: ' + body).to.match(/^anthropic\\/claude-haiku-4-5-\\d{8}$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/models/anthropic%2Fclaude-haiku-4-5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models",
+                "anthropic%2Fclaude-haiku-4-5"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: groq%2Fopenai%2Fgpt-oss-120b encoded namespaced id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"An SDK-encoded namespaced id keeps its inner segment\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, body).to.equal('groq/openai/gpt-oss-120b');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/groq%2Fopenai%2Fgpt-oss-120b",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "groq%2Fopenai%2Fgpt-oss-120b"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] Retrieve model: openai encoded ../ traversal is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Decoding must not turn an encoded ../ into a path the provider resolves\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'expected the traversal to be refused: ' + body).to.equal(400);",
+                  "  pm.expect(body, 'expected the model id to be rejected: ' + body).to.include('invalid model');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai%2F..%2F..%2Fchat%2Fcompletions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai%2F..%2F..%2Fchat%2Fcompletions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "171. Retargeted Claude request fits the target model (PR #7732) (retarget-fit)",
+      "description": "A routing rule, fallback or load-balancer can retarget a request built for one Claude model onto another after the client sized it. Claude Code sizes for Opus (max_tokens 128000, thinking adaptive, output_config.effort xhigh), and the Claude Code body is forwarded verbatim with only the model swapped, so Haiku 4.5 rejected it with \"max_tokens: 128000 > 64000\" and \"adaptive thinking is not supported on this model\", and Opus 4.5/4.6 rejected effort xhigh (\"Supported levels: high, low, medium\" / \"high, low, max, medium\"). Every builder path now fits the request to the target: max_tokens is clamped to the model's max_output_tokens (datasheet row, else the static Claude table), adaptive thinking on a pre-adaptive Claude becomes enabled with a budget in [1024, max_tokens), and output_config.effort snaps onto the model's ladder. The Claude Code cases send the Opus-sized body straight to the target model, which takes the same forwarded path a routing rule does after it swaps the model; they read the provider-bound body back from the log row (x-bf-store-raw-request-response) since the response is Anthropic's own bytes. The rebuilt-path cases read it from extra_fields.raw_request (x-bf-send-back-raw-request). Every case is red before PR #7732 (Anthropic 400) and green after.",
+      "item": [
+        {
+          "name": "Claude Code passthrough /v1/messages - Opus-sized body to claude-haiku-4-5 clamps max_tokens and budgets thinking - retarget-fit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('retargetFitHaikuRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('forwarded Claude Code body accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var reqId = pm.variables.get('retargetFitHaikuRequestId');",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var wire = JSON.stringify(rr).slice(0, 400);",
+                  "      pm.test('max_tokens clamped to the claude-haiku-4-5 ceiling (64000)', function () { pm.expect(rr.max_tokens, wire).to.eql(64000); });",
+                  "      pm.test('adaptive thinking became enabled with a budget in [1024, max_tokens)', function () {",
+                  "        pm.expect((rr.thinking || {}).type, wire).to.eql('enabled');",
+                  "        pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "      });",
+                  "      pm.test('effort not sent to a model without the effort parameter', function () { pm.expect((rr.output_config || {}).effort, wire).to.be.undefined; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.289 (external, cli)"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "context-management-2025-06-27"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"clear_thinking_20251015\",\n        \"keep\": \"all\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Claude Code passthrough /v1/messages stream - Opus-sized body to claude-haiku-4-5 streams to message_stop - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('streamed Claude Code body accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('stream reaches message_stop with no error event', function () {",
+                  "  pm.expect(txt, 'no message_stop: ' + txt.slice(0, 600)).to.include('message_stop');",
+                  "  pm.expect(txt.indexOf('event: error'), 'error event in stream: ' + txt.slice(0, 600)).to.eql(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.289 (external, cli)"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "context-management-2025-06-27"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"clear_thinking_20251015\",\n        \"keep\": \"all\"\n      }\n    ]\n  },\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - Opus-sized body to claude-haiku-4-5 without the Claude Code agent clamps and budgets - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('Opus-sized body accepted on the rebuilt path (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('provider body echoed (x-bf-send-back-raw-request)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('max_tokens clamped to the claude-haiku-4-5 ceiling (64000)', function () { pm.expect((rr || {}).max_tokens, wire).to.eql(64000); });",
+                  "pm.test('adaptive thinking became enabled with a budget in [1024, max_tokens)', function () {",
+                  "  pm.expect(((rr || {}).thinking || {}).type, wire).to.eql('enabled');",
+                  "  pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "context-management-2025-06-27"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"clear_thinking_20251015\",\n        \"keep\": \"all\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - anthropic/claude-haiku-4-5-20251001 max_tokens 128000 is clamped to 64000 - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('128000 max_tokens accepted on the chat route (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('provider body echoed (x-bf-send-back-raw-request)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('max_tokens clamped to the claude-haiku-4-5 ceiling (64000)', function () { pm.expect((rr || {}).max_tokens, wire).to.eql(64000); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Claude Code passthrough /v1/messages - effort xhigh on claude-opus-4-5 snaps to high with a thinking budget - retarget-fit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('retargetFitOpus45RequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('forwarded Claude Code body accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var reqId = pm.variables.get('retargetFitOpus45RequestId');",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var wire = JSON.stringify(rr).slice(0, 400);",
+                  "      pm.test('effort xhigh snapped onto the claude-opus-4-5 ladder (high)', function () { pm.expect((rr.output_config || {}).effort, wire).to.eql('high'); });",
+                  "      pm.test('adaptive thinking became enabled with a budget in [1024, max_tokens)', function () {",
+                  "        pm.expect((rr.thinking || {}).type, wire).to.eql('enabled');",
+                  "        pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.289 (external, cli)"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-5-20251101\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"xhigh\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - effort xhigh on claude-opus-4-6 snaps to max - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('effort xhigh accepted for claude-opus-4-6 (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('provider body echoed (x-bf-send-back-raw-request)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('effort xhigh snapped onto the claude-opus-4-6 ladder (max)', function () { pm.expect(((rr || {}).output_config || {}).effort, wire).to.eql('max'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"output_config\": {\n    \"effort\": \"xhigh\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - reasoning_effort xhigh on anthropic/claude-opus-4-5-20251101 snaps to high - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('reasoning_effort xhigh accepted for claude-opus-4-5 (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the request reached Anthropic unchanged: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('provider body echoed (x-bf-send-back-raw-request)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('effort xhigh snapped onto the claude-opus-4-5 ladder (high)', function () { pm.expect(((rr || {}).output_config || {}).effort, wire).to.eql('high'); });",
+                  "pm.test('thinking enabled with a budget below max_tokens', function () {",
+                  "  pm.expect(((rr || {}).thinking || {}).type, wire).to.eql('enabled');",
+                  "  pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-4-5-20251101\",\n  \"max_completion_tokens\": 2048,\n  \"reasoning_effort\": \"xhigh\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - explicit thinking budget above the clamped claude-haiku-4-5 ceiling is refit - retarget-fit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 400);",
+                  "pm.test('budget above the clamped ceiling accepted (200; a 400 means budget_tokens >= max_tokens reached Anthropic)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('provider body echoed (x-bf-send-back-raw-request)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "rr = rr || {};",
+                  "pm.test('max_tokens clamped to the claude-haiku-4-5 ceiling (64000)', function () { pm.expect(rr.max_tokens, wire).to.eql(64000); });",
+                  "pm.test('explicit budget refit below the clamped max_tokens', function () {",
+                  "  pm.expect((rr.thinking || {}).type, wire).to.eql('enabled');",
+                  "  pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 80000\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Claude Code passthrough /v1/messages - explicit thinking budget above the clamped claude-haiku-4-5 ceiling is refit - retarget-fit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('retargetFitBudgetRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('forwarded Claude Code body accepted (200; a 400 means budget_tokens >= max_tokens reached Anthropic)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var reqId = pm.variables.get('retargetFitBudgetRequestId');",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var wire = JSON.stringify(rr).slice(0, 400);",
+                  "      pm.test('max_tokens clamped to the claude-haiku-4-5 ceiling (64000)', function () { pm.expect(rr.max_tokens, wire).to.eql(64000); });",
+                  "      pm.test('explicit budget refit below the clamped max_tokens', function () {",
+                  "        pm.expect((rr.thinking || {}).type, wire).to.eql('enabled');",
+                  "        pm.expect(rr.thinking.budget_tokens, wire).to.be.at.least(1024).and.below(rr.max_tokens);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.289 (external, cli)"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 128000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 80000\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "172. MCP server instructions on the gateway handshake (PR #7517) (mcp-server-instructions)",
+      "description": "Gateway regression for PR #7517 (with #7516 capture). An upstream MCP server may return an `instructions` string from its initialize handshake; Bifrost captures it, aggregates the instructions of every upstream the caller may see, labels each block with its source client, and returns the result on the hosted /mcp handshake via an AfterInitialize hook. Nothing in this collection covered that before: `mcp_server name=` and `initialize` both appeared zero times. These cases pin that the field survives the real SSE transport end to end and that forwarding does not disturb tool discovery. Requires the harness MCP fixture (examples/mcps/remote-test-server, the sse_mcp client at :3012) to be running; it advertises a default instruction string, overridable with MCP_INSTRUCTIONS. No provider calls are made and no tokens are spent - openai is only a harness filter label. Run with FEATURE=mcp-server-instructions.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-server-instructions initialize forwards upstream instructions - PR #7517",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('initialize carries the upstream instructions, labeled by source client', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result, 'no JSON-RPC result: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.instructions, 'instructions missing - the upstream advertised none, or forwarding regressed: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(result.instructions.length, 'instructions present but empty: ' + pm.response.text()).to.be.above(0);",
+                  "  // Each upstream's text is wrapped and attributed, so one server's guidance cannot be",
+                  "  // mistaken for another's. sse_mcp is the harness fixture's client name.",
+                  "  pm.expect(result.instructions, 'instructions not attributed to a source client: ' + result.instructions).to.include('<mcp_server name=\"sse_mcp\">');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-server-instructions handshake stays well formed - PR #7517",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('adding instructions does not disturb the rest of the initialize result', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result.protocolVersion, 'protocolVersion missing: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(result.serverInfo, 'serverInfo missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.capabilities, 'capabilities missing: ' + pm.response.text()).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-server-instructions tool discovery unaffected - PR #7517",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('tools still list while instructions are forwarded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result.tools, 'tools missing: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(result.tools.length, 'instructions forwarding must not empty the tool set: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "179. Virtual key metadata on the management API (PR #7935) (vk-metadata-api)",
       "description": "Virtual keys carry free-form metadata (cost center, owner, environment, ...). PR #7935 exposes it on the management API: POST and PUT /api/governance/virtual-keys accept a metadata object (PUT replaces it as a whole, omitting it leaves it unchanged, {} clears it), the key's JSON returns it, GET /api/governance/virtual-keys filters on metadata_<key>=<value> query parameters (several pairs AND together, the same shape the logs endpoints accept), and invalid metadata or an invalid filter key is a 400 instead of being dropped. The seed creates one key whose cost_center value carries the run id, so the filter reads can expect exactly that key on a shared gateway; every later row depends on the seed through {{vkMetadataApiRun}} / {{vkMetadataApiVkId}}, which keeps the folder in one newman process. Red before the change: the create drops metadata (the seed's echo check fails), the list ignores metadata_* and returns every key, and the reserved key and bad filter key come back 200. The folder only ever deletes keys it created in this run (the cleanup row and the reserved-key row); nothing sweeps by age, so a parallel run's key is never touched. A key left by an aborted run is named harness-vk-metadata-api-run-<ms>-<rand> for manual cleanup. Management calls only, no provider traffic; attributed to the openai fork by name.",
       "item": [
         {
