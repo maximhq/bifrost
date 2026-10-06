@@ -1435,3 +1435,62 @@ func TestSetModelTags_ReloadFailureAfterCommit(t *testing.T) {
 		return slices.Equal(catalog.GetModelTags(schemas.OpenAI, "gpt-5.1"), []string{"prod"})
 	}, 5*time.Second, 10*time.Millisecond, "the background retry must refresh the overlay")
 }
+
+// stallingModelTagsStore blocks the first GetModelTags call until its context ends, then reads
+// from the wrapped store, so a test can make the post-commit overlay reload stall.
+type stallingModelTagsStore struct {
+	configstore.ConfigStore
+	mu      sync.Mutex
+	stalled bool
+}
+
+func (f *stallingModelTagsStore) GetModelTags(ctx context.Context) (map[string]map[string][]string, error) {
+	f.mu.Lock()
+	stall := !f.stalled
+	f.stalled = true
+	f.mu.Unlock()
+	if stall {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return f.ConfigStore.GetModelTags(ctx)
+}
+
+// TestSetModelTags_StalledReloadIsBounded pins that the immediate overlay reload after a committed
+// write is bounded by a timeout even though it is detached from the request's cancellation: a
+// stalled store read must not hold the request, and the background retry then refreshes the
+// overlay.
+func TestSetModelTags_StalledReloadIsBounded(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	prevDelays, prevTimeout := modelTagsReloadRetryDelays, modelTagsReloadTimeout
+	modelTagsReloadRetryDelays = []time.Duration{10 * time.Millisecond}
+	modelTagsReloadTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { modelTagsReloadRetryDelays, modelTagsReloadTimeout = prevDelays, prevTimeout })
+
+	ctx := context.Background()
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/config.db"},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+	catalog := modelcatalog.NewTestCatalogWithConfigStore(&stallingModelTagsStore{ConfigStore: store})
+	s := &BifrostHTTPServer{Config: &lib.Config{ConfigStore: store, ModelCatalog: catalog}}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.SetModelTags(ctx, []handlers.ModelTagsEntry{{Provider: "openai", Model: "gpt-5.1", Tags: []string{"prod"}}})
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stalled overlay reload must not hold the request")
+	}
+	assert.Eventually(t, func() bool {
+		return slices.Equal(catalog.GetModelTags(schemas.OpenAI, "gpt-5.1"), []string{"prod"})
+	}, 5*time.Second, 10*time.Millisecond, "the background retry must refresh the overlay")
+}
