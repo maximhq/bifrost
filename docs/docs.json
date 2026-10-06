@@ -1780,6 +1780,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.2.6",
               "changelogs/v2.2.5",
               {
                 "group": "September 2026",
@@ -2160,6 +2161,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.46",
               "changelogs/helm-v2.1.45",
               "changelogs/helm-v2.1.44",
               "changelogs/helm-v2.1.43",

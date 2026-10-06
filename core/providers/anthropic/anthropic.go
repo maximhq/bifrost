@@ -769,8 +769,10 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 	}
 	// Extended-thinking tokens. Max-merged (per-request total, not per-event
 	// increment) and mirrored onto the billing handle so a mid-stream cancel or
-	// timeout still reports the reasoning breakdown.
-	if usageToProcess.OutputTokensDetails != nil && usageToProcess.OutputTokensDetails.ThinkingTokens > 0 {
+	// timeout still reports the reasoning breakdown. An explicit zero (adaptive
+	// thinking that chose not to think) is kept on the response usage like the
+	// non-streaming converter does; billing only needs a non-zero count.
+	if usageToProcess.OutputTokensDetails != nil {
 		t := usageToProcess.OutputTokensDetails.ThinkingTokens
 		if usage.OutputTokensDetails == nil {
 			usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
@@ -778,7 +780,7 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 		if t > usage.OutputTokensDetails.ReasoningTokens {
 			usage.OutputTokensDetails.ReasoningTokens = t
 		}
-		if billedUsage != nil {
+		if billedUsage != nil && t > 0 {
 			if billedUsage.CompletionTokensDetails == nil {
 				billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 			}

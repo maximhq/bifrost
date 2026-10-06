@@ -834,6 +834,70 @@ func TestTextCompletionStreamOptInWithWaitForUsageKeepsTrailingUsage(t *testing.
 	}
 }
 
+// The synthesized final text chunk names the model the upstream served, like the
+// chat path, not the requested id.
+func TestTextCompletionStreamFinalChunkCarriesServedModel(t *testing.T) {
+	server := heartbeatSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"served-model","choices":[{"index":0,"text":"hello","finish_reason":null}]}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"served-model","choices":[{"index":0,"text":"","finish_reason":"stop"}]}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"served-model","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n"+
+		"data: [DONE]\n\n")
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "requested-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+	stream, bifrostErr := provider.TextCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a completed stream")
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostTextCompletionResponse == nil || final.BifrostTextCompletionResponse.Usage == nil {
+		t.Fatalf("expected the final text completion chunk to carry usage, got %+v", final)
+	}
+	if got := final.BifrostTextCompletionResponse.Model; got != "served-model" {
+		t.Errorf("final chunk model = %q, want the upstream's %q", got, "served-model")
+	}
+}
+
+// The text-completion stream falls back to the requested id when the upstream never names a model.
+func TestTextCompletionStreamFinalChunkFallsBackToRequestedModel(t *testing.T) {
+	server := heartbeatSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"choices":[{"index":0,"text":"hello","finish_reason":"stop"}]}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n"+
+		"data: [DONE]\n\n")
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "requested-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+	stream, bifrostErr := provider.TextCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a completed stream")
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostTextCompletionResponse == nil {
+		t.Fatalf("expected a final text completion chunk, got %+v", final)
+	}
+	if got := final.BifrostTextCompletionResponse.Model; got != "requested-model" {
+		t.Errorf("final chunk model = %q, want the requested %q", got, "requested-model")
+	}
+}
+
 // The text-completion loop terminates on the same switch, so the opt-in has to
 // reach it too.
 func TestTextCompletionStreamHeartbeatAfterFinishReasonEndsOnOptIn(t *testing.T) {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -238,7 +239,7 @@ func TestLiveRelaySessionUpdateChecksBackendModel(t *testing.T) {
 	assert.Contains(t, forwarded, `"model":"gpt-5.6-terra"`, "provider prefix and key alias are resolved")
 	assert.Contains(t, forwarded, `"reasoning":{"effort":"low"}`, "the rest of the frame is untouched")
 	opens, _, _ := allowed.runner.snapshot()
-	assert.Equal(t, fakeLiveOpen{model: "terra", continuation: true}, opens[len(opens)-1], "governance admitted the new model")
+	assert.Equal(t, fakeLiveOpen{model: "terra", kind: liveUnitBackend, continuation: true}, opens[len(opens)-1], "governance admitted the new model")
 
 	allowed.runner.setRefuse(true)
 	sendFrame(t, allowed.app, `{"type":"session.update","session":{"delegation":{"type":"responses","responses":{"model":"gpt-5.6-sol"}}}}`)
@@ -295,6 +296,22 @@ func TestReadLiveSessionStart(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+
+	// The cap is the connection's read limit: an oversized frame fails the read at the limit
+	// instead of being buffered whole and then measured. The sender's write outlives that read
+	// (nothing drains the rest), so it runs aside and is released by closing its socket.
+	t.Run("oversized", func(t *testing.T) {
+		bifrostSide, app, cleanup := dialRealtimeTestConn(t)
+		defer cleanup()
+		oversized := `{"type":"session.start","session":{"model":"gpt-live-1","instructions":"` + strings.Repeat("a", liveMaxFrameBytes) + `"}}`
+		written := make(chan error, 1)
+		go func() { written <- app.WriteMessage(ws.TextMessage, []byte(oversized)) }()
+		_, _, err := readLiveSessionStart(newRealtimeClientConn(bifrostSide))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read limit")
+		_ = app.Close()
+		<-written
+	})
 
 	bifrostSide, app, cleanup := dialRealtimeTestConn(t)
 	defer cleanup()
@@ -447,4 +464,97 @@ func TestLiveAttachRefusesBeforeUpgrade(t *testing.T) {
 	ctx = attach(false, " ")
 	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 	assert.Contains(t, string(ctx.Response.Body()), "session id is required")
+}
+
+func TestLiveRelayCarriesTranscriptOnSessionEnd(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "")
+
+	for _, frame := range []string{
+		`{"type":"session.input_transcript.delta","delta":"Hi ","start_ms":0,"end_ms":200}`,
+		`{"type":"session.input_transcript.delta","delta":"there.","start_ms":200,"end_ms":400}`,
+		`{"type":"session.output_transcript.delta","delta":"Hello!","start_ms":900,"end_ms":1200}`,
+	} {
+		sendFrame(t, f.openai, frame)
+		assert.Equal(t, frame, readFrame(t, f.app), "transcripts are relayed as sent")
+	}
+	sendFrame(t, f.app, `{"type":"session.close"}`)
+	readFrame(t, f.openai)
+	sendFrame(t, f.openai, `{"type":"session.closed","reason":"close_requested","usage":{"seconds":3}}`)
+	readFrame(t, f.app)
+	f.waitDone(t)
+
+	_, posts, _ := f.runner.snapshot()
+	last := posts[len(posts)-1]
+	require.True(t, last.end)
+	require.NotNil(t, last.live)
+	require.Len(t, last.live.Transcript, 2, "the closing unit carries the conversation")
+	assert.Equal(t, schemas.LiveTranscriptLine{Role: "user", Text: "Hi there.", StartMs: 0, EndMs: 400}, last.live.Transcript[0])
+	assert.Equal(t, schemas.LiveTranscriptLine{Role: "assistant", Text: "Hello!", StartMs: 900, EndMs: 1200}, last.live.Transcript[1])
+}
+
+func TestLiveRelayAssemblesDelegationOutputFromItemEvents(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "gpt-5.6-luna")
+
+	// OpenAI delivers a delegation's output items one by one and the terminal event with none.
+	for _, frame := range []string{
+		`{"type":"response.event","delegation_id":"item_1","event":{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"xxx"}}}`,
+		`{"type":"response.event","delegation_id":"item_1","event":{"type":"response.output_item.done","output_index":1,"item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"weather paris"}}}}`,
+		`{"type":"response.event","delegation_id":"item_1","event":{"type":"response.output_item.done","output_index":2,"item":{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"It's sunny in Paris."}]}}}`,
+		`{"type":"response.event","delegation_id":"item_1","event":{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.6-luna","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}}`,
+	} {
+		sendFrame(t, f.openai, frame)
+		assert.Equal(t, frame, readFrame(t, f.app), "events reach the client unchanged")
+	}
+	// A function call: the backend's first response ends on the call, the app answers on the
+	// socket, and a second response of the same delegation carries the message.
+	for _, frame := range []string{
+		`{"type":"session.delegation.created","delegation":{"id":"item_2","target":"responses"}}`,
+		`{"type":"response.event","delegation_id":"item_2","event":{"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"get_calendar","arguments":"{\"date\":\"today\"}"}}}`,
+		`{"type":"response.event","delegation_id":"item_2","event":{"type":"response.completed","response":{"id":"resp_2","model":"gpt-5.6-luna","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}}`,
+	} {
+		sendFrame(t, f.openai, frame)
+		readFrame(t, f.app)
+	}
+	sendFrame(t, f.app, `{"type":"response.item.create","event_id":"tool_result_1","item":{"type":"function_call_output","call_id":"call_1","output":"{\"events\":[]}"}}`)
+	readFrame(t, f.openai)
+	for _, frame := range []string{
+		`{"type":"response.event","delegation_id":"item_2","event":{"type":"response.output_item.done","output_index":0,"item":{"id":"msg_2","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Nothing today."}]}}}`,
+		`{"type":"response.event","delegation_id":"item_2","event":{"type":"response.completed","response":{"id":"resp_3","model":"gpt-5.6-luna","output":[],"usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16}}}}`,
+	} {
+		sendFrame(t, f.openai, frame)
+		readFrame(t, f.app)
+	}
+	sendFrame(t, f.app, `{"type":"session.close"}`)
+	readFrame(t, f.openai)
+	sendFrame(t, f.openai, `{"type":"session.closed","reason":"close_requested","usage":{"seconds":5}}`)
+	readFrame(t, f.app)
+	f.waitDone(t)
+
+	_, posts, _ := f.runner.snapshot()
+	var billed []fakeLivePost
+	for _, post := range posts {
+		if post.resp != nil && post.resp.Usage != nil && post.resp.Usage.TotalTokens > 0 {
+			billed = append(billed, post)
+		}
+	}
+	require.Len(t, billed, 3, "each backend response is billed")
+	assert.Equal(t, "resp_1", *billed[0].resp.ID)
+	assert.Equal(t, "item_1", billed[0].delegationID)
+	require.Len(t, billed[0].resp.Output, 2, "the tool call and the message are attached; reasoning is not")
+	assert.Equal(t, schemas.ResponsesMessageTypeWebSearchCall, *billed[0].resp.Output[0].Type)
+	assert.Equal(t, schemas.ResponsesMessageTypeMessage, *billed[0].resp.Output[1].Type)
+
+	assert.Equal(t, "resp_2", *billed[1].resp.ID)
+	assert.Equal(t, "item_2", billed[1].delegationID)
+	require.Len(t, billed[1].resp.Output, 1)
+	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *billed[1].resp.Output[0].Type)
+
+	assert.Equal(t, "resp_3", *billed[2].resp.ID)
+	assert.Equal(t, "item_2", billed[2].delegationID, "the continuation belongs to the same delegation")
+	require.Len(t, billed[2].resp.Output, 2, "the app's result precedes the answer")
+	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCallOutput, *billed[2].resp.Output[0].Type)
+	assert.Equal(t, "call_1", *billed[2].resp.Output[0].ResponsesToolMessage.CallID)
+	assert.Equal(t, schemas.ResponsesMessageTypeMessage, *billed[2].resp.Output[1].Type)
 }

@@ -232,3 +232,39 @@ func TestLiveWebRTCRelayEndToEnd(t *testing.T) {
 	}
 	assert.Equal(t, []float64{31, 9}, voice, "a full window, then the rest reported by session.closed")
 }
+
+// TestLiveWebRTCCloseBeforeEstablishedDoesNotFinish: a relay that fails during setup must not run
+// the session's finish, which would bill the transport minimum as a success; the create handler
+// aborts the meter instead. Once the relay is established, a close finishes the session.
+func TestLiveWebRTCCloseBeforeEstablishedDoesNotFinish(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	messages := &liveWebRTCMessages{relay: &webrtcRelay{}}
+	messages.liveSessionController = &liveSessionController{meter: meter, upstreamDone: make(chan struct{})}
+
+	messages.closed()
+	_, posts, _ := runner.snapshot()
+	assert.Empty(t, posts, "a close before the relay is established bills nothing")
+	assert.False(t, messages.relay.markEstablished(), "a relay closed during setup cannot then be established: setup fails and the handler aborts")
+
+	refusal := newRealtimeWireBifrostError(502, "upstream_connection_error", "upstream WebRTC connection failed")
+	meter.abort(refusal)
+	_, posts, _ = runner.snapshot()
+	require.NotEmpty(t, posts, "abort posts the failure to the plugins")
+	for _, post := range posts {
+		assert.NotNil(t, post.err, "the session's outcome is the setup failure")
+	}
+
+	established := &liveWebRTCMessages{relay: &webrtcRelay{}}
+	require.True(t, established.relay.markEstablished(), "setup wins when no close raced it")
+	meter2 := newTestLiveMeter(runner)
+	require.Nil(t, meter2.admit("gpt-live-1", "gpt-5.6-luna"))
+	established.liveSessionController = &liveSessionController{meter: meter2, upstreamDone: make(chan struct{})}
+	before := len(posts)
+	established.closed()
+	_, posts, _ = runner.snapshot()
+	assert.Greater(t, len(posts), before, "an established relay's close finishes the session")
+}
