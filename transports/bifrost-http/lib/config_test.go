@@ -1967,7 +1967,6 @@ func TestMatchConfigVirtualKeys(t *testing.T) {
 		entries       []tables.TableVirtualKey
 		wantIdx       []int
 		wantAmbiguous []bool
-		wantHeld      []string
 	}{
 		{name: "id wins over name and owner", entries: []tables.TableVirtualKey{{ID: "vk-prod-team2", Name: "other", TeamID: &team1}}, wantIdx: []int{1}},
 		{name: "unknown id is new", entries: []tables.TableVirtualKey{{ID: "vk-new", Name: "prod", TeamID: &team1}}, wantIdx: []int{-1}},
@@ -1980,7 +1979,6 @@ func TestMatchConfigVirtualKeys(t *testing.T) {
 			entries:       []tables.TableVirtualKey{{Name: "prod", TeamID: &team3}},
 			wantIdx:       []int{-1},
 			wantAmbiguous: []bool{true},
-			wantHeld:      []string{"vk-prod-team1", "vk-prod-team2", "vk-prod-unowned"},
 		},
 		{name: "unknown name is new", entries: []tables.TableVirtualKey{{Name: "dev", TeamID: &team1}}, wantIdx: []int{-1}},
 		{
@@ -2001,7 +1999,6 @@ func TestMatchConfigVirtualKeys(t *testing.T) {
 			entries:       []tables.TableVirtualKey{{Name: "ci", TeamID: &team3}, {Name: "ci", TeamID: &team4}},
 			wantIdx:       []int{-1, -1},
 			wantAmbiguous: []bool{true, true},
-			wantHeld:      []string{"vk-ci-customer1"},
 		},
 		{
 			// team-1 and team-2 claim their own rows, leaving the unowned prod key as the lone
@@ -2020,56 +2017,58 @@ func TestMatchConfigVirtualKeys(t *testing.T) {
 				wantAmbiguous = make([]bool, len(tc.entries))
 			}
 			assert.Equal(t, wantAmbiguous, got.ambiguous)
-			held := make([]string, 0, len(got.held))
-			for id := range got.held {
-				held = append(held, id)
-			}
-			assert.ElementsMatch(t, tc.wantHeld, held)
 		})
 	}
 }
 
-// TestMergeGovernanceConfig_AmbiguousVirtualKeyIsNotPruned covers source_of_truth=config.json with
-// an id-less virtual key whose name matches several stored keys, none with its owner. The entry is
-// skipped, so the stored keys it may refer to must not be pruned as absent from the file, and the
-// skipped entry must not reach the in-memory snapshot without an id.
-func TestMergeGovernanceConfig_AmbiguousVirtualKeyIsNotPruned(t *testing.T) {
-	initTestLogger()
+// TestMergeGovernanceConfig_AmbiguousVirtualKeyFailsSync covers an id-less virtual key whose name
+// matches several stored keys, none with its owner. Bifrost cannot tell which key the entry means, so
+// the sync fails with an error that names the entry and asks for its id, before anything is written:
+// no stored key is pruned, updated or kept on the entry's behalf, and no key is created for it. This
+// holds in both sync modes.
+func TestMergeGovernanceConfig_AmbiguousVirtualKeyFailsSync(t *testing.T) {
+	for _, sourceOfTruth := range []string{"", SourceOfTruthConfigJSON} {
+		t.Run("source_of_truth="+sourceOfTruth, func(t *testing.T) {
+			initTestLogger()
 
-	team1, team2, team3 := "team-1", "team-2", "team-3"
-	store := NewMockConfigStore()
-	dbGovernance := &configstore.GovernanceConfig{
-		VirtualKeys: []tables.TableVirtualKey{
-			{ID: "vk-prod-team1", Name: "prod", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-team1")},
-			{ID: "vk-prod-team2", Name: "prod", TeamID: &team2, Value: *schemas.NewSecretVar("sk-bf-team2")},
-			{ID: "vk-stale", Name: "stale", Value: *schemas.NewSecretVar("sk-bf-stale")},
-		},
-	}
-	store.governanceConfig = dbGovernance
-	config := &Config{
-		ConfigStore:      store,
-		GovernanceConfig: dbGovernance,
-	}
-	configData := &ConfigData{
-		SourceOfTruth: SourceOfTruthConfigJSON,
-		Governance: &configstore.GovernanceConfig{
-			VirtualKeys: []tables.TableVirtualKey{
-				{Name: "prod", TeamID: &team3, Value: *schemas.NewSecretVar("sk-bf-team3")},
-			},
-		},
-	}
+			team1, team2, team3 := "team-1", "team-2", "team-3"
+			store := NewMockConfigStore()
+			dbGovernance := &configstore.GovernanceConfig{
+				VirtualKeys: []tables.TableVirtualKey{
+					{ID: "vk-prod-team1", Name: "prod", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-team1")},
+					{ID: "vk-prod-team2", Name: "prod", TeamID: &team2, Value: *schemas.NewSecretVar("sk-bf-team2")},
+					{ID: "vk-stale", Name: "stale", Value: *schemas.NewSecretVar("sk-bf-stale")},
+				},
+			}
+			store.governanceConfig = dbGovernance
+			config := &Config{
+				ConfigStore:      store,
+				GovernanceConfig: dbGovernance,
+			}
+			configData := &ConfigData{
+				SourceOfTruth: sourceOfTruth,
+				Governance: &configstore.GovernanceConfig{
+					VirtualKeys: []tables.TableVirtualKey{
+						{Name: "prod", TeamID: &team3, Value: *schemas.NewSecretVar("sk-bf-team3")},
+					},
+				},
+			}
 
-	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+			err := mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
 
-	assert.Equal(t, []string{"vk-stale"}, store.virtualKeysDeleted,
-		"only the key no config.json entry can refer to may be pruned")
-	ids := make([]string, 0, len(config.GovernanceConfig.VirtualKeys))
-	for _, vk := range config.GovernanceConfig.VirtualKeys {
-		ids = append(ids, vk.ID)
+			require.Error(t, err, "an ambiguous id-less entry must fail the sync")
+			assert.Contains(t, err.Error(), `"prod"`, "the error must name the entry")
+			assert.Contains(t, err.Error(), "id", "the error must say how to fix it")
+			assert.Empty(t, store.virtualKeysDeleted, "nothing may be pruned when the sync fails")
+			assert.Empty(t, store.governanceItemsCreated.virtualKeys, "an ambiguous entry must not create a key")
+			ids := make([]string, 0, len(config.GovernanceConfig.VirtualKeys))
+			for _, vk := range config.GovernanceConfig.VirtualKeys {
+				ids = append(ids, vk.ID)
+			}
+			assert.ElementsMatch(t, []string{"vk-prod-team1", "vk-prod-team2", "vk-stale"}, ids,
+				"the in-memory snapshot is left as stored")
+		})
 	}
-	assert.ElementsMatch(t, []string{"vk-prod-team1", "vk-prod-team2"}, ids,
-		"kept keys stay in the in-memory snapshot and the skipped id-less entry stays out of it")
-	assert.Empty(t, store.governanceItemsCreated.virtualKeys, "an ambiguous entry must not create a key")
 }
 
 func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {

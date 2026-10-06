@@ -28,7 +28,7 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 - **Active/Inactive Status** - Enable/disable access instantly
 
 <Note>
-Because names are only unique per owner, `config.json` should reference existing virtual keys by `id`. An entry without an `id` is matched by name to the key with the same owner. Failing that, it takes the one remaining key with that name, but only if no other entry has claimed that key and no other id-less entry wants it. If more than one key or entry could match, the entry is skipped with a warning until you set its `id`, and with `source_of_truth: config.json` the keys it could refer to are kept rather than pruned.
+Because names are only unique per owner, `config.json` should reference existing virtual keys by `id`. An entry without an `id` is matched by name to the key with the same owner. Failing that, it takes the one remaining key with that name, but only if no other entry has claimed that key and no other id-less entry wants it. If more than one key or entry could match, Bifrost cannot tell which key the entry means, so loading the config fails with an error naming the entry until you set its `id`. Nothing is written in that case.
 </Note>
 
 ## Configuration
