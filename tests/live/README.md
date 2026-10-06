@@ -83,7 +83,7 @@ Every test skips when the gateway does not answer `/health`.
 | `billing_test.go` | voice windows, the per-transport minimum, once-per-response, backend switches, budget exhaustion, upstream drop, client leaving (both transports) |
 | `delegation_test.go` | web search assembly, function-call round trip grouped into one delegation, transcript turns, client delegation (the app runs the backend and speaks the result back) (both transports) |
 | `attach_test.go` | sideband refusals, steering a WebRTC session, sideband policy checks, a sideband ending with its session |
-| `content_test.go` | recording relay and refusals (both transports) |
+| `content_test.go` | recording relay and refusals, and the `live_content` row each download logs (both transports) |
 | `logging_test.go` | one row per session with totals, error and dropped sessions (both transports) |
 | `governance_test.go` | one request per session, token limits on backend usage, budgets debited mid-call (both transports) |
 | `load_test.go` | fifty WebSocket and ten WebRTC sessions at once, each logged once |

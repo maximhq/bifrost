@@ -140,9 +140,10 @@ export const RequestTypes = [
 	"websocket_responses",
 	"realtime",
 	"realtime.turn",
-	// GPT Live: one row per session, delegations inside it
+	// GPT Live: one row per session, delegations inside it; a recording download is its own row
 	"live",
 	"live.session",
+	"live_content",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -366,6 +367,7 @@ export const RequestTypeLabels = {
 	"realtime.turn": "Realtime Turn",
 	live: "Live",
 	"live.session": "Live Session",
+	live_content: "Live Recording",
 } as const;
 
 export const RequestTypeColors = {
@@ -460,6 +462,7 @@ export const RequestTypeColors = {
 	"realtime.turn": "bg-cyan-100 text-cyan-800",
 	live: "bg-violet-100 text-violet-800",
 	"live.session": "bg-violet-100 text-violet-800",
+	live_content: "bg-blue-100 text-blue-800",
 } as const;
 
 export const RoutingEngineUsedLabels = {

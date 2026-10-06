@@ -33,37 +33,42 @@ func TestLiveContentRefusesBeforeFetching(t *testing.T) {
 	assert.Contains(t, string(ctx.Response.Body()), "session id is required")
 }
 
-// fakeLiveContentProvider answers the recording download with a fixed body or error.
-type fakeLiveContentProvider struct {
-	schemas.LiveProvider
-	sessionID string
-	content   *schemas.LiveContentResponse
-	err       *schemas.BifrostError
+// fakeLiveContentClient answers the recording download with a fixed body or error.
+type fakeLiveContentClient struct {
+	ctx     *schemas.BifrostContext
+	req     *schemas.BifrostLiveContentRequest
+	content *schemas.LiveContentResponse
+	err     *schemas.BifrostError
 }
 
-func (f *fakeLiveContentProvider) LiveSessionContent(_ *schemas.BifrostContext, _ schemas.Key, sessionID string) (*schemas.LiveContentResponse, *schemas.BifrostError) {
-	f.sessionID = sessionID
+func (f *fakeLiveContentClient) LiveSessionContentRequest(ctx *schemas.BifrostContext, req *schemas.BifrostLiveContentRequest) (*schemas.LiveContentResponse, *schemas.BifrostError) {
+	f.ctx, f.req = ctx, req
 	return f.content, f.err
 }
 
 func TestServeLiveContentWritesTheRecording(t *testing.T) {
 	t.Parallel()
 
-	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	wav := []byte("RIFF....WAVEfmt ")
-	provider := &fakeLiveContentProvider{content: &schemas.LiveContentResponse{Content: wav, ContentType: "audio/wav"}}
+	client := &fakeLiveContentClient{content: &schemas.LiveContentResponse{SessionID: "live_1", Content: wav, ContentType: "audio/wav"}}
 	ctx := &fasthttp.RequestCtx{}
-	serveLiveContent(ctx, bifrostCtx, provider, schemas.Key{ID: "key-1"}, "live_1")
-	assert.Equal(t, "live_1", provider.sessionID)
+	serveLiveContent(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), client, schemas.OpenAI, "live_1")
+
+	// The download goes through the client, so the plugin pipeline counts, logs and traces it.
+	require.NotNil(t, client.req)
+	assert.Equal(t, &schemas.BifrostLiveContentRequest{Provider: schemas.OpenAI, SessionID: "live_1"}, client.req)
+	assert.Equal(t, schemas.LiveContentRequest, client.ctx.Value(schemas.BifrostContextKeyHTTPRequestType))
+	assert.Equal(t, "live_1", client.ctx.Value(schemas.BifrostContextKeyRealtimeProviderSessionID), "the log row names the session the recording belongs to")
+
 	assert.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
 	assert.Equal(t, "audio/wav", string(ctx.Response.Header.ContentType()))
 	assert.Equal(t, len(wav), ctx.Response.Header.ContentLength())
 	assert.Equal(t, wav, ctx.Response.Body())
 
-	// The provider's refusal, such as a session that was not stored, passes through with its status.
-	refused := &fakeLiveContentProvider{err: newRealtimeWireBifrostError(404, "invalid_request_error", "Session not found.")}
+	// A refusal from the provider is relayed with its status.
+	refused := &fakeLiveContentClient{err: &schemas.BifrostError{StatusCode: new(fasthttp.StatusNotFound), Error: &schemas.ErrorField{Message: "Session not found."}}}
 	ctx = &fasthttp.RequestCtx{}
-	serveLiveContent(ctx, bifrostCtx, refused, schemas.Key{ID: "key-1"}, "live_2")
-	require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
+	serveLiveContent(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), refused, schemas.OpenAI, "live_2")
+	assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
 	assert.Contains(t, string(ctx.Response.Body()), "Session not found.")
 }

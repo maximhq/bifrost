@@ -270,3 +270,41 @@ func TestLiveSessionPendingEntryOutlivesIdleEviction(t *testing.T) {
 	_, err = store.FindByID(context.Background(), "bfsess-silent")
 	assert.ErrorIs(t, err, logstore.ErrNotFound)
 }
+
+func TestLiveContentDownloadLogsItsOwnRow(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	// A recording download is an ordinary request like a file download, with the provider's
+	// session id in its metadata so the row can be traced back to the session.
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "dl-1")
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+	ctx.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, "live_abc")
+	req := &schemas.BifrostRequest{RequestType: schemas.LiveContentRequest, LiveContentRequest: &schemas.BifrostLiveContentRequest{Provider: schemas.OpenAI, SessionID: "live_abc"}}
+	_, _, err = plugin.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	resp := &schemas.BifrostResponse{LiveContentResponse: &schemas.LiveContentResponse{
+		SessionID:   "live_abc",
+		Content:     []byte("RIFF....WAVEfmt "),
+		ContentType: "audio/wav",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.LiveContentRequest, Provider: schemas.OpenAI},
+	}}
+	_, _, err = plugin.PostLLMHook(ctx, resp, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindByID(context.Background(), "dl-1")
+	require.NoError(t, err)
+	assert.Equal(t, string(schemas.LiveContentRequest), row.Object)
+	assert.Equal(t, logStatusSuccess, row.Status)
+	assert.Equal(t, "openai", row.Provider)
+	assert.Equal(t, "key-1", row.SelectedKeyID)
+	require.NotNil(t, row.VirtualKeyID)
+	assert.Equal(t, "vk-1", *row.VirtualKeyID)
+	assert.Equal(t, "live_abc", row.MetadataParsed["provider_session_id"])
+	assert.Nil(t, row.LiveSessionParsed, "a download is not a session")
+	assert.Zero(t, row.Cost, "nothing is billed for a download")
+}

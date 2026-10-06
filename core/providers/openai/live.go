@@ -143,5 +143,10 @@ func (provider *OpenAIProvider) LiveSessionContent(ctx *schemas.BifrostContext, 
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	return &schemas.LiveContentResponse{Content: append([]byte(nil), body...), ContentType: contentType}, nil
+	return &schemas.LiveContentResponse{
+		SessionID:   sessionID,
+		Content:     append([]byte(nil), body...),
+		ContentType: contentType,
+		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+	}, nil
 }

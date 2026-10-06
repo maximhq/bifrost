@@ -194,3 +194,17 @@ def find_live_row(provider_session_id: str, timeout: float = ROW_TIMEOUT) -> dic
         if time.monotonic() > deadline:
             pytest.fail(f"no live.session row for provider session {provider_session_id} within {timeout}s")
         time.sleep(0.3)
+
+
+def find_content_row(provider_session_id: str, timeout: float = ROW_TIMEOUT) -> dict:
+    """The row a recording download leaves, found by the provider's session id in its metadata."""
+    deadline = time.monotonic() + timeout
+    while True:
+        listing = httpx.get(f"{GATEWAY}/api/logs", params={"objects": "live_content", "limit": 200}, timeout=10).raise_for_status().json()
+        for summary in listing.get("logs", []):
+            row = fetch_log(summary["id"])
+            if (row.get("metadata") or {}).get("provider_session_id") == provider_session_id:
+                return row
+        if time.monotonic() > deadline:
+            pytest.fail(f"no live_content row for provider session {provider_session_id} within {timeout}s")
+        time.sleep(0.3)

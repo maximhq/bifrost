@@ -19,6 +19,7 @@ from conftest import (
     error_message,
     event_type,
     fake_only,
+    find_content_row,
     find_live_row,
     make_client,
     microphone,
@@ -91,6 +92,10 @@ def test_download_recording(client, marker):
     assert body[:4] == b"RIFF", body[:16]
     if UPSTREAM == "fake":
         assert len(body) == 44 + 24000 * 2, "the fake's one second of 24 kHz silence, byte for byte"
+    row = find_content_row(provider_session_id)
+    assert row["status"] == "success", row
+    assert row["provider"] == "openai", row
+    assert not row.get("live_session"), "a download is logged on its own, not in the session's row"
 
 
 def test_unstored_session_has_no_recording(client, marker):

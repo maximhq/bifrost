@@ -30,6 +30,12 @@ func (h *LiveControlHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 	}
 }
 
+// liveContentClient downloads a recording through the plugin pipeline, so the download is
+// counted, logged and traced like a file download.
+type liveContentClient interface {
+	LiveSessionContentRequest(ctx *schemas.BifrostContext, req *schemas.BifrostLiveContentRequest) (*schemas.LiveContentResponse, *schemas.BifrostError)
+}
+
 // handleContent downloads a stored session's recording. Nothing is billed.
 func (h *LiveControlHandler) handleContent(ctx *fasthttp.RequestCtx) {
 	req, ok := h.gateway.prepareRequest(ctx)
@@ -39,17 +45,15 @@ func (h *LiveControlHandler) handleContent(ctx *fasthttp.RequestCtx) {
 	defer req.cancel()
 	bifrostCtx, cancel := h.gateway.sessionContext(req.auth, req.preReqCtx, req.middlewareValues, req.path)
 	defer cancel()
-	key, bifrostErr := h.gateway.controlKey(bifrostCtx, req.providerKey)
-	if bifrostErr != nil {
-		SendBifrostError(ctx, bifrostErr)
-		return
-	}
-	serveLiveContent(ctx, bifrostCtx, req.provider, key, req.sessionID)
+	serveLiveContent(ctx, bifrostCtx, h.gateway.client, req.providerKey, req.sessionID)
 }
 
-// serveLiveContent fetches the recording and writes it as the provider served it.
-func serveLiveContent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, provider schemas.LiveProvider, key schemas.Key, sessionID string) {
-	content, bifrostErr := provider.LiveSessionContent(bifrostCtx, key, sessionID)
+// serveLiveContent fetches the recording through the client and writes it as the provider served it.
+// The provider's session id rides on the context so the log row names the session it belongs to.
+func serveLiveContent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, client liveContentClient, providerKey schemas.ModelProvider, sessionID string) {
+	bifrostCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveContentRequest)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, sessionID)
+	content, bifrostErr := client.LiveSessionContentRequest(bifrostCtx, &schemas.BifrostLiveContentRequest{Provider: providerKey, SessionID: sessionID})
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return
