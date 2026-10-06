@@ -461,6 +461,20 @@ func (s *Store) SetSupportedParamsForTest(params map[string][]string) {
 	s.supportedParams = params
 }
 
+// SetPricingRowsForTest replaces pricingData with rows and rebuilds the derived
+// indexes. Test-only seam for packages outside datasheet (e.g. the compat
+// plugin) that need capability lookups such as max_output_tokens without
+// running a sync.
+func (s *Store) SetPricingRowsForTest(rows []configstoreTables.TableModelPricing) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(rows))
+	for _, row := range rows {
+		s.pricingData[makeKey(row.Model, row.Provider, row.Mode)] = row
+	}
+	s.rebuildDatasheetViewUnsafe()
+}
+
 // --- Internal: rebuild the datasheet view from current pricingData ---
 
 // rebuildDatasheetViewUnsafe regenerates baseModelIndex, datasheetByProvider,
