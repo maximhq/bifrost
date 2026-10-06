@@ -12,30 +12,16 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// Client-stripped raw payloads (raw_request / raw_response) must not be
-// persisted in cache entries nor replayed to a later request's client.
+// Raw provider payloads (raw_request / raw_response) must not be persisted in
+// cache entries nor replayed on a hit.
 //
-// When a deployment captures raw provider payloads for internal logging only
-// (store_raw_request_response on, send_back_raw_* off), core sets
-// BifrostContextKeyDropRawRequestFromClient /
-// BifrostContextKeyDropRawResponseFromClient on the request context and nils
-// ExtraFields.RawRequest/RawResponse on the delivered response AFTER the
-// post-hook chain returns (core/bifrost.go, applyRawCaptureSignals +
-// tryRequest onResult). PostLLMHook serializes inside the hook, before that
-// strip lands, so the serialized snapshot must not keep the fields — a cache
-// entry is replayed verbatim on a hit, and would hand logging-only payloads
-// to a different request's client.
+// They describe the upstream call made for the request that wrote the entry.
+// A hit makes no upstream call, and the hitting request's own send-back policy
+// is not known yet when the hit is served: core derives the drop flags per
+// attempt in the request worker (applyRawCaptureSignals), after the pre-hooks
+// have run. So the entry never keeps them, and replay clears any an older
+// entry still carries.
 // -----------------------------------------------------------------------------
-
-// dropRawContext builds a cache-keyed test context carrying both drop flags,
-// mirroring a request whose raw payloads are captured for logging only.
-func dropRawContext(t testing.TB, suffix string) *schemas.BifrostContext {
-	t.Helper()
-	ctx := CreateContextWithCacheKeyAndType(t, suffix, CacheTypeDirect)
-	ctx.SetValue(schemas.BifrostContextKeyDropRawRequestFromClient, true)
-	ctx.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, true)
-	return ctx
-}
 
 // chatCacheResponse builds a minimal non-streaming chat response carrying the
 // given raw payloads in ExtraFields.
@@ -61,14 +47,16 @@ func chatCacheResponse(text string, rawRequest, rawResponse json.RawMessage) *sc
 	}
 }
 
-func TestPostLLMHook_StoreOnlyRawFieldsAreNotCached(t *testing.T) {
+func TestPostLLMHook_RawFieldsAreNotCached(t *testing.T) {
 	store := newObservableStore()
 	plugin := newTestPlugin(t, store)
 
-	ctx := dropRawContext(t, "drop-raw-unary")
+	// No drop flags: even a request that asked for the raw payloads back must
+	// not leave them in an entry a later caller can hit.
+	ctx := CreateContextWithCacheKeyAndType(t, "raw-unary", CacheTypeDirect)
 	mustPreLLMHookMiss(t, plugin, ctx, &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
-		ChatRequest: CreateBasicChatRequest("raw fields drop", 0.7, 50),
+		ChatRequest: CreateBasicChatRequest("raw fields unary", 0.7, 50),
 	})
 
 	res := chatCacheResponse("cached answer",
@@ -78,13 +66,6 @@ func TestPostLLMHook_StoreOnlyRawFieldsAreNotCached(t *testing.T) {
 	if _, _, err := plugin.PostLLMHook(ctx, res, nil); err != nil {
 		t.Fatalf("PostLLMHook failed: %v", err)
 	}
-
-	// Core performs this cleanup after the post-hook chain returns
-	// (core/bifrost.go onResult). The stored bytes are already written by
-	// then, so this only exercises the live response.
-	res.ChatResponse.ExtraFields.RawRequest = nil
-	res.ChatResponse.ExtraFields.RawResponse = nil
-
 	plugin.WaitForPendingOperations()
 
 	store.mu.Lock()
@@ -94,21 +75,21 @@ func TestPostLLMHook_StoreOnlyRawFieldsAreNotCached(t *testing.T) {
 	}
 	payload, _ := store.chunks[store.addIDs[0]].Properties["response"].(string)
 	if strings.Contains(payload, `"raw_request"`) || strings.Contains(payload, `"raw_response"`) {
-		t.Fatalf("cache entry persisted raw fields the client must never see; stored payload: %s", payload)
+		t.Fatalf("cache entry persisted raw fields; stored payload: %s", payload)
 	}
 	if !strings.Contains(payload, "cached answer") {
 		t.Fatalf("cache entry lost the response body while dropping raw fields; stored payload: %s", payload)
 	}
 }
 
-func TestPostLLMHook_StoreOnlyRawFieldsAreNotCachedInStreamChunks(t *testing.T) {
+func TestPostLLMHook_RawFieldsAreNotCachedInStreamChunks(t *testing.T) {
 	store := newObservableStore()
 	plugin := newTestPlugin(t, store)
 
-	ctx := dropRawContext(t, "drop-raw-stream")
+	ctx := CreateContextWithCacheKeyAndType(t, "raw-stream", CacheTypeDirect)
 	mustPreLLMHookMiss(t, plugin, ctx, &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionStreamRequest,
-		ChatRequest: CreateBasicChatRequest("raw fields drop stream", 0.7, 50),
+		ChatRequest: CreateBasicChatRequest("raw fields stream", 0.7, 50),
 	})
 
 	chunks := []*schemas.BifrostResponse{
@@ -121,9 +102,6 @@ func TestPostLLMHook_StoreOnlyRawFieldsAreNotCachedInStreamChunks(t *testing.T) 
 		if _, _, err := plugin.PostLLMHook(ctx, chunk, nil); err != nil {
 			t.Fatalf("PostLLMHook failed for chunk %d: %v", i, err)
 		}
-		// Mirror core's post-hook cleanup on the delivered chunk.
-		chunk.ChatResponse.ExtraFields.RawRequest = nil
-		chunk.ChatResponse.ExtraFields.RawResponse = nil
 	}
 	plugin.WaitForPendingOperations()
 
@@ -138,102 +116,16 @@ func TestPostLLMHook_StoreOnlyRawFieldsAreNotCachedInStreamChunks(t *testing.T) 
 	}
 	for i, c := range cached {
 		if strings.Contains(c, `"raw_request"`) || strings.Contains(c, `"raw_response"`) {
-			t.Fatalf("cached stream chunk %d persisted raw fields the client must never see: %s", i, c)
+			t.Fatalf("cached stream chunk %d persisted raw fields: %s", i, c)
 		}
 	}
 }
 
-func TestPostLLMHook_PartialDropKeyStripsOnlyThatSide(t *testing.T) {
+func TestPostLLMHook_LeavesLiveResponseRawFieldsUntouched(t *testing.T) {
 	store := newObservableStore()
 	plugin := newTestPlugin(t, store)
 
-	// Only the response side is marked for strip; the request side is sent
-	// back, so raw_request must stay in the entry while raw_response is gone.
-	ctx := CreateContextWithCacheKeyAndType(t, "drop-raw-partial", CacheTypeDirect)
-	ctx.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, true)
-	mustPreLLMHookMiss(t, plugin, ctx, &schemas.BifrostRequest{
-		RequestType: schemas.ChatCompletionRequest,
-		ChatRequest: CreateBasicChatRequest("raw fields partial", 0.7, 50),
-	})
-
-	res := chatCacheResponse("cached answer",
-		json.RawMessage(`{"upstream_request":true}`),
-		json.RawMessage(`{"upstream_response":true}`),
-	)
-	if _, _, err := plugin.PostLLMHook(ctx, res, nil); err != nil {
-		t.Fatalf("PostLLMHook failed: %v", err)
-	}
-	res.ChatResponse.ExtraFields.RawRequest = nil
-	res.ChatResponse.ExtraFields.RawResponse = nil
-	plugin.WaitForPendingOperations()
-
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if len(store.addIDs) != 1 {
-		t.Fatalf("expected one cache write, got %d", len(store.addIDs))
-	}
-	payload, _ := store.chunks[store.addIDs[0]].Properties["response"].(string)
-	if strings.Contains(payload, `"raw_response"`) {
-		t.Fatalf("cache entry kept the client-stripped raw_response; stored payload: %s", payload)
-	}
-	if !strings.Contains(payload, `"raw_request":{"upstream_request":true}`) {
-		t.Fatalf("cache entry lost the send-back raw_request; stored payload: %s", payload)
-	}
-}
-
-func TestPostLLMHook_SendBackRawFieldsStillCachedAndReplayed(t *testing.T) {
-	store := newObservableStore()
-	plugin := newTestPlugin(t, store)
-
-	// No drop keys: this request asked for the raw payloads back, so they
-	// belong in the cache entry and in a later replay.
-	ctx := CreateContextWithCacheKeyAndTTL(t, "keep-raw-unary", time.Hour)
-	req := &schemas.BifrostRequest{
-		RequestType: schemas.ChatCompletionRequest,
-		ChatRequest: CreateBasicChatRequest("raw fields keep", 0.7, 50),
-	}
-	mustPreLLMHookMiss(t, plugin, ctx, req)
-
-	res := chatCacheResponse("cached answer",
-		json.RawMessage(`{"upstream_request":true}`),
-		json.RawMessage(`{"upstream_response":true}`),
-	)
-	if _, _, err := plugin.PostLLMHook(ctx, res, nil); err != nil {
-		t.Fatalf("PostLLMHook failed: %v", err)
-	}
-	plugin.WaitForPendingOperations()
-
-	store.mu.Lock()
-	entry := store.chunks[store.addIDs[0]]
-	store.mu.Unlock()
-	payload, _ := entry.Properties["response"].(string)
-	if !strings.Contains(payload, `"raw_request":{"upstream_request":true}`) {
-		t.Fatalf("send-back request lost its cached raw_request; stored payload: %s", payload)
-	}
-	if !strings.Contains(payload, `"raw_response":{"upstream_response":true}`) {
-		t.Fatalf("send-back request lost its cached raw_response; stored payload: %s", payload)
-	}
-
-	// A later request without drop flags replays the stored raws unchanged.
-	hitCtx := newBaseTestContext()
-	sc, err := plugin.buildResponseFromResult(hitCtx, &cacheState{}, req, entry, CacheTypeDirect, nil, nil)
-	if err != nil {
-		t.Fatalf("buildResponseFromResult failed: %v", err)
-	}
-	if sc == nil || sc.Response == nil {
-		t.Fatal("expected a non-stream short-circuit on replay")
-	}
-	ef := sc.Response.GetExtraFields()
-	if ef.RawRequest == nil || ef.RawResponse == nil {
-		t.Fatalf("replay dropped raw fields for a send-back request: %+v", ef)
-	}
-}
-
-func TestPostLLMHook_DropKeysLeaveLiveResponseUntouched(t *testing.T) {
-	store := newObservableStore()
-	plugin := newTestPlugin(t, store)
-
-	ctx := dropRawContext(t, "drop-raw-live")
+	ctx := CreateContextWithCacheKeyAndType(t, "raw-live", CacheTypeDirect)
 	mustPreLLMHookMiss(t, plugin, ctx, &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: CreateBasicChatRequest("live response untouched", 0.7, 50),
@@ -250,8 +142,8 @@ func TestPostLLMHook_DropKeysLeaveLiveResponseUntouched(t *testing.T) {
 	if got != res {
 		t.Fatal("PostLLMHook returned a different response object")
 	}
-	// Core still needs the raw fields for logging and performs its own strip
-	// after the post-hook chain — the plugin must not have nil'd them.
+	// Core still needs the raw fields for logging and decides what the client
+	// gets after the post-hook chain; the plugin must not have nil'd them.
 	ef := res.GetExtraFields()
 	if ef.RawRequest == nil || ef.RawResponse == nil {
 		t.Fatalf("PostLLMHook mutated the live response's raw fields: %+v", ef)
@@ -259,11 +151,10 @@ func TestPostLLMHook_DropKeysLeaveLiveResponseUntouched(t *testing.T) {
 	plugin.WaitForPendingOperations()
 }
 
-func TestCacheHit_DropsStoredRawFieldsWhenRequestMarkedForStrip(t *testing.T) {
-	plugin := newTestPlugin(t, newObservableStore())
-
-	// Seed an entry that carries raw payloads — written by a request that
-	// sent them back (or by a version without the write-side strip).
+// seededRawEntry is an entry that still carries raw payloads, as written by a
+// version without the write-side strip.
+func seededRawEntry(t *testing.T) vectorstore.SearchResult {
+	t.Helper()
 	entryJSON, err := json.Marshal(chatCacheResponse("cached answer",
 		json.RawMessage(`{"upstream_request":true}`),
 		json.RawMessage(`{"upstream_response":true}`),
@@ -271,23 +162,27 @@ func TestCacheHit_DropsStoredRawFieldsWhenRequestMarkedForStrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to build seeded entry: %v", err)
 	}
-	entry := vectorstore.SearchResult{
+	return vectorstore.SearchResult{
 		ID: "raw-entry-1",
 		Properties: map[string]interface{}{
 			"response":   string(entryJSON),
 			"expires_at": time.Now().Add(time.Hour).Unix(),
 		},
 	}
+}
+
+func TestCacheHit_ReplayDropsStoredRawFields(t *testing.T) {
+	plugin := newTestPlugin(t, newObservableStore())
 
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
-		ChatRequest: CreateBasicChatRequest("raw fields drop", 0.7, 50),
+		ChatRequest: CreateBasicChatRequest("raw fields replay", 0.7, 50),
 	}
+	// A plain context, as a hit sees it: core has not derived the drop flags
+	// for this request yet, so replay cannot rely on them.
 	ctx := newBaseTestContext()
-	ctx.SetValue(schemas.BifrostContextKeyDropRawRequestFromClient, true)
-	ctx.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, true)
 
-	sc, err := plugin.buildResponseFromResult(ctx, &cacheState{}, req, entry, CacheTypeDirect, nil, nil)
+	sc, err := plugin.buildResponseFromResult(ctx, &cacheState{}, req, seededRawEntry(t), CacheTypeDirect, nil, nil)
 	if err != nil {
 		t.Fatalf("buildResponseFromResult failed: %v", err)
 	}
@@ -296,14 +191,16 @@ func TestCacheHit_DropsStoredRawFieldsWhenRequestMarkedForStrip(t *testing.T) {
 	}
 	ef := sc.Response.GetExtraFields()
 	if ef.RawRequest != nil || ef.RawResponse != nil {
-		t.Fatalf("replay handed raw fields to a client-stripped request: raw_request=%v raw_response=%v", ef.RawRequest, ef.RawResponse)
+		t.Fatalf("replay handed stored raw fields to a different request: raw_request=%s raw_response=%s", ef.RawRequest, ef.RawResponse)
+	}
+	if text := sc.Response.ChatResponse.Choices[0].Message.Content.ContentStr; text == nil || *text != "cached answer" {
+		t.Fatalf("replay lost the response body: %v", text)
 	}
 }
 
-func TestStreamHit_DropsStoredRawFieldsWhenRequestMarkedForStrip(t *testing.T) {
+func TestStreamHit_ReplayDropsStoredRawFields(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 
-	// Same as the non-stream case, on the streaming replay path.
 	var streamArray []string
 	for i, text := range []string{"chunk zero", "chunk one"} {
 		chunkJSON, err := json.Marshal(newChatStreamChunk(i, text, json.RawMessage(fmt.Sprintf(`{"chunk":%d}`, i))))
@@ -315,11 +212,9 @@ func TestStreamHit_DropsStoredRawFieldsWhenRequestMarkedForStrip(t *testing.T) {
 
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionStreamRequest,
-		ChatRequest: CreateBasicChatRequest("raw fields drop stream", 0.7, 50),
+		ChatRequest: CreateBasicChatRequest("raw fields replay stream", 0.7, 50),
 	}
 	ctx := newBaseTestContext()
-	ctx.SetValue(schemas.BifrostContextKeyDropRawRequestFromClient, true)
-	ctx.SetValue(schemas.BifrostContextKeyDropRawResponseFromClient, true)
 
 	sc, err := plugin.buildStreamingResponseFromResult(
 		ctx, &cacheState{}, req,
@@ -332,13 +227,18 @@ func TestStreamHit_DropsStoredRawFieldsWhenRequestMarkedForStrip(t *testing.T) {
 	if sc == nil || sc.Stream == nil {
 		t.Fatal("expected a stream short-circuit on replay")
 	}
+	seen := 0
 	for chunk := range sc.Stream {
 		if chunk == nil || chunk.BifrostChatResponse == nil {
 			continue
 		}
+		seen++
 		ef := chunk.BifrostChatResponse.ExtraFields
 		if ef.RawRequest != nil || ef.RawResponse != nil {
-			t.Fatalf("stream replay handed raw fields to a client-stripped request: %+v", ef)
+			t.Fatalf("stream replay handed stored raw fields to a different request: %+v", ef)
 		}
+	}
+	if seen != len(streamArray) {
+		t.Fatalf("expected %d replayed chunks, got %d", len(streamArray), seen)
 	}
 }

@@ -667,29 +667,15 @@ func (plugin *Plugin) parseStreamChunks(streamData interface{}) ([]string, error
 	}
 }
 
-// clientDropRawFieldFlags reads the two raw-drop signals core derives in
-// applyRawCaptureSignals (core/bifrost.go): they are set when a request
-// captures raw provider payloads for internal logging only (store raw on,
-// send-back raw off), and core nils the corresponding ExtraFields fields on
-// the delivered response after the post-hook chain returns. The cache must
-// mirror that strip so a later hit cannot replay payloads the client was
-// never meant to see.
-func clientDropRawFieldFlags(ctx *schemas.BifrostContext) (dropRequest, dropResponse bool) {
-	dropRequest, _ = ctx.Value(schemas.BifrostContextKeyDropRawRequestFromClient).(bool)
-	dropResponse, _ = ctx.Value(schemas.BifrostContextKeyDropRawResponseFromClient).(bool)
-	return
-}
-
-// dropClientStrippedRawFields rewrites an already-serialized response so
-// extra_fields no longer carries raw_request / raw_response for the sides
-// core marked as client-stripped. The rewrite runs on the serialized bytes
-// rather than on the live *BifrostResponse: core still needs the fields for
-// logging and performs its own strip after the post-hook chain, and the
-// async cache writer must only ever receive owned bytes (issue #7233).
+// dropRawFields rewrites an already-serialized response so extra_fields no
+// longer carries raw_request / raw_response. The rewrite runs on the
+// serialized bytes rather than on the live *BifrostResponse: core still needs
+// the fields for logging and performs its own strip after the post-hook chain,
+// and the async cache writer must only ever receive owned bytes (issue #7233).
 //
 // The edit is scoped to extra_fields inside whichever response union member
 // is populated; every other byte of the payload is preserved.
-func dropClientStrippedRawFields(responseData []byte, dropRequest, dropResponse bool) ([]byte, error) {
+func dropRawFields(responseData []byte) ([]byte, error) {
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(responseData, &members); err != nil {
 		return nil, err
@@ -709,15 +695,9 @@ func dropClientStrippedRawFields(responseData []byte, dropRequest, dropResponse 
 			continue
 		}
 		stripped := false
-		if dropRequest {
-			if _, present := extraFields["raw_request"]; present {
-				delete(extraFields, "raw_request")
-				stripped = true
-			}
-		}
-		if dropResponse {
-			if _, present := extraFields["raw_response"]; present {
-				delete(extraFields, "raw_response")
+		for _, key := range []string{"raw_request", "raw_response"} {
+			if _, present := extraFields[key]; present {
+				delete(extraFields, key)
 				stripped = true
 			}
 		}

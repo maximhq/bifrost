@@ -727,14 +727,14 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// flowing (issue #7233).
 	responseData, err := sonic.Marshal(res)
 	if err == nil {
-		// Core's raw-field strip runs after this marshal, so without a rewrite
-		// the entry would persist raw payloads captured for internal logging
-		// only (store raw on, send-back raw off) and replay them to a later
-		// request's client. Strip them on the serialized copy — the live
-		// response keeps them for core's own strip and logging post-hooks.
-		if dropRequest, dropResponse := clientDropRawFieldFlags(ctx); dropRequest || dropResponse {
-			responseData, err = dropClientStrippedRawFields(responseData, dropRequest, dropResponse)
-		}
+		// Raw provider payloads never go into the entry. They describe the
+		// upstream call made for this request, and a hit makes no upstream
+		// call; replaying them would hand this request's payloads to a later
+		// caller whose own send-back policy is not known yet when the hit is
+		// served (core derives it per attempt, after the pre-hooks). Strip
+		// them on the serialized copy only: the live response keeps them for
+		// core's own strip and the logging post-hooks.
+		responseData, err = dropRawFields(responseData)
 	}
 	if err != nil {
 		switch {

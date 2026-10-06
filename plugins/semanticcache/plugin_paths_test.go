@@ -810,8 +810,7 @@ func TestPostLLMHook_WritesWhenVectorRequiredAndEmbeddingPresent(t *testing.T) {
 // PostLLMHook returns, racing with core's raw-field cleanup (core/bifrost.go
 // nils ExtraFields.RawRequest/RawResponse right after RunPostLLMHooks). The
 // cache write must snapshot the response before PostLLMHook returns; the
-// stored payload must contain the raw_response value that was present at
-// hook time.
+// stored payload must contain the content that was present at hook time.
 func TestPostLLMHook_ResponseOwnershipAfterReturn(t *testing.T) {
 	previous := runtime.GOMAXPROCS(1)
 	defer runtime.GOMAXPROCS(previous)
@@ -853,10 +852,11 @@ func TestPostLLMHook_ResponseOwnershipAfterReturn(t *testing.T) {
 		t.Fatalf("PostLLMHook failed: %v", err)
 	}
 
-	// Core performs this cleanup after RunPostLLMHooks returns (core/bifrost.go
-	// onResult: extraField.RawResponse = nil when drop-raw is set). The async
-	// writer must not observe it.
+	// Core mutates the delivered response after RunPostLLMHooks returns
+	// (core/bifrost.go onResult). The async writer must not observe any
+	// change made after the hook returned.
 	res.ChatResponse.ExtraFields.RawResponse = nil
+	content = "mutated after return"
 
 	plugin.WaitForPendingOperations()
 
@@ -866,8 +866,8 @@ func TestPostLLMHook_ResponseOwnershipAfterReturn(t *testing.T) {
 		t.Fatalf("expected one cache write, got %d", len(store.addIDs))
 	}
 	payload, _ := store.chunks[store.addIDs[0]].Properties["response"].(string)
-	if !strings.Contains(payload, `"raw_response":{"synthetic":true}`) {
-		t.Fatalf("async cache writer read the caller's response after raw-field cleanup; stored payload: %s", payload)
+	if !strings.Contains(payload, `"content":"stable snapshot"`) || strings.Contains(payload, "mutated after return") {
+		t.Fatalf("async cache writer read the caller's response after the hook returned; stored payload: %s", payload)
 	}
 }
 
@@ -904,6 +904,7 @@ func TestPostLLMHook_StreamChunkOwnershipAfterReturn(t *testing.T) {
 	// (raw-field strip / PopulateExtraFields). The accumulator still holds
 	// this pointer until the final chunk flushes.
 	first.ChatResponse.ExtraFields.RawResponse = nil
+	*first.ChatResponse.Choices[0].ChatStreamResponseChoice.Delta.Content = "mutated after return"
 
 	final := newChatStreamChunk(1, "chunk one", json.RawMessage(`{"chunk":1}`))
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -912,6 +913,7 @@ func TestPostLLMHook_StreamChunkOwnershipAfterReturn(t *testing.T) {
 	}
 	// Same post-return cleanup on the final chunk, racing the async flush.
 	final.ChatResponse.ExtraFields.RawResponse = nil
+	*final.ChatResponse.Choices[0].ChatStreamResponseChoice.Delta.Content = "mutated after return"
 
 	plugin.WaitForPendingOperations()
 
@@ -924,18 +926,17 @@ func TestPostLLMHook_StreamChunkOwnershipAfterReturn(t *testing.T) {
 	if !ok || len(chunks) != 2 {
 		t.Fatalf("expected 2 cached stream chunks, got %v", store.chunks[store.addIDs[0]].Properties["stream_chunks"])
 	}
-	if !strings.Contains(chunks[0], `"raw_response":{"chunk":0}`) {
-		t.Fatalf("cached chunk 0 lost raw_response after core's post-hook cleanup; cached: %s", chunks[0])
+	if !strings.Contains(chunks[0], `"content":"chunk zero"`) || strings.Contains(chunks[0], "mutated after return") {
+		t.Fatalf("cached chunk 0 reflects a mutation made after the hook returned; cached: %s", chunks[0])
 	}
-	if !strings.Contains(chunks[1], `"raw_response":{"chunk":1}`) {
-		t.Fatalf("cached final chunk lost raw_response after core's post-hook cleanup; cached: %s", chunks[1])
+	if !strings.Contains(chunks[1], `"content":"chunk one"`) || strings.Contains(chunks[1], "mutated after return") {
+		t.Fatalf("cached final chunk reflects a mutation made after the hook returned; cached: %s", chunks[1])
 	}
 }
 
 // newChatStreamChunk builds one chat-completion stream chunk carrying the
 // given delta text and chunk index. raw, when non-nil, is stamped as
-// ExtraFields.RawResponse so tests can watch it survive (or not) into the
-// cached payload.
+// ExtraFields.RawResponse.
 func newChatStreamChunk(chunkIndex int, text string, raw json.RawMessage) *schemas.BifrostResponse {
 	res := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
