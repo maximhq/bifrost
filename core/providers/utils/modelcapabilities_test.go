@@ -89,6 +89,22 @@ func TestGetMaxOutputTokensOrDefault_ClaudeStaticFallback(t *testing.T) {
 	}
 }
 
+// KnownClaudeMaxOutputTokens is the static ceiling callers fall back to when the
+// datasheet has no row; zero means the model has no known limit.
+func TestKnownClaudeMaxOutputTokens(t *testing.T) {
+	for model, want := range map[string]int{
+		"claude-haiku-4-5":                         64000,
+		"anthropic.claude-haiku-4-5-20251001-v1:0": 64000,
+		"claude-sonnet-4-6":                        128000,
+		"claude-unknown-9":                         0,
+		"gpt-4o":                                   0,
+	} {
+		if got := KnownClaudeMaxOutputTokens(model); got != want {
+			t.Errorf("KnownClaudeMaxOutputTokens(%q) = %d, want %d", model, got, want)
+		}
+	}
+}
+
 func TestIsVertexMultiRegionOnlyModel(t *testing.T) {
 	yes := true
 	withResolver(t, func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
@@ -182,7 +198,7 @@ func TestGetMaxOutputTokensOrDefaultStaticFallback(t *testing.T) {
 
 		// Azure
 		{"claude-3-5-sonnet-20241022", 8192, "Azure: claude-3-5-sonnet"},
-		{"claude-sonnet-4-6", 64000, "Azure: claude-sonnet-4-6"},
+		{"claude-sonnet-4-6", 128000, "Azure: claude-sonnet-4-6"},
 
 		// Non-Claude models should return the default
 		{"gpt-4o", 4096, "Non-Claude: gpt-4o"},

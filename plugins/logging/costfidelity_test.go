@@ -959,7 +959,6 @@ func TestRecalculateCostsBackfillsRecoveredUsageSoSecondRunSkipsObjectStore(t *t
 // calculateBatchAggregateCost reprices per model_breakdown entry instead, the
 // same way settlement originally priced each result item.
 
-
 // repriceAggregate drives the production seam: RepriceLog asks whichever job kind
 // owns the row to recompute it. Returns the cost and the kind's re-serialized
 // debug blob, matching the shape the old plugin-local helper returned.
@@ -1555,4 +1554,39 @@ func TestFailedVideoRepricesAsSettledZeroNotSkipped(t *testing.T) {
 	// an unresolved one. Getting it wrong is invisible until the backfill never drains.
 	settledZero := repriced.Cost <= 0 && !repriced.DisplayOnly
 	assert.True(t, settledZero, "must persist CostUpdate{} and count as priced")
+}
+
+// TestPricingScopesForLogCarriesBilledAt guards the one pricing input a reprice
+// cannot re-derive from the reconstructed response. Everything else the row was
+// billed under (served tier, OCR pages, speech usage) is restored from dedicated
+// columns; the billing instant has to come from the row's Timestamp the same
+// way. Without it, a model on a peak/off-peak schedule resolves time-of-day
+// pricing against whenever the recalculation happened to run, so the same row
+// reprices to a different cost on every pass.
+func TestPricingScopesForLogCarriesBilledAt(t *testing.T) {
+	vk := "vk-1"
+	userID := "user-1"
+	ts := time.Date(2026, 8, 17, 2, 0, 0, 0, time.UTC)
+
+	scopes := pricingScopesForLog(&logstore.Log{
+		Timestamp:     ts,
+		Provider:      string(schemas.DeepSeek),
+		SelectedKeyID: "key-1",
+		VirtualKeyID:  &vk,
+		UserID:        &userID,
+	})
+
+	if !scopes.BilledAt.Equal(ts) {
+		t.Fatalf("BilledAt = %v, want %v", scopes.BilledAt, ts)
+	}
+	if scopes.Provider != string(schemas.DeepSeek) || scopes.SelectedKeyID != "key-1" ||
+		scopes.VirtualKeyID != vk || scopes.UserID != userID {
+		t.Fatalf("unexpected scopes: %+v", scopes)
+	}
+}
+
+func TestPricingScopesForLogNilEntry(t *testing.T) {
+	if got := pricingScopesForLog(nil); !got.BilledAt.IsZero() {
+		t.Fatalf("BilledAt = %v, want zero", got.BilledAt)
+	}
 }

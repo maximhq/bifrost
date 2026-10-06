@@ -33,19 +33,22 @@ func (m *fakeMCPManagerVerifyOnly) UpdateMCPClientCredentials(_ context.Context,
 	return nil
 }
 func (m *fakeMCPManagerVerifyOnly) ReconnectMCPClient(_ context.Context, _ string) error { return nil }
+func (m *fakeMCPManagerVerifyOnly) RefreshMCPClientTools(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
 func (m *fakeMCPManagerVerifyOnly) CloseAndMarkNeedsReauth(_ context.Context, _ string) error {
 	return nil
 }
 func (m *fakeMCPManagerVerifyOnly) DisableMCPClient(_ context.Context, _ string) error { return nil }
 func (m *fakeMCPManagerVerifyOnly) EnableMCPClient(_ context.Context, _ string) error  { return nil }
-func (m *fakeMCPManagerVerifyOnly) VerifyPerUserOAuthConnection(_ context.Context, _ *schemas.MCPClientConfig, _ string) (map[string]schemas.ChatTool, map[string]string, error) {
-	return nil, nil, nil
+func (m *fakeMCPManagerVerifyOnly) VerifyPerUserOAuthConnection(_ context.Context, _ *schemas.MCPClientConfig, _ string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+	return nil, nil, "", nil
 }
-func (m *fakeMCPManagerVerifyOnly) VerifyHeadersConnection(_ context.Context, _ *schemas.MCPClientConfig, _ map[string]string) (map[string]schemas.ChatTool, map[string]string, error) {
+func (m *fakeMCPManagerVerifyOnly) VerifyHeadersConnection(_ context.Context, _ *schemas.MCPClientConfig, _ map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
 	m.verifyCalls++
-	return nil, nil, errors.New("rejected by upstream")
+	return nil, nil, "", errors.New("rejected by upstream")
 }
-func (m *fakeMCPManagerVerifyOnly) SetClientTools(_ string, _ map[string]schemas.ChatTool, _ map[string]string) {
+func (m *fakeMCPManagerVerifyOnly) SetClientTools(_ string, _ map[string]schemas.ChatTool, _ map[string]string, _ string) {
 }
 func (m *fakeMCPManagerVerifyOnly) RequiresPerCallConnection(_ *schemas.MCPClientConfig) bool {
 	return false

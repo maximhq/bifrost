@@ -31,6 +31,15 @@ const (
 	PermitVirtualKey PermitType = "vk"
 	// PermitAccessProfile marks permits whose access comes from a profile attached to a caller.
 	PermitAccessProfile PermitType = "access_profile"
+	// PermitTeamAccessProfile, PermitBusinessUnitAccessProfile and PermitCustomerAccessProfile mark
+	// permits whose access comes from a profile attached to a team, business unit or customer. Such a
+	// profile applies to everything under the entity - its members' requests and the keys it owns -
+	// and joins the caller's other permits under union, so it widens what may be reached. One kind
+	// each rather than one shared kind, because a refusal has to say whose profile it named: "your
+	// team's access profile" and "your business unit's" are different answers.
+	PermitTeamAccessProfile         PermitType = "team_access_profile"
+	PermitBusinessUnitAccessProfile PermitType = "business_unit_access_profile"
+	PermitCustomerAccessProfile     PermitType = "customer_access_profile"
 	// PermitProject marks permits whose access comes from a project a request names. A project is
 	// not something the caller belongs to but something the request opts into, so it grants
 	// alongside whatever the caller already holds rather than instead of it. PrettyString needs no
@@ -39,18 +48,24 @@ const (
 	PermitProject PermitType = "project"
 )
 
-// PrettyString names the permit kind as a refusal should say it. Refusals are read by whoever made
-// the request, so "your virtual key has expired" is the answer and "vk" is not.
-//
-// A kind it does not know renders as itself. That is not a good message, but it is better than an
-// empty one: a refusal that loses its subject cannot be acted on at all.
+// PrettyString is what a refusal calls this permit kind: "your team's access profile", not
+// "team_access_profile". Every kind is named here because every kind is declared here - the labels
+// are fixed words, so there is nothing for another build to supply. A kind with no case renders as
+// its identifier, which is ugly but still says what ran out.
 func (t PermitType) PrettyString() string {
 	switch t {
 	case PermitVirtualKey:
 		return "virtual key"
 	case PermitAccessProfile:
 		return "access profile"
+	case PermitTeamAccessProfile:
+		return "team access profile"
+	case PermitBusinessUnitAccessProfile:
+		return "business unit access profile"
+	case PermitCustomerAccessProfile:
+		return "customer access profile"
 	default:
+		// PermitProject lands here on purpose: the identifier already reads as prose.
 		return string(t)
 	}
 }
@@ -69,6 +84,7 @@ type Permit struct {
 
 	providerPermits   []schemas.ProviderPermit
 	mcpPermits        []schemas.MCPPermit
+	agentPermits      []string
 	allowAllProviders bool
 }
 
@@ -76,6 +92,11 @@ type Permit struct {
 // stable while letting a source set the occasional extra, so a resolver that does not need one is
 // unaffected.
 type PermitOption func(*Permit)
+
+// WithAgentPermits grants the named Agent Gateway registrations.
+func WithAgentPermits(agentNames []string) PermitOption {
+	return func(p *Permit) { p.agentPermits = slices.Clone(agentNames) }
+}
 
 // WithAllowAllProviders grants every provider, including ones the permit holds no provider permit
 // for: those are allowed with all models and all keys, while a provider it does hold a permit for
@@ -191,6 +212,14 @@ func (p *Permit) MCPPermits() []schemas.MCPPermit {
 	return cloneMCPPermits(p.mcpPermits)
 }
 
+// AgentPermits implements schemas.Permit. See ProviderPermits for why this returns a copy.
+func (p *Permit) AgentPermits() []string {
+	if p == nil {
+		return nil
+	}
+	return slices.Clone(p.agentPermits)
+}
+
 // AllowsAllProviders implements schemas.Permit.
 func (p *Permit) AllowsAllProviders() bool {
 	return p != nil && p.allowAllProviders
@@ -231,6 +260,10 @@ func blacklistsModel(p schemas.Permit, provider string, model string) bool {
 		}
 	}
 	return false
+}
+
+func allowsAgent(p schemas.Permit, agentName string) bool {
+	return !isNilPermit(p) && slices.Contains(p.AgentPermits(), agentName)
 }
 
 // allowsTool reports whether the permit permits toolPattern. The MCP permit that holds a client

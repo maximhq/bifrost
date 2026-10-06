@@ -1,4 +1,5 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
@@ -68,6 +69,7 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 	const { data: allPlugins = [], isLoading: isLoadingLoadedPlugins } = useGetLoadedPluginsQuery();
 	const { data: targetPlugin } = useGetPluginQuery(pluginName);
 	const [updatePlugin, { isLoading }] = useUpdatePluginMutation();
+	const hasUpdateAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [toggles, setToggles] = useState<Record<string, boolean>>({});
 	const [exportOverheadSpans, setExportOverheadSpans] = useState(false);
 	const wasOpenRef = useRef(false);
@@ -169,11 +171,7 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 												Internal timing spans (setup, key selection, pipeline phases). Off by default.
 											</span>
 										</div>
-										<Switch
-											checked={exportOverheadSpans}
-											onCheckedChange={setExportOverheadSpans}
-											data-testid="tracing-overhead-toggle"
-										/>
+										<Switch checked={exportOverheadSpans} onCheckedChange={setExportOverheadSpans} data-testid="tracing-overhead-toggle" />
 									</div>
 								</div>
 							</>
@@ -196,7 +194,8 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 						</Button>
 						<Button
 							onClick={handleSave}
-							disabled={isLoading || !wasOpenRef.current}
+							disabled={isLoading || !wasOpenRef.current || !hasUpdateAccess}
+							title={hasUpdateAccess ? undefined : "You do not have permission to change observability settings"}
 							isLoading={isLoading}
 							data-testid="plugin-tracing-save-button"
 							type="button"

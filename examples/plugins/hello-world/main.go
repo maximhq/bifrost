@@ -46,6 +46,15 @@ func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest
 	return nil
 }
 
+// HTTPTransportResponseHeadersHook is called once immediately before response
+// headers are committed, for both streaming and non-streaming responses.
+func HTTPTransportResponseHeadersHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+	fmt.Println("HTTPTransportResponseHeadersHook called")
+	resp.SetHeader("x-hello-world-response-header", "response-headers-hook-value")
+	ctx.Log(schemas.LogLevelInfo, "HTTPTransportResponseHeadersHook called")
+	return nil
+}
+
 func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	fmt.Println("HTTPTransportStreamChunkHook called")
 	// Modify chunk in-place

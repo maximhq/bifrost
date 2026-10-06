@@ -14,6 +14,22 @@ describe("logs constants", () => {
 		expect(RequestTypeColors["realtime.turn"]).toBeTruthy();
 	});
 
+	it("registers model retrieve as a known request type", () => {
+		expect(RequestTypes).toContain("model_retrieve");
+		expect(RequestTypeLabels.model_retrieve).toBe("Retrieve Model");
+		expect(RequestTypeColors.model_retrieve).toBeTruthy();
+	});
+	
+	it("registers live sessions as known request types", () => {
+		for (const type of ["live", "live.session", "live_content"] as const) {
+			expect(RequestTypes).toContain(type);
+			expect(RequestTypeLabels[type]).toBeTruthy();
+			expect(RequestTypeColors[type]).toBeTruthy();
+		}
+		expect(RequestTypeLabels["live.session"]).toBe("Live Session");
+		expect(RequestTypeLabels["live_content"]).toBe("Live Recording");
+	});
+
 	it("maps backend app names to display metadata", () => {
 		expect(mapAppToClientApp("Claude Code").name).toBe("Claude Code");
 		expect(mapAppToClientApp("Claude Code").icon).toBe("/images/claude-code.png");
@@ -24,4 +40,15 @@ describe("logs constants", () => {
 	it("maps versioned user agents as a fallback for older rows", () => {
 		expect(mapUserAgentToApp("claude-cli/2.1.168 (external, cli)").name).toBe("Claude Code");
 	});
+});
+// Edge reports stable app keys, while gateway logs may contain display names.
+describe("Edge app icon identity", () => {
+	it.each(["claude-code", "codex-cli", "codex-desktop", "cursor", "opencode"])(
+		"resolves %s to the same icon as its display name",
+		(key) => {
+			const app = mapAppToClientApp(key);
+			expect(app.icon).toBeTruthy();
+			expect(mapAppToClientApp(app.name)).toEqual(app);
+		},
+	);
 });

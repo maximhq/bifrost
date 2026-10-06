@@ -85,3 +85,23 @@ func TestImageInputMarshalsObjectForm(t *testing.T) {
 		t.Fatalf("marshalled = %s", out)
 	}
 }
+
+// Image edit requests carry aspect_ratio too, so edit responses backfill it like generation responses.
+func TestImageEditBackfillsAspectRatio(t *testing.T) {
+	req := &BifrostRequest{ImageEditRequest: &BifrostImageEditRequest{
+		Input:  &ImageEditInput{Images: []ImageInput{{Image: []byte("png")}}},
+		Params: &ImageEditParameters{AspectRatio: new("3:2")},
+	}}
+
+	resp := &BifrostImageGenerationResponse{}
+	resp.BackfillParams(req)
+	if resp.ImageGenerationResponseParameters == nil || resp.ImageGenerationResponseParameters.AspectRatio != "3:2" {
+		t.Fatalf("response params = %+v, want aspect_ratio 3:2", resp.ImageGenerationResponseParameters)
+	}
+
+	streamResp := &BifrostImageGenerationStreamResponse{}
+	streamResp.BackfillParams(req)
+	if streamResp.AspectRatio != "3:2" {
+		t.Fatalf("stream aspect_ratio = %q, want 3:2", streamResp.AspectRatio)
+	}
+}

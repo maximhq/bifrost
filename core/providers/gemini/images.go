@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -101,6 +102,9 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest(ctx *sch
 			if size != "" {
 				bifrostReq.Params.Size = &size
 			}
+		}
+		if aspectRatio := strings.TrimSpace(ic.AspectRatio); aspectRatio != "" {
+			bifrostReq.Params.AspectRatio = &aspectRatio
 		}
 	}
 
@@ -306,6 +310,9 @@ func (request *GeminiGenerationRequest) ToBifrostImageEditRequest(ctx *schemas.B
 				bifrostReq.Params.Size = &size
 			}
 		}
+		if aspectRatio := strings.TrimSpace(ic.AspectRatio); aspectRatio != "" {
+			bifrostReq.Params.AspectRatio = &aspectRatio
+		}
 	}
 
 	return bifrostReq
@@ -420,13 +427,15 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
 	}
-	geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 
 	// Set response modalities to indicate this is an image generation request
 	geminiReq.GenerationConfig.ResponseModalities = []Modality{ModalityImage}
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
+		// Clone: the conversion runs once per retry/fallback attempt on the same
+		// Bifrost request, and the consumed keys are deleted from the outbound map.
+		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 
 		// Prefer explicit aspect_ratio; fall back to deriving aspect ratio + resolution from size.
 		imageConfig := &GeminiImageConfig{}
@@ -579,7 +588,7 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 		// Handle extra parameters for Imagen-specific fields
 		if bifrostReq.Params.ExtraParams != nil {
-			req.ExtraParams = bifrostReq.Params.ExtraParams
+			req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 			if addWatermark, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["addWatermark"]); ok {
 				delete(req.ExtraParams, "addWatermark")
 				req.Parameters.AddWatermark = addWatermark
@@ -775,17 +784,20 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 
-		// Derive aspect ratio + resolution from size (edit params carry no typed aspect_ratio).
+		// Prefer explicit aspect_ratio; fall back to deriving aspect ratio + resolution from size.
+		imageConfig := &GeminiImageConfig{}
 		if bifrostReq.Params.Size != nil && strings.ToLower(*bifrostReq.Params.Size) != "auto" {
 			aspectRatio, imageSize := utils.ConvertSizeToAspectRatioAndResolution(*bifrostReq.Params.Size)
-			if aspectRatio != "" || imageSize != "" {
-				geminiReq.GenerationConfig.ImageConfig = &GeminiImageConfig{
-					ImageSize:   imageSize,
-					AspectRatio: aspectRatio,
-				}
-			}
+			imageConfig.AspectRatio = aspectRatio
+			imageConfig.ImageSize = imageSize
+		}
+		if bifrostReq.Params.AspectRatio != nil && *bifrostReq.Params.AspectRatio != "" {
+			imageConfig.AspectRatio = *bifrostReq.Params.AspectRatio
+		}
+		if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" {
+			geminiReq.GenerationConfig.ImageConfig = imageConfig
 		}
 
 		// Handle extra parameters
@@ -999,7 +1011,7 @@ func ToImagenImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 		var hasMaskData bool
 		var dilation *float64
 		var maskClasses []int
-		req.ExtraParams = bifrostReq.Params.ExtraParams
+		req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 		// Check if user provided a mask
 		if len(bifrostReq.Params.Mask) > 0 {
 			hasMaskData = true

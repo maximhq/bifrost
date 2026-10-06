@@ -1,6 +1,9 @@
 package logstore
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // unixBucketExpr returns a SQL expression that truncates the `timestamp` column
 // to a bucket boundary and yields an integer unix-seconds value, per dialect.
@@ -75,6 +78,14 @@ func dimensionFanoutFrom(dialect, idCol string) (string, bool) {
 	return "", false
 }
 
+func agentDimensionFanoutFrom(dialect, idCol string) (string, bool) {
+	from, ok := dimensionFanoutFrom(dialect, idCol)
+	if !ok {
+		return "", false
+	}
+	return strings.ReplaceAll(from, "FROM logs", "FROM agent_logs"), true
+}
+
 // sqliteDimensionFanoutFrom builds the SQLite fan-out subquery using the JSON1
 // extension (always compiled in: the bundled mattn/go-sqlite3 amalgamation
 // registers json_each unconditionally, and JSON has been on by default since
@@ -91,7 +102,7 @@ func dimensionFanoutFrom(dialect, idCol string) (string, bool) {
 //   - the name is read positionally with json_extract(names, '$[<key>]')
 //     rather than a second json_each in a LEFT JOIN, because json_each sets
 //     `key` to the 0-based array index and json_extract accepts a runtime-built
-//     path. An id with no matching name yields NULL -> ''.
+//     path. An id with no matching name yields NULL, which becomes an empty string.
 //
 // json_valid must precede json_type in both guards: json_type() throws on
 // malformed input and SQLite evaluates AND left to right.

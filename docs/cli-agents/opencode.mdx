@@ -1,176 +1,172 @@
 ---
-title: "Opencode"
-description: "Use Opencode with Bifrost to access any AI provider through a terminal-based coding assistant with virtual keys and observability."
+title: "OpenCode"
+description: "Use OpenCode with Bifrost through a generated provider, Enterprise SSO, or a virtual key."
 icon: "codepen"
 ---
 
-[Opencode](https://github.com/sst/opencode) is an AI-powered coding application that supports OpenAI-compatible APIs. By pointing it at Bifrost, you get access to any provider/model in your Bifrost configuration, plus governance features like virtual keys, built-in observability, and per-model options for reasoning effort, thinking budget, and more.
+[OpenCode](https://opencode.ai/) is a terminal coding agent that supports custom
+providers. Bifrost CLI generates an isolated OpenCode provider for the selected
+gateway model.
 
-![Opencode with Bifrost](../media/opencode-with-bifrost.png)
+<Tip>
+OpenCode sends `x-session-affinity` and `x-session-id` on every request, so a
+session sticks to the provider and key that served it and keeps hitting the same
+prompt cache, with nothing to configure. See
+[Session Affinity](/providers/session-affinity).
+</Tip>
 
-<Note>
-If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with OpenCode, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
-</Note>
+## Recommended: launch with Bifrost CLI
 
-## Setup
+```bash
+bifrost context add production \
+  --base-url https://gateway.example.com \
+  --use
 
-### 1. Configure OpenCode to work with Bifrost
+# Enterprise user-scoped inference
+bifrost auth login
 
-OpenCode uses a JSON config file (`opencode.json`) to configure providers. Point your provider's `baseURL` to Bifrost.
+# Or configure a virtual key
+printf '%s\n' "$BIFROST_VIRTUAL_KEY" |
+  bifrost auth set-virtual-key --stdin
 
-### Using OpenAI-compatible endpoint
+bifrost run opencode --model openai/gpt-5
+```
 
-Route OpenAI and other providers through Bifrost's OpenAI endpoint:
+Bifrost creates a temporary OpenCode runtime configuration with:
+
+- a provider named `bifrost`;
+- the Bifrost `/openai` endpoint;
+- the selected provider-qualified model; and
+- the effective SSO agent token or virtual key.
+
+OpenCode sees the selected model as `bifrost/<provider>/<model>`, for example
+`bifrost/openai/gpt-5`. The temporary configuration is removed when the process
+exits.
+
+Enterprise SSO and virtual keys are both supported.
+
+<Warning>
+OpenCode receives one agent access token when it starts. If a long-running
+session reaches token expiry, exit and relaunch it through Bifrost so the CLI
+can refresh the Enterprise session first.
+</Warning>
+
+## Configure OpenCode manually with a virtual key
+
+Create or update `~/.config/opencode/opencode.json`:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
+  "model": "bifrost/openai/gpt-5",
   "provider": {
-    "openai": {
+    "bifrost": {
+      "npm": "@ai-sdk/openai-compatible",
       "name": "Bifrost",
       "options": {
         "baseURL": "http://localhost:8080/openai",
-        "apiKey": "your-bifrost-key"
+        "apiKey": "your-bifrost-virtual-key"
       },
       "models": {
         "openai/gpt-5": {},
-        "anthropic/claude-sonnet-4-5-20250929": {},
+        "anthropic/claude-sonnet-4-6": {},
         "gemini/gemini-2.5-pro": {}
-      }
-    }
-  },
-  "model": "openai/gpt-5"
-}
-```
-
-### Using Anthropic endpoint
-
-Route Anthropic models through Bifrost's Anthropic endpoint:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "anthropic": {
-      "name": "Bifrost",
-      "options": {
-        "baseURL": "http://localhost:8080/anthropic/v1",
-        "apiKey": "your-bifrost-key"
-      },
-      "models": {
-        "anthropic/claude-sonnet-4-5-20250929": {}
-      }
-    }
-  },
-  "model": "anthropic/claude-sonnet-4-5-20250929"
-}
-```
-
-<Tip>
-You can also use the `/connect` command in the OpenCode TUI to configure credentials interactively, then update the `baseURL` in your config file.
-</Tip>
-
-## Virtual Keys
-
-When Bifrost has [virtual key authentication](/features/governance/virtual-keys) enabled, set `apiKey` in your provider options to your virtual key:
-
-```jsonc
-"options": {
-  "baseURL": "http://localhost:8080/openai",
-  "apiKey": "bf-your-virtual-key-here"
-}
-```
-
-This lets you enforce usage limits, budgets, and access control per user or environment. For team deployments, create a separate virtual key for each team - each key can have its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
-
-## Model Selection
-
-Set your default models in `opencode.json`:
-
-```jsonc
-{
-  "model": "openai/gpt-5",
-  "small_model": "anthropic/claude-haiku-4-5"
-}
-```
-
-Switch models in the TUI with <key>ctrl</key>+<key>p</key>
-
-![Opencode model selection](../media/opencode-model-selection.png)
-
-- Use powerful models like `openai/gpt-5` or `anthropic/claude-sonnet-4-5-20250929` for complex coding tasks
-- Use fast models like `groq/llama-3.3-70b-versatile` for quick completions
-- Set `small_model` to a lighter model for faster, lower-cost operations
-
-## Using Multiple Providers
-
-Bifrost routes requests to the correct provider based on the model name. Use the `provider/model-name` format to access any configured provider through the single OpenAI endpoint:
-
-```
-anthropic/claude-sonnet-4-5-20250929
-openai/gpt-5
-gemini/gemini-2.5-pro
-mistral/mistral-large-latest
-```
-
-You can configure models from different providers with per-model options:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "theme": "opencode",
-  "autoupdate": true,
-  "provider": {
-    "openai": {
-      "name": "Bifrost",
-      "options": {
-        "baseURL": "http://localhost:8080/openai",
-        "apiKey": "your-bifrost-key"
-      },
-      "models": {
-        "openai/gpt-5": {
-          "options": {
-            "reasoningEffort": "high",
-            "textVerbosity": "low",
-            "reasoningSummary": "auto",
-            "include": [
-              "reasoning.encrypted_content"
-            ]
-          }
-        },
-        "anthropic/claude-sonnet-4-5-20250929": {
-          "options": {
-            "thinking": {
-              "type": "enabled",
-              "budgetTokens": 16000
-            }
-          }
-        }
       }
     }
   }
 }
 ```
 
-### Supported Providers
+Use the provider/model pair as OpenCode's model reference:
 
-Bifrost supports the following providers with the `provider/model-name` format:
+```text
+bifrost/openai/gpt-5
+bifrost/anthropic/claude-sonnet-4-6
+bifrost/gemini/gemini-2.5-pro
+```
 
-`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `deepseek`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
+When configuring multiple teams or environments, use a separate Bifrost virtual
+key for each required governance boundary.
 
-<Warning>
-Non-native models **must support tool use** for OpenCode to work properly. OpenCode relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
-</Warning>
+## Model selection
 
-<Note>
-OpenCode connects to Bifrost via a single endpoint. Bifrost handles routing to the correct provider based on the model name - no per-provider configuration needed.
-</Note>
+Bifrost's generated OpenCode provider contains the model selected when the
+harness starts. Relaunch from the Bifrost chooser or command line to use a model
+that is not in that generated provider:
+
+```bash
+bifrost run opencode --model anthropic/claude-sonnet-4-6
+```
+
+The target must support the tool calls and streaming behavior OpenCode uses for
+file access, terminal commands, and editing.
+
+## Theme and terminal appearance
+
+The OpenCode conversation, prompt boxes, activity lines, and model footer are
+rendered by OpenCode. Harnesses selected through `bifrost launch` receive native
+terminal passthrough, matching the rendering used by `bifrost opencode`.
+The optional `bifrost launch --tabs` mode uses Bifrost's virtual terminal and
+may render modern terminal features differently.
+
+Bifrost currently checks `~/.config/opencode/tui.json`. If that file has no
+explicit theme, Bifrost supplies a temporary OpenCode TUI configuration with:
+
+```json
+{
+  "theme": "system"
+}
+```
+
+OpenCode's `system` theme uses the terminal ANSI palette and background. It can
+therefore have low contrast on some terminal palettes even though Bifrost does
+not reinterpret the harness output.
+
+To keep the normal OpenCode appearance, create
+`~/.config/opencode/tui.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "theme": "opencode"
+}
+```
+
+You can replace `opencode` with another built-in or custom OpenCode theme. Use
+`tui.json` for the launcher-detected global setting; TUI options are separate
+from the provider settings in `opencode.json`.
+
+## Troubleshooting
+
+### OpenCode reports a Google API key is missing
+
+Check the model/provider shown in OpenCode's footer. A Bifrost-launched model
+should use the generated `bifrost/...` provider. If OpenCode is using its native
+Google provider instead, relaunch with:
+
+```bash
+bifrost run opencode --model gemini/gemini-2.5-pro
+```
+
+This is separate from Gemini CLI's authentication behavior.
+
+### OpenCode colors look different
+
+Set an explicit theme in `~/.config/opencode/tui.json` and restart Bifrost CLI.
+
+### `401 Unauthorized` during a long session
+
+Exit and relaunch OpenCode through Bifrost. The preflight refreshes the SSO
+session before starting the new child process.
 
 ## Observability
 
-All OpenCode traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` - filter by provider, model, or search through conversation content to track usage.
+OpenCode traffic through Bifrost is logged and attributed to the selected
+provider, model, user or virtual key, and application. Use the Bifrost logs view
+or `bifrost logs list` to inspect it.
 
-## Next Steps
+## Next steps
 
-- [Provider Configuration](/quickstart/gateway/provider-configuration) - Configure AI providers in Bifrost
-- [Virtual Keys](/features/governance/virtual-keys) - Set up usage limits and access control
+- [Bifrost CLI](/quickstart/cli/getting-started)
+- [Virtual keys](/features/governance/virtual-keys)
+- [Built-in observability](/features/observability/default)

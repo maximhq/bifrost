@@ -10,6 +10,63 @@ import (
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 )
 
+func TestRealtimeTurnFinalEventUsesTranscriptionCompletionOnlyForTranscriptionSessions(t *testing.T) {
+	t.Parallel()
+
+	provider := &openai.OpenAIProvider{}
+	if got := realtimeTurnFinalEvent(provider, false); got != schemas.RTEventResponseDone {
+		t.Fatalf("normal final event = %q, want %q", got, schemas.RTEventResponseDone)
+	}
+	if got := realtimeTurnFinalEvent(provider, true); got != schemas.RTEventInputAudioTransCompleted {
+		t.Fatalf("transcription final event = %q, want %q", got, schemas.RTEventInputAudioTransCompleted)
+	}
+}
+
+func TestRealtimeTurnCompletionContentModelsTranscriptAsOutputOnlyForTranscriptionSessions(t *testing.T) {
+	t.Parallel()
+
+	event := &schemas.BifrostRealtimeEvent{
+		Type: schemas.RTEventInputAudioTransCompleted,
+		ExtraParams: map[string]json.RawMessage{
+			"item_id":    json.RawMessage(`"item_123"`),
+			"transcript": json.RawMessage(`"spoken user turn"`),
+		},
+	}
+
+	transcriptionSession := bfws.NewSession(nil)
+	inputItemID, inputSummary, output := realtimeTurnCompletionContent(transcriptionSession, event, true)
+	if inputItemID != "" || inputSummary != "" || output != "spoken user turn" {
+		t.Fatalf("transcription completion = (%q, %q, %q), want (empty, empty, transcript)", inputItemID, inputSummary, output)
+	}
+
+	normalSession := bfws.NewSession(nil)
+	normalSession.AppendRealtimeOutputText("assistant response")
+	inputItemID, inputSummary, output = realtimeTurnCompletionContent(normalSession, event, false)
+	if inputItemID != "item_123" || inputSummary != "spoken user turn" || output != "assistant response" {
+		t.Fatalf("normal completion = (%q, %q, %q), want input transcript and assistant output", inputItemID, inputSummary, output)
+	}
+}
+
+func TestBuildRealtimeTurnPostResponseModelsTranscriptionAsOutput(t *testing.T) {
+	t.Parallel()
+
+	rawResponse := []byte(`{"type":"conversation.item.input_audio_transcription.completed","transcript":"spoken user turn","usage":{"total_tokens":11}}`)
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-transcribe", `{"type":"input_audio_buffer.commit"}`, rawResponse, "spoken user turn", 123, true)
+	if resp == nil || resp.ResponsesResponse == nil || len(resp.ResponsesResponse.Output) != 1 {
+		t.Fatalf("response = %#v, want one transcription output", resp)
+	}
+	if resp.ResponsesResponse.ExtraFields.RequestType != schemas.RealtimeRequest {
+		t.Fatalf("request type = %q, want realtime", resp.ResponsesResponse.ExtraFields.RequestType)
+	}
+	if resp.ResponsesResponse.ExtraFields.PricingRequestType != schemas.TranscriptionRequest {
+		t.Fatalf("pricing request type = %q, want transcription", resp.ResponsesResponse.ExtraFields.PricingRequestType)
+	}
+	output := resp.ResponsesResponse.Output[0]
+	if output.Content == nil || output.Content.ContentStr == nil || *output.Content.ContentStr != "spoken user turn" {
+		t.Fatalf("output content = %#v, want completed transcript", output.Content)
+	}
+}
+
 func TestBuildRealtimeTurnPreRequestIncludesResponseCreateContent(t *testing.T) {
 	t.Parallel()
 
@@ -382,9 +439,12 @@ func TestBuildRealtimeTurnPostResponseUsesFullResponseDonePayload(t *testing.T) 
 		}
 	}`)
 
-	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-realtime-preview-2025-06-03", rawRequest, rawResponse, "", 4321)
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-realtime-preview-2025-06-03", rawRequest, rawResponse, "", 4321, false)
 	if resp == nil || resp.ResponsesResponse == nil {
 		t.Fatal("expected realtime post response to be built")
+	}
+	if resp.ResponsesResponse.ExtraFields.PricingRequestType != "" {
+		t.Fatalf("PricingRequestType = %q, want empty for normal realtime", resp.ResponsesResponse.ExtraFields.PricingRequestType)
 	}
 	if resp.ResponsesResponse.ExtraFields.Latency != 4321 {
 		t.Fatalf("Latency = %d, want %d", resp.ResponsesResponse.ExtraFields.Latency, 4321)
@@ -427,7 +487,7 @@ func TestBuildRealtimeTurnPostResponseMergesTextAndToolCalls(t *testing.T) {
 		}
 	}`)
 
-	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-realtime", "", rawResponse, "", 123)
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-realtime", "", rawResponse, "", 123, false)
 	if resp == nil || resp.ResponsesResponse == nil {
 		t.Fatal("expected realtime post response")
 	}

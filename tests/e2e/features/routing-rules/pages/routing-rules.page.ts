@@ -15,8 +15,12 @@ export interface RoutingRuleConfig {
   enabled?: boolean
   scope?: 'global' | 'team' | 'customer' | 'virtual_key'
   scopeId?: string
-  // Fallback providers
-  fallbacks?: string[]
+  // Fallback providers, as "provider/model" strings or objects that pin a provider key.
+  // The key is named, not identified: the key select renders key_id as the option value
+  // and the key's name as its text, and pinFallbackKey locates the option by that text.
+  fallbacks?: Array<string | { provider: string; model?: string; key_name?: string }>
+  // Time-to-first-token cutoff in ms; null clears it on edit.
+  ttftTimeoutMs?: number | null
 }
 
 /**
@@ -47,6 +51,7 @@ export class RoutingRulesPage extends BasePage {
   readonly priorityInput: Locator
   readonly enabledToggle: Locator
   readonly scopeSelect: Locator
+  readonly ttftTimeoutInput: Locator
   readonly saveBtn: Locator
   readonly cancelBtn: Locator
 
@@ -88,6 +93,7 @@ export class RoutingRulesPage extends BasePage {
     this.scopeSelect = page.locator('[data-testid="rule-scope-select"]').or(
       page.locator('button').filter({ hasText: /Scope/i })
     )
+    this.ttftTimeoutInput = page.getByTestId('routing-rule-ttft-timeout-input')
     // Use exact button names to avoid matching wrong buttons
     // Match both "Save Rule" (create) and "Update Rule" (edit)
     this.saveBtn = page.locator('[data-testid="save-rule-btn"]').or(
@@ -123,7 +129,7 @@ export class RoutingRulesPage extends BasePage {
     const toast = this.page.locator('[data-sonner-toast]:not([data-removed="true"])').first()
     await expect(toast).toBeVisible({ timeout: 10000 })
     const toastText = await toast.textContent()
-    if (toastText?.toLowerCase().includes('error') || toastText?.toLowerCase().includes('failed')) {
+    if (await toast.getAttribute('data-type') === 'error' || toastText?.toLowerCase().includes('error') || toastText?.toLowerCase().includes('failed')) {
       throw new Error(`Failed to ${action}: ${toastText}`)
     }
     await this.dismissToasts()
@@ -165,7 +171,7 @@ export class RoutingRulesPage extends BasePage {
 
     // Select provider if provided (in the Routing Target section)
     if (config.provider) {
-      const providerCombo = this.sheet.getByRole('combobox').filter({ hasText: /Select provider/i }).first()
+      const providerCombo = this.sheet.getByTestId('routing-target-0-provider-select')
       if (await providerCombo.isVisible().catch(() => false)) {
         await providerCombo.click()
         await this.page.waitForSelector('[role="listbox"]', { timeout: 5000 })
@@ -199,6 +205,19 @@ export class RoutingRulesPage extends BasePage {
       }
     }
 
+    // Add fallbacks if provided
+    for (const fallback of config.fallbacks ?? []) {
+      const spec = typeof fallback === 'string'
+        ? { provider: fallback.split('/')[0], model: fallback.split('/').slice(1).join('/') || undefined, key_name: undefined }
+        : fallback
+      const index = await this.addFallbackProvider(spec.provider, spec.model)
+      if (spec.key_name) {
+        await this.pinFallbackKey(index, spec.key_name)
+      }
+    }
+
+    await this.fillTTFTTimeout(config.ttftTimeoutMs)
+
     // Save
     await this.saveBtn.waitFor({ state: 'visible' })
     await this.saveBtn.click()
@@ -218,11 +237,8 @@ export class RoutingRulesPage extends BasePage {
     const row = this.getRuleRow(name)
     await row.scrollIntoViewIfNeeded()
 
-    const editBtn = row.locator('button').filter({ has: this.page.locator('svg.lucide-pencil') }).or(
-      row.getByRole('button', { name: /Edit/i })
-    )
-    await editBtn.waitFor({ state: 'visible' })
-    await editBtn.click()
+    await row.getByRole('button', { name: `Actions for routing rule ${name}`, exact: true }).click()
+    await this.page.getByRole('menuitem', { name: 'Edit', exact: true }).click()
 
     await expect(this.sheet).toBeVisible({ timeout: 5000 })
     await this.waitForSheetAnimation()
@@ -237,11 +253,8 @@ export class RoutingRulesPage extends BasePage {
     await row.scrollIntoViewIfNeeded()
 
     // Find edit button
-    const editBtn = row.locator('button').filter({ has: this.page.locator('svg.lucide-pencil') }).or(
-      row.getByRole('button', { name: /Edit/i })
-    )
-    await editBtn.waitFor({ state: 'visible' })
-    await editBtn.click()
+    await row.getByRole('button', { name: `Actions for routing rule ${name}`, exact: true }).click()
+    await this.page.getByRole('menuitem', { name: 'Edit', exact: true }).click()
 
     await expect(this.sheet).toBeVisible({ timeout: 5000 })
     await this.waitForSheetAnimation()
@@ -267,6 +280,8 @@ export class RoutingRulesPage extends BasePage {
       await this.priorityInput.fill(String(updates.priority))
     }
 
+    await this.fillTTFTTimeout(updates.ttftTimeoutMs)
+
     // Save
     await this.saveBtn.waitFor({ state: 'visible' })
     await this.saveBtn.click()
@@ -277,6 +292,20 @@ export class RoutingRulesPage extends BasePage {
   }
 
   /**
+   * Set the TTFT cutoff input: a number fills it, null clears it, undefined leaves it alone.
+   */
+  async fillTTFTTimeout(ms: number | null | undefined): Promise<void> {
+    if (ms === undefined) {
+      return
+    }
+    await this.ttftTimeoutInput.scrollIntoViewIfNeeded()
+    await this.ttftTimeoutInput.clear()
+    if (ms !== null) {
+      await this.ttftTimeoutInput.fill(String(ms))
+    }
+  }
+
+  /**
    * Delete a routing rule
    */
   async deleteRoutingRule(name: string): Promise<void> {
@@ -284,12 +313,8 @@ export class RoutingRulesPage extends BasePage {
     const row = this.getRuleRow(name)
     await row.scrollIntoViewIfNeeded()
 
-    // Find delete button (may have lucide-trash or lucide-trash-2 icon)
-    const deleteBtn = row.locator('button').filter({
-      has: this.page.locator('svg.lucide-trash, svg.lucide-trash-2')
-    }).first()
-    await deleteBtn.waitFor({ state: 'visible' })
-    await deleteBtn.click()
+    await row.getByRole('button', { name: `Actions for routing rule ${name}`, exact: true }).click()
+    await this.page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
 
     // Wait for confirmation dialog (AlertDialog uses role="alertdialog")
     const alertDialog = this.page.locator('[role="alertdialog"]')
@@ -596,23 +621,81 @@ export class RoutingRulesPage extends BasePage {
   }
 
   /**
-   * Add a fallback provider
+   * Add a fallback row and pick its provider, optionally its model.
+   * Returns the index of the row that was added.
    */
-  async addFallbackProvider(provider: string, model?: string): Promise<void> {
-    // Find the "Add Fallback" button
-    const addFallbackBtn = this.sheet.getByRole('button', { name: /Add Fallback/i }).or(
-      this.sheet.locator('button').filter({ hasText: /Fallback/i })
-    )
+  async addFallbackProvider(provider: string, model?: string): Promise<number> {
+    const existing = await this.sheet.locator('[data-testid^="routing-fallback-"][data-testid$="-provider-select"]').count()
+    const index = existing
 
-    const isVisible = await addFallbackBtn.isVisible().catch(() => false)
-    if (isVisible) {
-      await addFallbackBtn.click()
+    await this.sheet.getByRole('button', { name: /Add Fallback/i }).click()
 
-      // Fill in provider/model - typically in format "provider/model"
-      const fallbackInput = this.sheet.locator('input[placeholder*="fallback" i], input[placeholder*="provider" i]').first()
-      const value = model ? `${provider}/${model}` : provider
-      await fallbackInput.fill(value)
+    const providerCombo = this.sheet.getByTestId(`routing-fallback-${index}-provider-select`)
+    await providerCombo.waitFor({ state: 'visible', timeout: 5000 })
+    await providerCombo.click()
+    await this.page.waitForSelector('[role="listbox"]', { timeout: 5000 })
+    const option = this.page.getByRole('option', { name: new RegExp(provider, 'i') }).first()
+    await option.scrollIntoViewIfNeeded()
+    await option.click({ force: true })
+    await this.page.waitForSelector('[role="listbox"]', { state: 'hidden', timeout: 5000 }).catch(() => {})
+
+    if (model) {
+      const modelSelect = this.sheet.getByTestId(`routing-fallback-${index}-model-select`)
+      await modelSelect.click()
+      await modelSelect.getByRole('combobox').or(modelSelect.locator('input')).first().fill(model)
+      await this.page.keyboard.press('Enter')
     }
+
+    return index
+  }
+
+  /**
+   * The provider currently selected on a fallback row.
+   */
+  async getFallbackProvider(index: number): Promise<string | null> {
+    const combo = this.sheet.getByTestId(`routing-fallback-${index}-provider-select`)
+    if (!(await combo.isVisible().catch(() => false))) {
+      return null
+    }
+    return (await combo.textContent())?.trim() ?? null
+  }
+
+  /**
+   * Pin a provider key on a fallback row. Returns false when the row offers no key select,
+   * which is what happens when the chosen provider has no keys configured in this environment.
+   */
+  async pinFallbackKey(index: number, keyName?: string): Promise<boolean> {
+    const keySelect = this.sheet.getByTestId(`routing-fallback-${index}-apikey-select`)
+    if (!(await keySelect.isVisible().catch(() => false))) {
+      return false
+    }
+
+    await keySelect.click()
+    await this.page.waitForSelector('[role="listbox"]', { timeout: 5000 })
+    const option = keyName
+      ? this.page.getByRole('option', { name: new RegExp(keyName, 'i') }).first()
+      : this.page.getByRole('option').first()
+    await option.click({ force: true })
+    await this.page.waitForSelector('[role="listbox"]', { state: 'hidden', timeout: 5000 }).catch(() => {})
+    return true
+  }
+
+  /**
+   * The key currently pinned on a fallback row, or null when the row has no key select.
+   */
+  async getPinnedFallbackKey(index: number): Promise<string | null> {
+    const keySelect = this.sheet.getByTestId(`routing-fallback-${index}-apikey-select`)
+    if (!(await keySelect.isVisible().catch(() => false))) {
+      return null
+    }
+    return (await keySelect.textContent())?.trim() ?? null
+  }
+
+  /**
+   * Clear the pinned key on a fallback row, returning it to load-balanced selection.
+   */
+  async clearFallbackKey(index: number): Promise<void> {
+    await this.sheet.getByTestId(`routing-fallback-${index}-apikey-clear`).click()
   }
 
   /**

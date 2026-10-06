@@ -51,6 +51,10 @@ func (m *mockRoutingManager) ReloadComplexityAnalyzerConfig(_ context.Context, c
 	return m.reloadErr
 }
 
+func (m *mockRoutingManager) ReloadRoutingRule(_ context.Context, _ string) error {
+	return nil
+}
+
 func testComplexityAnalyzerPayload(t *testing.T, cfg complexity.AnalyzerConfig) string {
 	t.Helper()
 	body, err := json.Marshal(cfg)
@@ -226,6 +230,32 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	if stored.Session == nil || !stored.Session.Enabled {
 		t.Fatalf("expected enabled session config to persist, got %+v", stored.Session)
 	}
+}
+
+// TestComplexityAnalyzerConfigPutPersistsDecision verifies the API accepts and stores the decision-model classifier payload.
+func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+
+	cfg := complexity.DefaultAnalyzerConfig()
+	cfg.Classifier = complexity.ClassifierDecision
+	count := 1
+	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond}
+	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
+	handler.updateComplexityAnalyzerConfig(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, complexity.ClassifierDecision, stored.Classifier)
+	require.NotNil(t, stored.Decision)
+	require.NotNil(t, stored.Decision.PreviousMessageCount)
+	require.Equal(t, 1, *stored.Decision.PreviousMessageCount)
+	require.Equal(t, 400*time.Millisecond, stored.Decision.Timeout)
+	require.Equal(t, 1, manager.reloadCalls)
 }
 
 func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
@@ -462,4 +492,212 @@ func TestRoutingRoutesServeCanonicalAndLegacyPaths(t *testing.T) {
 			}
 		}
 	}
+}
+
+// reloadRecordingRoutingManager accepts rule reloads so the CRUD handlers can run end to end.
+type reloadRecordingRoutingManager struct {
+	RoutingManager
+	reloaded []string
+}
+
+func (m *reloadRecordingRoutingManager) ReloadRoutingRule(_ context.Context, id string) error {
+	m.reloaded = append(m.reloaded, id)
+	return nil
+}
+
+// ruleFallbacksJSON returns the "fallbacks" array of a handler response exactly as the client sees it.
+func ruleFallbacksJSON(t *testing.T, ctx *fasthttp.RequestCtx) string {
+	t.Helper()
+	require.Less(t, ctx.Response.StatusCode(), 300, "unexpected status: %s", string(ctx.Response.Body()))
+	var resp struct {
+		Rule struct {
+			ID        string          `json:"id"`
+			Fallbacks json.RawMessage `json:"fallbacks"`
+		} `json:"rule"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	if len(resp.Rule.Fallbacks) == 0 {
+		return ""
+	}
+	return string(resp.Rule.Fallbacks)
+}
+
+// TestRoutingRuleFallbacksRoundTrip pins the fallbacks a client sends, reads back and edits through
+// the routing rule API: both forms survive create, GET and the stored column; a PUT without
+// fallbacks keeps them, a PUT with fallbacks replaces them, an empty list clears them, and an
+// invalid PUT leaves them untouched.
+func TestRoutingRuleFallbacksRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &reloadRecordingRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+
+	created := `["anthropic/claude-sonnet-4","azure/",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-1"},{"provider":"groq","model":"llama-3.1-8b-instant"},{"provider":"bedrock","model":"","key_id":"k-2"}]`
+	// An unpinned object is normalized to its legacy string; everything else comes back as sent.
+	wantCreated := `["anthropic/claude-sonnet-4","azure/",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-1"},"groq/llama-3.1-8b-instant",{"provider":"bedrock","model":"","key_id":"k-2"}]`
+
+	createCtx := newTestRequestCtx(`{"name":"fb-roundtrip","cel_expression":"model == \"gpt-4o\"","targets":[{"provider":"openai","weight":1}],"fallbacks":` + created + `}`)
+	handler.createRoutingRule(createCtx)
+	require.JSONEq(t, wantCreated, ruleFallbacksJSON(t, createCtx))
+	var createResp struct {
+		Rule struct {
+			ID string `json:"id"`
+		} `json:"rule"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &createResp))
+	ruleID := createResp.Rule.ID
+	require.Equal(t, []string{ruleID}, manager.reloaded)
+
+	get := func() string {
+		ctx := newTestRequestCtx("")
+		ctx.SetUserValue("rule_id", ruleID)
+		handler.getRoutingRule(ctx)
+		return ruleFallbacksJSON(t, ctx)
+	}
+	put := func(body string) *fasthttp.RequestCtx {
+		ctx := newTestRequestCtx(body)
+		ctx.SetUserValue("rule_id", ruleID)
+		handler.updateRoutingRule(ctx)
+		return ctx
+	}
+	storedColumn := func() string {
+		rule, err := store.GetRoutingRule(context.Background(), ruleID)
+		require.NoError(t, err)
+		if rule.Fallbacks == nil {
+			return ""
+		}
+		return *rule.Fallbacks
+	}
+
+	require.Equal(t, wantCreated, get(), "GET must return the fallbacks byte-for-byte")
+	require.Equal(t, wantCreated, storedColumn(), "the stored column must hold the same bytes")
+
+	t.Run("PUT without fallbacks keeps them", func(t *testing.T) {
+		ctx := put(`{"description":"renamed"}`)
+		require.Equal(t, wantCreated, ruleFallbacksJSON(t, ctx))
+		require.Equal(t, wantCreated, get())
+	})
+
+	t.Run("invalid PUT is rejected and leaves them untouched", func(t *testing.T) {
+		for _, body := range []string{
+			`{"fallbacks":["gpt-4o"]}`,
+			`{"fallbacks":[{"key_id":"k-1"}]}`,
+			`{"fallbacks":[{"provider":"vertex","provider_key_name":"prod"}]}`,
+			`{"fallbacks":[""]}`,
+			`{"fallbacks":[null]}`,
+		} {
+			ctx := put(body)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%s: %s", body, string(ctx.Response.Body()))
+			require.Equal(t, wantCreated, get(), "%s changed the stored fallbacks", body)
+		}
+	})
+
+	t.Run("PUT with fallbacks replaces them", func(t *testing.T) {
+		replaced := `[{"provider":"anthropic","model":"claude-sonnet-4","key_id":"k-3"},"openai/gpt-4o-mini"]`
+		ctx := put(`{"fallbacks":` + replaced + `}`)
+		require.Equal(t, replaced, ruleFallbacksJSON(t, ctx))
+		require.Equal(t, replaced, get())
+		require.Equal(t, replaced, storedColumn())
+	})
+
+	t.Run("PUT with an empty list clears them", func(t *testing.T) {
+		ctx := put(`{"fallbacks":[]}`)
+		require.Equal(t, "", ruleFallbacksJSON(t, ctx))
+		require.Equal(t, "", get())
+		require.Equal(t, "", storedColumn())
+	})
+}
+
+// TestCreateRoutingRuleRejectsInvalidFallbacks pins that a create with a bad fallback returns 400
+// and stores nothing.
+func TestCreateRoutingRuleRejectsInvalidFallbacks(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &reloadRecordingRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+
+	for _, fallbacks := range []string{
+		`["gpt-4o"]`,
+		`["meta-llama/Llama-3.1-8B"]`,
+		`[""]`,
+		`[{"key_id":"k-1"}]`,
+		`[{"provider":"vertex","provider_key_name":"prod"}]`,
+		`[{"provider":"unregistered","model":"claude-sonnet-5","key_id":"k-1"}]`,
+		`[{"provider":" ","model":"claude-sonnet-5"}]`,
+		`[1]`,
+	} {
+		t.Run(fallbacks, func(t *testing.T) {
+			ctx := newTestRequestCtx(`{"name":"bad-fb","cel_expression":"true","targets":[{"provider":"openai","weight":1}],"fallbacks":` + fallbacks + `}`)
+			handler.createRoutingRule(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		})
+	}
+	rules, err := store.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, rules, "a rejected create must not store a rule")
+	require.Empty(t, manager.reloaded)
+}
+
+// TestRoutingTargetTTFTTimeoutValidation pins a target's ttft_timeout_ms on
+// create and update: 1..300000 is stored, 0 means "off", targets are replaced
+// wholesale on update so omitting it there clears it, and anything else is a 400.
+func TestRoutingTargetTTFTTimeoutValidation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &RoutingHandler{configStore: store, routingManager: &mockRoutingManager{}}
+
+	targets := func(ttft string) string {
+		return fmt.Sprintf(`[{"provider":"openai","model":"gpt-4o-mini","weight":1%s}]`, ttft)
+	}
+	create := func(t *testing.T, name, ttft string) (int, string) {
+		t.Helper()
+		body := fmt.Sprintf(`{"name":%q,"cel_expression":"true","targets":%s,"priority":%d}`, name, targets(ttft), len(name))
+		ctx := newTestRequestCtx(body)
+		handler.createRoutingRule(ctx)
+		var resp struct {
+			Rule tables.TableRoutingRule `json:"rule"`
+		}
+		_ = json.Unmarshal(ctx.Response.Body(), &resp)
+		return ctx.Response.StatusCode(), resp.Rule.ID
+	}
+	update := func(t *testing.T, id, body string) int {
+		t.Helper()
+		ctx := newTestRequestCtx(body)
+		ctx.SetUserValue("rule_id", id)
+		handler.updateRoutingRule(ctx)
+		return ctx.Response.StatusCode()
+	}
+	stored := func(t *testing.T, id string) *int {
+		t.Helper()
+		rule, err := store.GetRoutingRule(context.Background(), id)
+		require.NoError(t, err)
+		require.Len(t, rule.Targets, 1)
+		return rule.Targets[0].TTFTTimeoutMs
+	}
+
+	status, id := create(t, "ttft-set", `,"ttft_timeout_ms":1500`)
+	require.Equal(t, fasthttp.StatusOK, status)
+	require.NotNil(t, stored(t, id))
+	require.Equal(t, 1500, *stored(t, id))
+
+	status, offID := create(t, "ttft-zero", `,"ttft_timeout_ms":0`)
+	require.Equal(t, fasthttp.StatusOK, status)
+	require.Nil(t, stored(t, offID), "0 must mean no TTFT deadline")
+
+	for _, bad := range []string{`,"ttft_timeout_ms":-1`, `,"ttft_timeout_ms":300001`} {
+		status, _ = create(t, "ttft-bad"+bad[len(bad)-2:], bad)
+		require.Equal(t, fasthttp.StatusBadRequest, status, "create with %s", bad)
+	}
+
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"description":"no targets field"}`))
+	require.Equal(t, 1500, *stored(t, id), "an update that omits targets must keep them and their deadline")
+
+	require.Equal(t, fasthttp.StatusBadRequest, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":999999`)+`}`))
+	require.Equal(t, 1500, *stored(t, id), "a rejected update must not change it")
+
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":250`)+`}`))
+	require.Equal(t, 250, *stored(t, id))
+
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":0`)+`}`))
+	require.Nil(t, stored(t, id), "0 on update must clear the deadline")
 }

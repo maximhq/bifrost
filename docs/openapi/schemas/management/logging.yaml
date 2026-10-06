@@ -73,16 +73,34 @@ LogEntry:
       nullable: true
     complexity_mechanism:
       type: [string, 'null']
-      enum: [semantic, llm, session, skipped, null]
-      description: How the effective complexity tier was determined. session means retained session state supplied the tier; skipped means classification was demanded but produced no tier.
+      enum: [semantic, decision, llm, session, skipped, null]
+      description: How the effective complexity tier was determined. decision means the configured decision model supplied the tier; session means retained session state supplied it; skipped means classification was demanded but produced no tier.
     complexity_score:
       type: number
-      description: Similarity score of the nearest reference phrase behind the tier. Absent for llm, session, and skipped decisions.
+      description: Similarity score of the nearest reference phrase behind the tier. Absent for decision-model, LLM, session, and skipped decisions.
       nullable: true
     session_id:
       type: string
       description: Raw opaque Bifrost session ID resolved at ingress for key stickiness and request correlation.
       nullable: true
+    child_count:
+      type: integer
+      description: Rows nesting under this one (fallback attempts, and settled async cost rows). Present only on roots_only responses.
+    children_cost:
+      type: number
+      description: Cost summed over those nested rows, under the same filters as the listing. Present only on roots_only responses.
+    children_tokens:
+      type: integer
+      description: Tokens summed over those nested rows, under the same filters as the listing. Present only on roots_only responses.
+    session_child_count:
+      type: integer
+      description: Rows in this session other than this one. Present only on the root of a collapsed session (group_sessions responses), and absent for a session with a single matching row.
+    session_total_cost:
+      type: number
+      description: Cost summed over the whole session, this row included, under the same filters as the listing. Present only on the root of a collapsed session (group_sessions responses), and absent for a session with a single matching row or when the total is zero.
+    session_total_tokens:
+      type: integer
+      description: Tokens summed over the whole session, this row included, under the same filters as the listing. Present only on the root of a collapsed session (group_sessions responses), and absent for a session with a single matching row or when the total is zero.
     stream:
       type: boolean
     raw_request:

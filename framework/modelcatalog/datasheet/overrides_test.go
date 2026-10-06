@@ -1002,6 +1002,14 @@ func TestPatchPricing_InputCostPerQuery(t *testing.T) {
 	assert.Equal(t, 0.002, *patched.InputCostPerQuery)
 }
 
+func TestPatchPricing_WebSearchCostPerRequest(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "claude-haiku-4-5", Provider: "anthropic", Mode: "chat"}
+
+	patched := patchPricing(base, Options{WebSearchCostPerRequest: bifrost.Ptr(0.01)})
+	require.NotNil(t, patched.WebSearchCostPerRequest)
+	assert.Equal(t, 0.01, *patched.WebSearchCostPerRequest)
+}
+
 func TestPatchPricing_SizeAndQualityImageRates(t *testing.T) {
 	base := configstoreTables.TableModelPricing{
 		Model:    "gpt-image-1",
@@ -1069,4 +1077,99 @@ func TestPatchPricing_VideoResolutionBandRates(t *testing.T) {
 
 	// Unpatched fields keep their base values.
 	assert.Equal(t, 0.30, *patched.OutputCostPerVideoPerSecond)
+}
+
+// TestPatchPricing_TimeOfDayFields covers the two peak/off-peak fields. The
+// multiplier rides the *float64 loop; PeakHours is patched separately because
+// it is a struct pointer, so both paths need pinning.
+func TestPatchPricing_TimeOfDayFields(t *testing.T) {
+	baseSchedule := &configstoreTables.PeakHoursSchedule{
+		Timezone: "UTC",
+		Windows: []configstoreTables.PeakHoursWindow{
+			{Days: []int{1, 2, 3, 4, 5}, Start: "01:00", End: "04:00"},
+		},
+	}
+	base := configstoreTables.TableModelPricing{
+		Model:                 "deepseek-v4-flash",
+		Provider:              "deepseek",
+		Mode:                  "chat",
+		OffPeakCostMultiplier: bifrost.Ptr(0.5),
+		PeakHours:             baseSchedule,
+	}
+
+	t.Run("both fields overridden", func(t *testing.T) {
+		newSchedule := &configstoreTables.PeakHoursSchedule{
+			Timezone: "Asia/Shanghai",
+			Windows: []configstoreTables.PeakHoursWindow{
+				{Days: []int{0, 6}, Start: "09:00", End: "18:00"},
+			},
+		}
+		patched := patchPricing(base, Options{
+			OffPeakCostMultiplier: bifrost.Ptr(0.75),
+			PeakHours:             newSchedule,
+		})
+		require.NotNil(t, patched.OffPeakCostMultiplier)
+		assert.Equal(t, 0.75, *patched.OffPeakCostMultiplier)
+		require.NotNil(t, patched.PeakHours)
+		assert.Equal(t, "Asia/Shanghai", patched.PeakHours.Timezone)
+		assert.Len(t, patched.PeakHours.Windows, 1)
+	})
+
+	t.Run("multiplier only keeps the datasheet schedule", func(t *testing.T) {
+		patched := patchPricing(base, Options{OffPeakCostMultiplier: bifrost.Ptr(0.9)})
+		require.NotNil(t, patched.OffPeakCostMultiplier)
+		assert.Equal(t, 0.9, *patched.OffPeakCostMultiplier)
+		require.NotNil(t, patched.PeakHours)
+		assert.Equal(t, "UTC", patched.PeakHours.Timezone)
+	})
+
+	t.Run("empty override leaves both intact", func(t *testing.T) {
+		patched := patchPricing(base, Options{})
+		require.NotNil(t, patched.OffPeakCostMultiplier)
+		assert.Equal(t, 0.5, *patched.OffPeakCostMultiplier)
+		require.NotNil(t, patched.PeakHours)
+		assert.Equal(t, "UTC", patched.PeakHours.Timezone)
+	})
+
+	t.Run("base is not mutated", func(t *testing.T) {
+		_ = patchPricing(base, Options{
+			OffPeakCostMultiplier: bifrost.Ptr(0.1),
+			PeakHours:             &configstoreTables.PeakHoursSchedule{Timezone: "UTC"},
+		})
+		assert.Equal(t, 0.5, *base.OffPeakCostMultiplier)
+		assert.Same(t, baseSchedule, base.PeakHours)
+	})
+}
+
+func TestPatchPricing_UltrafastAbove272kRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "gpt-6-astra", Provider: "openai", Mode: "responses"}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenAbove272kTokensUltrafast:           bifrost.Ptr(0.00012),
+		OutputCostPerTokenAbove272kTokensUltrafast:          bifrost.Ptr(0.00045),
+		CacheReadInputTokenCostAbove272kTokensUltrafast:     bifrost.Ptr(0.000012),
+		CacheCreationInputTokenCostAbove272kTokensUltrafast: bifrost.Ptr(0.00015),
+	})
+	require.NotNil(t, patched.InputCostPerTokenAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00012, *patched.InputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, patched.OutputCostPerTokenAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00045, *patched.OutputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, patched.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	assert.Equal(t, 0.000012, *patched.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00015, *patched.CacheCreationInputTokenCostAbove272kTokensUltrafast)
+}
+
+func TestPatchPricing_PriorityAbove272kCacheCreationRate(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "gpt-6-astra", Provider: "openai", Mode: "responses",
+		CacheCreationInputTokenCostPriority: bifrost.Ptr(0.000025)}
+
+	patched := patchPricing(base, Options{
+		CacheCreationInputTokenCostAbove272kTokensPriority: bifrost.Ptr(0.00005),
+	})
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove272kTokensPriority)
+	assert.Equal(t, 0.00005, *patched.CacheCreationInputTokenCostAbove272kTokensPriority)
+	// Untouched sibling survives the patch.
+	require.NotNil(t, patched.CacheCreationInputTokenCostPriority)
+	assert.Equal(t, 0.000025, *patched.CacheCreationInputTokenCostPriority)
 }

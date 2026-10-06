@@ -27,6 +27,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { OverheadBreakdown } from "@/components/logs/overheadBreakdown";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
@@ -42,17 +43,26 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
-import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
+import { getLogRoutingPanel } from "@/lib/registries/logs";
+import { useGetLogsQuery, useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
-import { BatchRequestCounts, ContentBlock, LLMUsage, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
+import {
+	BatchRequestCounts,
+	ContentBlock,
+	InputCostDetails,
+	LLMUsage,
+	LogEntry,
+	OutputCostDetails,
+	ResponsesMessage,
+} from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
-import { extractResponsesItemPayload, summarizeResponsesToolCall } from "@/lib/utils/responsesItems";
 import { isJson } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import "@enterprise/lib/registrations/logs";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench, X } from "lucide-react";
@@ -69,7 +79,31 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
-import { parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
+import {
+	extractProviderErrorMessage,
+	isClientToolCallItem,
+	nextSessionLookupStart,
+	isShownMetadataKey,
+	parseRoutingDecisionLine,
+	pickNextSessionLog,
+	resolveRawJsonNoticeState,
+} from "./logDetailView.utils";
+import LiveSessionView from "../views/liveSessionView";
+import {
+	CollapsibleCode,
+	EncryptedReveal,
+	MessageRow,
+	ResponsesItemRow,
+	ToolNameLabel,
+	extractReasoningParts,
+	extractResponsesText,
+	flattenDeclaredTools,
+	getResponsesRole,
+	messageDotClass,
+	messageRoleLabel,
+	messageToneClass,
+	type MessageRole,
+} from "../views/responsesItemRow";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -110,125 +144,6 @@ const formatRealtimeSource = (value: unknown): string => {
 	}
 };
 
-const extractResponsesText = (msg: ResponsesMessage, mapping?: Record<string, string>): string => {
-	let text: string;
-	if (msg.type === "reasoning") {
-		const summaryText = (msg.summary ?? [])
-			.map((s) => s.text)
-			.filter(Boolean)
-			.join("\n")
-			.trim();
-		if (summaryText) text = summaryText;
-		else if (msg.encrypted_content) text = msg.encrypted_content;
-		else text = "";
-	} else if (typeof msg.content === "string") {
-		text = msg.content;
-	} else if (Array.isArray(msg.content)) {
-		text = msg.content
-			.filter(
-				(b: any) =>
-					b &&
-					(b.text || b.refusal) &&
-					(b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal"),
-			)
-			// Refusal blocks carry their text in `refusal`, not `text`.
-			.map((b: any) => (b.text ?? b.refusal) as string)
-			.join("\n");
-	} else if (typeof (msg as any).arguments === "string") {
-		text = (msg as any).arguments as string;
-	} else {
-		text = "";
-	}
-	if (mapping && text) {
-		for (const [key, value] of Object.entries(mapping)) {
-			text = text.replaceAll(`[${key}]`, value);
-		}
-	}
-	return text;
-};
-
-type ReasoningParts = {
-	summaries: string[];
-	encrypted?: string;
-	signatures: string[];
-	contentText?: string;
-};
-
-const collectReasoningFromBlocks = (blocks: any[]): { text: string; signatures: string[] } => {
-	const texts: string[] = [];
-	const signatures: string[] = [];
-	for (const b of blocks) {
-		if (!b || typeof b !== "object") continue;
-		const isReasoningish =
-			b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal" || !b.type;
-		if (isReasoningish && typeof b.text === "string" && b.text.trim()) {
-			texts.push(b.text);
-		}
-		if (typeof b.signature === "string" && b.signature.trim()) {
-			signatures.push(b.signature.trim());
-		}
-	}
-	return { text: texts.join("\n"), signatures };
-};
-
-const extractReasoningParts = (msg: ResponsesMessage, mapping?: Record<string, string>): ReasoningParts => {
-	let summaries = (msg.summary ?? []).map((s) => (s?.text ?? "").trim()).filter(Boolean);
-	const encryptedRaw = (msg as any).encrypted_content?.trim?.();
-	let encrypted = encryptedRaw ? encryptedRaw : undefined;
-	const signatures: string[] = [];
-	let contentText = "";
-	if (typeof msg.content === "string") {
-		contentText = msg.content;
-	} else if (Array.isArray(msg.content)) {
-		const fromContent = collectReasoningFromBlocks(msg.content as any[]);
-		contentText = fromContent.text;
-		signatures.push(...fromContent.signatures);
-	}
-	// Some providers stash reasoning under `output` instead of `content`
-	const out = (msg as any).output;
-	if (out !== undefined) {
-		if (typeof out === "string" && out.trim() && !contentText) {
-			contentText = out;
-		} else if (Array.isArray(out)) {
-			const fromOutput = collectReasoningFromBlocks(out as any[]);
-			if (!contentText && fromOutput.text) contentText = fromOutput.text;
-			signatures.push(...fromOutput.signatures);
-		}
-	}
-	// Defensive: top-level text-bearing fields some variants use
-	if (!contentText) {
-		const topText =
-			(typeof (msg as any).text === "string" && (msg as any).text) ||
-			(typeof (msg as any).thinking === "string" && (msg as any).thinking) ||
-			"";
-		if (topText.trim()) contentText = topText;
-	}
-	if (mapping) {
-		summaries = summaries.map((s) => {
-			for (const [key, value] of Object.entries(mapping)) {
-				s = s.replaceAll(`[${key}]`, value);
-			}
-			return s;
-		});
-		if (encrypted) {
-			for (const [key, value] of Object.entries(mapping)) {
-				encrypted = encrypted.replaceAll(`[${key}]`, value);
-			}
-		}
-		if (contentText) {
-			for (const [key, value] of Object.entries(mapping)) {
-				contentText = contentText.replaceAll(`[${key}]`, value);
-			}
-		}
-	}
-	return {
-		summaries,
-		encrypted,
-		signatures,
-		contentText: contentText || undefined,
-	};
-};
-
 const extractChatReasoning = (message: any, mapping?: Record<string, string>): string => {
 	if (!message) return "";
 	let text = "";
@@ -249,27 +164,6 @@ const extractChatReasoning = (message: any, mapping?: Record<string, string>): s
 	return text;
 };
 
-const getResponsesRole = (msg: ResponsesMessage): MessageRole => {
-	if (msg.type === "reasoning") return "reasoning";
-	if (
-		msg.type &&
-		(msg.type.endsWith("_call") ||
-			msg.type.endsWith("_call_output") ||
-			msg.type === "tool_search_output" ||
-			msg.type === "additional_tools" ||
-			msg.type === "mcp_list_tools" ||
-			msg.type === "mcp_approval_request" ||
-			msg.type === "mcp_approval_responses")
-	) {
-		return "tool";
-	}
-	const r = msg.role;
-	if (r === "user") return "user";
-	if (r === "assistant") return "assistant";
-	if (r === "system" || r === "developer") return "system";
-	return "assistant";
-};
-
 const isPlainAssistantResponsesMessage = (m: ResponsesMessage): boolean => {
 	if (m.type && m.type !== "message") return false;
 	return getResponsesRole(m) === "assistant";
@@ -280,15 +174,6 @@ const isReasoningResponsesMessage = (m: ResponsesMessage): boolean => m.type ===
 // Streaming providers can emit a single logical assistant turn (or reasoning
 // item) as many small messages. Collapse adjacent ones so the UI shows one
 // bubble per turn instead of N "1 line" bubbles.
-// Expands namespace tool declarations into their callable children
-// (`namespace.tool` names), leaving plain declarations untouched.
-const flattenDeclaredTools = (tools: any[]): any[] =>
-	tools.flatMap((tool) =>
-		tool?.type === "namespace" && Array.isArray(tool.tools)
-			? (tool.tools as any[]).map((nested) => ({ ...nested, name: `${tool.name ?? "namespace"}.${nested?.name ?? ""}` }))
-			: [tool],
-	);
-
 // Later declarations of the same tool replace earlier ones — a conversation
 // history can carry multiple `additional_tools` items, each a point-in-time
 // update, so the effective tool set is last-write-wins by name. Unnamed
@@ -423,6 +308,35 @@ const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
 	return lines.join("\n");
 };
 
+const INPUT_COST_LABELS: [keyof InputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["cached_read_cost", "Cache read"],
+	["cached_write_cost", "Cache write"],
+	["request_cost", "Per-request fee"],
+];
+
+const OUTPUT_COST_LABELS: [keyof OutputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["reasoning_cost", "Reasoning"],
+	["citation_cost", "Citations"],
+	["search_queries_cost", "Web search"],
+];
+
+// Lists the non-zero cost categories; undefined when there are none or text is the only one.
+const getCostDetailsTooltip = <T extends InputCostDetails | OutputCostDetails>(
+	details: T | undefined,
+	labels: [keyof T, string][],
+): string | undefined => {
+	if (!details) return undefined;
+	const set = labels.filter(([key]) => ((details[key] as number | undefined) ?? 0) > 0);
+	if (set.length === 0 || (set.length === 1 && set[0][0] === "text_cost")) return undefined;
+	return set.map(([key, label]) => `${label}: ${formatCostPrecise(details[key] as number)}`).join("\n");
+};
+
 // Helper to detect passthrough operations
 const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
 
@@ -446,22 +360,22 @@ const isContainerOperation = (object: string) => {
 };
 
 const statusPillStyles: Record<string, string> = {
-	success: "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900",
-	error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900",
+	success: "border-chart-success/30 bg-chart-success/10 text-chart-success-ink",
+	error: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
 	processing: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900",
 	cancelled: "bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-900/40 dark:text-gray-400 dark:border-gray-800",
 };
 const statusDotStyles: Record<string, string> = {
-	success: "bg-green-500",
-	error: "bg-red-500",
+	success: "bg-chart-success",
+	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
 };
 
 const batchStatusBadgeStyles: Record<string, string> = {
-	completed: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-	ended: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-	failed: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+	completed: "bg-chart-success/15 text-chart-success-ink",
+	ended: "bg-chart-success/15 text-chart-success-ink",
+	failed: "bg-chart-error/15 text-chart-error-ink",
 	expired: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
 	cancelled: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
 	deleted: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
@@ -484,13 +398,12 @@ function StatusPill({ status }: { status: Status }) {
 
 // Colors an HTTP status code badge by response class.
 function statusCodeBadgeClass(code: number): string {
-	if (code >= 200 && code < 300)
-		return "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900";
+	if (code >= 200 && code < 300) return "border-chart-success/30 bg-chart-success/10 text-chart-success-ink";
 	if (code >= 300 && code < 400)
 		return "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900";
 	if (code >= 400 && code < 500)
 		return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900";
-	return "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900";
+	return "border-chart-error/30 bg-chart-error/10 text-chart-error-ink";
 }
 
 function HeroStat({
@@ -519,307 +432,6 @@ function HeroStat({
 	);
 }
 
-// formatMicros renders a microsecond overhead value, promoting to ms once it is
-// large enough that microseconds would just be noise.
-function formatMicros(us: number): string {
-	if (us >= 1000) return `${(us / 1000).toFixed(2)} ms`;
-	return `${us.toFixed(us < 10 ? 1 : 0)} µs`;
-}
-
-// Top-level overhead categories shown in the stacked bar + legend. Raw backend span
-// names are grouped into a handful of user-facing categories: Serialization (JSON
-// parse/encode), Conversion (API schema translation), Plugins, Middleware (auth/access),
-// Key selection, Processing (internal request pipeline), Networking
-// (client<->gateway<->provider handling), Client delivery (SSE egress to the client), and Miscellaneous
-// (small glue on no dedicated span plus the residual goroutine-hop latency between phases). "View details" drills into the member
-// spans inside each grouped category with their friendly labels. See OVERHEAD_LABELS /
-// OVERHEAD_BUCKET_CATEGORY / overheadCategoryKey for the mapping.
-type OverheadCategory = {
-	key: string;
-	label: string;
-	colorClass: string;
-	totalUs: number;
-	members: OverheadBucket[];
-};
-
-// The four serialization phases collapsed into the "Serialization" category. Their
-// per-phase labels below are used for the drill-down rows.
-const OVERHEAD_SERIALIZATION_PHASES = new Set(["request-unmarshal", "request-marshal", "response-parse", "response-marshal"]);
-
-// Top-level categories shown in the stacked bar + legend. Each has a distinct colour.
-const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string }> = {
-	serialization: { label: "Serialization", colorClass: "bg-indigo-500/70" },
-	conversion: { label: "Conversion", colorClass: "bg-fuchsia-500/70" },
-	plugins: { label: "Plugins", colorClass: "bg-blue-500/70" },
-	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
-	routing: { label: "Key selection", colorClass: "bg-amber-500/70" },
-	processing: { label: "Processing", colorClass: "bg-teal-500/70" },
-	networking: { label: "Networking", colorClass: "bg-emerald-500/70" },
-	streaming: { label: "Client delivery", colorClass: "bg-red-500/70" },
-	miscellaneous: { label: "Miscellaneous", colorClass: "bg-slate-500/70" },
-	other: { label: "Other", colorClass: "bg-muted-foreground/50" },
-};
-
-// Friendly drill-down labels for each raw bucket name (the technical span names the
-// backend emits). Members without an entry fall back to the name with any "plugin."
-// prefix stripped.
-const OVERHEAD_LABELS: Record<string, string> = {
-	// Serialization (JSON parse / encode)
-	"request-unmarshal": "Request parse",
-	"request-marshal": "Request encode",
-	"response-parse": "Response parse",
-	"response-marshal": "Response encode",
-	// Conversion (API schema translation)
-	convertor: "Schema conversion",
-	"convertor.stream-in": "Stream convert (inbound)",
-	"convertor.stream-out": "Stream convert (outbound)",
-	// Middleware (auth / access control)
-	"middleware.apikeys": "API",
-	"middleware.scim": "SCIM",
-	"middleware.auth": "Auth",
-	// Routing
-	"key-pool": "Key pool",
-	"key.selection": "Key selection",
-	// Processing (internal request pipeline)
-	"handle-setup": "Request setup",
-	"pipeline-pre": "Pre-hooks",
-	"pipeline-post": "Post-hooks",
-	"worker-setup": "Worker setup",
-	"worker-handoff": "Worker handoff",
-	"queue-wait": "Queue wait",
-	"attribute-population": "Attribute population",
-	miscellaneous: "Uncaptured glue",
-	// Networking (client<->gateway<->provider handling)
-	"provider-internal": "Provider processing",
-	"transport-context": "Request context building",
-	"transport-response-headers": "Response headers",
-	"response-finalize": "Response read",
-	"request-sign": "Request signing",
-	"credentials-fetch": "Credential fetch",
-	// Streaming relay
-	"stream-backpressure": "Client backpressure",
-	"stream-client-write": "Client write",
-	scheduling: "Scheduling residual",
-};
-
-// Category assignment for buckets that aren't matched by a prefix rule below. Every
-// backend bucket name should be either matched by a prefix rule (serialization phases,
-// middleware.*, convertor*, plugin.*) or listed here — otherwise it lands in "Other",
-// which is the signal that a new bucket needs a home.
-const OVERHEAD_BUCKET_CATEGORY: Record<string, string> = {
-	"key-pool": "routing",
-	"key.selection": "routing",
-	"handle-setup": "processing",
-	"pipeline-pre": "processing",
-	"pipeline-post": "processing",
-	"worker-setup": "processing",
-	"worker-handoff": "processing",
-	"queue-wait": "processing",
-	"attribute-population": "processing",
-	miscellaneous: "miscellaneous",
-	"provider-internal": "networking",
-	"transport-context": "networking",
-	"transport-response-headers": "networking",
-	"response-finalize": "networking",
-	"request-sign": "networking",
-	"credentials-fetch": "networking",
-	"stream-backpressure": "streaming",
-	"stream-client-write": "streaming",
-	scheduling: "miscellaneous",
-};
-
-// Raw backend spans that split one user-facing step into internals a reader doesn't care
-// about are folded into a single member. key-pool (the pool lookup) + key.selection (the
-// actual pick) are both "choosing the API key", so they collapse into "Key selection".
-const OVERHEAD_MEMBER_MERGE: Record<string, string> = {
-	"key-pool": "key.selection",
-};
-function mergedBucketName(name: string): string {
-	return OVERHEAD_MEMBER_MERGE[name] ?? name;
-}
-
-function overheadCategoryKey(b: OverheadBucket): string {
-	if (OVERHEAD_SERIALIZATION_PHASES.has(b.name)) {
-		return "serialization";
-	}
-	if (b.name.startsWith("middleware.")) {
-		return "middleware";
-	}
-	// The bare "convertor" phase and the per-chunk streaming variants (convertor.stream-in
-	// / .stream-out) all fold into the single Conversion category.
-	if (b.name === "convertor" || b.name.startsWith("convertor.")) {
-		return "conversion";
-	}
-	const mapped = OVERHEAD_BUCKET_CATEGORY[b.name];
-	if (mapped) {
-		return mapped;
-	}
-	return b.kind === "plugin" ? "plugins" : "other";
-}
-
-// overheadMemberLabel renders a drill-down member with its friendly label when there is
-// one, else the span name with the redundant "plugin." prefix stripped (every plugin row
-// already sits under the Plugins group).
-// Plugin display names where a plain title-case of the kebab id would read wrong
-// (acronyms, multi-word tokens). Everything else is title-cased from its id.
-const PLUGIN_LABEL_OVERRIDES: Record<string, string> = {
-	otel: "OpenTelemetry",
-	datadog: "Datadog",
-	compat: "Compatibility",
-	"adaptive-loadbalancer": "Adaptive Load Balancer",
-	"model-catalog-resolver": "Model Catalog Resolver",
-};
-
-// pluginDisplayName turns a plugin's kebab-case id ("enterprise-governance") into a
-// friendly label ("Enterprise Governance"), honouring PLUGIN_LABEL_OVERRIDES first.
-function pluginDisplayName(id: string): string {
-	if (PLUGIN_LABEL_OVERRIDES[id]) return PLUGIN_LABEL_OVERRIDES[id];
-	return id
-		.split("-")
-		.filter(Boolean)
-		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-		.join(" ");
-}
-
-function overheadMemberLabel(name: string): string {
-	const friendly = OVERHEAD_LABELS[name];
-	if (friendly) return friendly;
-	if (name.startsWith("plugin.")) return pluginDisplayName(name.slice("plugin.".length));
-	if (name.startsWith("middleware.")) return name.slice("middleware.".length);
-	return name;
-}
-
-// buildOverheadCategories groups the raw buckets into the top-level categories,
-// ordered largest-first so the bar and legend read like the numbers.
-function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] {
-	const grouped = new Map<string, OverheadBucket[]>();
-	for (const b of buckets) {
-		const key = overheadCategoryKey(b);
-		const list = grouped.get(key);
-		if (list) list.push(b);
-		else grouped.set(key, [b]);
-	}
-	const cats: OverheadCategory[] = [];
-	for (const [key, rawMembers] of grouped) {
-		// Fold raw span splits into their merged member (e.g. key-pool -> key.selection),
-		// summing durations, before sorting/rendering.
-		const byName = new Map<string, OverheadBucket>();
-		for (const m of rawMembers) {
-			const name = mergedBucketName(m.name);
-			const existing = byName.get(name);
-			if (existing) existing.duration_us += m.duration_us;
-			else byName.set(name, { ...m, name });
-		}
-		const members = Array.from(byName.values());
-		members.sort((a, b) => b.duration_us - a.duration_us);
-		cats.push({
-			key,
-			label: OVERHEAD_CATEGORY_META[key]?.label ?? key,
-			colorClass: OVERHEAD_CATEGORY_META[key]?.colorClass ?? "bg-muted-foreground/50",
-			totalUs: members.reduce((acc, m) => acc + m.duration_us, 0),
-			members,
-		});
-	}
-	return cats.sort((a, b) => b.totalUs - a.totalUs);
-}
-
-// OverheadBreakdown renders Bifrost's overhead as a single horizontal stacked bar
-// split into the top-level categories, with a legend beneath. Plugin and internal
-// spans are measured directly; the "scheduling" bucket (from the backend) accounts for
-// the residual goroutine-hop latency between phases, so the segments sum to the full
-// overhead number. "View details" expands the categories that hold more than one span
-// into their individual members so a specific phase or plugin can be inspected.
-function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[]; overheadMs?: number }) {
-	const [showDetails, setShowDetails] = useState(false);
-	if (!buckets || buckets.length === 0) return null;
-
-	const categories = buildOverheadCategories(buckets);
-	const sumUs = buckets.reduce((acc, b) => acc + b.duration_us, 0);
-	const overheadUs = overheadMs != null && !isNaN(overheadMs) ? overheadMs * 1000 : undefined;
-
-	// When measured spans already exceed the computed overhead, the backend omits a
-	// scheduling bucket (it would be negative): a sign the upstream accumulator is
-	// over-counting. Surface it rather than let the numbers look inconsistent.
-	const overCounted = overheadUs != null && sumUs > overheadUs + 1;
-
-	const barTotal = categories.reduce((acc, c) => acc + c.totalUs, 0) || 1;
-	// Only categories that aggregate more than one span are worth drilling into.
-	const drillable = categories.filter((c) => c.members.length > 1);
-
-	return (
-		<div className="space-y-3">
-			<div className="flex items-center justify-between gap-2">
-				<BlockHeader title="Overhead Breakdown" />
-				<div className="font-mono text-xs tabular-nums">{formatMicros(overheadUs ?? sumUs)}</div>
-			</div>
-
-			<div className="flex h-3 w-full overflow-hidden rounded-sm">
-				{categories.map((c) => (
-					<div
-						key={c.key}
-						className={cn(c.colorClass, "h-full")}
-						style={{ width: `${(c.totalUs / barTotal) * 100}%` }}
-						title={`${c.label} · ${formatMicros(c.totalUs)}`}
-					/>
-				))}
-			</div>
-
-			<div className="flex flex-wrap gap-x-4 gap-y-1.5">
-				{categories.map((c) => (
-					<div key={c.key} className="flex items-center gap-1.5 font-mono text-[11px]">
-						<span className={cn("h-2.5 w-2.5 shrink-0 rounded-[2px]", c.colorClass)} />
-						<span>{c.label}</span>
-						<span className="text-muted-foreground tabular-nums">{formatMicros(c.totalUs)}</span>
-					</div>
-				))}
-			</div>
-
-			{drillable.length > 0 ? (
-				<button
-					type="button"
-					onClick={() => setShowDetails((v) => !v)}
-					className="text-muted-foreground hover:text-foreground flex items-center gap-1 font-mono text-[11px] transition"
-				>
-					View details
-					<ChevronDown className={cn("h-3 w-3 transition-transform", showDetails ? "rotate-180" : "rotate-0")} />
-				</button>
-			) : null}
-
-			{showDetails ? (
-				<div className="space-y-3 pt-1">
-					{drillable.map((c) => (
-						<div key={c.key} className="space-y-1.5">
-							<div className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-medium tracking-wide uppercase">
-								<span className={cn("h-2 w-2 shrink-0 rounded-[2px]", c.colorClass)} />
-								{c.label}
-								{/* normal-case: keep the unit as "µs" — uppercasing mangles the micro sign into "ΜS" (reads as ms) */}
-								<span className="normal-case tabular-nums">{formatMicros(c.totalUs)}</span>
-							</div>
-							<div className="space-y-1 pl-3">
-								{c.members.map((m) => (
-									<div key={m.name} className="flex items-center justify-between gap-3 font-mono text-[11px]">
-										<span className="truncate" title={m.name}>
-											{overheadMemberLabel(m.name)}
-										</span>
-										<span className="text-muted-foreground shrink-0 tabular-nums">{formatMicros(m.duration_us)}</span>
-									</div>
-								))}
-							</div>
-						</div>
-					))}
-				</div>
-			) : null}
-
-			{overCounted ? (
-				<div className="text-muted-foreground text-[11px]">
-					Measured spans ({formatMicros(sumUs)}) exceed the computed overhead ({formatMicros(overheadUs!)}); the upstream accumulator may be
-					over-counting.
-				</div>
-			) : null}
-		</div>
-	);
-}
-
 function CopyInlineButton({ text, testId }: { text: string; testId?: string }) {
 	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
 	return (
@@ -838,27 +450,13 @@ function CopyInlineButton({ text, testId }: { text: string; testId?: string }) {
 	);
 }
 
-type MessageRole = "system" | "user" | "assistant" | "reasoning" | "tool";
-const messageToneClass: Record<MessageRole, string> = {
-	system: "bg-zinc-50 border-zinc-200 dark:bg-zinc-900/40 dark:border-zinc-800",
-	user: "bg-blue-50/60 border-blue-200 dark:bg-blue-950/30 dark:border-blue-900",
-	assistant: "bg-white border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800",
-	reasoning: "bg-violet-50/70 border-violet-200 dark:bg-violet-950/30 dark:border-violet-900",
-	tool: "bg-amber-50/70 border-amber-200 dark:bg-amber-950/30 dark:border-amber-900",
-};
-const messageDotClass: Record<MessageRole, string> = {
-	system: "bg-zinc-400",
-	user: "bg-blue-500",
-	assistant: "bg-zinc-900 dark:bg-zinc-100",
-	reasoning: "bg-violet-500",
-	tool: "bg-amber-500",
-};
-const messageRoleLabel: Record<MessageRole, string> = {
-	system: "System",
-	user: "User",
-	assistant: "Assistant",
-	reasoning: "Reasoning",
-	tool: "Tool Result",
+// Decision logs store the state as the user message and the answers as the
+// assistant message; label them by what they actually are.
+const decisionRoleLabel = (requestType: string | undefined, role: MessageRole): string | undefined => {
+	if (requestType !== "decisions") return undefined;
+	if (role === "user") return "State";
+	if (role === "assistant") return "Decision";
+	return undefined;
 };
 
 // deriveComplexityRouting returns the complexity tier / classification mechanism /
@@ -955,73 +553,103 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 	);
 }
 
-function EncryptedReveal({ text, label }: { text: string; label: string }) {
-	const [open, setOpen] = useState(false);
+// A response that ends on a tool call the caller runs itself (Warp's agent loop, any
+// Responses client) has no result in this row: the caller executes the tool and, if
+// it carries on, sends the output with a later request. Point at the next row in the
+// same session, without claiming it is the one that carries the result.
+function NextSessionRequestLink({ log, onOpenLog }: { log: LogEntry; onOpenLog: (logId: string) => void }) {
+	// currentData, not data: data keeps the previous log's page while this one's
+	// lookup runs, which would briefly link to the wrong request.
+	const { currentData, isError, refetch } = useGetLogsQuery(
+		{
+			filters: { session_id: log.session_id, start_time: nextSessionLookupStart(log.timestamp) },
+			pagination: { limit: 2, offset: 0, sort_by: "timestamp", order: "asc" },
+			rootsOnly: true,
+		},
+		// The caller may send its follow-up after this opens, so look again while
+		// the page is in view.
+		{ skip: !log.session_id, pollingInterval: 10_000, skipPollingIfUnfocused: true },
+	);
+	const next = currentData ? pickNextSessionLog(currentData.logs, log) : undefined;
+	// A failed lookup is not "there is no next request": say so, and offer a retry.
+	if (isError && !currentData) {
+		return (
+			<div className="text-muted-foreground mt-2 text-[12px]" data-testid="log-tool-call-next-request-error">
+				Couldn't look up the next request in this session.{" "}
+				<button
+					type="button"
+					className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+					onClick={() => void refetch()}
+					data-testid="log-tool-call-next-request-retry"
+				>
+					Retry
+				</button>
+			</div>
+		);
+	}
 	return (
-		<div className="space-y-1">
-			<button
-				type="button"
-				onClick={() => setOpen((o) => !o)}
-				className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-[10.5px] font-semibold tracking-wider uppercase"
-			>
-				<ChevronDown className={cn("h-3 w-3 transition-transform", open ? "rotate-180" : "-rotate-90")} />
-				{label}
-				{!open ? (
-					<span className="text-muted-foreground/70 ml-1 font-mono text-[10px] tracking-normal normal-case">{text.length} chars</span>
-				) : null}
-			</button>
-			{open ? <pre className="font-mono text-[12.5px] leading-[1.6] break-all whitespace-pre-wrap">{text}</pre> : null}
+		<div className="text-muted-foreground mt-2 text-[12px]" data-testid="log-tool-call-next-request">
+			The tool's result isn't in this request.{" "}
+			{next ? (
+				<button
+					type="button"
+					className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+					onClick={() => onOpenLog(next.id)}
+					data-testid="log-tool-call-next-request-link"
+				>
+					Open next request
+				</button>
+			) : !log.session_id ? null : currentData ? (
+				// The lookup finished and found nothing: the caller has not sent a
+				// follow-up in this session, or has not yet.
+				<span data-testid="log-tool-call-next-request-none">No later request in this session.</span>
+			) : (
+				<span data-testid="log-tool-call-next-request-loading">Looking for the next request…</span>
+			)}
 		</div>
 	);
 }
 
-function CollapsibleCode({ text, preview = 3, lang, mono = true }: { text: string; preview?: number; lang?: string; mono?: boolean }) {
+// Collapses all but the last two messages of a long input history. The earlier
+// turns stay in the DOM order they occurred in; expanding reveals them in place.
+function MessageHistoryCollapse({ count, children }: { count: number; children: ReactNode }) {
 	const [open, setOpen] = useState(false);
-	const lines = text.split("\n");
-	const shown = open ? lines : lines.slice(0, preview);
-	const hasMore = lines.length > preview;
-	const moreCount = lines.length - preview;
 	return (
 		<>
-			{mono ? (
-				<pre className="font-mono text-[12.5px] leading-[1.6] break-words whitespace-pre-wrap">{shown.join("\n")}</pre>
-			) : (
-				<div className="text-[13px] leading-relaxed break-words whitespace-pre-wrap">{shown.join("\n")}</div>
-			)}
-			{hasMore && (
-				<div className="mt-1.5 flex items-center justify-between">
-					<button
-						type="button"
-						onClick={() => setOpen((o) => !o)}
-						className="text-primary inline-flex items-center gap-1 text-[11.5px] font-medium hover:underline"
-					>
-						{open ? "Show less" : `Show ${moreCount} more lines`}
-						<ChevronDown className={cn("h-3 w-3 transition-transform", open && "rotate-180")} />
-					</button>
-					<span className="text-muted-foreground font-mono text-[10.5px]">
-						{lines.length} lines{lang ? ` · ${lang}` : ""}
-					</span>
-				</div>
-			)}
+			<button
+				type="button"
+				data-testid="log-messages-history-toggle"
+				onClick={() => setOpen((v) => !v)}
+				className="text-muted-foreground hover:text-foreground mb-3 flex w-full items-center gap-2 text-[11.5px] font-medium"
+			>
+				<ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
+				{open ? "Hide earlier history" : `Show ${count} earlier message${count === 1 ? "" : "s"}`}
+				<span className="bg-border h-px flex-1" />
+			</button>
+			{open ? children : null}
 		</>
 	);
 }
 
-function MessageRow({ role, meta, children, last = false }: { role: MessageRole; meta?: string; children: ReactNode; last?: boolean }) {
+function EmbeddingJsonBox({ title, value }: { title: string; value: unknown }) {
+	const json = JSON.stringify(value, null, 2);
 	return (
-		<div className="flex gap-3">
-			<div className="flex flex-col items-center pt-1.5">
-				<span className={cn("h-2 w-2 rounded-sm", messageDotClass[role])} />
-				{!last && <div className="bg-border my-1 w-px flex-1" />}
-			</div>
-			<div className="min-w-0 flex-1 pb-4">
-				<div className="mb-1 flex items-center gap-2">
-					<span className="text-foreground text-[11.5px] font-semibold">{messageRoleLabel[role]}</span>
-					{meta ? <span className="text-muted-foreground text-[11px]">{meta}</span> : null}
-				</div>
-				<div className={cn("rounded-sm border p-3 text-[13px] leading-relaxed", messageToneClass[role])}>{children}</div>
-			</div>
-		</div>
+		<CollapsibleBox title={title} onCopy={() => json} collapsedHeight={150}>
+			<CodeEditor
+				className="z-0 w-full"
+				shouldAdjustInitialHeight
+				maxHeight={450}
+				wrap
+				code={json}
+				lang="json"
+				readonly
+				options={{
+					scrollBeyondLastLine: false,
+					lineNumbers: "off",
+					alwaysConsumeMouseWheel: false,
+				}}
+			/>
+		</CollapsibleBox>
 	);
 }
 
@@ -1035,6 +663,7 @@ interface LogDetailViewProps {
 	headerAction?: ReactNode;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
 	onFilterBySessionId?: (sessionId: string) => void;
+	onOpenLog?: (logId: string) => void;
 }
 
 // Explains an empty Raw JSON tab. Raw payloads are only persisted when the
@@ -1113,6 +742,7 @@ export function LogDetailView({
 	headerAction,
 	onFilterByParentRequestId,
 	onFilterBySessionId,
+	onOpenLog,
 }: LogDetailViewProps) {
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: "Request body copied to clipboard",
@@ -1157,9 +787,15 @@ export function LogDetailView({
 	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const complexityRouting = deriveComplexityRouting(log);
+	// A downstream build can draw its own routing record at the top of the Routing tab.
+	const RoutingPanel = getLogRoutingPanel();
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
+	const isRealtimeTranscription =
+		isRealtimeTurn && log.metadata?.realtime_event_type === "conversation.item.input_audio_transcription.completed";
+	const audioSeconds = log.token_usage?.audio_seconds;
 	const isBatch = isBatchOperation(log.object);
+	const isEmbedding = log.object === "embedding";
 	const batchDebug = log.batch_debug;
 	// Set on both the submission row and the aggregate cost row a settlement writes;
 	// only the latter carries accounting, which is what tells the two apart.
@@ -1193,14 +829,14 @@ export function LogDetailView({
 					const contents = item?.request?.contents;
 					const messages = Array.isArray(contents)
 						? contents.map((c: any) => ({
-							role: c?.role === "model" ? "assistant" : c?.role || "user",
-							content: Array.isArray(c?.parts)
-								? c.parts
-									.filter((p: any) => p && typeof p.text === "string")
-									.map((p: any) => p.text)
-									.join("")
-								: "",
-						}))
+								role: c?.role === "model" ? "assistant" : c?.role || "user",
+								content: Array.isArray(c?.parts)
+									? c.parts
+											.filter((p: any) => p && typeof p.text === "string")
+											.map((p: any) => p.text)
+											.join("")
+									: "",
+							}))
 						: [];
 					return {
 						customId: typeof item?.metadata?.key === "string" && item.metadata.key ? item.metadata.key : `request-${index + 1}`,
@@ -1259,9 +895,9 @@ export function LogDetailView({
 					const parts = candidate?.content?.parts;
 					const text = Array.isArray(parts)
 						? parts
-							.filter((p: any) => p && typeof p.text === "string")
-							.map((p: any) => p.text)
-							.join("")
+								.filter((p: any) => p && typeof p.text === "string")
+								.map((p: any) => p.text)
+								.join("")
 						: "";
 					const role = candidate?.content?.role === "model" ? "assistant" : candidate?.content?.role || "assistant";
 					message = { role, content: text };
@@ -1284,11 +920,11 @@ export function LogDetailView({
 	}, [batchRawResponse]);
 	const passthroughParams = isPassthrough
 		? (log.params as {
-			method?: string;
-			path?: string;
-			raw_query?: string;
-			status_code?: number;
-		})
+				method?: string;
+				path?: string;
+				raw_query?: string;
+				status_code?: number;
+			})
 		: null;
 	// Only errors and passthrough requests carry a real HTTP status code; others have none.
 	// Non-HTTP errors (timeouts, network, marshal) default to 0; treat that as no status
@@ -1308,12 +944,22 @@ export function LogDetailView({
 	if (declaredTools.length) {
 		try {
 			toolsParameter = JSON.stringify(declaredTools, null, 2);
-		} catch { }
+		} catch {}
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
 	const rawRequest = applyRedactionMapping(log.raw_request, activeInputRevealMapping);
 	const rawResponse = applyRedactionMapping(log.raw_response, activeOutputRevealMapping);
+	// An error whose message the provider parser could not extract still carries the provider's
+	// body on the error's raw response (and on the raw_response column when raw-response
+	// persistence is on), so fall back to that instead of showing nothing.
+	const errorMessageFallback = (() => {
+		if (log.error_details?.error.message) return null;
+		const fromErrorDetails = extractProviderErrorMessage(log.error_details?.extra_fields?.raw_response);
+		const text = fromErrorDetails ?? (log.status === "error" ? extractProviderErrorMessage(log.raw_response) : null);
+		return text ? applyRedactionMapping(text, activeOutputRevealMapping) : null;
+	})();
+	const displayErrorMessage = log.error_details?.error.message || errorMessageFallback;
 	const passthroughRequestBody = applyRedactionMapping(log.passthrough_request_body, activeInputRevealMapping);
 	const passthroughResponseBody = applyRedactionMapping(log.passthrough_response_body, activeOutputRevealMapping);
 	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output || log.video_delete_output;
@@ -1325,7 +971,7 @@ export function LogDetailView({
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
 			}
-		} catch { }
+		} catch {}
 		return 0;
 	})();
 
@@ -1592,37 +1238,62 @@ export function LogDetailView({
 						hasRightBorder
 					/>
 					<HeroStat
-						label="Tokens in / out"
+						label={audioSeconds != null ? "Audio duration" : "Tokens in / out"}
 						mono
 						value={
-							log.token_usage
-								? `${formatCompactNumber(log.token_usage.prompt_tokens ?? 0)} / ${formatCompactNumber(log.token_usage.completion_tokens ?? 0)}`
-								: "—"
+							audioSeconds != null
+								? `${audioSeconds}s`
+								: log.token_usage
+									? `${formatCompactNumber(log.token_usage.prompt_tokens ?? 0)} / ${formatCompactNumber(log.token_usage.completion_tokens ?? 0)}`
+									: "—"
 						}
 						sub={
-							log.token_usage
-								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
-									? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-									: ""
-								}`
-								: "—"
+							audioSeconds != null
+								? "duration billed"
+								: log.token_usage
+									? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
+											log.token_usage.completion_tokens_details?.reasoning_tokens
+												? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+												: ""
+										}`
+									: "—"
 						}
 						hasRightBorder
 					/>
 					<HeroStat
 						label="Cost"
-						value={log.cost != null ? formatCost(log.cost) : "—"}
+						// Routing classifiers add sidecar cost to normal inference
+						// requests, so keep those totals visible at useful precision.
+						value={
+							log.cost != null
+								? log.object === "decisions" ||
+									(log.cost_breakdown?.additional_cost_details?.routing_cost ?? 0) > 0 ||
+									(log.status === "cancelled" && log.stream && log.provider === "anthropic")
+									? formatCostPrecise(log.cost)
+									: formatCost(log.cost)
+								: "—"
+						}
 						sub={
-							log.cost != null && log.token_usage?.total_tokens
-								? `≈ ${((log.cost / log.token_usage.total_tokens) * 1000).toFixed(6)}＄ per 1k`
-								: ""
+							log.cost != null && audioSeconds
+								? `≈ ${(log.cost / audioSeconds).toFixed(6)}＄ per second`
+								: log.cost != null && log.token_usage?.total_tokens
+									? `≈ ${((log.cost / log.token_usage.total_tokens) * 1000).toFixed(6)}＄ per 1k`
+									: ""
 						}
 						hasRightBorder
 					/>
-					{isRealtimeTurn ? (
+					{log.live_session ? (
 						<HeroStat
 							label="Voice"
-							value={log.metadata?.realtime_voice ? String(log.metadata.realtime_voice) : "\u2014"}
+							value={log.live_session.transport ? formatRealtimeTransport(log.live_session.transport) : "\u2014"}
+							valueClass="text-[15px]"
+						/>
+					) : isRealtimeTurn ? (
+						<HeroStat
+							label={isRealtimeTranscription ? "Type" : "Voice"}
+							value={
+								isRealtimeTranscription ? "Transcription" : log.metadata?.realtime_voice ? String(log.metadata.realtime_voice) : "\u2014"
+							}
 							sub={log.metadata?.realtime_transport ? formatRealtimeTransport(log.metadata.realtime_transport) : ""}
 						/>
 					) : (
@@ -1710,9 +1381,7 @@ export function LogDetailView({
 							{!isContainer && log.server_side_fallback_model && (
 								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
 							)}
-							{!isContainer && log.served_model && (
-								<LogEntryDetailsView className="w-full" label="Served Model" value={log.served_model} />
-							)}
+							{!isContainer && log.served_model && <LogEntryDetailsView className="w-full" label="Served Model" value={log.served_model} />}
 							{detectedApp && (
 								<LogEntryDetailsView
 									className="w-full"
@@ -1786,12 +1455,13 @@ export function LogDetailView({
 										onFilterByParentRequestId ? (
 											<Tooltip>
 												<TooltipTrigger asChild>
-													<code
-														className="block max-w-full min-w-0 cursor-pointer truncate font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+													<button
+														type="button"
+														className="block max-w-full min-w-0 cursor-pointer truncate text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
 														onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
 													>
 														{log.parent_request_id}
-													</code>
+													</button>
 												</TooltipTrigger>
 												<TooltipContent sideOffset={6} className="max-w-md break-all">
 													{log.parent_request_id} · Filter this session
@@ -1815,7 +1485,7 @@ export function LogDetailView({
 												<TooltipTrigger asChild>
 													<button
 														type="button"
-														className="block max-w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:text-blue-400"
+														className="focus-visible:ring-ring block max-w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none dark:text-blue-400"
 														onClick={() => onFilterBySessionId(log.session_id as string)}
 													>
 														{log.session_id}
@@ -2179,13 +1849,19 @@ export function LogDetailView({
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
 									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
-										<LogEntryDetailsView className="w-full" label="Input Cost" value={formatCostPrecise(log.cost_breakdown?.input_cost)} />
+										<LogEntryDetailsView
+											className="w-full"
+											label="Input Cost"
+											value={formatCostPrecise(log.cost_breakdown?.input_cost)}
+											tooltip={getCostDetailsTooltip(log.cost_breakdown?.input_cost_details, INPUT_COST_LABELS)}
+										/>
 									)}
 									{(log.cost_breakdown?.output_cost ?? 0) > 0 && (
 										<LogEntryDetailsView
 											className="w-full"
 											label="Output Cost"
 											value={formatCostPrecise(log.cost_breakdown?.output_cost)}
+											tooltip={getCostDetailsTooltip(log.cost_breakdown?.output_cost_details, OUTPUT_COST_LABELS)}
 										/>
 									)}
 									{(log.cost_breakdown?.total_cost ?? log.cost ?? 0) > 0 && (
@@ -2199,11 +1875,7 @@ export function LogDetailView({
 									    has no cost of its own. Without this the detail view of a video
 									    generation reads as free while the list beside it shows the spend. */}
 									{log.cost == null && (log.children_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Settled Cost"
-											value={formatCostPrecise(log.children_cost)}
-										/>
+										<LogEntryDetailsView className="w-full" label="Settled Cost" value={formatCostPrecise(log.children_cost)} />
 									)}
 									{/* Additional cost (guardrail / semantic cache / routing / MCP) on its own row below. */}
 									{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
@@ -2380,7 +2052,9 @@ export function LogDetailView({
 														}
 													/>
 												)}
-												{reasoning.max_tokens && <LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />}
+												{reasoning.max_tokens != null && (
+													<LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />
+												)}
 											</div>
 										</div>
 									</>
@@ -2619,7 +2293,11 @@ export function LogDetailView({
 												label="Mechanism"
 												value={
 													<Badge variant="secondary" className="uppercase">
-														{call.output_tokens != null ? "LLM Classification" : "Embedding"}
+														{call.request_type === "decisions"
+															? "Decision Model Classification"
+															: call.output_tokens != null
+																? "LLM Classification"
+																: "Embedding"}
 													</Badge>
 												}
 											/>
@@ -2648,46 +2326,14 @@ export function LogDetailView({
 					{!isContainer &&
 						!isPassthrough &&
 						log.metadata &&
-						Object.keys(log.metadata).filter((k) => {
-							if (k === "isAsyncRequest") return false;
-							if (
-								isRealtimeTurn &&
-								[
-									"realtime_session_id",
-									"provider_session_id",
-									"realtime_source",
-									"realtime_event_type",
-									"realtime_transport",
-									"realtime_voice",
-									"realtime",
-								].includes(k)
-							)
-								return false;
-							return true;
-						}).length > 0 && (
+						Object.keys(log.metadata).some((k) => isShownMetadataKey(k, isRealtimeTurn)) && (
 							<>
 								<DottedSeparator />
 								<div className="space-y-4">
 									<BlockHeader title="Metadata" />
 									<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 										{Object.entries(log.metadata)
-											.filter(([key]) => {
-												if (key === "isAsyncRequest") return false;
-												if (
-													isRealtimeTurn &&
-													[
-														"realtime_session_id",
-														"provider_session_id",
-														"realtime_source",
-														"realtime_event_type",
-														"realtime_transport",
-														"realtime_voice",
-														"realtime",
-													].includes(key)
-												)
-													return false;
-												return true;
-											})
+											.filter(([key]) => isShownMetadataKey(key, isRealtimeTurn))
 											.map(([key, value]) => (
 												<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
 											))}
@@ -2724,7 +2370,7 @@ export function LogDetailView({
 						</TabsTrigger>
 					)}
 
-					{showTabs && !isPassthrough && !log.list_models_output && !isBatch && (
+					{showTabs && !isPassthrough && !log.list_models_output && !isBatch && !isEmbedding && (
 						<TabsTrigger value="tools" className="px-3">
 							Tools
 							{declaredTools.length ? (
@@ -2912,8 +2558,8 @@ export function LogDetailView({
 							Content logging has been disabled for this request.
 						</div>
 					)}
-                    {/* Passthrough just renders the raw json, so there's nothing to filter */}
-					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough) && "hidden")}>
+					{/* Passthrough just renders the raw json, so there's nothing to filter */}
+					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough || isEmbedding) && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<button
@@ -3001,6 +2647,7 @@ export function LogDetailView({
 							requestType={log.object}
 						/>
 					)}
+					{log.live_session && <LiveSessionView session={log.live_session} mapping={activeOutputRevealMapping} />}
 
 					{isPassthrough && passthroughRequestBody && (
 						<CollapsibleBox
@@ -3074,118 +2721,135 @@ export function LogDetailView({
 					)}
 
 					{!isPassthrough &&
+						!log.live_session &&
 						((log.input_history && log.input_history.length > 0) ||
 							(log.output_message && !log.error_details?.error.message) ||
 							log.stop_reason === "refusal" ||
 							log.stop_reason === "content_filter" ||
 							log.stop_reason === "safety") && (
 							<div className="bg-card rounded-sm border p-5">
-								{(visibleRoles.size < allRoles.length
-									? log.input_history?.filter((m) => {
-										if (!m) return false;
-										const mainRole = ((m.role as string) || "user") as MessageRole;
-										const hasReasoning = !!extractChatReasoning(m);
-										return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
-									})
-									: log.input_history?.filter(Boolean)
-								)?.flatMap((message, index) => {
-									const role = ((message.role as string) || "user") as MessageRole;
-									const text = extractMessageText(message, activeInputRevealMapping);
-									const reasoningText = extractChatReasoning(message, activeInputRevealMapping);
-									const showAll = visibleRoles.size === allRoles.length;
-									const showMain = showAll || visibleRoles.has(role);
-									const showReasoning = !!reasoningText && (showAll || visibleRoles.has("reasoning"));
-									const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
-									const isOverallLast =
-										index === (log.input_history?.length ?? 0) - 1 && !log.output_message && !log.error_details?.error.message;
-									const lineCount = text ? text.split("\n").length : 0;
-									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
-									const reasoningTokens = reasoningText ? Math.max(1, Math.round(reasoningText.length / 4)) : 0;
-									const meta = text
-										? role === "system" || role === "tool"
-											? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-											: `${lineCount} line${lineCount === 1 ? "" : "s"}`
-										: hasToolCalls
-											? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
-											: undefined;
-									const usePlainText = role === "user" || role === "assistant";
-									const rows: ReactNode[] = [];
-									if (showReasoning) {
-										rows.push(
-											<MessageRow
-												key={`${index}-reasoning`}
-												role="reasoning"
-												meta={`~${reasoningTokens} tokens`}
-												last={isOverallLast && !showMain}
-											>
-												<CollapsibleCode text={reasoningText} preview={3} mono={false} />
-											</MessageRow>,
-										);
-									}
-									if (showMain) {
-										rows.push(
-											<MessageRow key={index} role={role} meta={meta} last={isOverallLast}>
-												{text ? (
-													usePlainText && isJson(text) ? (
-														<CodeEditor
-															wrap
-															code={(() => {
-																try {
-																	return JSON.stringify(JSON.parse(text), null, 2);
-																} catch {
-																	return text;
-																}
-															})()}
-															lang="json"
-															readonly
-															autoResize
-															options={{
-																collapsibleBlocks: true,
-																showIndentLines: false,
-																disableHover: true,
-															}}
-														/>
-													) : usePlainText ? (
-														<CollapsibleCode text={text} preview={3} mono={false} />
-													) : (
-														<CollapsibleCode text={text} preview={3} lang={role === "system" ? "xml" : undefined} />
-													)
-												) : (
-													<LogChatMessageView message={message} audioFormat={audioFormat} />
-												)}
-												{text &&
-													Array.isArray(message.content) &&
-													(message.content as ContentBlock[])
-														.filter((b) => b.type === "image_url")
-														.map((b, i) => {
-															const src = b.image_url?.url;
-															if (!src) return null;
-															return <img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />;
-														})}
-												{text &&
-													Array.isArray(message.content) &&
-													(message.content as ContentBlock[])
-														.filter((b) => b.type === "file" && b.file)
-														.map((b, i) => (
-															<LogChatFileBlockView
-																key={`${i}-${b.file?.filename || b.file?.file_id || "file"}`}
-																block={b}
-																className="mt-2"
+								{(() => {
+									const historyMessages =
+										(visibleRoles.size < allRoles.length
+											? log.input_history?.filter((m) => {
+													if (!m) return false;
+													const mainRole = ((m.role as string) || "user") as MessageRole;
+													const hasReasoning = !!extractChatReasoning(m);
+													return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
+												})
+											: log.input_history?.filter(Boolean)) ?? [];
+									const messageRows = historyMessages.map((message, index) => {
+										const role = ((message.role as string) || "user") as MessageRole;
+										const text = extractMessageText(message, activeInputRevealMapping);
+										const reasoningText = extractChatReasoning(message, activeInputRevealMapping);
+										const showAll = visibleRoles.size === allRoles.length;
+										const showMain = showAll || visibleRoles.has(role);
+										const showReasoning = !!reasoningText && (showAll || visibleRoles.has("reasoning"));
+										const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+										const isOverallLast =
+											index === (log.input_history?.length ?? 0) - 1 && !log.output_message && !log.error_details?.error.message;
+										const lineCount = text ? text.split("\n").length : 0;
+										const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
+										const reasoningTokens = reasoningText ? Math.max(1, Math.round(reasoningText.length / 4)) : 0;
+										const meta = text
+											? role === "system" || role === "tool"
+												? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
+												: `${lineCount} line${lineCount === 1 ? "" : "s"}`
+											: hasToolCalls
+												? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
+												: undefined;
+										const usePlainText = role === "user" || role === "assistant";
+										const rows: ReactNode[] = [];
+										if (showReasoning) {
+											rows.push(
+												<MessageRow
+													key={`${index}-reasoning`}
+													role="reasoning"
+													meta={`~${reasoningTokens} tokens`}
+													last={isOverallLast && !showMain}
+												>
+													<CollapsibleCode text={reasoningText} preview={3} mono={false} />
+												</MessageRow>,
+											);
+										}
+										if (showMain) {
+											rows.push(
+												<MessageRow key={index} role={role} meta={meta} last={isOverallLast} label={decisionRoleLabel(log.object, role)}>
+													{text ? (
+														usePlainText && isJson(text) ? (
+															<CodeEditor
+																wrap
+																code={(() => {
+																	try {
+																		return JSON.stringify(JSON.parse(text), null, 2);
+																	} catch {
+																		return text;
+																	}
+																})()}
+																lang="json"
+																readonly
+																autoResize
+																options={{
+																	collapsibleBlocks: true,
+																	showIndentLines: false,
+																	disableHover: true,
+																}}
 															/>
-														))}
-												{hasToolCalls && text ? (
-													<div className="text-muted-foreground mt-2 text-[11px]">
-														{message
-															.tool_calls!.map((tc) => tc.function?.name)
-															.filter(Boolean)
-															.join(", ") || `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
-													</div>
-												) : null}
-											</MessageRow>,
-										);
-									}
-									return rows;
-								})}
+														) : usePlainText ? (
+															<CollapsibleCode text={text} preview={3} mono={false} />
+														) : (
+															<CollapsibleCode text={text} preview={3} lang={role === "system" ? "xml" : undefined} />
+														)
+													) : (
+														<LogChatMessageView message={message} audioFormat={audioFormat} />
+													)}
+													{text &&
+														Array.isArray(message.content) &&
+														(message.content as ContentBlock[])
+															.filter((b) => b.type === "image_url")
+															.map((b, i) => {
+																const src = b.image_url?.url;
+																if (!src) return null;
+																return <img key={`${i}-${src}`} src={src} alt="Attachment" className="mt-2 max-w-full rounded border" />;
+															})}
+													{text &&
+														Array.isArray(message.content) &&
+														(message.content as ContentBlock[])
+															.filter((b) => b.type === "file" && b.file)
+															.map((b, i) => (
+																<LogChatFileBlockView
+																	key={`${i}-${b.file?.filename || b.file?.file_id || "file"}`}
+																	block={b}
+																	className="mt-2"
+																/>
+															))}
+													{hasToolCalls && text ? (
+														<div className="text-muted-foreground mt-2 text-[11px]">
+															{message
+																.tool_calls!.map((tc) => tc.function?.name)
+																.filter(Boolean)
+																.join(", ") || `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
+														</div>
+													) : null}
+												</MessageRow>,
+											);
+										}
+										return rows;
+									});
+									// Show only the last two turns; everything earlier collapses
+									// behind an expandable history toggle.
+									const visibleTail = 2;
+									const splitAt = Math.max(0, messageRows.length - visibleTail);
+									const earlier = messageRows.slice(0, splitAt);
+									const tail = messageRows.slice(splitAt);
+									const earlierCount = earlier.filter((r) => r.length > 0).length;
+									return (
+										<>
+											{earlierCount > 0 && <MessageHistoryCollapse count={earlierCount}>{earlier}</MessageHistoryCollapse>}
+											{tail}
+										</>
+									);
+								})()}
 								{log.output_message &&
 									!log.error_details?.error.message &&
 									(() => {
@@ -3218,7 +2882,7 @@ export function LogDetailView({
 													</MessageRow>
 												) : null}
 												{showAssistant ? (
-													<MessageRow role="assistant" meta={meta} last>
+													<MessageRow role="assistant" meta={meta} last label={decisionRoleLabel(log.object, "assistant")}>
 														{showRefusal ? (
 															<div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
 																<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
@@ -3284,148 +2948,35 @@ export function LogDetailView({
 						const rawOutput = log.status !== "processing" && !log.error_details?.error.message ? (log.responses_output ?? []) : [];
 						const outputMsgs =
 							visibleRoles.size < allRoles.length ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m))) : rawOutput;
-						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string> }> = [
-							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping })),
-							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping })),
+						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string>; fromOutput: boolean }> = [
+							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping, fromOutput: false })),
+							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping, fromOutput: true })),
 						];
 						if (all.length === 0) return null;
+						// The link to the request carrying the results goes under the last call
+						// the caller has to run, once, however many calls the response made.
+						const lastClientCallIndex =
+							onOpenLog && log.session_id ? all.findLastIndex((entry) => entry.fromOutput && isClientToolCallItem(entry.msg.type)) : -1;
 						return (
 							<div className="bg-card rounded-sm border p-5">
-								{all.map(({ msg, mapping }, index) => {
-									const role = getResponsesRole(msg);
-									const isLast = index === all.length - 1;
-									const reasoningParts = role === "reasoning" ? extractReasoningParts(msg, mapping) : null;
-									const reasoningHasAny =
-										!!reasoningParts &&
-										(reasoningParts.summaries.length > 0 ||
-											!!reasoningParts.encrypted ||
-											!!reasoningParts.contentText ||
-											reasoningParts.signatures.length > 0);
-									const text = role === "reasoning" ? "" : extractResponsesText(msg, mapping);
-									// Whatever the item carries outside the fields rendered below — a server tool's `action`,
-									// a custom_tool_call's `input`, a compaction item's `encrypted_content`.
-									const itemPayload = extractResponsesItemPayload(msg);
-									const lineCount = text ? text.split("\n").length : 0;
-									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
-									let meta: string | undefined;
-									if (role === "reasoning" && reasoningParts) {
-										const totalLen =
-											reasoningParts.summaries.reduce((acc, s) => acc + s.length, 0) +
-											(reasoningParts.contentText?.length ?? 0) +
-											(reasoningParts.encrypted?.length ?? 0);
-										const totalApprox = totalLen ? Math.max(1, Math.round(totalLen / 4)) : 0;
-										const hasOpaqueOnly =
-											(!!reasoningParts.encrypted || reasoningParts.signatures.length > 0) &&
-											reasoningParts.summaries.length === 0 &&
-											!reasoningParts.contentText;
-										meta = totalApprox
-											? `~${totalApprox} tokens${hasOpaqueOnly ? " · encrypted" : ""}`
-											: hasOpaqueOnly
-												? "encrypted"
-												: undefined;
-									} else {
-										meta = text
-											? role === "system" || role === "tool"
-												? msg.name
-													? `${msg.name} · ${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-													: `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-												: `${lineCount} line${lineCount === 1 ? "" : "s"}`
-											: msg.name
-												? msg.name
-												: msg.type === "function_call_output" && msg.call_id
-													? msg.call_id
-													: Array.isArray(msg.tools)
-														? (() => {
-															const callable = flattenDeclaredTools(msg.tools).length;
-															return callable !== msg.tools.length
-																? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
-																: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
-														})()
-														: [msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined;
-									}
-									const usePlainText = role === "user" || role === "assistant";
-									return (
-										<MessageRow key={index} role={role} meta={meta} last={isLast}>
-											{role === "reasoning" ? (
-												reasoningHasAny && reasoningParts ? (
-													<div className="space-y-3">
-														{reasoningParts.contentText ? (
-															<CollapsibleCode text={reasoningParts.contentText} preview={3} mono={false} />
-														) : null}
-														{reasoningParts.summaries.map((s, i) => (
-															<div key={`s-${i}`} className="space-y-1">
-																{reasoningParts.summaries.length > 1 ? (
-																	<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">
-																		Summary {i + 1}
-																	</div>
-																) : null}
-																<CollapsibleCode text={s} preview={3} mono={false} />
-															</div>
-														))}
-														{reasoningParts.encrypted ? (
-															<div className="space-y-1">
-																<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">Encrypted</div>
-																<CollapsibleCode text={reasoningParts.encrypted} preview={2} />
-															</div>
-														) : null}
-														{reasoningParts.signatures.length > 0 ? (
-															<EncryptedReveal
-																text={reasoningParts.signatures.join("\n\n")}
-																label={reasoningParts.signatures.length > 1 ? "Encrypted signatures" : "Encrypted signature"}
-															/>
-														) : null}
-													</div>
-												) : (
-													<div className="text-muted-foreground text-[12px] italic">No reasoning content available</div>
-												)
-											) : text ? (
-												usePlainText ? (
-													<CollapsibleCode text={text} preview={3} mono={false} />
-												) : (
-													<CollapsibleCode text={text} preview={3} lang={role === "system" ? "xml" : undefined} />
-												)
-											) : msg.output !== undefined ? (
-												<CollapsibleCode
-													text={
-														typeof msg.output === "string"
-															? applyRedactionMapping(msg.output, mapping)
-															: JSON.stringify(applyRedactionMappingToValue(msg.output, mapping), null, 2)
-													}
-													preview={3}
-												/>
-											) : Array.isArray(msg.tools) && msg.tools.length > 0 ? (
-												<CollapsibleCode text={JSON.stringify(msg.tools, null, 2)} preview={3} />
-											) : Array.isArray(msg.tools) ? (
-												<div className="text-muted-foreground text-[12px] italic">No tools declared</div>
-											) : itemPayload ? (
-												<CollapsibleCode text={JSON.stringify(applyRedactionMappingToValue(itemPayload, mapping), null, 2)} preview={3} />
-											) : (
-												<div className="text-muted-foreground text-[12px] italic">No content</div>
-											)}
-											{Array.isArray(msg.content) &&
-												msg.content
-													.filter((b) => b?.type === "input_image" && b.image_url)
-													.map((b, i) => (
-														<img
-															key={`${i}-${b.image_url}`}
-															src={b.image_url}
-															alt="Attached image"
-															className="mt-2 max-w-full rounded border"
-														/>
-													))}
-										</MessageRow>
-									);
-								})}
+								{all.map(({ msg, mapping }, index) => (
+									<ResponsesItemRow key={index} msg={msg} mapping={mapping} last={index === all.length - 1}>
+										{index === lastClientCallIndex && onOpenLog ? <NextSessionRequestLink log={log} onOpenLog={onOpenLog} /> : null}
+									</ResponsesItemRow>
+								))}
 							</div>
 						);
 					})()}
 
-					{log.is_large_payload_request && !log.input_history?.length && !log.responses_input_history?.length && (
-						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-							Large payload request: input content was streamed directly to the provider and is not available for display.
-							{log.raw_request && " A truncated preview is available in the Raw JSON tab."}
-						</div>
-					)}
+					{log.is_large_payload_request &&
+						!log.input_history?.length &&
+						!log.responses_input_history?.length &&
+						!log.embedding_input?.length && (
+							<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+								Large payload request: input content was streamed directly to the provider and is not available for display.
+								{log.raw_request && " A truncated preview is available in the Raw JSON tab."}
+							</div>
+						)}
 					{log.is_large_payload_response && !log.output_message && !log.responses_output?.length && log.status !== "processing" && (
 						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
 							Large payload response: response content was streamed directly to the client and is not available for display.
@@ -3433,20 +2984,11 @@ export function LogDetailView({
 						</div>
 					)}
 
+					{log.embedding_input && log.embedding_input.length > 0 && (
+						<EmbeddingJsonBox title="Input" value={applyRedactionMappingToValue(log.embedding_input, activeInputRevealMapping)} />
+					)}
 					{log.status !== "processing" && log.embedding_output && log.embedding_output.length > 0 && !log.error_details?.error.message && (
-						<div className="bg-card space-y-3 rounded-sm border p-5">
-							<div className="text-sm font-medium">Embedding</div>
-							<LogChatMessageView
-								message={{
-									role: "assistant",
-									content: JSON.stringify(
-										log.embedding_output.map((embedding) => embedding.embedding),
-										null,
-										2,
-									),
-								}}
-							/>
-						</div>
+						<EmbeddingJsonBox title="Embedding" value={log.embedding_output.map((embedding) => embedding.embedding)} />
 					)}
 					{log.status !== "processing" && log.rerank_output && !log.error_details?.error.message && (
 						<CollapsibleBox title={`Rerank Output (${log.rerank_output.length})`} onCopy={() => JSON.stringify(log.rerank_output, null, 2)}>
@@ -3493,18 +3035,19 @@ export function LogDetailView({
 						</CollapsibleBox>
 					)}
 
-					{(log.error_details?.error.message || log.error_details?.error.error != null) && (
+					{(displayErrorMessage || log.error_details?.error.error != null || log.status === "error") && (
 						<div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
 							<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
 								<AlertCircle className="h-4 w-4 shrink-0" />
 								<span className="text-[12.5px] font-semibold">Error</span>
-								{log.error_details?.error.message ? <CopyInlineButton text={log.error_details.error.message} /> : null}
+								{displayErrorMessage ? <CopyInlineButton text={displayErrorMessage} /> : null}
 							</div>
-							{log.error_details?.error.message ? (
-								<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-									{log.error_details.error.message}
-								</div>
-							) : null}
+							<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+								{displayErrorMessage ??
+									(statusCode
+										? `The provider returned an error (HTTP ${statusCode}) without a message.`
+										: "The provider returned an error without a message.")}
+							</div>
 							{log.error_details?.error.error != null ? (
 								<details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
 									<summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
@@ -3600,6 +3143,7 @@ export function LogDetailView({
 				</TabsContent>
 
 				<TabsContent value="routing" className="space-y-3">
+					{RoutingPanel && <RoutingPanel log={log} />}
 					{log.attempt_trail && log.attempt_trail.length > 1 && (
 						<CollapsibleBox
 							title={`Attempt Trail (${log.attempt_trail.length} attempts)`}
@@ -3623,7 +3167,7 @@ export function LogDetailView({
 													{record.fail_reason ? (
 														<span className="text-destructive">{record.fail_reason}</span>
 													) : (
-														<span className="text-green-600 dark:text-green-400">success</span>
+														<span className="text-chart-success-ink">success</span>
 													)}
 												</td>
 											</tr>
@@ -3731,7 +3275,7 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 		const isRealtimeTurn = log.object === "realtime.turn";
 		const isSpeech = log.object === "audio.speech" || log.object === "audio.speech.chunk";
 		const isTextCompletion = log.object === "text.completion" || log.object === "text.completion.chunk";
-		const isEmbedding = log.object === "list";
+		const isEmbedding = log.object === "embedding";
 
 		const extractTextFromMessage = (message: any): string => {
 			if (!message || !message.content) {
@@ -3795,7 +3339,10 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 			if (prompt) {
 				requestBody.prompt = prompt;
 			}
+		} else if (log.object === "embedding" && log.embedding_input && log.embedding_input.length > 0) {
+			requestBody.input = log.embedding_input;
 		} else if (isEmbedding && log.input_history && log.input_history.length > 0) {
+			// Fallback for logs written before embedding_input existed.
 			const texts: string[] = [];
 			for (const message of log.input_history) {
 				const messageTexts = extractTextsFromMessage(message);

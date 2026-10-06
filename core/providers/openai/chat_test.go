@@ -295,6 +295,42 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "high",
 		},
 		{
+			name:     "maps none to low for gpt-6-astra",
+			model:    "gpt-6-astra",
+			effort:   "none",
+			expected: "low",
+		},
+		{
+			name:     "preserves none for gpt-6-sol",
+			model:    "gpt-6-sol",
+			effort:   "none",
+			expected: "none",
+		},
+		{
+			name:     "preserves none for gpt-6-luna",
+			model:    "gpt-6-luna",
+			effort:   "none",
+			expected: "none",
+		},
+		{
+			name:     "maps none to minimal for gpt-5-mini",
+			model:    "gpt-5-mini",
+			effort:   "none",
+			expected: "minimal",
+		},
+		{
+			name:     "maps none to low for o4",
+			model:    "o4",
+			effort:   "none",
+			expected: "low",
+		},
+		{
+			name:     "preserves none for gpt-5.4",
+			model:    "gpt-5.4",
+			effort:   "none",
+			expected: "none",
+		},
+		{
 			name:     "preserves max for deepseek-v4-pro",
 			provider: schemas.ModelProvider("deepseek"),
 			model:    "deepseek-v4-pro",
@@ -441,6 +477,67 @@ func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
 			if strings.Contains(string(body), "reasoning_effort") {
 				t.Fatalf("expected marshalled body to omit reasoning_effort, got %s", string(body))
 			}
+		})
+	}
+}
+
+// TestToOpenAIChatRequest_StripsUnsupportedSamplingParams pins that sampling fields
+// OpenAI rejects at the effective reasoning effort are dropped for OpenAI and Azure.
+func TestToOpenAIChatRequest_StripsUnsupportedSamplingParams(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		effort   string
+		stripped bool
+	}{
+		{name: "gpt-6-astra always strips", model: "gpt-6-astra", stripped: true},
+		{name: "azure gpt-6-astra always strips", provider: schemas.Azure, model: "gpt-6-astra", effort: "low", stripped: true},
+		{name: "o3 strips", model: "o3", effort: "high", stripped: true},
+		{name: "gpt-5.5 omitted effort defaults to medium", model: "gpt-5.5", stripped: true},
+		{name: "gpt-5.4 omitted effort defaults to none", model: "gpt-5.4", stripped: false},
+		{name: "gpt-5.6 keeps while effort none", model: "gpt-5.6", effort: "none", stripped: false},
+		{name: "gpt-5.6 strips once reasoning is on", model: "gpt-5.6", effort: "low", stripped: true},
+		{name: "non-reasoning model keeps", model: "gpt-4o", stripped: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := tt.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
+			params := &schemas.ChatParameters{
+				Temperature: schemas.Ptr(0.2),
+				TopP:        schemas.Ptr(0.9),
+				LogProbs:    new(true),
+				TopLogProbs: schemas.Ptr(3),
+			}
+			if tt.effort != "" {
+				params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr(tt.effort)}
+			}
+			out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: params,
+			})
+			require.NotNil(t, out)
+			if tt.stripped {
+				require.Nil(t, out.Temperature)
+				require.Nil(t, out.TopP)
+				require.Nil(t, out.LogProbs)
+				require.Nil(t, out.TopLogProbs)
+			} else {
+				require.NotNil(t, out.Temperature)
+				require.NotNil(t, out.TopP)
+				require.NotNil(t, out.LogProbs)
+				require.NotNil(t, out.TopLogProbs)
+			}
+			require.NotNil(t, params.Temperature, "caller's params must not be mutated")
 		})
 	}
 }
@@ -1663,7 +1760,7 @@ func TestOpenAIInbound_MaxCompletionTokensTakesPriorityOverMaxTokens(t *testing.
 	}
 }
 
-func TestToOpenAIChatRequest_OpencodeUsesLegacyMaxTokensOnWire(t *testing.T) {
+func TestToOpenAIChatRequest_LegacyMaxTokensProvidersUseMaxTokensOnWire(t *testing.T) {
 	tests := []struct {
 		name     string
 		provider schemas.ModelProvider
@@ -1671,6 +1768,7 @@ func TestToOpenAIChatRequest_OpencodeUsesLegacyMaxTokensOnWire(t *testing.T) {
 		{name: "Go", provider: schemas.OpencodeGo},
 		{name: "Zen", provider: schemas.OpencodeZen},
 		{name: "Ollama", provider: schemas.Ollama},
+		{name: "DeepSeek", provider: schemas.DeepSeek},
 	}
 
 	for _, tt := range tests {
@@ -2127,5 +2225,179 @@ func TestOpenAICompatFiltersReadDatasheet(t *testing.T) {
 		req.applyXAICompatibility(schemas.ResolveModelCaps(schemas.XAI, model))
 		require.NotNil(t, req.PresencePenalty, "an explicit false must beat the grok name check")
 		require.Nil(t, req.FrequencyPenalty, "fields the row omits keep the grok name-based default")
+	})
+}
+
+// reasoning.type is an Anthropic thinking type; it must never reach the wire of
+// OpenAI or the OpenAI-compatible providers that share this converter.
+func TestToOpenAIChatRequest_DoesNotEmitReasoningType(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.Groq, schemas.OpenRouter, schemas.XAI, schemas.Cerebras, schemas.Ollama} {
+		req := &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    "gpt-5",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{
+				Type:   schemas.Ptr("between_tools"),
+				Effort: schemas.Ptr("medium"),
+			}},
+		}
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+		require.NotNil(t, out, "%s: expected request", provider)
+		body, err := sonic.Marshal(out)
+		require.NoError(t, err)
+		require.NotContains(t, string(body), "between_tools", "%s: reasoning.type leaked: %s", provider, body)
+	}
+}
+
+// TestToOpenAIChatRequest_GPT56CacheBreakpoint is the Chat Completions counterpart
+// of TestToOpenAIResponsesRequest_GPT56CacheBreakpoint. gpt-5.6 and later take an
+// explicit boundary as prompt_cache_breakpoint on a text part; a cache_control
+// marker sent in Chat format (LiteLLM-style clients) used to be stripped with
+// nothing put in its place, so the request fell back to implicit caching.
+func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
+	ephemeral := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	mkReq := func(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("REUSABLE_PREFIX"), CacheControl: ephemeral},
+				}}},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeImage, CacheControl: ephemeral, ImageURLStruct: &schemas.ChatInputImage{URL: "https://example.com/a.png"}},
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Call echo.")},
+				}}},
+				{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("echo"), Arguments: `{"text":"hello"}`},
+				}}}},
+				{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+					Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+						{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("hello"), CacheControl: ephemeral},
+					}}},
+			},
+			Params: &schemas.ChatParameters{},
+		}
+	}
+	marshal := func(t *testing.T, req *schemas.BifrostChatRequest) (map[string]any, string) {
+		t.Helper()
+		ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+		defer cancel()
+		out := ToOpenAIChatRequest(ctx, req)
+		require.NotNil(t, out)
+		b, err := out.MarshalJSON()
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, sonic.Unmarshal(b, &m), string(b))
+		return m, string(b)
+	}
+	part := func(t *testing.T, m map[string]any, msg, idx int, raw string) map[string]any {
+		t.Helper()
+		msgs, _ := m["messages"].([]any)
+		require.Greater(t, len(msgs), msg, raw)
+		mm, _ := msgs[msg].(map[string]any)
+		parts, ok := mm["content"].([]any)
+		require.True(t, ok && idx < len(parts), "message %d content must be a part array; raw=%s", msg, raw)
+		p, _ := parts[idx].(map[string]any)
+		return p
+	}
+
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"openai gpt-5.6", schemas.OpenAI, "gpt-5.6-sol"},
+		{"openai gpt-6", schemas.OpenAI, "gpt-6-sol"},
+		{"azure gpt-6.1", schemas.Azure, "gpt-6.1-luna"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := mkReq(tc.provider, tc.model)
+			m, raw := marshal(t, req)
+			for _, loc := range []struct {
+				msg, idx int
+				what     string
+			}{{0, 0, "system text"}, {3, 0, "tool message text"}} {
+				p := part(t, m, loc.msg, loc.idx, raw)
+				bp, ok := p["prompt_cache_breakpoint"].(map[string]any)
+				require.Truef(t, ok, "%s must carry prompt_cache_breakpoint; raw=%s", loc.what, raw)
+				require.Equalf(t, "explicit", bp["mode"], "%s mode; raw=%s", loc.what, raw)
+				_, present := p["cache_control"]
+				require.Falsef(t, present, "cache_control must not reach OpenAI on %s; raw=%s", loc.what, raw)
+			}
+			img := part(t, m, 1, 0, raw)
+			_, present := img["prompt_cache_breakpoint"]
+			require.Falsef(t, present, "Chat image parts have no verified breakpoint field; none may be synthesized; raw=%s", raw)
+			_, present = img["cache_control"]
+			require.Falsef(t, present, "cache_control must be stripped from the image part; raw=%s", raw)
+			_, present = part(t, m, 1, 1, raw)["prompt_cache_breakpoint"]
+			require.Falsef(t, present, "unmarked text part must not receive a breakpoint; raw=%s", raw)
+
+			opts, ok := m["prompt_cache_options"].(map[string]any)
+			require.Truef(t, ok, "a translated breakpoint must switch the request to explicit mode; raw=%s", raw)
+			require.Equalf(t, "explicit", opts["mode"], "raw=%s", raw)
+
+			// Copy-on-write: the caller's input must still carry its own markers only.
+			require.Nil(t, req.Input[0].Content.ContentBlocks[0].PromptCacheBreakpoint, "caller's input was mutated")
+			require.NotNil(t, req.Input[0].Content.ContentBlocks[0].CacheControl, "caller's marker was cleared")
+		})
+	}
+
+	t.Run("caller's prompt_cache_options wins", func(t *testing.T) {
+		req := mkReq(schemas.OpenAI, "gpt-5.6-sol")
+		req.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Mode: schemas.Ptr("implicit")}
+		m, raw := marshal(t, req)
+		opts, _ := m["prompt_cache_options"].(map[string]any)
+		require.Equalf(t, "implicit", opts["mode"], "raw=%s", raw)
+	})
+
+	t.Run("pre-5.6 model strips and stays implicit", func(t *testing.T) {
+		m, raw := marshal(t, mkReq(schemas.OpenAI, "gpt-4o"))
+		_, present := part(t, m, 0, 0, raw)["prompt_cache_breakpoint"]
+		require.Falsef(t, present, "gpt-4o predates prompt_cache_breakpoint; raw=%s", raw)
+		_, present = part(t, m, 0, 0, raw)["cache_control"]
+		require.Falsef(t, present, "cache_control must still be stripped; raw=%s", raw)
+		_, present = m["prompt_cache_options"]
+		require.Falsef(t, present, "gpt-4o must not gain prompt_cache_options; raw=%s", raw)
+	})
+
+	t.Run("openrouter keeps cache_control verbatim and gains no breakpoint", func(t *testing.T) {
+		m, raw := marshal(t, mkReq(schemas.OpenRouter, "anthropic/claude-sonnet-4.6"))
+		p := part(t, m, 0, 0, raw)
+		_, present := p["prompt_cache_breakpoint"]
+		require.Falsef(t, present, "raw=%s", raw)
+		_, present = p["cache_control"]
+		require.Truef(t, present, "OpenRouter forwards cache_control itself; raw=%s", raw)
+		_, present = m["prompt_cache_options"]
+		require.Falsef(t, present, "raw=%s", raw)
+	})
+
+	t.Run("more than four markers keeps the latest four", func(t *testing.T) {
+		req := mkReq(schemas.OpenAI, "gpt-5.6-sol")
+		var extra []schemas.ChatMessage
+		for i := 0; i < 4; i++ {
+			extra = append(extra, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("turn"), CacheControl: ephemeral},
+			}}})
+		}
+		req.Input = append(req.Input, extra...) // 6 markers in total: system, tool, 4 turns
+		m, raw := marshal(t, req)
+		count := 0
+		msgs, _ := m["messages"].([]any)
+		for _, mm := range msgs {
+			parts, _ := mm.(map[string]any)["content"].([]any)
+			for _, pp := range parts {
+				if _, ok := pp.(map[string]any)["prompt_cache_breakpoint"]; ok {
+					count++
+				}
+			}
+		}
+		require.Equalf(t, 4, count, "raw=%s", raw)
+		_, present := part(t, m, 0, 0, raw)["prompt_cache_breakpoint"]
+		require.Falsef(t, present, "the earliest marker (system) must be the one dropped; raw=%s", raw)
 	})
 }

@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"slices"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -94,6 +96,10 @@ func InjectResponsesCacheBreakpoints(cfg *schemas.PromptCacheConfig, input []sch
 			copied[t.msg] = true
 		}
 		msg := &out[t.msg]
+		if t.toolOutput {
+			msg.CacheControl = marker
+			continue
+		}
 		if t.promoteStr {
 			// A bare string has nowhere to hang a marker, so it becomes a single
 			// text block. Deterministic: the same message always renders the same
@@ -149,6 +155,52 @@ func InjectChatCacheBreakpoints(cfg *schemas.PromptCacheConfig, input []schemas.
 	return out
 }
 
+// ChatCachePointsSupported reports whether this attempt accepts cachePoint markers.
+// cachePoint is a Converse-only element, so the provider gate comes first: the name
+// fallback matches a Claude model whatever serves it.
+func ChatCachePointsSupported(provider schemas.ModelProvider, model string) bool {
+	if provider != schemas.Bedrock {
+		return false
+	}
+	return schemas.ResolveModelCaps(provider, model).SupportsCachePoint(schemas.BedrockModelSupportsCachePoints(model))
+}
+
+// StripChatCachePoints returns input without Bedrock cachePoint markers, copying only the messages that carry one.
+func StripChatCachePoints(input []schemas.ChatMessage) ([]schemas.ChatMessage, bool) {
+	var out []schemas.ChatMessage
+	for i := range input {
+		content := input[i].Content
+		if content == nil || !slices.ContainsFunc(content.ContentBlocks, hasChatCachePoint) {
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(input)
+		}
+		blocks := make([]schemas.ChatContentBlock, 0, len(content.ContentBlocks))
+		for _, block := range content.ContentBlocks {
+			if block.CachePoint != nil {
+				// A standalone marker has nothing else to send.
+				if block.Type == "" {
+					continue
+				}
+				block.CachePoint = nil
+			}
+			blocks = append(blocks, block)
+		}
+		contentCopy := *content
+		contentCopy.ContentBlocks = blocks
+		out[i].Content = &contentCopy
+	}
+	if out == nil {
+		return input, false
+	}
+	return out, true
+}
+
+func hasChatCachePoint(block schemas.ChatContentBlock) bool {
+	return block.CachePoint != nil
+}
+
 // injectionTarget names one place to write a marker. promoteStr means the message
 // carries a bare ContentStr that must become a block first, in which case block is
 // meaningless.
@@ -156,6 +208,30 @@ type injectionTarget struct {
 	msg        int
 	block      int
 	promoteStr bool
+	toolOutput bool // mark the function_call_output item itself (message-level marker)
+}
+
+// isResponsesToolOutput reports whether a message is a function_call_output item
+// with a body. Such an item has no role and no Content of its own; its marker lives
+// on the message, which every converter reads (Anthropic as tool_result.cache_control,
+// OpenAI gpt-5.6+ as a prompt_cache_breakpoint on the output's last part).
+func isResponsesToolOutput(msg *schemas.ResponsesMessage) bool {
+	return msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
+		msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Output != nil
+}
+
+// responsesRoleAt is the role an injection point sees for a Responses item. A
+// function_call_output carries none on the wire, but it is the client-supplied turn
+// that follows a tool call - Anthropic places the same content inside a user message -
+// so a point on role "user" reaches it, as does any index that lands on it.
+func responsesRoleAt(msg *schemas.ResponsesMessage) string {
+	if isResponsesToolOutput(msg) {
+		return string(schemas.ResponsesInputMessageRoleUser)
+	}
+	if msg.Role == nil {
+		return ""
+	}
+	return string(*msg.Role)
 }
 
 // responsesHasCacheMarker reports whether the caller already expressed caching
@@ -256,15 +332,17 @@ func responsesPointTargets(points []schemas.CacheControlInjectionPoint, input []
 	seen := make(map[int]bool)
 	for _, p := range points {
 		for _, idx := range matchMessageIndices(p, len(input), func(i int) string {
-			if input[i].Role == nil {
-				return ""
-			}
-			return string(*input[i].Role)
+			return responsesRoleAt(&input[i])
 		}) {
 			if seen[idx] || len(out) >= MaxInjectedCacheBreakpoints {
 				continue
 			}
 			msg := input[idx]
+			if isResponsesToolOutput(&msg) {
+				out = append(out, injectionTarget{msg: idx, toolOutput: true})
+				seen[idx] = true
+				continue
+			}
 			if msg.Content == nil {
 				continue
 			}
@@ -287,6 +365,11 @@ func chatPointTargets(points []schemas.CacheControlInjectionPoint, input []schem
 	seen := make(map[int]bool)
 	for _, p := range points {
 		for _, idx := range matchMessageIndices(p, len(input), func(i int) string {
+			// A tool message is the same client-supplied turn as a Responses
+			// function_call_output, so role "user" reaches it here too.
+			if input[i].Role == schemas.ChatMessageRoleTool {
+				return string(schemas.ChatMessageRoleUser)
+			}
 			return string(input[i].Role)
 		}) {
 			if seen[idx] || len(out) >= MaxInjectedCacheBreakpoints {

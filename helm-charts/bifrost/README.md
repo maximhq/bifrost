@@ -4,13 +4,52 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.40
+**Latest Version:** 2.1.46
 
 ## Changelog
 
-### 2.1.41
+### Upcoming
+
+- Added `bifrost.governance.complexityAnalyzerConfig.decision` (renders into `complexity_analyzer_config.decision`): a decision-model classifier for the complexity router. `provider` and `model` select any decision model (default `typesafe`/`jev-latest`). Laya, Nimble (by Bespoke), and Cloudflare Clef work too when served by a custom provider with `base_provider_type: typesafe`; requests go through Bifrost's `/v1/decisions` to that provider's System One endpoint (`/v1/systemone`, or the full-URL `decisions` override for Clef). `criteria` holds per-tier overrides of the shipped `definition`, `signals`, and `examples`, keyed by `SIMPLE`, `MEDIUM`, or `COMPLEX` (exact case). Any tier or field left out sends the shipped default; a definition is at most 500 characters, and each list at most 12 items of 300 characters.
+- Added `bifrost.mcp.toolManagerConfig.maxInstructionsPerClient` and `.maxInstructionsTotal` (`max_instructions_per_client` / `max_instructions_total`) to bound forwarded MCP server instructions in bytes; 0 keeps the built-in defaults.
+- Added `access_profile` to `bifrost.governance.customers[]`, `.teams[]`, and `.businessUnits[]` (renders into `governance.{customers,teams,business_units}[].access_profile`), the enterprise access profile the entity holds in place of its own budgets and rate limit.
+- `bifrost.governance.roles[].dac` and `.entity_dac` now accept `business-unit-data` and `customer-data` (`governance.roles[].dac` / `entity_dac`).
+- Documented `ttft_timeout_ms` on `bifrost.governance.routingRules[].targets[]` (`governance.routing_rules[].targets[].ttft_timeout_ms`) in the values schema.
+- Added `bifrost.proxyConfig` (renders into the top-level `proxy_config`): the global outbound proxy from the dashboard's proxy settings page, including `enableForScim` (`enable_for_scim`), `enableForInference` and `enableForApi`; reconciled with the same config hash as the other sections.
+- Added `bifrost.scim.config.attributeProjectMappings` (`{ attribute, value, project }`, every SSO provider) — renders into `scim_config.config.attributeProjectMappings`. Every matching rule adds the user to that project by name (projects are never auto-created); memberships a rule added are removed when it stops matching, while members added from the dashboard are kept.
+- Added `bifrost.scim.config.bulkSyncInterval` (default `24h`, every SSO provider) — renders into `scim_config.config.bulkSyncInterval`. How often the directory reconcile deprovisions users the IdP no longer returns: whole days or h/m/s pairs (`12h`, `1h30m`, `7d`), between 1h and 30d. Inert when SCIM is enabled or the provider has no directory API access.
+- Added `bifrost.mcp.toolManagerConfig.codeModeLimits` (`maxSourceBytes`, `maxSteps`, `maxMemoryBytes`, `maxLogBytes`, `maxToolCalls`, `maxValueBytes`, `maxNestingDepth`) to tune the limits on each code mode execution; an omitted or 0 field keeps the built-in default. Renders into `mcp.tool_manager_config.code_mode_limits`. Code mode no longer limits concurrent executions.
+- Added a template-time guard: the chart now fails to render when `bifrost.client.mcpServerAuthMode` is `oauth` or `both` and `bifrost.client.oauth2ServerConfig.issuerUrl` (`client.oauth2_server_config.issuer_url`) is empty or unset, instead of letting the pod crash-loop on Bifrost's startup check. `env.VAR_NAME` references pass.
+
+### 2.1.46
+
+- Added `bifrost.agents[]` — declarative A2A agent registrations rendered into the config.json `agents` section. Each entry takes `name`, `agent_card_url`, and optionally `tenant`, `enabled`, `allow_by_default`, `forward_accepted_credential`, `forward_accepted_credential_overrides_auth`, `discovery_auth`, `runtime_auth`, `extension_uris`, and `virtual_key_ids`. Reconciled by name on startup: created if absent, updated when the declaration changes, and left alone otherwise (merge mode). When `bifrost.sourceOfTruth` is `config.json` and `agents` is present, stored registrations absent from the rendered list are removed; set `agents: []` to remove all stored registrations.
+- Added `bifrost.client.a2aExternalClientUrl` (`a2a_external_client_url`) — Bifrost's public base URL for served agent cards and A2A push-notification callback URLs. Push notifications stay disabled while unset. Supports `env.` syntax.
+- Added `bifrost.server.a2aGrpcBaseDomain` (`a2a_grpc_base_domain`) and `bifrost.server.a2aGrpcPort` (`a2a_grpc_port`) — enable the shared A2A gRPC listener; per-agent hostnames are advertised as `<agent-name>.<base-domain>:<port>`. gRPC stays disabled while either is unset.
+
+### 2.1.44
+
+- Added `bifrost.auditLogs.omitIpAddresses` (default `false`) to stop recording client IP addresses in audit logs while keeping the rest of the audit trail. IPs stored before the flag was turned on are hidden from the API, filter data, search and exports, and archive copies written after the change omit them, but they stay in the database and in archive objects already written. Renders into `audit_logs.omit_ip_addresses`.
+- Added `excluded_attributes` to the OTEL, Datadog, Kafka, Pub/Sub, Splunk and BigQuery plugin configs (`bifrost.plugins.<connector>.config.excluded_attributes`, and `profiles[*].excluded_attributes` for OTEL). Names span attributes to leave out of exported traces, matched exactly (e.g. `gen_ai.request.tools`), for dropping large attributes that are not needed downstream. Unmatched names are ignored. On BigQuery these are **column names** (`tools`) rather than attribute names, because BigQuery writes typed columns; the column stays in the table schema and is left empty, and `trace_id` / `timestamp` are rejected. Renders into `excluded_attributes`.
+- Added `bifrost.plugins.bigquery.config.export_raw_payloads` and `bifrost.plugins.otel.config.export_raw_payloads` (also `profiles[*].export_raw_payloads`), default `false`. Stores the raw provider request and response bodies. Requires the provider's `store_raw_request_response` and is suppressed by `disable_content_logging`. Previously the field existed in Bifrost but had no Helm path, so it could not be enabled from a declarative install. Renders into `export_raw_payloads`.
+
+### 2.1.43
+- Added `bifrost.plugins.telemetry.config.user_labels_enabled` (default `false`) — adds `user_id` and `user_name` labels to every `bifrost_*` metric. Off by default because these are unbounded: they multiply metric series by end-user count, on top of a `virtual_key_id` label that already reaches tens of thousands of values in large deployments, and Prometheus cannot drop a label after the fact. Datadog and Splunk emit these dimensions unconditionally, since a costly tag can be dropped server-side there.
+
+### 2.1.42
 
 - Added `bifrost.governance.roles[].access_profiles` for granting multiple access profiles to a role. The plural list takes precedence over the deprecated singular `access_profile`; an explicit empty list removes all profile grants.
+- Added `bifrost.scim.trustedNetworks` — the private IP/CIDR allowlist the SSRF guard consults before the generic provider's outbound OIDC discovery calls (**Discover endpoints** / **Discover claims**), so a self-hosted IdP on `10.x`, `172.16-31.x`, or `192.168.x` is reachable from a declarative install instead of only from the dashboard. Each entry is `{ cidr, description }`: a bare IP is treated as a single host (`/32`, or `/128` for IPv6) and hostnames are rejected. Declaring the key makes Helm own the whole list - it replaces whatever is stored, and an explicit `trustedNetworks: []` clears dashboard-added ranges - while omitting it leaves them untouched. 
+- Added `mcp.clientConfigs[].perUserHeaderKeys` — the header names each caller must individually supply under `authType: per_user_headers` (e.g. `["Authorization"]`).
+- Added `bifrost.plugins.otel.config.overhead_breakdown_enabled` (default `false`) and `bifrost.plugins.telemetry.config.overhead_breakdown_enabled` - exports the per-component overhead histogram `bifrost_overhead_component_microseconds`, overhead latency split by the `overhead_component` label. 
+- Fixed `bifrost.plugins.otel.config.export_overhead_spans` not rendering into `config.json`.
+- Added `bifrost.accessProfiles[].virtual_mcps` and `bifrost.accessProfiles[].mcp_configs` (`{ mcp_client_id, tools_to_execute }`) — the current spelling of a profile's MCP grants. The values schema previously declared only the retired `mcp_tool_groups` / `mcp_servers` / `mcp_tool_overrides` keys under `additionalProperties: false`, so a chart using the keys Bifrost actually reads failed schema validation and MCP grants could not be managed declaratively at all. `tools_to_execute` is `["*"]` for every tool including future ones, `[]` for none, or a named list.
+- Virtual MCPs are now assigned **by name**: `bifrost.accessProfiles[].virtual_mcps[]` and `bifrost.governance.projects[].virtual_mcps[]` take `{ virtual_mcp_name }`, matching how `mcp_configs` names its MCP client. Resolved on startup; a name matching no Virtual MCP is refused. `virtual_mcp_id` is still accepted as an alternative and wins when both are set.
+- Deprecated `bifrost.accessProfiles[].mcp_tool_groups`, `.mcp_servers`, and `.mcp_tool_overrides`. They still render and Bifrost now folds them into `virtual_mcps` / `mcp_configs` at load time with a warning in the startup logs, instead of dropping them silently. `mcp_tool_groups` is ignored when `virtual_mcps` is present; `mcp_servers` becomes a `["*"]` allowlist except for clients `mcp_configs` already names.
+
+### 2.1.41
+
+- This version has been missed. Please refer to v2.1.42
 
 ### 2.1.40
 
@@ -32,10 +71,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.client.vkRotationCooldown` (default `0`) — grace period after a virtual key rotation during which the previous key value still authenticates. Go duration string (e.g. `"5m"`), max 30 days; `0` disables
 - Added `databricks_key_config` (`workspace_url`, `api_format`, `client_id`/`client_secret` for OAuth M2M, `forward_gateway_tags`) to provider keys, with `bifrost.providers.databricks` examples in `values.yaml`.
 - Added `allow_all_providers` to `bifrost.governance.projects[]` and `bifrost.accessProfiles[]` (default `false`) — grant access to every provider, including ones without a `provider_configs` entry and providers added later; listed providers keep their own model, key, budget, and rate-limit rules. Renders into each entry's `allow_all_providers`.
-=======
-**Latest Version:** 2.1.38
-
-## Changelog
 
 ### 2.1.38
 
@@ -68,7 +103,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Documented `endpoints` on the `bedrock` and `bedrock_mantle` key examples (AWS PrivateLink interface VPC endpoint hosts: `runtime`, `control_plane`, `mantle`, `agent_runtime`, `s3`). Passes through into `bedrock_key_config.endpoints` / `bedrock_mantle_key_config.endpoints`.
 - Extended `bifrost.governance.budgets[]` with quarterly resets (`reset_duration: "1Q"`) and `reset_config.quarter_start_month` (1–12, sets the fiscal Q1 month). Passes through into `budgets[].reset_config`.
 - Added `target` (`llm` default, or `mcp`) to `bifrost.governance` guardrail rules to select the rule's execution target. Passes through into the rule's `target`.
-
 
 ### 2.1.34
 

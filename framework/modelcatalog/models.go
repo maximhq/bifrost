@@ -87,7 +87,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			out = append(out, alias)
 		}
 		for _, m := range e.Allowed {
-			if m == "*" || blacklisted.IsBlocked(m) {
+			if m == "*" || schemas.IsRegexEntry(m) || blacklisted.IsBlocked(m) {
 				continue
 			}
 			if _, ok := seen[m]; ok {
@@ -175,6 +175,7 @@ func (mc *ModelCatalog) catalogGeneration() uint64 {
 func (mc *ModelCatalog) initCaches() {
 	mc.providersForModel = newProvidersForModelCache(mc)
 	mc.modelsForProvider = newModelsForProviderCache(mc)
+	mc.maxOutputTokens = gencache.New[int](mc.catalogGeneration, catalogMemoMaxEntries)
 }
 
 // Clone-on-return: the resolver sorts the result in place.
@@ -319,8 +320,8 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 		return false
 	}
 
-	// Bare-name match needs no catalog access and covers most allowlists.
-	if slices.Contains(allowedModels, model) {
+	// Bare-name match (exact or regex:) needs no catalog access and covers most allowlists.
+	if allowedModels.Contains(model) {
 		return true
 	}
 

@@ -12,6 +12,15 @@ var (
 		FinishReasonMaxTokens:    "length",
 		FinishReasonToolCall:     "tool_calls",
 	}
+
+	// Maps Bifrost finish reasons back to Cohere's v2 response format.
+	bifrostFinishReasonToCohere = map[string]CohereFinishReason{
+		string(schemas.BifrostFinishReasonStop):      FinishReasonComplete,
+		string(schemas.BifrostFinishReasonLength):    FinishReasonMaxTokens,
+		string(schemas.BifrostFinishReasonToolCalls): FinishReasonToolCall,
+		"error":   FinishReasonError,
+		"timeout": FinishReasonTimeout,
+	}
 )
 
 // ConvertCohereFinishReasonToBifrost converts provider finish reasons to Bifrost format
@@ -20,6 +29,17 @@ func ConvertCohereFinishReasonToBifrost(providerReason CohereFinishReason) strin
 		return bifrostReason
 	}
 	return string(providerReason)
+}
+
+// ConvertBifrostFinishReasonToCohere converts a canonical finish reason to one
+// accepted by Cohere's v2 SDK. Unknown reasons become COMPLETE because Cohere's
+// response contract requires a finish_reason even when an upstream provider
+// uses a provider-specific value.
+func ConvertBifrostFinishReasonToCohere(bifrostReason string) CohereFinishReason {
+	if providerReason, ok := bifrostFinishReasonToCohere[bifrostReason]; ok {
+		return providerReason
+	}
+	return FinishReasonComplete
 }
 
 // convertInterfaceToToolFunctionParameters converts an interface{} to ToolFunctionParameters

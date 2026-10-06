@@ -1,34 +1,23 @@
 ---
 title: "Bifrost CLI"
-description: "Launch any coding agent through Bifrost with a single command. Automatic configuration, model selection, and MCP integration - no environment variables needed."
+description: "Connect coding agents to Bifrost, sign in with Enterprise SSO or a virtual key, and manage gateway resources from the terminal."
 icon: "laptop-code"
 ---
 
-{/* TODO: Add hero screenshot of the CLI TUI showing the summary/launch screen */}
-
 ## What is Bifrost CLI?
 
-<Frame>
-<iframe 
-  src="https://drive.google.com/file/d/1Sh1-xCJrVeccKscaowznopHNdyoGl2zu/preview" 
-  title="Embedded content"
-  className="w-full h-96 rounded-md"
-></iframe>
-</Frame>
+Bifrost CLI is both:
 
-Bifrost CLI is an interactive terminal tool that connects your favorite coding agents - Claude Code, Codex CLI, Gemini CLI, and Opencode - to your Bifrost gateway with zero manual configuration.
+- an interactive launcher for Claude Code, Codex CLI, Gemini CLI, and OpenCode; and
+- a scriptable client for Bifrost inference, user-scoped usage, and management APIs.
 
-Instead of setting environment variables, editing config files, and looking up provider paths, you just run `bifrost` and pick your agent, model, and go.
+Running `bifrost` without a command opens the launcher. Commands such as
+`bifrost models list`, `bifrost usage`, and `bifrost providers list` can be used
+directly from a shell or CI job.
 
-**What it does for you:**
-
-- Automatically configures base URLs, API keys, and model settings for each agent
-- Fetches available models from your Bifrost gateway's `/v1/models` endpoint
-- Installs missing agents via npm if needed
-- Auto-attaches Bifrost's MCP server to Claude Code for tool access
-- Launches agents inside a persistent tabbed terminal UI so you can switch sessions without re-running the CLI
-- Shows per-tab activity badges so you can tell when a session is progressing, idle, or has sent an alert
-- Stores your selections securely (virtual keys go to your OS keyring, never plaintext on disk)
+The CLI stores gateway URLs and model selections as non-secret local state.
+Virtual keys, management keys, and Enterprise session credentials are kept in
+the operating-system keyring.
 
 ## Installation
 
@@ -36,305 +25,398 @@ Instead of setting environment variables, editing config files, and looking up p
 npx -y @maximhq/bifrost-cli
 ```
 
-This downloads and runs the latest Bifrost CLI. No global install required - npx handles everything.
+The npm package is a small installer and launcher. It downloads the
+platform-specific Bifrost CLI binary from Bifrost's release storage, verifies
+its SHA-256 checksum when one is available, and then runs it. Node.js 18 or
+later is required for this installation method.
 
-<Note>
-Bifrost CLI requires **Node.js 18+** (for npx) and a running Bifrost gateway. See [Gateway Setup](/quickstart/gateway/setting-up) if you haven't started one yet.
-</Note>
-
-### Install a Specific Version
+Install or run a specific CLI release with:
 
 ```bash
 npx -y @maximhq/bifrost-cli --cli-version v1.0.0
 ```
 
-## Quick Start
+## Configure a gateway context
 
-### 1. Start your Bifrost gateway
-
-Make sure your Bifrost gateway is running. The default is `http://localhost:8080`:
-
-```bash
-npx -y @maximhq/bifrost
-```
-
-### 2. Launch the CLI
-
-In another terminal:
-
-To install 
+A context keeps one gateway URL, default model, selections, and an independent
+set of keyring credentials. This prevents credentials from one environment from
+being sent to another.
 
 ```bash
-npx -y @maximhq/bifrost-cli
+bifrost context add production \
+  --base-url https://gateway.example.com \
+  --use
+
+bifrost context list
+bifrost context show
 ```
 
-If you have already installed run
+Use `--context NAME` on any command to override the current context:
+
+```bash
+bifrost --context production models list
+```
+
+Persistent credentials and browser sessions always belong to a named context.
+An ad-hoc `--base-url` can be used with credential environment variables, but
+`auth login` and `auth set-*` refuse to store secrets until a context has been
+created. Commands load only the credential types they need, so local config and
+help operations do not depend on an available operating-system keyring.
+
+<Note>
+The CLI requires HTTPS for non-loopback gateway URLs before constructing a
+request or starting browser authentication. Plain HTTP remains available for
+local development through `localhost`, `127.0.0.1`, and `::1`.
+</Note>
+
+## Choose an authentication method
+
+Inference and management APIs intentionally use different credentials.
+
+### Enterprise browser SSO
+
+```bash
+bifrost auth login
+bifrost auth whoami --output json
+bifrost auth status --output json
+```
+
+The browser reuses the gateway's configured identity-provider session. The CLI
+receives opaque Bifrost `ck-bf-agent-*` access and refresh tokens; it does not
+read or store the browser cookie, IdP token, or password.
+
+Enterprise SSO authorizes user-scoped inference, assigned virtual-key discovery,
+budgets, rate limits, and usage. The gateway resolves the signed-in user and the
+applicable access profile or assigned virtual key without returning a
+virtual-key secret to the CLI.
+
+```bash
+bifrost virtual-keys assigned
+bifrost usage
+bifrost usage budgets --output json
+bifrost auth select-virtual-key "$VIRTUAL_KEY_ID"
+```
+
+If the browser cannot be opened automatically, keep the CLI running and open
+the printed URL on the same machine:
+
+```bash
+bifrost auth login --no-browser
+```
+
+The callback uses an ephemeral `127.0.0.1` port. Browser sign-in therefore does
+not currently support completing the flow on a different workstation.
+
+You can also sign in or out without leaving the interactive workflow. Run
+`bifrost`, select the **Enterprise SSO** row, and press Enter. The launcher
+temporarily leaves the full-screen view while it opens and prints the browser
+URL, then returns to the same gateway context after authentication. Changing a
+context's base URL clears its existing SSO session before saving the new URL.
+
+### Virtual key
+
+Use a virtual key for OSS inference, CI, or a harness that cannot carry the
+Enterprise agent token:
+
+```bash
+printf '%s\n' "$BIFROST_VIRTUAL_KEY" |
+  bifrost auth set-virtual-key --stdin
+```
+
+When both an Enterprise SSO session and a virtual key are stored, the CLI sends
+only one automatic inference credential. Supported clients use the SSO agent
+token; the virtual key is used when there is no signed-in session or the
+harness cannot consume an agent token, such as Gemini CLI. Gateway credential
+conflict policies apply only to a manually constructed request that explicitly
+carries both credentials.
+
+### Management API key
+
+Browser SSO does **not** grant administrative management access. Provider,
+credential, user, RBAC, and other administrative commands require a scoped
+`bfst-*` management API key:
+
+```bash
+printf '%s\n' "$BIFROST_MANAGEMENT_KEY" |
+  bifrost auth set-management-key --stdin
+
+bifrost providers list
+bifrost users list                       # Enterprise
+```
+
+For an OSS gateway protected by dashboard username/password authentication,
+use:
+
+```bash
+printf '%s\n' "$BIFROST_ADMIN_PASSWORD" |
+  bifrost auth login --username admin --password-stdin
+```
+
+## Launch a coding agent
+
+Open the interactive launcher:
 
 ```bash
 bifrost
 ```
 
-<Frame>
-  <img src="/media/cli/welcome-screen.png" alt="CLI welcome screen" />
-</Frame>
+Or launch a harness directly:
 
-### 3. Walk through the setup
+```bash
+bifrost run claude --model anthropic/claude-sonnet-4-6
+bifrost run codex --model openai/gpt-5
+bifrost run opencode --model openai/gpt-5
+bifrost run gemini --model gemini/gemini-2.5-pro
+```
 
-The CLI guides you through an interactive setup flow:
+Direct aliases forward remaining arguments to the child CLI:
 
-**Step 1 - Base URL**
+```bash
+bifrost claude --resume
+bifrost codex exec "summarize this repository" --json
+```
 
-Enter your Bifrost gateway URL. If you're running locally, this is typically `http://localhost:8080`.
+### Harness authentication matrix
 
-{/* TODO: Add screenshot of the base URL input screen */}
+| Harness | Gateway path | Enterprise SSO agent token | Virtual key | Session refresh |
+| --- | --- | --- | --- | --- |
+| Claude Code | `/anthropic` | Yes | Yes | Automatic through a temporary token helper |
+| Codex CLI | `/openai/v1` | Yes | Yes | Restart Codex after a token expires |
+| OpenCode | `/openai` | Yes | Yes | Restart OpenCode after a token expires |
+| Gemini CLI | `/genai` | Not currently | Yes | Virtual-key session |
 
-**Step 2 - Virtual Key (optional)**
+<Warning>
+Gemini CLI does not currently work with Enterprise browser SSO alone. Gemini's
+API-key mode sends its credential as `x-goog-api-key`, while Bifrost agent
+sessions authenticate with `Authorization: Bearer`. Configure a Bifrost virtual
+key before launching Gemini when inference authentication is enabled.
+</Warning>
 
-If your Bifrost gateway has [virtual key authentication](/features/governance/virtual-keys) enabled, enter your virtual key here. Otherwise, press Enter to skip.
+Claude Code receives a temporary `apiKeyHelper` that asks Bifrost CLI for the
+current agent token. The settings file contains no token and is removed after
+Claude exits. Codex receives the current token in its child environment.
+OpenCode receives it in an owner-readable temporary provider configuration,
+which is removed when OpenCode exits. Persistent `bifrost configure` remains
+virtual-key-only so short-lived user credentials are not written to long-lived
+harness configuration.
 
-{/* TODO: Add screenshot of the virtual key input screen */}
+## Model selection caveats
 
-**Step 3 - Choose a Harness**
+The launcher fetches `/v1/models` using the effective inference identity, so
+the list reflects the selected user's or virtual key's model permissions.
 
-Select which coding agent you want to launch. The CLI shows installation status and version for each:
+### Codex CLI
 
-{/* TODO: Add screenshot of the harness selection screen */}
+Start Codex with the full Bifrost model identifier:
 
-| Harness | Binary | Provider Path | Notes |
-|---------|--------|---------------|-------|
-| Claude Code | `claude` | `/anthropic` | MCP auto-attach, worktree support |
-| Codex CLI | `codex` | `/openai` | Sets `OPENAI_BASE_URL` to `{base}/openai/v1`; model override via `--model` |
-| Gemini CLI | `gemini` | `/genai` | Model override via `--model` flag |
-| Opencode | `opencode` | `/openai` | Custom models configured automatically through generated OpenCode config |
+```bash
+bifrost run codex --model anthropic/claude-opus-4-6
+```
 
-If a harness isn't installed, the CLI will offer to install it via npm for you.
+Codex's in-session `/model` picker is built from Codex's own model catalog. It
+does not automatically contain the Bifrost `/v1/models` catalog, and typing an
+arbitrary Bifrost model after `/model` may leave the previous model active. Use
+`/status` inside Codex to confirm the model. Until Bifrost supplies a generated
+Codex catalog, relaunch with `--model` when selecting a provider-qualified
+Bifrost model.
 
-{/* TODO: Add screenshot of the install confirmation dialog */}
+Codex uses the Responses API. A non-OpenAI target must support the tool calls
+required for file access, shell commands, and edits, and its Bifrost provider
+adapter must support the corresponding Responses conversion.
 
-**Step 4 - Select a Model**
+### OpenCode
 
-The CLI fetches available models from your Bifrost gateway and presents a searchable list. Type to filter, arrow keys to navigate:
+Bifrost generates a temporary OpenCode provider containing the model selected
+at launch. OpenCode displays that generated provider as `bifrost/<model>`.
+Relaunch from Bifrost to select a different gateway model that is not present in
+the generated OpenCode provider.
 
-{/* TODO: Add screenshot of the model search/selection screen */}
+### Claude Code and Gemini CLI
 
-<Tip>
-You can type any model name manually - even if it's not in the list. Just type the full model identifier and press Enter.
-</Tip>
+The model must support the tools and wire features the harness uses. Selecting
+a model in Bifrost does not add missing upstream capabilities such as tool use,
+vision, web search, or provider-specific reasoning controls.
 
-**Step 5 - Launch**
+## OpenCode appearance
 
-Review your configuration in the summary screen. Press Enter to launch, or use the shortcut keys to adjust any setting:
+The conversation area, prompt boxes, activity output, and model footer are
+rendered by OpenCode. Bifrost gives the selected harness native terminal
+passthrough, so launching it from the chooser has the same terminal rendering
+behavior as running `bifrost opencode` directly.
 
-{/* TODO: Add screenshot of the summary/ready-to-launch screen */}
+Bifrost currently sets OpenCode's `system` theme when
+`~/.config/opencode/tui.json` does not contain an explicit theme. Depending on
+the terminal palette, this can produce a different appearance or lower contrast
+than running `opencode` without Bifrost's temporary configuration.
 
-| Key | Action |
-|-----|--------|
-| `Enter` | Launch the harness |
-| `u` | Change base URL |
-| `v` | Change virtual key |
-| `h` | Change harness |
-| `m` | Change model |
-| `w` | Set worktree name (Claude Code only) |
-| `d` | Open Bifrost dashboard |
-| `r` | Open documentation |
-| `l` | Toggle harness exit logs |
-| `i` | Report an issue on GitHub |
-| `s` | Star the repo on GitHub |
-| `q` | Quit |
-
-The CLI then launches your agent with all the correct environment variables and configuration set automatically.
-
-{/* TODO: Add screenshot of the launch banner showing endpoint, model, vk status */}
-
-## Tabbed Session UI
-
-After launch, Bifrost CLI keeps you inside a tabbed terminal UI instead of exiting after the first session. The bottom tab bar shows:
-
-- The `Bifrost CLI` label and current CLI version
-- One tab per running or recent agent session
-- A status badge for each tab:
-  - `🧠` - the visible screen is actively changing, so the agent is still working
-  - `✅` - the session looks idle and ready
-  - `🔔` - the PTY emitted a real terminal alert
-
-Use `Ctrl+B` at any time to focus the tab bar. From tab mode you can:
-
-| Key | Action |
-|-----|--------|
-| `n` | Open a new tab and launch another agent session |
-| `x` | Close the current tab |
-| `h` / `l` | Move left or right across tabs |
-| `1`-`9` | Jump directly to a tab |
-| `Esc` / `Enter` / `Ctrl+B` | Return to the active session |
-
-<Tip>
-If you press `Ctrl+B` before launching your first session, Bifrost CLI stays open on the Home tab bar so you can create a new tab from there.
-</Tip>
-
-## Configuration
-
-### Config File
-
-The CLI stores its configuration at `~/.bifrost/config.json`. This file is created automatically on first run and updated when you change settings through the TUI.
+To make the appearance deterministic, set an explicit OpenCode theme:
 
 ```json
 {
-  "base_url": "http://localhost:8080",
-  "default_harness": "claude",
-  "default_model": "anthropic/claude-sonnet-4-5-20250929"
+  "$schema": "https://opencode.ai/tui.json",
+  "theme": "opencode"
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `base_url` | Your Bifrost gateway URL |
-| `default_harness` | Last used harness ID (`claude`, `codex`, `gemini`, `opencode`) |
-| `default_model` | Last used model identifier |
+Save this as `~/.config/opencode/tui.json` and restart Bifrost CLI. Other
+OpenCode themes, including `tokyonight`, `catppuccin`, and `system`, work the
+same way.
 
-<Warning>
-Never put your virtual key in the config file. The CLI stores virtual keys securely in your OS keyring (macOS Keychain, Windows Credential Manager, or Linux Secret Service).
-</Warning>
+## Native harness sessions
 
-### CLI Flags
+After you select a harness, Bifrost temporarily hands the terminal to that
+process. Native passthrough preserves the harness's colors, cursor behavior,
+keyboard handling, scrolling, and resize behavior. When the harness exits,
+Bifrost restores the terminal and returns to the launcher chooser.
 
-```bash
-npx -y @maximhq/bifrost-cli [flags]
-```
-
-| Flag | Description |
-|------|-------------|
-| `-config <path>` | Path to a custom `config.json` file |
-| `-no-resume` | Skip resume flow and open fresh setup |
-| `-worktree <name>` | Create a git worktree for the session (Claude Code only) |
-
-### Using a Custom Config Path
-
-Point the CLI to a project-specific config:
+The previous multiplexer remains available as an opt-in when running several
+harnesses in one terminal is more important than native rendering:
 
 ```bash
-npx -y @maximhq/bifrost-cli -config ./my-project/bifrost.json
+bifrost launch --tabs
 ```
 
-This is useful when working across multiple Bifrost gateways or projects with different configurations.
+Tabbed mode reserves the bottom terminal row for Bifrost and interprets the
+harness output through a virtual terminal, so colors and cursor behavior can
+differ from native mode.
 
-## Switching Harnesses and Models
-
-The CLI handles all environment variables, API keys, and provider-specific configuration automatically - you never need to set them yourself. To change your setup, use the shortcut keys from the summary screen:
-
-{/* TODO: Add screenshot of the summary/ready-to-launch screen with shortcut keys highlighted */}
-
-| Key | Action |
-|-----|--------|
-| `h` | Switch to a different harness (Claude Code, Codex, Gemini CLI, Opencode) |
-| `m` | Pick a different model from the gateway's available models |
-| `u` | Change the Bifrost gateway URL |
-| `v` | Update your virtual key |
-| `w` | Set worktree name (Claude Code only) |
-| `d` | Open the Bifrost dashboard in your browser |
-| `r` | Open the CLI documentation |
-| `l` | Toggle harness exit logs |
-| `i` | Report an issue on GitHub |
-| `s` | Star the repo on GitHub |
-| `Enter` | Launch with current settings |
-| `q` | Quit |
-
-When you switch harnesses, the CLI reconfigures everything for the new agent - base URLs, API keys, model flags, and any agent-specific setup. You can switch as many times as you like before launching.
-
-<Tip>
-After a session ends, the CLI returns to the summary screen with your previous configuration intact. Press `h` to switch agents or `m` to try a different model, then `Enter` to re-launch.
-</Tip>
-
-### Opencode Notes
-
-Bifrost CLI applies two OpenCode-specific behaviors automatically:
-
-- **Custom model selection**: when you pick a model in Bifrost CLI, OpenCode is launched with the correct provider-qualified model reference and a generated OpenCode runtime config.
-- **Theme handling**: if your OpenCode `tui.json` already defines a theme, Bifrost preserves it. If not, Bifrost supplies the adaptive `system` theme so OpenCode does not fall back to its default dark-only appearance.
-
-## Session Flow
-
-The CLI is designed for iterative development sessions:
-
-1. **Launch** - Select your agent and model, press Enter
-2. **Work** - Use your agent as normal, all traffic routes through Bifrost
-3. **Switch** - Press `Ctrl+B` any time to open the tab bar and jump to another session or start a new one
-4. **Return** - When an agent exits (or you quit it), the CLI returns to the chooser with your previous configuration intact
-5. **Re-launch** - Change model, switch harness, or re-launch the same setup instantly
-
-Your last selections are remembered across sessions. The next time you run `bifrost`, you'll see the summary screen with your previous configuration ready to go. Press Enter to re-launch immediately, or adjust any setting.
-
-{/* TODO: Add screenshot showing the re-launch flow with a previous session message */}
-
-## Worktree Support
-
-<Note>
-Worktree support is currently available for **Claude Code** only.
-</Note>
-
-Launch Claude Code in an isolated git worktree for parallel development:
+## Gateway and management commands
 
 ```bash
-npx -y @maximhq/bifrost-cli -worktree feature-branch
+bifrost status --output json
+bifrost doctor
+bifrost models list
+bifrost usage
+bifrost providers list
+bifrost credentials list openai
+bifrost virtual-keys list
+bifrost teams list
+bifrost resources list
 ```
 
-Or select worktree mode from the TUI during the setup flow. The CLI passes the `--worktree` flag to Claude Code automatically.
+The default `table` output is optimized for terminal reading. Collection
+responses fit populated fields to the terminal width, show no more than eight
+columns, prioritize identity and status fields, and summarize nested values
+such as roles. When an API returns more fields, the CLI prints a notice below
+the table. Use `--output json` or `--output yaml` whenever you need the complete
+response for inspection or automation.
 
-## MCP Integration
+Use the generated OpenAPI operation catalog for endpoints without a first-class
+wrapper:
 
-When launching **Claude Code**, the CLI automatically registers Bifrost's MCP server endpoint (`/mcp`) so all your configured MCP tools are available inside the agent.
+```bash
+bifrost api list --search virtual
+bifrost api describe getVirtualKey
+bifrost api call getVirtualKey --param vk_id="$VIRTUAL_KEY_ID"
+```
 
-If a virtual key is configured, the CLI sets up authenticated MCP access with the correct `Authorization` header - no manual `claude mcp add-json` commands needed.
+Use `request` for a runtime route that is not in the bundled catalog:
 
-For other harnesses, the CLI prints the MCP server URL so you can configure it manually in your agent's settings.
+```bash
+bifrost request GET /api/version --auth none
+bifrost request POST /v1/responses --auth inference --file request.json --stream
+```
+
+For buffered requests, `--timeout` limits the complete exchange. For streaming
+requests, it limits only receipt of the response headers; once streaming has
+started, the request context or user cancellation controls its lifetime. This
+prevents a healthy long generation from being terminated by the default `30s`
+timeout.
+
+First-class management mutation commands and `bifrost api call` support
+`--dry-run`; destructive operations additionally require `--yes`. The generic
+`bifrost request` command is a low-level escape hatch and does not add these
+safeguards.
+
+The CLI uses stable process exit codes: `0` for success, `1` for general or
+usage errors, `3` for authentication/authorization failures, `4` for not found,
+`5` for conflicts, and `6` for timeouts or gateway/server failures.
+
+## Local files and environment overrides
+
+The CLI stores context metadata and per-context selections in
+`~/.bifrost/state.json`. Legacy launcher defaults can still be read from
+`~/.bifrost/config.json`. Secret values are excluded from both files.
+
+Environment variables override keyring credentials for CI and temporary use:
+
+- `BIFROST_BASE_URL`
+- `BIFROST_CONTEXT`
+- `BIFROST_VIRTUAL_KEY`
+- `BIFROST_MANAGEMENT_KEY`
+- `BIFROST_SESSION_TOKEN`
+- `BIFROST_AGENT_TOKEN`
+- `BIFROST_AGENT_REFRESH_TOKEN`
+- `BIFROST_AGENT_VIRTUAL_KEY_ID`
+- `BIFROST_OUTPUT`
 
 ## Troubleshooting
 
-### "npm not found in path"
+### `401 Unauthorized` after SSO login
 
-The CLI needs npm to install harnesses. Make sure Node.js is installed:
-
-```bash
-node --version  # Should be 18+
-npm --version
-```
-
-### Agent not found after install
-
-If a harness was installed but the binary still isn't found, you may need to restart your terminal or add npm's global bin directory to your `PATH`:
+Run:
 
 ```bash
-# Check npm global bin path
-npm config get prefix
-
-# Add to PATH (add to ~/.zshrc or ~/.bashrc for persistence)
-export PATH="$(npm config get prefix)/bin:$PATH"
+bifrost auth status --output json
+bifrost models list
 ```
 
-### Models not loading
+Confirm that `inference_credential_type` is `enterprise-sso`. An SSO session
+does not authorize administrative endpoints; configure a management API key for
+those commands.
 
-If the model list doesn't load, check that:
+### Gemini asks for an API key
 
-1. Your Bifrost gateway is running and accessible at the configured base URL
-2. You have at least one provider configured in Bifrost
-3. If using virtual keys, your key has permission to list models
+Configure a Bifrost virtual key with `bifrost auth set-virtual-key --stdin`.
+Google account OAuth, Vertex credentials, and a Bifrost Enterprise agent token
+are different credential types and are not interchangeable in Gemini CLI's
+API-key flow.
 
-### Virtual key not persisting
+### Codex still requests `gpt-5`
 
-The CLI stores virtual keys in your OS keyring. On Linux, ensure `gnome-keyring` or `kwallet` is running. If keyring access fails, the CLI will log a warning but continue working - the key will need to be re-entered next session.
+The in-session `/model` command did not select the provider-qualified model.
+Exit and relaunch:
 
-## Next Steps
+```bash
+bifrost run codex --model provider/model
+```
+
+Then use `/status` inside Codex to verify the active model.
+
+### OpenCode colors differ from a direct launch
+
+Set an explicit theme in `~/.config/opencode/tui.json`. The `system` theme uses
+the terminal's ANSI palette and can differ from OpenCode's default appearance.
+Tabbed mode can introduce additional rendering differences.
+
+### Models do not load
+
+Check that the gateway is reachable, at least one provider is configured, and
+the effective SSO identity or virtual key has permission to list the desired
+models. Under the default `version: 2` semantics, an empty provider-key model
+allow-list or virtual-key `allowed_models` list denies all models in that
+scope; use `["*"]` to allow all models. `version: 1` retains the legacy
+empty-means-allow-all behavior:
+
+```bash
+bifrost doctor
+bifrost auth status
+bifrost models list --output json
+```
+
+## Next steps
 
 <CardGroup cols={2}>
   <Card title="Gateway Setup" icon="server" href="/quickstart/gateway/setting-up">
-    Set up a Bifrost gateway if you haven't already
+    Set up a Bifrost gateway.
   </Card>
   <Card title="Provider Configuration" icon="gear" href="/quickstart/gateway/provider-configuration">
-    Configure AI providers in your Bifrost gateway
+    Configure provider credentials and models.
   </Card>
   <Card title="Virtual Keys" icon="key" href="/features/governance/virtual-keys">
-    Set up authentication and usage limits
+    Configure inference access, budgets, and rate limits.
   </Card>
-  <Card title="MCP Gateway" icon="toolbox" href="/mcp/overview">
-    Configure MCP tools for your agents
+  <Card title="CLI Agents" icon="terminal" href="/cli-agents/overview">
+    Review harness-specific configuration and limitations.
   </Card>
 </CardGroup>

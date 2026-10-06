@@ -1,0 +1,206 @@
+---
+title: "Singulr AI"
+description: "Use Singulr AI policies with Bifrost Enterprise to block unsafe LLM traffic and apply policy-selected PII redaction."
+icon: "/media/singulr-logo-nav.svg"
+---
+
+## Overview
+
+Bifrost Enterprise supports **Singulr AI** as a third-party guardrail provider for LLM requests and responses.
+
+Singulr owns the policies and their decisions. Configure prompt-injection, PII, PHI, or other policies in Singulr, then attach the Singulr profile to a Bifrost rule to choose which traffic is evaluated. Singulr returns an `allow`, `block`, or `redact` decision; Bifrost enforces it inline.
+
+- **Allow:** Bifrost continues the request or response unchanged.
+- **Block:** Bifrost returns a guardrail intervention and does not continue that phase.
+- **Redact:** Singulr returns entity spans. Bifrost validates those spans, replaces the matching runtime text, and persists the redacted values in Bifrost logs.
+
+<Note>
+  Singulr selects whether a policy allows, blocks, or redacts. The Singulr profile does not expose a separate Bifrost `action`, `redaction_strategy`, or `redaction_mode` setting. Its redaction behavior is fixed to runtime replacement after Bifrost validates the spans returned by Singulr.
+</Note>
+
+<Note>
+  **Streaming output:** For `output` and `both` rules, Bifrost holds the response until generation is complete, evaluates the complete response with Singulr once, then releases the allowed/redacted response or returns a guardrail intervention. It does not send individual stream chunks to Singulr.
+</Note>
+
+## Prerequisites
+
+- Bifrost Enterprise with guardrails enabled
+- A Singulr API key
+- A Singulr Application ID and Guardrail ID for the application/policy you want to enforce
+- Required policies enabled in Singulr for the selected guardrail
+- Network egress from Bifrost to the Singulr API over HTTPS
+
+## Set Up Policies in Singulr
+
+Before creating the Bifrost profile:
+
+1. Create or select the Singulr application that represents the workload you want to protect.
+2. Create or select its guardrail configuration.
+3. Enable the required Singulr policies, such as prompt injection, PII, or PHI.
+4. Configure each policy's decision in Singulr: allow, block, or redact.
+5. Copy the API key, complete Application ID, and Guardrail ID into Bifrost.
+
+<Tip>
+  The Application ID is the complete bracketed value supplied by Singulr. Keep separate Singulr applications and guardrail IDs for environments that need independent policy changes.
+</Tip>
+
+## How It Works
+
+1. Create a Bifrost provider configuration with `provider_name: "singulr-ai"`.
+2. Attach it to a guardrail rule that applies to `input`, `output`, or `both`.
+3. Bifrost sends the selected conversation to Singulr before the LLM call, or sends the completed assistant response after the call.
+4. Singulr evaluates the applicable policies and returns `allow`, `block`, or `redact`.
+5. Bifrost maps that decision to the request or response path.
+
+For an output evaluation, Bifrost sends prior conversation context in `messages` and the final assistant output in a separate `response` object. Singulr uses the context for evaluation, but Bifrost only permits redaction of the final assistant response.
+
+## Configuration Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `api_key` | string | Yes | - | Singulr API key. Supports `env.SINGULR_API_KEY`. |
+| `application_id` | string | Yes | - | Complete Application ID supplied by Singulr. |
+| `guardrail_id` | string | Yes | - | Guardrail configuration ID supplied by Singulr. |
+| `base_url` | string | No | `https://dev-app6.ai-platform.singulr.ai` | Singulr API root. Bifrost appends `/api/v1/ai-gateway/bifrost`. Supports `env.SINGULR_BASE_URL`. |
+| `timeout` | integer | No | `30` | Provider execution timeout in seconds. |
+
+## Configure Bifrost
+
+<Tabs group="singulr-ai-config">
+<Tab title="Web UI">
+
+1. Go to **Guardrails** > **Providers**.
+2. Select **Singulr AI** and click **Add Configuration**.
+3. Enter a descriptive **Name**.
+4. Enter the **API Key**, complete **Application ID**, and **Guardrail ID** supplied by Singulr.
+5. Leave **Base URL** blank to use the default Singulr API root, unless Singulr has provided a different endpoint.
+6. Set the timeout, enable the configuration, optionally click **Verify**, then save it.
+7. Under **Guardrails** > **Rules**, attach the saved Singulr profile to an input, output, or both-phase rule.
+
+<Frame>
+  <img src="/media/guardrails/singulr-ai-configuration.png" alt="Singulr AI configuration in the Bifrost Guardrails Providers screen" />
+</Frame>
+
+</Tab>
+<Tab title="API">
+
+Create the Singulr AI provider configuration with the management API:
+
+```bash
+curl -X POST http://localhost:8080/api/guardrails/singulr-ai \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "singulr-ai-production",
+    "enabled": true,
+    "config": {
+      "api_key": "env.SINGULR_API_KEY",
+      "application_id": "[APPLICATION_ID]",
+      "guardrail_id": "guardrail-1234567890",
+      "base_url": "env.SINGULR_BASE_URL",
+      "timeout": 30
+    }
+  }'
+```
+
+Fetch the generated configuration ID:
+
+```bash
+curl -X GET http://localhost:8080/api/guardrails/singulr-ai
+```
+
+Attach it to a rule by referencing `singulr-ai:<id>` in `selectedGuardrailProfiles`:
+
+```bash
+curl -X POST http://localhost:8080/api/guardrails/rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "singulr-ai-all-traffic",
+    "description": "Apply Singulr AI policies to prompts and completions",
+    "enabled": true,
+    "celExpression": "provider == \"openai\"",
+    "applyTo": "both",
+    "samplingRate": 100,
+    "timeout": 60,
+    "selectedGuardrailProfiles": ["singulr-ai:25"]
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 25,
+        "provider_name": "singulr-ai",
+        "policy_name": "singulr-ai-production",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "api_key": "env.SINGULR_API_KEY",
+          "application_id": "[APPLICATION_ID]",
+          "guardrail_id": "guardrail-1234567890",
+          "base_url": "env.SINGULR_BASE_URL"
+        }
+      }
+    ],
+    "guardrail_rules": [
+      {
+        "id": 251,
+        "name": "singulr-ai-all-traffic",
+        "description": "Apply Singulr AI policies to prompts and completions",
+        "enabled": true,
+        "cel_expression": "provider == 'openai'",
+        "apply_to": "both",
+        "sampling_rate": 100,
+        "timeout": 60,
+        "provider_config_ids": [25]
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 25
+        provider_name: "singulr-ai"
+        policy_name: "singulr-ai-production"
+        enabled: true
+        timeout: 30
+        config:
+          api_key: "env.SINGULR_API_KEY"
+          application_id: "[APPLICATION_ID]"
+          guardrail_id: "guardrail-1234567890"
+          base_url: "env.SINGULR_BASE_URL"
+
+    rules:
+      - id: 251
+        name: "singulr-ai-all-traffic"
+        description: "Apply Singulr AI policies to prompts and completions"
+        enabled: true
+        cel_expression: "provider == 'openai'"
+        apply_to: "both"
+        sampling_rate: 100
+        timeout: 60
+        provider_config_ids: [25]
+```
+
+</Tab>
+</Tabs>
+
+## Supported Content and Limitations
+
+- **LLM input and output:** Singulr evaluates text-bearing request and response content. Input redaction targets the current message; output redaction targets the final assistant response.
+- **Conversation context:** Bifrost can include prior conversation when evaluating input or output. Prior turns provide context but are not redaction targets.
+- **Tool calls and tool results:** Singulr can block content in tool-call arguments and tool-result content, but Bifrost does not redact those fields with Singulr spans.
+- **Images and files:** This integration sends text content, not image pixels, file bytes, or arbitrary binary payloads.
+
+For shared rule behavior, CEL scoping, streaming replay, and audit logging, see [Guardrails](/enterprise/guardrails). For the general redaction model, see [Guardrail Redaction](/enterprise/guardrails/redaction).

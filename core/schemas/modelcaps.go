@@ -105,11 +105,35 @@ func (c ModelCaps) SupportsFastMode(fallback bool) bool {
 	return fallback
 }
 
+// SupportsSafeguards returns true if the model supports the Claude Code
+// auto-mode server-side classifier (`safeguards` request field /
+// `safeguard_results` response field) on surfaces where the feature is
+// model-gated. Auto mode on Amazon Bedrock, Google Cloud's Agent Platform,
+// Microsoft Foundry, and Claude apps gateway sessions is supported only on
+// Sonnet 5, Opus 4.7 or later, and the Fable models. Anthropic direct uses the
+// same model gate. Payloads are forwarded opaquely after capability filtering.
+//
+// Sources:
+//   - https://code.claude.com/docs/en/auto-mode-classifier-billing
+//   - https://code.claude.com/docs/en/permission-modes#enable-auto-mode-on-bedrock-agent-platform-or-foundry
+//
+// Prefers the datasheet's supports_safeguards boolean when set, falling back to
+// name detection when no record is registered.
+func (c ModelCaps) SupportsSafeguards(fallback bool) bool {
+	if c.record != nil && c.record.SupportsSafeguards != nil {
+		return *c.record.SupportsSafeguards
+	}
+	return fallback
+}
+
 // Wire field names used as UnsupportedFields and ConditionallyUnsupportedFields
 // keys. Call sites pass these rather than string literals so a typo fails to
 // compile instead of silently reading as "supported".
 const (
 	FieldTopP                 = "top_p"
+	FieldTemperature          = "temperature"
+	FieldTopLogprobs          = "top_logprobs"
+	FieldLogprobs             = "logprobs"
 	FieldPresencePenalty      = "presence_penalty"
 	FieldFrequencyPenalty     = "frequency_penalty"
 	FieldStop                 = "stop"
@@ -121,6 +145,7 @@ const (
 	FieldVerbosity            = "verbosity"
 	FieldStore                = "store"
 	FieldWebSearchOptions     = "web_search_options"
+	FieldSearchContentTypes   = "search_content_types"
 )
 
 // Logical field names used as FieldNames keys, where the value is the wire name
@@ -253,6 +278,24 @@ func (c ModelCaps) SupportsCachePoint(fallback bool) bool {
 	return fallback
 }
 
+// SupportsPromptCacheBreakpoint reports whether the model accepts OpenAI's
+// per-block prompt_cache_breakpoint and request-level prompt_cache_options.
+func (c ModelCaps) SupportsPromptCacheBreakpoint(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCacheBreakpoint != nil {
+		return *c.record.SupportsPromptCacheBreakpoint
+	}
+	return fallback
+}
+
+// SupportsAsyncTools reports whether the model accepts OpenAI's async flag on tool
+// definitions and on replayed function/custom call items.
+func (c ModelCaps) SupportsAsyncTools(fallback bool) bool {
+	if c.record != nil && c.record.SupportsAsyncTools != nil {
+		return *c.record.SupportsAsyncTools
+	}
+	return fallback
+}
+
 // SupportsPromptCaching reports whether the model supports explicit prompt caching
 // at all. It is the base feature that SupportsPromptCachingScope and
 // SupportsExtendedCacheTTL refine, and it is what gates breakpoint injection: a
@@ -312,6 +355,15 @@ func (c ModelCaps) ToolChoiceAnySupported(fallback bool) bool {
 func (c ModelCaps) SupportsForcedToolChoice(fallback bool) bool {
 	if c.record != nil && c.record.SupportsForcedToolChoice != nil {
 		return *c.record.SupportsForcedToolChoice
+	}
+	return fallback
+}
+
+// SupportsPromptCacheBreakpoints reports whether the Responses wire accepts
+// prompt_cache_breakpoint on input_text blocks in place of cache_control.
+func (c ModelCaps) SupportsPromptCacheBreakpoints(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCacheBreakpoints != nil {
+		return *c.record.SupportsPromptCacheBreakpoints
 	}
 	return fallback
 }
@@ -408,6 +460,16 @@ func (c ModelCaps) SupportsMidConversationSystem(fallback bool) bool {
 	return fallback
 }
 
+// SupportsMidConvOutputConfig reports whether the pair accepts output_config.effort
+// on a role:"system" message inside messages (per-message effort). The record is keyed per
+// (provider, model), so it decides for both the provider and the model when set.
+func (c ModelCaps) SupportsMidConvOutputConfig(fallback bool) bool {
+	if c.record != nil && c.record.SupportsMidConvOutputConfig != nil {
+		return *c.record.SupportsMidConvOutputConfig
+	}
+	return fallback
+}
+
 // SupportsMCP reports whether the model accepts MCP connector servers.
 func (c ModelCaps) SupportsMCP(fallback bool) bool {
 	if c.record != nil && c.record.SupportsMCP != nil {
@@ -471,6 +533,38 @@ func (c ModelCaps) SupportsMemoryTool(fallback bool) bool {
 func (c ModelCaps) SupportsToolSearch(fallback bool) bool {
 	if c.record != nil && c.record.SupportsToolSearch != nil {
 		return *c.record.SupportsToolSearch
+	}
+	return fallback
+}
+
+// SupportsNamespaceTools reports whether the model accepts the OpenAI Responses
+// `namespace` tool container on the wire. A row decides in either direction;
+// with no row the caller's per-provider default is returned, which is what
+// decides whether core flattens namespaces before dispatch (#7048).
+func (c ModelCaps) SupportsNamespaceTools(fallback bool) bool {
+	if c.record != nil && c.record.SupportsNamespaceTools != nil {
+		return *c.record.SupportsNamespaceTools
+	}
+	return fallback
+}
+
+// ToolNameMaxLength returns the longest tool name the wire accepts. A row with a
+// positive tool_name_max_length wins; absent or non-positive returns fallback, the
+// caller's per-provider default.
+func (c ModelCaps) ToolNameMaxLength(fallback int) int {
+	if c.record != nil && c.record.ToolNameMaxLength != nil && *c.record.ToolNameMaxLength > 0 {
+		return *c.record.ToolNameMaxLength
+	}
+	return fallback
+}
+
+// ReservedToolNamespaces returns the namespace-tool names the provider reserves for
+// its own server tools. A non-empty row replaces fallback outright, so a row can
+// both add names and clear a hardcoded one; absent or empty returns fallback.
+func (c ModelCaps) ReservedToolNamespaces(fallback []string) []string {
+	if c.record != nil && len(c.record.ReservedToolNamespaces) > 0 {
+		return c.record.ReservedToolNamespaces
+
 	}
 	return fallback
 }
@@ -567,6 +661,17 @@ func (c ModelCaps) SupportsFilesAPI(fallback bool) bool {
 	return fallback
 }
 
+// SupportsComputerToolset reports whether the model accepts the
+// computer_toolset_20260801 client toolset. Distinct from the dated computer_*
+// tools: most models that take the toolset still accept the dated form too, and
+// Opus 5.5 on the Claude API and Google Cloud takes only the toolset.
+func (c ModelCaps) SupportsComputerToolset(fallback bool) bool {
+	if c.record != nil && c.record.SupportsComputerToolset != nil {
+		return *c.record.SupportsComputerToolset
+	}
+	return fallback
+}
+
 // SupportsTextEditorTool reports whether the model accepts the text_editor client tool.
 func (c ModelCaps) SupportsTextEditorTool(fallback bool) bool {
 	if c.record != nil && c.record.SupportsTextEditorTool != nil {
@@ -611,6 +716,16 @@ func (c ModelCaps) MinOutputTokens(fallback int) int {
 	return fallback
 }
 
+// MaxOutputTokens returns the ceiling the model enforces on max_output_tokens.
+// A row with a positive max_output_tokens wins; absent or non-positive returns
+// fallback. Zero means no ceiling, so callers clamp only above zero.
+func (c ModelCaps) MaxOutputTokens(fallback int) int {
+	if c.record != nil && c.record.MaxOutputTokens != nil && *c.record.MaxOutputTokens > 0 {
+		return *c.record.MaxOutputTokens
+	}
+	return fallback
+}
+
 // BedrockReasoningShape returns the reasoning wire shape the datasheet says this
 // (provider, model) pair uses on Converse, falling back to the caller's
 // name-based answer when the row says nothing or publishes a value this binary
@@ -622,6 +737,16 @@ func (c ModelCaps) BedrockReasoningShape(fallback BedrockReasoningShape) Bedrock
 	return fallback
 }
 
+// BedrockMantleBasePath reports the URL base path Bedrock Mantle serves this
+// model's OpenAI-compatible APIs on. Falls back to the caller's name-based answer
+// when the row says nothing or publishes a value this binary does not recognise.
+func (c ModelCaps) BedrockMantleBasePath(fallback BedrockMantleBasePath) BedrockMantleBasePath {
+	if c.record != nil && c.record.BedrockMantleBasePath.IsValid() {
+		return c.record.BedrockMantleBasePath
+	}
+	return fallback
+}
+
 // BedrockRequiresSignedReasoning reports whether the (provider, model) pair
 // verifies reasoning signatures on Converse, so an unsigned reasoningText block
 // cannot be replayed to it. Falls back to the caller's name-based answer when
@@ -629,6 +754,16 @@ func (c ModelCaps) BedrockReasoningShape(fallback BedrockReasoningShape) Bedrock
 func (c ModelCaps) BedrockRequiresSignedReasoning(fallback bool) bool {
 	if c.record != nil && c.record.BedrockRequiresSignedReasoning != nil {
 		return *c.record.BedrockRequiresSignedReasoning
+	}
+	return fallback
+}
+
+// SupportsConverseToolResultImages reports whether Converse accepts image blocks
+// inside a toolResult for this model. Falls back to the caller's name-based answer
+// when the row says nothing.
+func (c ModelCaps) SupportsConverseToolResultImages(fallback bool) bool {
+	if c.record != nil && c.record.SupportsConverseToolResultImages != nil {
+		return *c.record.SupportsConverseToolResultImages
 	}
 	return fallback
 }

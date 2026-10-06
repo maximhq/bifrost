@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -1685,4 +1686,312 @@ func TestToResponsesMessages_EncryptedReasoningMarshalsSummaryAsArray(t *testing
 	if strings.Contains(string(encoded), `"summary":null`) {
 		t.Fatalf("summary must never marshal as null: %s", encoded)
 	}
+}
+
+// Every response family carrying a Usage must be reachable through
+// NormalizedUsage, or be listed as a known exclusion. DecisionResponse was added
+// to the logging plugin's switch but not here, so decision rows silently lost
+// their token counts.
+func TestNormalizedUsageCoversEveryUsageBearingFamily(t *testing.T) {
+	handled := map[string]bool{}
+	for _, name := range normalizedUsageFamilies {
+		handled[name] = true
+	}
+	// Pre-existing gaps, present in the hand-rolled switch this replaced too.
+	// Streams are accumulated into their non-stream family before they reach a
+	// logging or span path; video has never been wired to either.
+	knownExcluded := map[string]string{
+		"SpeechStreamResponse":          "accumulated into SpeechResponse",
+		"TranscriptionStreamResponse":   "accumulated into TranscriptionResponse",
+		"ImageGenerationStreamResponse": "accumulated into ImageGenerationResponse",
+		"VideoGenerationResponse":       "never wired to logging or spans",
+	}
+
+	rt := reflect.TypeOf(BifrostResponse{})
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		if !strings.HasSuffix(f.Name, "Response") || f.Type.Kind() != reflect.Ptr {
+			continue
+		}
+		inner := f.Type.Elem()
+		if inner.Kind() != reflect.Struct {
+			continue
+		}
+		if _, hasUsage := inner.FieldByName("Usage"); !hasUsage {
+			continue
+		}
+		if handled[f.Name] {
+			if _, excluded := knownExcluded[f.Name]; excluded {
+				t.Errorf("%s is both handled and listed as excluded", f.Name)
+			}
+			continue
+		}
+		if _, excluded := knownExcluded[f.Name]; !excluded {
+			t.Errorf("%s carries a Usage field but NormalizedUsage does not read it; "+
+				"a request of that family would report zero tokens", f.Name)
+		}
+	}
+	// A stale exclusion is drift too.
+	for name := range knownExcluded {
+		if _, ok := rt.FieldByName(name); !ok {
+			t.Errorf("knownExcluded lists %s, which is no longer a BifrostResponse field", name)
+		}
+	}
+}
+
+// normalizedUsageFamilies lists what NormalizedUsage reads.
+var normalizedUsageFamilies = []string{
+	"TextCompletionResponse", "ChatResponse", "ResponsesResponse", "CompactionResponse",
+	"EmbeddingResponse", "RerankResponse", "DecisionResponse", "TranscriptionResponse",
+	"SpeechResponse", "ImageGenerationResponse", "PassthroughResponse",
+}
+
+// A provider may report total_tokens: 0 alongside real input/output counts.
+// Speech derived the total in that case; transcription only did so when the
+// pointer was nil, so it returned zero. Both now agree.
+func TestNormalizedUsageDerivesTotalWhenReportedZero(t *testing.T) {
+	i64 := func(v int) *int { return &v }
+
+	for _, tc := range []struct {
+		name      string
+		resp      *BifrostResponse
+		wantTotal int
+	}{
+		{
+			"transcription, total reported zero",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3), TotalTokens: i64(0)},
+			}},
+			10,
+		},
+		{
+			"transcription, total nil",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3)},
+			}},
+			10,
+		},
+		{
+			"transcription, total reported and correct",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3), TotalTokens: i64(10)},
+			}},
+			10,
+		},
+		{
+			"transcription, provider total wins when non-zero",
+			&BifrostResponse{TranscriptionResponse: &BifrostTranscriptionResponse{
+				Usage: &TranscriptionUsage{InputTokens: i64(7), OutputTokens: i64(3), TotalTokens: i64(99)},
+			}},
+			99,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := tc.resp.NormalizedUsage()
+			if u == nil {
+				t.Fatal("NormalizedUsage returned nil")
+			}
+			if u.TotalTokens != tc.wantTotal {
+				t.Errorf("TotalTokens = %d, want %d", u.TotalTokens, tc.wantTotal)
+			}
+		})
+	}
+}
+
+// reasoning.type must survive the chat<->responses conversion used when a
+// provider only implements one of the two APIs.
+func TestReasoningTypeSurvivesChatResponsesConversion(t *testing.T) {
+	chat := &BifrostChatRequest{
+		Model:  "claude-sonnet-5-5",
+		Params: &ChatParameters{Reasoning: &ChatReasoning{Type: Ptr("between_tools")}},
+	}
+	responses := chat.ToResponsesRequest()
+	if responses.Params == nil || responses.Params.Reasoning == nil || responses.Params.Reasoning.Type == nil ||
+		*responses.Params.Reasoning.Type != "between_tools" {
+		t.Fatalf("chat->responses dropped reasoning.type: %+v", responses.Params)
+	}
+	back := responses.ToChatRequest()
+	if back.Params == nil || back.Params.Reasoning == nil || back.Params.Reasoning.Type == nil ||
+		*back.Params.Reasoning.Type != "between_tools" {
+		t.Fatalf("responses->chat dropped reasoning.type: %+v", back.Params)
+	}
+}
+
+// reasoning.mode must survive the chat<->responses conversion: a chat request that
+// sets it is served by the Responses API, and a mode-only reasoning object must not
+// be dropped by the "anything set?" guard.
+func TestReasoningModeSurvivesChatResponsesConversion(t *testing.T) {
+	chat := &BifrostChatRequest{
+		Model:  "gpt-6-luna",
+		Params: &ChatParameters{Reasoning: &ChatReasoning{Mode: Ptr("pro")}},
+	}
+	responses := chat.ToResponsesRequest()
+	if responses.Params == nil || responses.Params.Reasoning == nil || responses.Params.Reasoning.Mode == nil ||
+		*responses.Params.Reasoning.Mode != "pro" {
+		t.Fatalf("chat->responses dropped reasoning.mode: %+v", responses.Params)
+	}
+	back := responses.ToChatRequest()
+	if back.Params == nil || back.Params.Reasoning == nil || back.Params.Reasoning.Mode == nil ||
+		*back.Params.Reasoning.Mode != "pro" {
+		t.Fatalf("responses->chat dropped reasoning.mode: %+v", back.Params)
+	}
+}
+
+// TestGuardContentMarkerSurvivesChatResponsesMux: the Bedrock guard marker crosses the
+// chat <-> responses bridge in both directions, like cache_control does.
+func TestGuardContentMarkerSurvivesChatResponsesMux(t *testing.T) {
+	marker := &GuardContent{Qualifiers: []string{"query"}}
+	chat := ChatMessage{
+		Role: ChatMessageRoleUser,
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{
+			{Type: ChatContentBlockTypeText, Text: Ptr("context")},
+			{Type: ChatContentBlockTypeText, Text: Ptr("question"), GuardContent: marker},
+		}},
+	}
+	responses := chat.ToResponsesMessages()
+	if len(responses) != 1 || responses[0].Content == nil || len(responses[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("unexpected responses shape: %+v", responses)
+	}
+	if responses[0].Content.ContentBlocks[0].GuardContent != nil {
+		t.Error("unmarked block gained a guard marker")
+	}
+	if responses[0].Content.ContentBlocks[1].GuardContent != marker {
+		t.Fatal("guard marker dropped on chat -> responses")
+	}
+
+	back := ToChatMessages(responses)
+	if len(back) != 1 || back[0].Content == nil || len(back[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("unexpected chat shape: %+v", back)
+	}
+	if back[0].Content.ContentBlocks[1].GuardContent != marker {
+		t.Fatal("guard marker dropped on responses -> chat")
+	}
+}
+
+// OpenAI pairs a reasoning item's id with its encrypted_content, and rejects a
+// replay whose id does not match the token. The chat shape must therefore carry
+// the id out on reasoning_details and hand the same id back when it is replayed.
+func TestReasoningItemIDSurvivesChatRoundTrip(t *testing.T) {
+	encrypted := "gAAAA-encrypted-token"
+	items := []ResponsesMessage{
+		{
+			ID:   Ptr("rs_openai_original"),
+			Type: Ptr(ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &ResponsesReasoning{
+				Summary:          []ResponsesReasoningSummary{{Type: ResponsesReasoningContentBlockTypeSummaryText, Text: "thought about it"}},
+				EncryptedContent: &encrypted,
+			},
+		},
+		{
+			Role:    Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{ContentStr: Ptr("answer")},
+		},
+	}
+
+	chat := ToChatMessages(items)
+	var assistant *ChatMessage
+	for i := range chat {
+		if chat[i].Role == ChatMessageRoleAssistant && chat[i].ChatAssistantMessage != nil {
+			assistant = &chat[i]
+		}
+	}
+	if assistant == nil || len(assistant.ChatAssistantMessage.ReasoningDetails) == 0 {
+		t.Fatalf("expected reasoning_details on the assistant message, got %#v", chat)
+	}
+	for _, d := range assistant.ChatAssistantMessage.ReasoningDetails {
+		if d.ID == nil || *d.ID != "rs_openai_original" {
+			t.Fatalf("reasoning_details[%d] (%s) lost the reasoning item id: %#v", d.Index, d.Type, d.ID)
+		}
+	}
+
+	replayed := assistant.ToResponsesMessages()
+	if len(replayed) == 0 || replayed[0].Type == nil || *replayed[0].Type != ResponsesMessageTypeReasoning {
+		t.Fatalf("expected a reasoning item first, got %#v", replayed)
+	}
+	if replayed[0].ID == nil || *replayed[0].ID != "rs_openai_original" {
+		t.Fatalf("replay minted a new id instead of reusing the original: %#v", replayed[0].ID)
+	}
+
+	t.Run("no recorded id still mints a fresh rs_ id", func(t *testing.T) {
+		cm := &ChatMessage{
+			Role: ChatMessageRoleAssistant,
+			ChatAssistantMessage: &ChatAssistantMessage{
+				ReasoningDetails: []ChatReasoningDetails{{Index: 0, Type: BifrostReasoningDetailsTypeEncrypted, Data: &encrypted}},
+			},
+		}
+		out := cm.ToResponsesMessages()
+		if len(out) == 0 || out[0].ID == nil || !strings.HasPrefix(*out[0].ID, "rs_") || len(*out[0].ID) <= len("rs_") {
+			t.Fatalf("expected a freshly minted rs_ id, got %#v", out)
+		}
+	})
+
+	t.Run("the encrypted detail's id wins when several reasoning items merge", func(t *testing.T) {
+		cm := &ChatMessage{
+			Role: ChatMessageRoleAssistant,
+			ChatAssistantMessage: &ChatAssistantMessage{
+				ReasoningDetails: []ChatReasoningDetails{
+					{ID: Ptr("rs_summary_only"), Index: 0, Type: BifrostReasoningDetailsTypeSummary, Summary: Ptr("s")},
+					{ID: Ptr("rs_with_token"), Index: 1, Type: BifrostReasoningDetailsTypeEncrypted, Data: &encrypted},
+				},
+			},
+		}
+		out := cm.ToResponsesMessages()
+		if len(out) == 0 || out[0].ID == nil || *out[0].ID != "rs_with_token" {
+			t.Fatalf("expected the id paired with the encrypted token, got %#v", out[0].ID)
+		}
+	})
+}
+
+// The id sent with a reasoning item must be the one its encrypted token was issued with. When the
+// token's own detail carries no id, borrowing another detail's id would pair the token with an id it
+// was never issued with (OpenAI rejects that), so a fresh id is minted instead.
+func TestReasoningIDIsTakenFromTheEncryptedDetailThatIsEmitted(t *testing.T) {
+	tokenA, tokenB := "token-A", "token-B"
+	replay := func(details ...ChatReasoningDetails) ResponsesMessage {
+		t.Helper()
+		out := (&ChatMessage{Role: ChatMessageRoleAssistant, ChatAssistantMessage: &ChatAssistantMessage{ReasoningDetails: details}}).ToResponsesMessages()
+		if len(out) == 0 || out[0].Type == nil || *out[0].Type != ResponsesMessageTypeReasoning {
+			t.Fatalf("expected a reasoning item first, got %#v", out)
+		}
+		return out[0]
+	}
+
+	t.Run("an encrypted detail without an id does not borrow a neighbour's id", func(t *testing.T) {
+		item := replay(
+			ChatReasoningDetails{ID: Ptr("rs_summary_only"), Index: 0, Type: BifrostReasoningDetailsTypeSummary, Summary: Ptr("s")},
+			ChatReasoningDetails{Index: 1, Type: BifrostReasoningDetailsTypeEncrypted, Data: &tokenA},
+		)
+		if item.ResponsesReasoning == nil || item.ResponsesReasoning.EncryptedContent == nil || *item.ResponsesReasoning.EncryptedContent != tokenA {
+			t.Fatalf("the encrypted token must still be replayed, got %#v", item.ResponsesReasoning)
+		}
+		if item.ID == nil || *item.ID == "rs_summary_only" {
+			t.Fatalf("the token was paired with an unrelated id: %#v", item.ID)
+		}
+		if !strings.HasPrefix(*item.ID, "rs_") || len(*item.ID) <= len("rs_") {
+			t.Fatalf("expected a freshly minted rs_ id, got %q", *item.ID)
+		}
+	})
+
+	t.Run("with two encrypted details the one whose token is emitted decides the id", func(t *testing.T) {
+		item := replay(
+			ChatReasoningDetails{ID: Ptr("rs_a"), Index: 0, Type: BifrostReasoningDetailsTypeEncrypted, Data: &tokenA},
+			ChatReasoningDetails{ID: Ptr("rs_b"), Index: 1, Type: BifrostReasoningDetailsTypeEncrypted, Data: &tokenB},
+		)
+		if item.ResponsesReasoning == nil || item.ResponsesReasoning.EncryptedContent == nil || *item.ResponsesReasoning.EncryptedContent != tokenB {
+			t.Fatalf("expected the last token to be emitted, got %#v", item.ResponsesReasoning)
+		}
+		if item.ID == nil || *item.ID != "rs_b" {
+			t.Fatalf("expected the id paired with the emitted token (rs_b), got %#v", item.ID)
+		}
+	})
+
+	t.Run("with no token to pair, the first recorded id is kept", func(t *testing.T) {
+		item := replay(
+			ChatReasoningDetails{ID: Ptr("rs_summary_only"), Index: 0, Type: BifrostReasoningDetailsTypeSummary, Summary: Ptr("s")},
+			ChatReasoningDetails{ID: Ptr("rs_later"), Index: 1, Type: BifrostReasoningDetailsTypeSummary, Summary: Ptr("t")},
+		)
+		if item.ID == nil || *item.ID != "rs_summary_only" {
+			t.Fatalf("expected the first recorded id, got %#v", item.ID)
+		}
+	})
 }

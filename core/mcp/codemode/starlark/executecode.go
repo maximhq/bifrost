@@ -9,13 +9,11 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/canonical/starlark/starlark"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
-	"go.starlark.net/starlark"
-	"go.starlark.net/starlarkstruct"
-	"go.starlark.net/syntax"
 )
 
 // ExecutionResult represents the result of code execution
@@ -207,195 +205,31 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 
 // executeCode executes Python (Starlark) code in a sandboxed interpreter with MCP tool bindings.
 func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string) ExecutionResult {
-	logs := []string{}
-
-	s.logger.Debug("%s Starting Starlark code execution", codemcp.CodeModeLogPrefix)
-
-	// Step 1: Handle empty code
-	trimmedCode := strings.TrimSpace(code)
-	if trimmedCode == "" {
-		return ExecutionResult{
-			Result: nil,
-			Logs:   logs,
-			Errors: nil,
-			Environment: ExecutionEnvironment{
-				ServerKeys: []string{},
-			},
-		}
+	limits := s.getLimits()
+	if len(code) > limits.MaxSourceBytes {
+		return sandboxFailure("code exceeds source limit")
 	}
-
-	// Step 2: Build tool bindings for all connected servers
-	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
-	serverKeys := make([]string, 0, len(availableToolsPerClient))
-	predeclared := starlark.StringDict{}
-
-	// Thread-safe log appender
-	appendLog := func(msg string) {
-		s.logMu.Lock()
-		defer s.logMu.Unlock()
-		logs = append(logs, msg)
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return ExecutionResult{Logs: []string{}, Environment: ExecutionEnvironment{ServerKeys: []string{}}}
 	}
-
-	s.logger.Debug("%s GetToolPerClient returned %d clients", codemcp.CodeModeLogPrefix, len(availableToolsPerClient))
-
-	for clientName, tools := range availableToolsPerClient {
+	bindings := map[string][]string{}
+	for clientName, tools := range s.clientManager.GetToolPerClient(ctx) {
 		client := s.clientManager.GetClientByName(clientName)
-		if client == nil {
-			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
+		if client == nil || !client.ExecutionConfig.IsCodeModeClient {
 			continue
 		}
-		s.logger.Debug("%s [%s] Client found. IsCodeModeClient: %v, ToolCount: %d", codemcp.CodeModeLogPrefix, clientName, client.ExecutionConfig.IsCodeModeClient, len(tools))
-		if !client.ExecutionConfig.IsCodeModeClient || len(tools) == 0 {
-			s.logger.Debug("%s [%s] Skipped: IsCodeModeClient=%v, HasTools=%v", codemcp.CodeModeLogPrefix, clientName, client.ExecutionConfig.IsCodeModeClient, len(tools) > 0)
-			continue
-		}
-		serverKeys = append(serverKeys, clientName)
-
-		// Build struct with tool methods
-		structMembers := starlark.StringDict{}
-
 		for _, tool := range tools {
-			if tool.Function == nil || tool.Function.Name == "" {
-				continue
-			}
-
-			originalToolName := tool.Function.Name
-			parsedToolName := getCanonicalToolName(clientName, originalToolName)
-			compatibilityAlias := getCompatibilityToolAlias(clientName, originalToolName)
-
-			s.logger.Debug("%s [%s] Binding tool: %s -> %s", codemcp.CodeModeLogPrefix, clientName, originalToolName, parsedToolName)
-
-			// Capture variables for closure
-			capturedToolName := originalToolName
-			capturedClientName := clientName
-
-			// Create a Starlark builtin function for this tool
-			toolFunc := starlark.NewBuiltin(parsedToolName, func(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-				// Convert kwargs to Go map
-				goArgs := make(map[string]interface{})
-				for _, kwarg := range kwargs {
-					if len(kwarg) == 2 {
-						key := string(kwarg[0].(starlark.String))
-						value := starlarkToGo(kwarg[1])
-						goArgs[key] = value
-					}
-				}
-
-				// Also handle positional args if there's exactly one dict argument
-				if len(args) == 1 && len(kwargs) == 0 {
-					if dict, ok := args[0].(*starlark.Dict); ok {
-						for _, item := range dict.Items() {
-							if keyStr, ok := item[0].(starlark.String); ok {
-								goArgs[string(keyStr)] = starlarkToGo(item[1])
-							}
-						}
-					}
-				}
-
-				// Call the MCP tool
-				result, err := s.callMCPTool(ctx, capturedClientName, capturedToolName, goArgs, appendLog)
-				if err != nil {
-					return starlark.None, fmt.Errorf("tool call failed: %v", err)
-				}
-
-				// Convert result back to Starlark
-				return goToStarlark(result), nil
-			})
-
-			structMembers[parsedToolName] = toolFunc
-
-			if compatibilityAlias != parsedToolName && isValidStarlarkIdentifier(compatibilityAlias) {
-				if _, exists := structMembers[compatibilityAlias]; !exists {
-					structMembers[compatibilityAlias] = toolFunc
-					s.logger.Debug("%s [%s] Added compatibility alias: %s -> %s", codemcp.CodeModeLogPrefix, clientName, compatibilityAlias, parsedToolName)
-				}
+			if tool.Function != nil && tool.Function.Name != "" {
+				bindings[clientName] = append(bindings[clientName], tool.Function.Name)
 			}
 		}
-
-		// Create a struct for this server
-		serverStruct := starlarkstruct.FromStringDict(starlark.String(clientName), structMembers)
-		predeclared[clientName] = serverStruct
-		s.logger.Debug("%s [%s] Added server struct with %d tools", codemcp.CodeModeLogPrefix, clientName, len(structMembers))
 	}
-
-	if len(serverKeys) > 0 {
-		s.logger.Debug("%s Bound %d servers with tools: %v", codemcp.CodeModeLogPrefix, len(serverKeys), serverKeys)
-	} else {
-		s.logger.Debug("%s No servers available for code mode execution", codemcp.CodeModeLogPrefix)
-	}
-
-	// Step 3: Create Starlark thread with print function and timeout
-	toolExecutionTimeout := s.getToolExecutionTimeout()
-	timeoutCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, s.getToolExecutionTimeout())
 	defer cancel()
-
-	thread := &starlark.Thread{
-		Name: "codemode",
-		Print: func(_ *starlark.Thread, msg string) {
-			appendLog(msg)
-		},
-	}
-
-	// Set up cancellation check — watch the context and cancel the Starlark
-	// thread so that infinite loops and other long-running scripts are interrupted
-	// when the execution timeout fires.
-	thread.SetLocal("context", timeoutCtx)
-	go func() {
-		<-timeoutCtx.Done()
-		thread.Cancel(timeoutCtx.Err().Error())
-	}()
-
-	// Step 4: Configure Starlark dialect options for a Python-like experience
-	starlarkOpts := &syntax.FileOptions{
-		TopLevelControl: true, // allow if/for/while at top level (not just inside functions)
-		While:           true, // enable while loops
-		Set:             true, // enable set() builtin
-		GlobalReassign:  true, // allow reassignment to top-level names
-		Recursion:       true, // allow recursive functions
-	}
-
-	// Step 5: Execute the code
-	globals, err := starlark.ExecFileOptions(starlarkOpts, thread, "code.star", trimmedCode, predeclared)
-
-	if err != nil {
-		errorMessage := err.Error()
-		hints := generatePythonErrorHints(errorMessage, serverKeys)
-		s.logger.Debug("%s Execution failed: %s", codemcp.CodeModeLogPrefix, errorMessage)
-
-		errorKind := ExecutionErrorTypeRuntime
-		if strings.Contains(errorMessage, "syntax error") {
-			errorKind = ExecutionErrorTypeSyntax
-		}
-
-		return ExecutionResult{
-			Result: nil,
-			Logs:   logs,
-			Errors: &ExecutionError{
-				Kind:    errorKind,
-				Message: errorMessage,
-				Hints:   hints,
-			},
-			Environment: ExecutionEnvironment{
-				ServerKeys: serverKeys,
-			},
-		}
-	}
-
-	// Step 6: Extract result from globals
-	var result interface{}
-	if resultVal, ok := globals["result"]; ok && resultVal != starlark.None {
-		result = starlarkToGo(resultVal)
-	}
-
-	s.logger.Debug("%s Execution completed successfully", codemcp.CodeModeLogPrefix)
-	return ExecutionResult{
-		Result: result,
-		Logs:   logs,
-		Errors: nil,
-		Environment: ExecutionEnvironment{
-			ServerKeys: serverKeys,
-		},
-	}
+	return runSandbox(timeoutCtx, limits, code, bindings, func(callCtx context.Context, client, tool string, args map[string]interface{}, log func(string)) (interface{}, error) {
+		return s.callMCPTool(schemas.NewBifrostContext(callCtx, schemas.NoDeadline), client, tool, args, log)
+	})
 }
 
 // callMCPTool calls an MCP tool and returns the result.
@@ -422,6 +256,19 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 
 	if client == nil {
 		return nil, fmt.Errorf("client not found for server name: %s", clientName)
+	}
+
+	// Enforce the allow-lists at the actual invocation chokepoint, not just via the
+	// pre-flight source-text scan in agent.go: generated code can reach any bound tool
+	// through indirection (getattr, a dispatch table, etc.) that scan doesn't recognize,
+	// so this is the only point that sees the real tool being called regardless of how
+	// the Starlark code referenced it. Every Starlark tool invocation passes through this
+	// function (it's the sole callee of the builtin closures the sandbox is populated
+	// with), so this one check covers every syntax shape at once. ToolsToAutoExecute
+	// applies only to unattended (agent loop) runs; approved runs are bound by
+	// ToolsToExecute. A pre-hook rename is re-checked inside the op closure below.
+	if err := codemcp.AuthorizeCodeModeToolCall(ctx, toolName, client.ExecutionConfig); err != nil {
+		return nil, err
 	}
 
 	// Strip the client name prefix from tool name before calling MCP server
@@ -504,6 +351,11 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			toolCallReq = *preReq.ChatAssistantMessageToolCall
 			if toolCallReq.Function.Name != nil && *toolCallReq.Function.Name != "" {
 				effectiveToolName = stripClientPrefix(*toolCallReq.Function.Name, clientName)
+				// The pre-hook may have rewritten the name: authorize the tool that
+				// CallTool will actually invoke, not only the one the code asked for.
+				if err := codemcp.AuthorizeCodeModeToolCall(nestedCtx, *toolCallReq.Function.Name, client.ExecutionConfig); err != nil {
+					return nil, err
+				}
 			}
 			if strings.TrimSpace(toolCallReq.Function.Arguments) == "" {
 				effectiveArgs = map[string]interface{}{}
@@ -546,7 +398,10 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			return nil, fmt.Errorf("tool call failed for %s.%s: %v", clientName, effectiveToolName, callErr)
 		}
 
-		rawResult := extractTextFromMCPResponse(toolResponse, effectiveToolName)
+		rawResult, err := extractTextFromMCPResponse(toolResponse, effectiveToolName, contextSandboxLimits(ctx).MaxValueBytes)
+		if err != nil {
+			return nil, err
+		}
 		if after, ok := strings.CutPrefix(rawResult, "Error: "); ok {
 			s.logger.Debug("%s Tool returned error result: %s.%s - %s", codemcp.CodeModeLogPrefix, clientName, effectiveToolName, after)
 			appendLog(fmt.Sprintf("[TOOL] %s.%s error result: %s", clientName, effectiveToolName, after))
@@ -582,10 +437,32 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	}
 
 	if finalResp.ChatMessage != nil {
+		if content := finalResp.ChatMessage.Content; content != nil && content.ContentStr != nil {
+			if err := chargeToolResult(ctx, len(*content.ContentStr)); err != nil {
+				return nil, err
+			}
+		}
 		return extractResultFromChatMessage(finalResp.ChatMessage), nil
 	}
 
 	if finalResp.ResponsesMessage != nil {
+		if message := finalResp.ResponsesMessage.ResponsesToolMessage; message != nil && message.Output != nil {
+			size := 0
+			if text := message.Output.ResponsesToolCallOutputStr; text != nil {
+				size = len(*text)
+			}
+			for _, block := range message.Output.ResponsesFunctionToolCallOutputBlocks {
+				if block.Text != nil {
+					if len(*block.Text) >= contextSandboxLimits(ctx).MaxValueBytes-size {
+						return nil, fmt.Errorf("code mode tool result exceeds size limit")
+					}
+					size += len(*block.Text) + 1
+				}
+			}
+			if err := chargeToolResult(ctx, size); err != nil {
+				return nil, err
+			}
+		}
 		result, err := extractResultFromResponsesMessage(finalResp.ResponsesMessage)
 		if err != nil {
 			return nil, err
@@ -596,4 +473,17 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	}
 
 	return nil, fmt.Errorf("plugin post-hooks returned invalid response")
+}
+
+// Bound response decoding before constructing generic JSON containers. The
+// conservative charge includes parsing overhead; the subsequent conversion
+// accounts for the Starlark values. MCP transports retain their own wire limits.
+func chargeToolResult(ctx context.Context, size int) error {
+	if size < 0 || size > contextSandboxLimits(ctx).MaxValueBytes {
+		return fmt.Errorf("code mode tool result exceeds size limit")
+	}
+	if thread := starlark.ContextThread(ctx); thread != nil {
+		return thread.AddAllocs(starlark.SafeInt(32 * size))
+	}
+	return nil
 }
