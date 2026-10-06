@@ -4,7 +4,7 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.45
+**Latest Version:** 2.1.46
 
 ## Changelog
 
@@ -20,6 +20,12 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.scim.config.bulkSyncInterval` (default `24h`, every SSO provider) — renders into `scim_config.config.bulkSyncInterval`. How often the directory reconcile deprovisions users the IdP no longer returns: whole days or h/m/s pairs (`12h`, `1h30m`, `7d`), between 1h and 30d. Inert when SCIM is enabled or the provider has no directory API access.
 - Added `bifrost.mcp.toolManagerConfig.codeModeLimits` (`maxSourceBytes`, `maxSteps`, `maxMemoryBytes`, `maxLogBytes`, `maxToolCalls`, `maxValueBytes`, `maxNestingDepth`) to tune the limits on each code mode execution; an omitted or 0 field keeps the built-in default. Renders into `mcp.tool_manager_config.code_mode_limits`. Code mode no longer limits concurrent executions.
 - Added a template-time guard: the chart now fails to render when `bifrost.client.mcpServerAuthMode` is `oauth` or `both` and `bifrost.client.oauth2ServerConfig.issuerUrl` (`client.oauth2_server_config.issuer_url`) is empty or unset, instead of letting the pod crash-loop on Bifrost's startup check. `env.VAR_NAME` references pass.
+
+### 2.1.46
+
+- Added `bifrost.agents[]` — declarative A2A agent registrations rendered into the config.json `agents` section. Each entry takes `name`, `agent_card_url`, and optionally `tenant`, `enabled`, `allow_by_default`, `forward_accepted_credential`, `forward_accepted_credential_overrides_auth`, `discovery_auth`, `runtime_auth`, `extension_uris`, and `virtual_key_ids`. Reconciled by name on startup: created if absent, updated when the declaration changes, and left alone otherwise (merge mode). When `bifrost.sourceOfTruth` is `config.json` and `agents` is present, stored registrations absent from the rendered list are removed; set `agents: []` to remove all stored registrations.
+- Added `bifrost.client.a2aExternalClientUrl` (`a2a_external_client_url`) — Bifrost's public base URL for served agent cards and A2A push-notification callback URLs. Push notifications stay disabled while unset. Supports `env.` syntax.
+- Added `bifrost.server.a2aGrpcBaseDomain` (`a2a_grpc_base_domain`) and `bifrost.server.a2aGrpcPort` (`a2a_grpc_port`) — enable the shared A2A gRPC listener; per-agent hostnames are advertised as `<agent-name>.<base-domain>:<port>`. gRPC stays disabled while either is unset.
 
 ### 2.1.44
 
