@@ -90,12 +90,25 @@ type TypesafeAnswer struct {
 	// or array), keyed by level number.
 	Legend     map[string]any `json:"legend,omitempty"`
 	Confidence *float64       `json:"confidence,omitempty"`
+
+	// Laya-specific fields
+	AnswerConfidence    *float64        `json:"answer_confidence,omitempty"`
+	Action              json.RawMessage `json:"action,omitempty"`
+	Abstention          *string         `json:"abstention,omitempty"`
+	AbstentionThreshold *float64        `json:"abstention_threshold,omitempty"`
+	LowConfidence       *bool           `json:"low_confidence,omitempty"`
 }
 
 // TypesafeUsage reports token consumption. Typesafe bills input tokens only.
 type TypesafeUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+
+	// Laya-specific fields
+	StateTokens        *int     `json:"state_tokens,omitempty"`
+	StateTokensDropped *int     `json:"state_tokens_dropped,omitempty"`
+	Truncated          *bool    `json:"truncated,omitempty"`
+	TruncatedQuestions []string `json:"truncated_questions,omitempty"`
 }
 
 // TypesafeDecisionResponse is the body of a successful systemone response.
@@ -103,6 +116,9 @@ type TypesafeDecisionResponse struct {
 	Model   string                    `json:"model"`
 	Answers map[string]TypesafeAnswer `json:"answers"`
 	Usage   *TypesafeUsage            `json:"usage,omitempty"`
+
+	// Laya-specific fields
+	Routing json.RawMessage `json:"routing,omitempty"`
 }
 
 // TypesafeError is the JSON error body Typesafe returns on 400/401/422/429/529.
