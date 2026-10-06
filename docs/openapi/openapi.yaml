@@ -783,6 +783,8 @@ paths:
     $ref: "./paths/management/session.yaml#/is-auth-enabled"
   /api/session/ws-ticket:
     $ref: "./paths/management/session.yaml#/ws-ticket"
+  /api/session/setup:
+    $ref: "./paths/management/session.yaml#/setup"
 
   # Providers
   /api/providers:
@@ -1382,6 +1384,15 @@ components:
 
         A local admin — authenticated with the admin password, or any caller on a deployment with
         dashboard auth disabled — bypasses these checks and can call every management endpoint.
+
+        **OSS setup lock.** On Bifrost OSS, while dashboard auth is not active (no admin account,
+        or auth disabled), every management endpoint except the public ones (`/health`,
+        `/api/version`, `/api/session/is-auth-enabled`, `/api/session/login`, ...) requires the
+        operator's setup token in the `X-Bifrost-Setup-Token` header, in place of `Authorization`.
+        The token is set with `setup_token` in `config.json` or the `BIFROST_SETUP_TOKEN`
+        environment variable. A missing header returns `401`, a wrong token `403`. The header
+        stops working once dashboard auth is enabled. The dashboard instead trades the token once
+        for an HttpOnly `bifrost_setup_session` cookie via `POST /api/session/setup`.
         See [Required permissions](/api/procuring-api-keys#required-permissions) for how
         permissions are derived and which endpoints are exempt.
     BasicAuth:

@@ -217,6 +217,12 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 	if h.store.EnvLabel != "" {
 		mapConfig["env_label"] = h.store.EnvLabel
 	}
+	if h.store.ServerConfig != nil && h.store.ServerConfig.A2AGRPCBaseDomain != "" && h.store.ServerConfig.A2AGRPCPort > 0 {
+		mapConfig["agent_gateway"] = map[string]any{
+			"grpc_base_domain": h.store.ServerConfig.A2AGRPCBaseDomain,
+			"grpc_port":        h.store.ServerConfig.A2AGRPCPort,
+		}
+	}
 	mapConfig["is_git_available"] = CheckGitAvailability()
 	mapConfig["is_cache_connected"] = h.store.VectorStore != nil
 	mapConfig["is_logs_connected"] = h.store.LogsStore != nil
@@ -321,6 +327,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+	var requestFields struct {
+		ClientConfig map[string]json.RawMessage `json:"client_config"`
+	}
+	if err := json.Unmarshal(ctx.PostBody(), &requestFields); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	clientConfigFields := requestFields.ClientConfig
 
 	// Validate MCP external URL overrides up front — the rest of this handler
 	// applies live mutations (drop-excess flag, MCP tool-manager reload, compat
@@ -328,6 +342,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// rejection would leave the process in a partially-updated state.
 	if err := lib.ValidateBaseURL(payload.ClientConfig.MCPExternalClientURL.GetValue()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_external_client_url %v", err))
+		return
+	}
+	if err := lib.ValidateBaseURL(payload.ClientConfig.A2AExternalClientURL.GetValue()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a2a_external_client_url %v", err))
 		return
 	}
 
@@ -423,7 +441,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if existingAuthConfig == nil && payload.AuthConfig.IsEnabled {
-			if !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
+			if !isSetupTokenAuthenticated(ctx) && !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
 				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account")
 				return
 			}
@@ -701,34 +719,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MaxRequestBodySizeMB = payload.ClientConfig.MaxRequestBodySizeMB
 	}
 
-	// Handle compat plugin toggle
+	// Compat plugin reload is applied after the save below
 	newCompat := payload.ClientConfig.Compat
-	oldCompat := currentConfig.Compat
-	if newCompat != oldCompat {
-		newEnabled := newCompat.ConvertTextToChat || newCompat.ConvertChatToResponses || newCompat.ShouldDropParams || newCompat.ShouldConvertParams ||
-			newCompat.AzureDeepseek
-		if newEnabled {
-			compatCfg := &compat.Config{
-				ConvertTextToChat:      newCompat.ConvertTextToChat,
-				ConvertChatToResponses: newCompat.ConvertChatToResponses,
-				ShouldDropParams:       newCompat.ShouldDropParams,
-				ShouldConvertParams:    newCompat.ShouldConvertParams,
-				AzureDeepseek:          newCompat.AzureDeepseek,
-			}
-			if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
-				logger.Warn("failed to load compat plugin: %v", err)
-				SendError(ctx, 400, "Failed to load compat plugin")
-				return
-			}
-		} else {
-			disabledCtx := context.WithValue(ctx, PluginDisabledKey, true)
-			if err := h.configManager.RemovePlugin(disabledCtx, compat.PluginName); err != nil {
-				logger.Warn("failed to remove compat plugin: %v", err)
-				SendError(ctx, 400, "Failed to remove compat plugin")
-				return
-			}
-		}
-	}
+	shouldReloadCompat := newCompat != currentConfig.Compat
 	updatedConfig.Compat = newCompat
 	// Only update MCP fields if explicitly provided (non-zero) to avoid clearing stored values
 	if payload.ClientConfig.MCPAgentDepth > 0 {
@@ -791,6 +784,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Validation is performed up front in this handler so a failure here cannot leave the process in a partial state.
 	updatedConfig.MCPExternalClientURL = payload.ClientConfig.MCPExternalClientURL
 
+	// Preserve the stored Agent Gateway URL when an older or partial client omits
+	// the field. An explicit null still clears the override.
+	if _, present := clientConfigFields["a2a_external_client_url"]; present {
+		updatedConfig.A2AExternalClientURL = payload.ClientConfig.A2AExternalClientURL
+	}
+
 	// Only update each field when explicitly provided so partial /api/config
 	// payloads do not clear stored values (matches the MCP field handling above).
 	// The enum, disable_vk_identity, and auth_code_ttl validations for these
@@ -825,6 +824,27 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		logger.Warn("failed to save configuration: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save configuration: %v", err))
 		return
+	}
+
+	if shouldReloadCompat {
+		compatCfg := &compat.Config{
+			ConvertTextToChat:                   newCompat.ConvertTextToChat,
+			ConvertChatToResponses:              newCompat.ConvertChatToResponses,
+			ShouldDropParams:                    newCompat.ShouldDropParams,
+			ShouldConvertParams:                 newCompat.ShouldConvertParams,
+			AzureDeepseek:                       newCompat.AzureDeepseek,
+			ForceReasoningOnlyModelsToResponses: newCompat.ForceReasoningOnlyModelsToResponses,
+		}
+		if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
+			logger.Warn("failed to load compat plugin: %v", err)
+			if rollbackErr := h.store.ConfigStore.UpdateClientConfig(ctx, currentConfig); rollbackErr != nil {
+				logger.Error("failed to restore configuration after compat plugin reload failure, stored config now differs from the running gateway: %v", rollbackErr)
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to load compat plugin (%v) and the previous configuration could not be restored (%v); stored settings now differ from the running gateway, retry the save or restart", err, rollbackErr))
+				return
+			}
+			SendError(ctx, 400, "Failed to load compat plugin")
+			return
+		}
 	}
 
 	// Apply the in-memory change only after persistence succeeds, copying
@@ -1037,7 +1057,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			// setup_token or BIFROST_SETUP_TOKEN env var) so that action can't be taken by
 			// an unauthenticated network caller racing the real operator to a freshly
 			// exposed instance.
-			if authConfig == nil && !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
+			if authConfig == nil && !isSetupTokenAuthenticated(ctx) && !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
 				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in this request")
 				return
 			}

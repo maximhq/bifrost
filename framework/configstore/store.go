@@ -380,6 +380,33 @@ type ConfigStore interface {
 	CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error
+	ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error
+
+	// Agent Gateway registration CRUD. Declared on the interface (not just the
+	// RDB implementation) so wrappers that embed ConfigStore — like the
+	// enterprise config store — forward them and still satisfy agent.Store.
+	CreateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error
+	UpdateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error
+	ListAgentRegistrations(ctx context.Context) ([]schemas.AgentRegistration, error)
+	GetAgentRegistration(ctx context.Context, name string) (*schemas.AgentRegistration, error)
+	DeleteAgentRegistration(ctx context.Context, name string) error
+
+	// Agent Gateway push relay persistence, mirroring agent.PushStore for the
+	// same wrapper-forwarding reason as the registration CRUD above.
+	SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error
+	BindAgentPushConfigTask(ctx context.Context, agentName, ingressTokenHash, pendingTaskID, taskID string) error
+	GetAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error)
+	GetAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (*schemas.AgentPushConfig, error)
+	ListAgentPushConfigs(ctx context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error)
+	ListAgentPushConfigsPaginated(ctx context.Context, query schemas.AgentPushConfigQuery) ([]schemas.AgentPushConfig, int64, error)
+	ListAgentPushConfigAgentNames(ctx context.Context) ([]string, error)
+	DeleteAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error)
+	DeletePendingAgentPushConfig(ctx context.Context, agentName, ingressTokenHash, pendingTaskID string) (bool, error)
+	CreateAgentPushDeliveryIfNotExists(ctx context.Context, delivery *schemas.AgentPushDelivery) (bool, error)
+	ListDueAgentPushDeliveries(ctx context.Context, now time.Time, limit int) ([]schemas.AgentPushDelivery, error)
+	ClaimAgentPushDelivery(ctx context.Context, id, runnerID string, leaseUntil time.Time) (*schemas.AgentPushDelivery, error)
+	UpdateAgentPushDeliveryOutcome(ctx context.Context, delivery *schemas.AgentPushDelivery, runnerID string, leaseUntil time.Time) error
+	PruneAgentPushDeliveries(ctx context.Context, before time.Time) error
 
 	// Virtual key provider config CRUD
 	GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyProviderConfig, error)

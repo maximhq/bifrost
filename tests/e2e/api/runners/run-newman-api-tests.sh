@@ -24,6 +24,9 @@ API_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Configuration
 COLLECTION="$API_DIR/collections/bifrost-api-management.postman_collection.json"
 REPORT_DIR="$API_DIR/newman-reports/api-management"
+# OSS setup lock: while dashboard auth is not active, /api requires the setup token.
+# Must match setup_token in the server's config.json (or its BIFROST_SETUP_TOKEN).
+SETUP_TOKEN="${BIFROST_E2E_SETUP_TOKEN:-${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}}"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -344,6 +347,7 @@ cleanup() {
         echo "Restoring dashboard auth to disabled..."
         BIFROST_E2E_AUTH_HEADER="$ADMIN_AUTH_HEADER" \
         BIFROST_E2E_BASE_URL="$BASE_URL" \
+        BIFROST_E2E_SETUP_TOKEN="$SETUP_TOKEN" \
         BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
         BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
             node "$SCRIPT_DIR/set-auth-config.mjs" disable >/dev/null 2>&1 || true
@@ -392,7 +396,7 @@ fi
 # Build shared Newman arguments. The collection and reporter export paths are
 # supplied per pass so the unauthenticated and authenticated runs keep separate
 # reports while using identical environment/config inputs.
-newman_args=(--timeout-script 120000 --timeout 900000 -r "$REPORTERS" --env-var "base_url=$BASE_URL")
+newman_args=(--timeout-script 120000 --timeout 900000 -r "$REPORTERS" --env-var "base_url=$BASE_URL" --env-var "setup_token=$SETUP_TOKEN")
 
 # Parsed seed env entries live here, not in the runner's shell namespace.
 # Decoupling the data keyspace from the script's own variables (PATH, COLLECTION,
@@ -531,7 +535,11 @@ run_newman_pass() {
     return $pass_exit
 }
 
-run_newman_pass "Running unauthenticated API management tests..." "$COLLECTION" "" ""
+# The unauthenticated pass runs while dashboard auth is off, so the OSS setup lock
+# needs every request to carry the setup token.
+SETUP_COLLECTION="$REPORT_DIR/api-management-setup-token.postman_collection.json"
+node "$SCRIPT_DIR/add-setup-token-header.mjs" "$COLLECTION" "$SETUP_COLLECTION"
+run_newman_pass "Running unauthenticated API management tests..." "$SETUP_COLLECTION" "" ""
 EXIT_CODE=$?
 
 AUTH_COLLECTION="$REPORT_DIR/api-management-auth.postman_collection.json"
@@ -540,6 +548,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo -e "${GREEN}Enabling dashboard auth for authenticated API management tests...${NC}" | tee -a "$LOG_FILE"
     set +e
     BIFROST_E2E_BASE_URL="$BASE_URL" \
+    BIFROST_E2E_SETUP_TOKEN="$SETUP_TOKEN" \
     BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
     BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
         node "$SCRIPT_DIR/set-auth-config.mjs" enable 2>&1 | tee -a "$LOG_FILE"
@@ -583,6 +592,7 @@ if [ "$AUTH_ENABLED_BY_RUN" = "1" ]; then
     set +e
     BIFROST_E2E_AUTH_HEADER="$ADMIN_AUTH_HEADER" \
     BIFROST_E2E_BASE_URL="$BASE_URL" \
+    BIFROST_E2E_SETUP_TOKEN="$SETUP_TOKEN" \
     BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
     BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
         node "$SCRIPT_DIR/set-auth-config.mjs" disable 2>&1 | tee -a "$LOG_FILE"

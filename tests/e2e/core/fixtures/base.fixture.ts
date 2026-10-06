@@ -79,6 +79,7 @@ export const test = base.extend<BifrostFixtures>({
 
 	skipAutoLogin: [false, { option: true }],
 
+
 	handleLoginRedirect: [
 		async ({ page, skipAutoLogin }, use) => {
 			// Any test can hit an auth wall: dashboard auth redirects to /login (via a

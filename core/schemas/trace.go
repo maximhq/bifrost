@@ -315,13 +315,21 @@ func (t *Trace) SnapshotForExport() *Trace {
 // IsOverheadBreakdownSpan); only a plugin that opts in via OverheadSpanConsumer (the
 // logging plugin) receives them.
 var overheadBreakdownSpanNames = map[string]struct{}{
-	"request-unmarshal":    {},
-	"request-marshal":      {},
-	"response-parse":       {},
-	"response-marshal":     {},
-	"convertor":            {},
-	"queue-wait":           {},
-	"attribute-population": {},
+	"a2a.push.db.authenticate": {},
+	"a2a.push.db.bind":         {},
+	"a2a.push.db.enqueue":      {},
+	"a2a.push.db.config":       {},
+	"a2a.push.db.outcome":      {},
+	"a2a.push.db.local":        {},
+	"a2a.push.db.save":         {},
+	"a2a.push.db.delete":       {},
+	"request-unmarshal":        {},
+	"request-marshal":          {},
+	"response-parse":           {},
+	"response-marshal":         {},
+	"convertor":                {},
+	"queue-wait":               {},
+	"attribute-population":     {},
 }
 
 // IsOverheadBreakdownSpan reports whether a span exists only to feed the overhead
@@ -868,6 +876,9 @@ const (
 	SpanKindPlugin SpanKind = "plugin"
 	// SpanKindMCPTool represents an MCP tool invocation
 	SpanKindMCPTool SpanKind = "mcp.tool"
+	// SpanKindA2AOperation represents one Agent Gateway (A2A) operation: the
+	// upstream call plus its post-hooks, mirroring the MCP op span.
+	SpanKindA2AOperation SpanKind = "a2a.operation"
 	// SpanKindMCPClient represents an MCP client lifecycle operation (connect/ping/list_tools).
 	// These run in the background per-client and are not part of an LLM request flow.
 	SpanKindMCPClient SpanKind = "mcp.client"
@@ -1137,6 +1148,25 @@ const (
 	// measures it, not span wall-time (which covers the PostHooks). Bifrost-namespaced; not
 	// OTel MCP semconv.
 	AttrBifrostMCPToolDurationMs = "bifrost.mcp.tool.duration_ms"
+
+	// A2A (Agent Gateway) span attributes. There is no A2A semconv yet. The
+	// Bifrost operation name covers protocol and gateway-owned operations, while
+	// a2a.method.name is present only for strict-v1 JSON-RPC methods.
+	AttrBifrostA2AOperationName = "bifrost.a2a.operation.name"
+	AttrA2AMethodName           = "a2a.method.name"
+	AttrA2ATaskID               = "a2a.task.id"
+	AttrAgentName               = "gen_ai.agent.name"
+	AttrConversationID          = "gen_ai.conversation.id"
+
+	// Wire latency (ms) of one A2A operation as measured by the gateway, so the
+	// duration metric measures it rather than span wall-time (which covers the
+	// PostHooks). Bifrost-namespaced; not OTel semconv.
+	AttrBifrostA2AOperationDurationMs = "bifrost.a2a.operation.duration_ms"
+
+	// The transport the gateway selected for the upstream agent call
+	// (JSONRPC / GRPC / HTTP+JSON). Bifrost-namespaced because network.transport
+	// carries OSI-level values (tcp/pipe), not A2A protocol bindings.
+	AttrBifrostA2AUpstreamTransport = "bifrost.a2a.upstream.transport"
 
 	// =====================================================================
 	// Bifrost-namespaced attributes (bifrost.*)

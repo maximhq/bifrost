@@ -321,6 +321,7 @@ bifrost:
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
+    # a2aExternalClientUrl: ""               # Public base URL for served agent cards and A2A push-notification callback URLs (push is disabled when unset). Supports env.VAR_NAME
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
     # mcpServerAuthMode: "headers"
@@ -341,6 +342,10 @@ bifrost:
     # pluginDownloadPrivateAllowlist:
     #   - "artifacts.internal.corp"
     #   - "10.0.0.0/8"
+    # Shared gRPC listener for the A2A agent gateway; gRPC stays disabled while either field is unset.
+    # Served agent cards advertise <agent-name>.<a2aGrpcBaseDomain>:<a2aGrpcPort>.
+    # a2aGrpcBaseDomain: "a2a.example.com"
+    # a2aGrpcPort: 9095
 
   # Framework configuration
   framework:
@@ -1576,6 +1581,27 @@ bifrost:
   #     attempt_timeout_seconds: 10
   #     max_response_payload_kbs: 256
   #     max_concurrent_deliveries: 10
+
+  # Agents: A2A agent registrations synced into the database at startup, reconciled by name.
+  # Rendered directly as top-level `agents` in config.json.
+  # agents:
+  #   - name: "library-research"
+  #     agent_card_url: "http://agent.internal:9087/.well-known/agent-card.json"
+  #     enabled: true                                  # Defaults to true when omitted
+  #     allow_by_default: false                        # Reachable by any virtual key without an explicit grant
+  #     forward_accepted_credential: false             # Forward the accepted Bifrost credential upstream as x-bf-vk
+  #     forward_accepted_credential_overrides_auth: false # Forward it as Authorization, replacing configured runtime auth
+  #     tenant: ""                                     # Optional tenant label
+  #     extension_uris: []                             # A2A extension URIs to advertise
+  #     virtual_key_ids: []                            # Virtual key IDs granted access to this agent
+  #     discovery_auth:                                # Auth for fetching the agent card (types: none, headers, oauth)
+  #       type: "headers"
+  #       headers:
+  #         Authorization: "env.AGENT_DISCOVERY_TOKEN"
+  #     runtime_auth:                                  # Auth attached to proxied agent requests
+  #       type: "headers"
+  #       headers:
+  #         Authorization: "env.AGENT_RUNTIME_AUTH"
 
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
