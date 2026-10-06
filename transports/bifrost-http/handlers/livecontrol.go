@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"io"
 	"strconv"
 
 	"github.com/fasthttp/router"
@@ -30,6 +31,12 @@ func (h *LiveControlHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 	}
 }
 
+// liveContentClient downloads a recording through the plugin pipeline, so the download is
+// counted, logged and traced like a file download.
+type liveContentClient interface {
+	LiveSessionContentRequest(ctx *schemas.BifrostContext, req *schemas.BifrostLiveContentRequest) (*schemas.LiveContentResponse, *schemas.BifrostError)
+}
+
 // handleContent downloads a stored session's recording. Nothing is billed.
 func (h *LiveControlHandler) handleContent(ctx *fasthttp.RequestCtx) {
 	req, ok := h.gateway.prepareRequest(ctx)
@@ -38,23 +45,47 @@ func (h *LiveControlHandler) handleContent(ctx *fasthttp.RequestCtx) {
 	}
 	defer req.cancel()
 	bifrostCtx, cancel := h.gateway.sessionContext(req.auth, req.preReqCtx, req.middlewareValues, req.path)
-	defer cancel()
-	key, bifrostErr := h.gateway.controlKey(bifrostCtx, req.providerKey)
-	if bifrostErr != nil {
-		SendBifrostError(ctx, bifrostErr)
-		return
-	}
-	serveLiveContent(ctx, bifrostCtx, req.provider, key, req.sessionID)
+	serveLiveContent(ctx, bifrostCtx, h.gateway.client, req.providerKey, req.sessionID, cancel)
 }
 
-// serveLiveContent fetches the recording and writes it as the provider served it.
-func serveLiveContent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, provider schemas.LiveProvider, key schemas.Key, sessionID string) {
-	content, bifrostErr := provider.LiveSessionContent(bifrostCtx, key, sessionID)
+// serveLiveContent fetches the recording through the client and streams it as the provider served
+// it. The provider's session id rides on the context so the log row names the session it belongs
+// to. release ends the request context: on a refusal now, otherwise once the body has been sent,
+// since cancelling earlier would close the upstream stream under the transport.
+func serveLiveContent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, client liveContentClient, providerKey schemas.ModelProvider, sessionID string, release func()) {
+	bifrostCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveContentRequest)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, sessionID)
+	content, bifrostErr := client.LiveSessionContentRequest(bifrostCtx, &schemas.BifrostLiveContentRequest{Provider: providerKey, SessionID: sessionID})
 	if bifrostErr != nil {
+		release()
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
 	ctx.Response.Header.Set("Content-Type", content.ContentType)
-	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(content.Content)))
-	ctx.SetBody(content.Content)
+	// fasthttp reads the body until EOF when the size is unknown and closes it once sent.
+	bodySize := -1
+	if content.ContentLength > 0 {
+		bodySize = int(content.ContentLength)
+		ctx.Response.Header.Set("Content-Length", strconv.FormatInt(content.ContentLength, 10))
+	}
+	ctx.Response.SetBodyStream(&liveContentBody{ReadCloser: content.Body, release: release}, bodySize)
+	// The post-hook middleware copies response bodies for plugins; that would drain the stream
+	// before fasthttp sends it, so mark the request as streamed, as the large-response path does.
+	ctx.SetUserValue(lib.FastHTTPUserValueLargeResponseMode, true)
+}
+
+// liveContentBody is a recording being sent: closing it releases the upstream response, then the
+// request context.
+type liveContentBody struct {
+	io.ReadCloser
+	release func()
+}
+
+func (b *liveContentBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.release != nil {
+		b.release()
+		b.release = nil
+	}
+	return err
 }

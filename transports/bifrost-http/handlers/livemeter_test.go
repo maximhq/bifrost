@@ -25,6 +25,8 @@ type fakeLiveRunner struct {
 type fakeLiveOpen struct {
 	model        string
 	continuation bool
+	kind         string
+	start        bool
 }
 
 type fakeLivePost struct {
@@ -32,7 +34,11 @@ type fakeLivePost struct {
 	continuation bool
 	parentID     string
 	requestID    string
+	kind         string
+	end          bool
+	delegationID string
 	resp         *schemas.BifrostResponsesResponse
+	live         *schemas.LiveSessionLog
 	err          *schemas.BifrostError
 }
 
@@ -41,7 +47,9 @@ func (f *fakeLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, re
 	defer f.mu.Unlock()
 	_, model, _ := req.GetRequestFields()
 	continuation, _ := ctx.Value(schemas.BifrostContextKeySessionContinuation).(bool)
-	f.opens = append(f.opens, fakeLiveOpen{model: model, continuation: continuation})
+	kind, _ := ctx.Value(schemas.BifrostContextKeyLiveUnit).(string)
+	start, _ := ctx.Value(schemas.BifrostContextKeyLiveSessionStart).(bool)
+	f.opens = append(f.opens, fakeLiveOpen{model: model, continuation: continuation, kind: kind, start: start})
 	if f.refuse {
 		return nil, newRealtimeWireBifrostError(402, "budget_exceeded", "Budget exceeded: virtual key budget spent")
 	}
@@ -53,8 +61,12 @@ func (f *fakeLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, re
 			post.continuation, _ = postCtx.Value(schemas.BifrostContextKeySessionContinuation).(bool)
 			post.parentID, _ = postCtx.Value(schemas.BifrostContextKeyParentRequestID).(string)
 			post.requestID, _ = postCtx.Value(schemas.BifrostContextKeyRequestID).(string)
+			post.kind, _ = postCtx.Value(schemas.BifrostContextKeyLiveUnit).(string)
+			post.end, _ = postCtx.Value(schemas.BifrostContextKeyLiveSessionEnd).(bool)
+			post.delegationID, _ = postCtx.Value(schemas.BifrostContextKeyLiveDelegationID).(string)
 			if result != nil {
 				post.resp = result.ResponsesResponse
+				post.live = result.LiveSession
 			}
 			f.posts = append(f.posts, post)
 			return result, nil
@@ -101,8 +113,8 @@ func TestLiveMeterAdmission(t *testing.T) {
 
 	opens, posts, _ := runner.snapshot()
 	require.Equal(t, []fakeLiveOpen{
-		{model: "gpt-live-1", continuation: false}, // the session's one request
-		{model: "gpt-5.6-luna", continuation: true},
+		{model: "gpt-live-1", kind: liveUnitVoice, start: true}, // the session's one request
+		{model: "gpt-5.6-luna", kind: liveUnitBackend, continuation: true},
 	}, opens)
 	assert.Empty(t, posts, "nothing is billed at admission")
 
@@ -223,8 +235,8 @@ func TestLiveMeterBillsEachBackendResponseOnce(t *testing.T) {
 			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{ReasoningTokens: 111},
 		},
 	}
-	require.Nil(t, meter.onBackendResponse(response))
-	require.Nil(t, meter.onBackendResponse(response), "a replayed response is not billed twice")
+	require.Nil(t, meter.onBackendResponse(response, "", 0))
+	require.Nil(t, meter.onBackendResponse(response, "", 0), "a replayed response is not billed twice")
 
 	_, posts, _ := runner.snapshot()
 	require.Len(t, posts, 1)
@@ -241,7 +253,7 @@ func TestLiveMeterBillsEachBackendResponseOnce(t *testing.T) {
 	assert.Nil(t, response.Usage.AudioSeconds)
 
 	// A response with no usage is ignored.
-	require.Nil(t, meter.onBackendResponse(&schemas.BifrostResponsesResponse{ID: new("resp_2")}))
+	require.Nil(t, meter.onBackendResponse(&schemas.BifrostResponsesResponse{ID: new("resp_2")}, "", 0))
 	_, posts, _ = runner.snapshot()
 	assert.Len(t, posts, 1)
 }
@@ -259,7 +271,7 @@ func TestLiveMeterSumsBackendUsageWhileRefused(t *testing.T) {
 			ID:    new(id),
 			Model: "gpt-5.6-luna",
 			Usage: &schemas.ResponsesResponseUsage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110},
-		}))
+		}, "", 0))
 	}
 	meter.finish(5)
 	_, posts, _ := runner.snapshot()
@@ -284,12 +296,12 @@ func TestLiveMeterSwitchBackend(t *testing.T) {
 	require.Nil(t, meter.switchBackend("gpt-5.6-terra"))
 	opens, _, _ := runner.snapshot()
 	require.Len(t, opens, 3)
-	assert.Equal(t, fakeLiveOpen{model: "gpt-5.6-terra", continuation: true}, opens[2], "the new model is admitted by governance")
+	assert.Equal(t, fakeLiveOpen{model: "gpt-5.6-terra", kind: liveUnitBackend, continuation: true}, opens[2], "the new model is admitted by governance")
 
 	// A response naming neither lane bills to the active backend.
 	require.Nil(t, meter.onBackendResponse(&schemas.BifrostResponsesResponse{
 		ID: new("resp_1"), Model: "unexpected", Usage: &schemas.ResponsesResponseUsage{TotalTokens: 1},
-	}))
+	}, "", 0))
 	_, posts, _ := runner.snapshot()
 	require.Len(t, posts, 1)
 	assert.Equal(t, "gpt-5.6-terra", posts[0].model)
@@ -297,6 +309,19 @@ func TestLiveMeterSwitchBackend(t *testing.T) {
 	// A refused switch keeps the current backend.
 	runner.setRefuse(true)
 	require.NotNil(t, meter.switchBackend("gpt-5.6-sol"))
+	assert.Equal(t, "gpt-5.6-terra", meter.activeBackend)
+
+	// A switch that lands after the session ended opens nothing: finish ran its post-hooks already
+	// and never runs again, so a unit opened now would leak its pipeline.
+	runner.setRefuse(false)
+	meter.finish(10)
+	opens, _, cleanups := runner.snapshot()
+	bifrostErr := meter.switchBackend("gpt-5.6-nova")
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "ended")
+	opensAfter, _, cleanupsAfter := runner.snapshot()
+	assert.Len(t, opensAfter, len(opens), "no unit is opened on a finished meter")
+	assert.Equal(t, cleanups, cleanupsAfter)
 	assert.Equal(t, "gpt-5.6-terra", meter.activeBackend)
 }
 
@@ -320,4 +345,73 @@ func TestLiveMeterStaleCheckReadmitsWithoutEstimating(t *testing.T) {
 
 	runner.setRefuse(true)
 	assert.NotNil(t, meter.checkStale(time.Now().Add(200*time.Second)))
+}
+
+func TestLiveMeterMarksSessionBoundariesForPlugins(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	meter.setTransport("websocket")
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	meter.setProviderSessionID("live_abc")
+	opens, _, _ := runner.snapshot()
+	assert.Equal(t, []fakeLiveOpen{
+		{model: "gpt-live-1", kind: liveUnitVoice, start: true},
+		{model: "gpt-5.6-luna", kind: liveUnitBackend, continuation: true},
+	}, opens, "only the unit that opens the session is marked as its start")
+
+	// A backend unit closes with what its response produced, for the delegation's log row.
+	output := []schemas.ResponsesMessage{{Type: new(schemas.ResponsesMessageTypeMessage), Role: new(schemas.ResponsesInputMessageRoleAssistant)}}
+	require.Nil(t, meter.onBackendResponse(&schemas.BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-5.6-luna", Output: output, Usage: &schemas.ResponsesResponseUsage{TotalTokens: 5}}, "item_1", 2500))
+	_, posts, _ := runner.snapshot()
+	require.Len(t, posts, 1)
+	assert.Equal(t, liveUnitBackend, posts[0].kind)
+	assert.Equal(t, "item_1", posts[0].delegationID, "the unit names the delegation its response ran")
+	assert.Equal(t, output, posts[0].resp.Output)
+	require.NotNil(t, posts[0].resp.ID)
+	assert.Equal(t, "resp_1", *posts[0].resp.ID)
+	assert.False(t, posts[0].end)
+
+	// The voice unit closes last, carrying the session log with the transcript and the confirmed end.
+	transcript := []schemas.LiveTranscriptLine{{Role: "user", Text: "Hi there.", StartMs: 0, EndMs: 900}}
+	meter.setEnding(transcript)
+	meter.finish(40)
+	_, posts, _ = runner.snapshot()
+	require.Len(t, posts, 3)
+	assert.Equal(t, liveUnitBackend, posts[1].kind)
+	assert.False(t, posts[1].end)
+	last := posts[2]
+	assert.Equal(t, liveUnitVoice, last.kind)
+	assert.True(t, last.end, "the last unit ends the session")
+	require.NotNil(t, last.live)
+	assert.Equal(t, transcript, last.live.Transcript)
+	assert.Equal(t, "websocket", last.live.Transport)
+	assert.Equal(t, "live_abc", last.live.ProviderSessionID)
+	assert.Nil(t, last.resp.Output, "the transcript rides on the session log, not on the response")
+	assert.Equal(t, 40.0, postSeconds(t, last))
+
+	// A dropped session still closes its unit and carries the session log.
+	dropped := &fakeLiveRunner{}
+	droppedMeter := newTestLiveMeter(dropped)
+	require.Nil(t, droppedMeter.admit("gpt-live-1", ""))
+	droppedMeter.finish(12)
+	_, posts, _ = dropped.snapshot()
+	require.Len(t, posts, 1)
+	assert.True(t, posts[0].end)
+	require.NotNil(t, posts[0].live)
+
+	// A session that never ran ends with the error that stopped it.
+	aborted := &fakeLiveRunner{}
+	abortedMeter := newTestLiveMeter(aborted)
+	require.Nil(t, abortedMeter.admit("gpt-live-1", "gpt-5.6-luna"))
+	abortedMeter.abort(newRealtimeWireBifrostError(502, "server_error", "upstream refused"))
+	abortedMeter.finish(30)
+	_, posts, cleanups := aborted.snapshot()
+	require.Len(t, posts, 2, "abort closes both units and finish adds nothing")
+	assert.Equal(t, 2, cleanups)
+	assert.Equal(t, liveUnitVoice, posts[1].kind)
+	assert.True(t, posts[1].end)
+	require.NotNil(t, posts[1].err)
+	assert.Equal(t, "upstream refused", posts[1].err.Error.Message)
 }
