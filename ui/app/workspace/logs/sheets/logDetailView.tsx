@@ -1587,7 +1587,6 @@ export function LogDetailView({
 						<HeroStat
 							label="Voice"
 							value={log.live_session.transport ? formatRealtimeTransport(log.live_session.transport) : "\u2014"}
-							sub={log.live_session.usage_confirmed ? "usage confirmed" : "usage unconfirmed"}
 							valueClass="text-[15px]"
 						/>
 					) : isRealtimeTurn ? (

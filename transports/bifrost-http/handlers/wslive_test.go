@@ -272,8 +272,6 @@ func TestLiveRelayReportsUpstreamDrop(t *testing.T) {
 	assert.Contains(t, readFrame(t, f.app), "ended before session.closed")
 	f.waitDone(t)
 	assert.Equal(t, []float64{16}, f.voiceSeconds(t))
-	_, posts, _ := f.runner.snapshot()
-	assert.True(t, posts[len(posts)-1].unconfirmed, "usage the provider never confirmed is flagged")
 }
 
 func TestReadLiveSessionStart(t *testing.T) {
@@ -472,7 +470,6 @@ func TestLiveRelayCarriesTranscriptOnSessionEnd(t *testing.T) {
 	_, posts, _ := f.runner.snapshot()
 	last := posts[len(posts)-1]
 	require.True(t, last.end)
-	assert.False(t, last.unconfirmed)
 	require.NotNil(t, last.live)
 	require.Len(t, last.live.Transcript, 2, "the closing unit carries the conversation")
 	assert.Equal(t, schemas.LiveTranscriptLine{Role: "user", Text: "Hi there.", StartMs: 0, EndMs: 400}, last.live.Transcript[0])

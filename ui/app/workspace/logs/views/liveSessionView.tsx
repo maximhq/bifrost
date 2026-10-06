@@ -25,16 +25,11 @@ function formatVoiceTime(seconds: number): string {
 	return `${Math.round(seconds)}s`;
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function Stat({ label, value }: { label: string; value: string }) {
 	return (
 		<div className="min-w-0 px-6 py-3">
 			<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">{label}</div>
 			<div className="mt-0.5 text-[16px] font-semibold tabular-nums">{value}</div>
-			{sub ? (
-				<div className="text-muted-foreground mt-0.5 truncate text-[11px]" title={sub}>
-					{sub}
-				</div>
-			) : null}
 		</div>
 	);
 }
@@ -153,14 +148,9 @@ export default function LiveSessionView({ session }: LiveSessionViewProps) {
 							{session.transport}
 						</Badge>
 					) : null}
-					{!session.usage_confirmed ? (
-						<Badge variant="outline" className="ml-auto text-[10px] text-amber-700 dark:text-amber-400">
-							usage unconfirmed
-						</Badge>
-					) : null}
 				</div>
 				<div className="divide-border/70 grid grid-cols-2 md:grid-cols-4 md:divide-x">
-					<Stat label="Voice time" value={formatVoiceTime(session.voice_seconds)} sub={session.provider_session_id} />
+					<Stat label="Voice time" value={formatVoiceTime(session.voice_seconds)} />
 					<Stat label="Voice cost" value={formatCost(voiceCost)} />
 					<Stat label="Backend cost" value={formatCost(backendCost)} />
 					<Stat label="Delegations" value={String(delegations.length)} />

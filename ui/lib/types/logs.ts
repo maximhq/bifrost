@@ -384,7 +384,6 @@ export interface LiveSessionLog {
 	voice_seconds: number;
 	voice_cost?: number;
 	backend_cost?: number;
-	usage_confirmed: boolean;
 	transcript?: LiveTranscriptLine[];
 	delegations?: LiveDelegationLog[];
 }
