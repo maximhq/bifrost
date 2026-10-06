@@ -1934,6 +1934,12 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			}
 			defer func() {
 				deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
+				// Completing here would flush an incomplete trace and recycle the span
+				// the worker is still writing to.
+				workerOwned := tracer.IsTraceCompletionDeferred(traceID)
+				if !deferred && workerOwned {
+					deferred = true
+				}
 				// Record response status on the root span
 				if rootSpan != nil {
 					tracer.SetAttribute(rootSpan, schemas.AttrHTTPResponseStatusCode, ctx.Response.StatusCode())
@@ -1959,6 +1965,14 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				// If deferred, the streaming handler will complete the trace (and end the
 				// root span via the trace completer) after the stream ends.
 				if deferred {
+					// Only this defer can see the transport logs, and the worker completes
+					// the trace, so attach them and release it.
+					if workerOwned {
+						if transportLogs, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok && len(transportLogs) > 0 {
+							tracer.AttachPluginLogs(traceID, transportLogs)
+						}
+						tracer.SignalTransportHandoff(traceID)
+					}
 					return
 				}
 				// Attach transport plugin logs to trace before completion

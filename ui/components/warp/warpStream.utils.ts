@@ -368,6 +368,17 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 				],
 				raw,
 			};
+		case "access_denied":
+			return {
+				summary: "Your account doesn't have access to Warp's model.",
+				cause:
+					"This deployment's governance rules refused the request before it reached the provider. Warp's model calls count as yours, so they need the same access any of your requests would.",
+				suggestions: [
+					"Ask an administrator to give your account model access, such as an access profile that allows Warp's model.",
+					"If you do have access, the details below say which budget, rate limit or rule refused it.",
+				],
+				raw,
+			};
 		case "tool_error":
 			return {
 				summary: "A query failed.",
@@ -391,7 +402,15 @@ export function encodeTurnError(code: string | undefined, message: string): stri
 	return `${code ?? ""}:${message}`;
 }
 
-const WARP_ERROR_CODES = new Set(["not_configured", "upstream_error", "tool_error", "max_iterations", "timeout", "cancelled"]);
+const WARP_ERROR_CODES = new Set([
+	"not_configured",
+	"upstream_error",
+	"access_denied",
+	"tool_error",
+	"max_iterations",
+	"timeout",
+	"cancelled",
+]);
 
 /** Checks against known codes, since plain messages often contain colons ("TypeError: Failed to fetch"). */
 export function isEncodedTurnError(error: string): boolean {

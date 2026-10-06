@@ -175618,7 +175618,7 @@
       ]
     },
     {
-      "name": "119. Warp chats in-process with no base URL (warp-inprocess)",
+      "name": "119. Warp chats in-process with no base URL (warp-inprocess) [SERIAL]",
       "description": "Warp used to reach its model over HTTP: a private Bifrost instance whose OpenAI-transport provider pointed at base_url, which the dashboard defaulted to the page origin + /openai. Behind Tailscale, a reverse proxy or split DNS the server often cannot reach its own public origin, so Warp failed on exactly those deployments. Warp now calls the gateway client in-process and base_url is gone from the config API. These cases configure Warp with no base_url and ask one cheap question over the non-streaming chat route. Red before the change: with base_url empty the private instance called api.openai.com with a placeholder bearer, so the turn came back with error.code upstream. The log read pins that the in-process calls still carry Warp's labels (app Warp, grouped by the conversation's session id), which used to travel as HTTP headers. Requires the warp flag to be unlocked and the profile's vector store to be reachable; the flag and the previous Warp config are restored at the end.",
       "item": [
         {
@@ -184776,7 +184776,7 @@
       ]
     },
     {
-      "name": "131. Warp runs on one of several exposed models (warp-models)",
+      "name": "131. Warp runs on one of several exposed models (warp-models) [SERIAL]",
       "description": "Warp ran on exactly one provider and model, set in its config and used for every question. An administrator can now expose several: provider and model stay the default, additional_models lists the others, and POST /api/warp/chat may name any of them with provider and model. The pair is a selection among what the config exposes and nothing else: a pair that is not listed is refused with 400 before any model is called, and the provider key is always the configured entry's own, never something the request can name. These cases save a default (openai/gpt-4o-mini) with one additional model (openai/gpt-4.1-nano), ask one cheap question on the additional model, and read the log row back to pin that the call really went to it. Red before the change: the config write dropped additional_models, the chat body's provider and model were ignored so the turn ran on the default and was logged as gpt-4o-mini, and an unlisted model answered 200 on the default instead of 400. Writing the list is a config write, so it sits behind the existing admin gate on PUT /api/warp/config (local admin in OSS, Warp Update in enterprise); the handler tests pin that. Requires the warp flag to be unlocked and the profile's vector store to be reachable; the flag and the previous Warp config are restored at the end.",
       "item": [
         {
@@ -200536,7 +200536,895 @@
       ]
     },
     {
-      "name": "172. OpenAI Codex OAuth passthrough preserves caller auth (codex-oauth-passthrough)",
+      "name": "172. MCP server instructions on the gateway handshake (PR #7517) (mcp-server-instructions)",
+      "description": "Gateway regression for PR #7517 (with #7516 capture). An upstream MCP server may return an `instructions` string from its initialize handshake; Bifrost captures it, aggregates the instructions of every upstream the caller may see, labels each block with its source client, and returns the result on the hosted /mcp handshake via an AfterInitialize hook. Nothing in this collection covered that before: `mcp_server name=` and `initialize` both appeared zero times. These cases pin that the field survives the real SSE transport end to end and that forwarding does not disturb tool discovery. Requires the harness MCP fixture (examples/mcps/remote-test-server, the sse_mcp client at :3012) to be running; it advertises a default instruction string, overridable with MCP_INSTRUCTIONS. No provider calls are made and no tokens are spent - openai is only a harness filter label. Run with FEATURE=mcp-server-instructions.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-server-instructions initialize forwards upstream instructions - PR #7517",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('initialize carries the upstream instructions, labeled by source client', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result, 'no JSON-RPC result: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.instructions, 'instructions missing - the upstream advertised none, or forwarding regressed: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(result.instructions.length, 'instructions present but empty: ' + pm.response.text()).to.be.above(0);",
+                  "  // Each upstream's text is wrapped and attributed, so one server's guidance cannot be",
+                  "  // mistaken for another's. sse_mcp is the harness fixture's client name.",
+                  "  pm.expect(result.instructions, 'instructions not attributed to a source client: ' + result.instructions).to.include('<mcp_server name=\"sse_mcp\">');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-server-instructions handshake stays well formed - PR #7517",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('adding instructions does not disturb the rest of the initialize result', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result.protocolVersion, 'protocolVersion missing: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(result.serverInfo, 'serverInfo missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.capabilities, 'capabilities missing: ' + pm.response.text()).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-server-instructions tool discovery unaffected - PR #7517",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('tools still list while instructions are forwarded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result.tools, 'tools missing: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(result.tools.length, 'instructions forwarding must not empty the tool set: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "173. Warp chat resolves calendar days in the asker's time zone (warp-calendar) [SERIAL]",
+      "description": "Warp's tools took a window as a relative offset (-7d) or an RFC3339 timestamp. A rolling window was resolved on the server, but a calendar day was not: for \"yesterday\" or a named date the prompt told the model to work out the day's UTC boundaries itself from the asker's zone name, daylight saving included, and the server only validated what it was sent. A wrong offset moved the day by hours and the answer still read as \"yesterday\". start_time and end_time now accept the day itself (today, yesterday, 2026-09-03) or a local time with no offset, and the server resolves it at midnight in the zone the chat request named in timezone. The case has an Asia/Kolkata caller ask for one count_logs call with \"yesterday\" as both bounds, then reads the tool_calls the turn reports and the window the answer quotes. The arguments are dictated because which form a model picks unprompted varies from run to run, and the thing under test is what the server does with the day once it is named. Red before the change: a bare \"yesterday\" was refused by the tool. Requires the warp flag to be unlocked; the flag and the previous Warp config are restored at the end.",
+      "item": [
+        {
+          "name": "openai warp-calendar setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned the flag (see the test script).",
+                  "pm.collectionVariables.unset('warpCalendarFlagWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag;",
+                  "try { flag = (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0]; } catch (e) { flag = undefined; }",
+                  "pm.test('warp-calendar: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(flag.enabled, 'warp flag has no enabled state: ' + pm.response.text()).to.be.a('boolean');",
+                  "});",
+                  "// A failed read or a missing entry is not a disabled flag: record nothing, so the",
+                  "// enable and restore requests skip instead of switching off a flag that was on.",
+                  "if (pm.response.code === 200 && flag && typeof flag.enabled === 'boolean') {",
+                  "  pm.collectionVariables.set('warpCalendarFlagWas', flag.enabled ? 'true' : 'false');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai warp-calendar setup: enable warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the flag to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpCalendarFlagWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        },
+        {
+          "name": "openai warp-calendar setup: read current warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned a config (see the test script).",
+                  "pm.collectionVariables.unset('warpCalendarConfigWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var config;",
+                  "try { config = pm.response.json(); } catch (e) { config = undefined; }",
+                  "var isConfig = pm.response.code === 200 && config !== null && typeof config === 'object' && !Array.isArray(config);",
+                  "pm.test('warp-calendar: warp config is a config object', function () {",
+                  "  pm.expect(isConfig, 'not a config: ' + pm.response.text()).to.equal(true);",
+                  "});",
+                  "// Saved unchanged, and only when it is a config: an error body must never be written",
+                  "// back by the restore. Without it the configure and restore requests skip.",
+                  "if (isConfig) { pm.collectionVariables.set('warpCalendarConfigWas', pm.response.text()); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-calendar: configure Warp on gpt-4o-mini",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the previous config to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpCalendarConfigWas')) { pm.execution.skipRequest(); return; }",
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpCalendarConfigWas') || '{}');",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || ''",
+                  "};",
+                  "pm.collectionVariables.set('warpCalendarConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpCalendarConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-calendar: a tool call naming yesterday is resolved in the asker's time zone",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('warp-calendar: turn succeeded', function () {",
+                  "  pm.expect(body.error, 'turn failed: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.answer, 'no answer: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "// The calls that named the day the way the request asked, with whether the tool took them.",
+                  "var named = [];",
+                  "(body.tool_calls || []).forEach(function (call) {",
+                  "  var args = {};",
+                  "  try { args = JSON.parse(call.arguments || '{}'); } catch (e) { args = {}; }",
+                  "  var filters = args.filters || {};",
+                  "  if (call.name === 'count_logs' && String(filters.start_time).toLowerCase() === 'yesterday' && String(filters.end_time).toLowerCase() === 'yesterday') {",
+                  "    named.push({ name: call.name, failed: !!call.failed });",
+                  "  }",
+                  "});",
+                  "var seen = JSON.stringify(body.tool_calls || []);",
+                  "pm.test('warp-calendar: the tool was called with yesterday as both bounds', function () {",
+                  "  pm.expect(named.length, 'no call passed yesterday twice: ' + seen).to.be.at.least(1);",
+                  "});",
+                  "pm.test('warp-calendar: the tool accepted the day instead of refusing it', function () {",
+                  "  var accepted = named.filter(function (call) { return !call.failed; });",
+                  "  pm.expect(accepted.length, 'yesterday was refused: ' + seen).to.be.at.least(1);",
+                  "});",
+                  "pm.test('warp-calendar: the window starts at midnight in Kolkata, 18:30 UTC', function () {",
+                  "  pm.expect(body.answer, 'window not resolved in the asker zone: ' + pm.response.text()).to.include('T18:30:00Z');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"Call count_logs exactly once with filters {\\\"start_time\\\":\\\"yesterday\\\",\\\"end_time\\\":\\\"yesterday\\\",\\\"scope\\\":\\\"all\\\"}, passing those three values exactly as written. Then reply with the count and the provenance block.\"}],\"timezone\":\"Asia/Kolkata\",\"utc_offset_minutes\":330,\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai warp-calendar cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The config was never snapshotted, so setup did not change it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpCalendarConfigWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('warpCalendarConfigBody');",
+                  "pm.collectionVariables.unset('warpCalendarConversation');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpCalendarConfigWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-calendar cleanup: restore warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The flag was never snapshotted, so setup did not touch it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpCalendarFlagWas')) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('warpCalendarFlagBody', JSON.stringify({ enabled: pm.collectionVariables.get('warpCalendarFlagWas') === 'true' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-calendar: flag restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpCalendarFlagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
+    },
+    {
+      "name": "174. Warp chat names a model call governance refused (warp-refusal) [SERIAL]",
+      "description": "Warp's model calls are governed as whoever asked: the chat handler settles a grant from the dashboard request, including a virtual key sent in x-bf-vk. When governance refused that call - no access configured for the caller, an exhausted budget, a blocked model - Warp reported it as upstream_error, the code it uses for a provider outage, so the dashboard said Warp's model could not be reached and pointed the reader at the provider key. A signed-in user with no model access was told a credential had been revoked. Governance refusals now carry their own code, access_denied, and the no-access case says what to ask an administrator for while keeping governance's own reason. The case sends one chat with a virtual key that does not exist, which governance refuses before any provider is called, so no model tokens are spent. Red before the change: error.code was upstream_error. Requires the warp flag to be unlocked and the governance plugin enabled; the flag and the previous Warp config are restored at the end.",
+      "item": [
+        {
+          "name": "openai warp-refusal setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned the flag (see the test script).",
+                  "pm.collectionVariables.unset('warpRefusalFlagWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag;",
+                  "try { flag = (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0]; } catch (e) { flag = undefined; }",
+                  "pm.test('warp-refusal: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(flag.enabled, 'warp flag has no enabled state: ' + pm.response.text()).to.be.a('boolean');",
+                  "});",
+                  "// A failed read or a missing entry is not a disabled flag: record nothing, so the",
+                  "// enable and restore requests skip instead of switching off a flag that was on.",
+                  "if (pm.response.code === 200 && flag && typeof flag.enabled === 'boolean') {",
+                  "  pm.collectionVariables.set('warpRefusalFlagWas', flag.enabled ? 'true' : 'false');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai warp-refusal setup: enable warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the flag to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpRefusalFlagWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        },
+        {
+          "name": "openai warp-refusal setup: read current warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned a config (see the test script).",
+                  "pm.collectionVariables.unset('warpRefusalConfigWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var config;",
+                  "try { config = pm.response.json(); } catch (e) { config = undefined; }",
+                  "var isConfig = pm.response.code === 200 && config !== null && typeof config === 'object' && !Array.isArray(config);",
+                  "pm.test('warp-refusal: warp config is a config object', function () {",
+                  "  pm.expect(isConfig, 'not a config: ' + pm.response.text()).to.equal(true);",
+                  "});",
+                  "// Saved unchanged, and only when it is a config: an error body must never be written",
+                  "// back by the restore. Without it the configure and restore requests skip.",
+                  "if (isConfig) { pm.collectionVariables.set('warpRefusalConfigWas', pm.response.text()); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-refusal: configure Warp on gpt-4o-mini",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the previous config to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpRefusalConfigWas')) { pm.execution.skipRequest(); return; }",
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpRefusalConfigWas') || '{}');",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || ''",
+                  "};",
+                  "pm.collectionVariables.set('warpRefusalConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpRefusalConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-refusal: a model call governance refused is access_denied, not upstream_error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('warp-refusal: the turn failed without an answer', function () {",
+                  "  pm.expect(body.error, 'expected a refused turn: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.answer, 'a refused turn has no answer: ' + pm.response.text()).to.equal('');",
+                  "});",
+                  "pm.test('warp-refusal: the refusal is not reported as a provider failure', function () {",
+                  "  pm.expect(body.error.code, 'wrong code: ' + pm.response.text()).to.equal('access_denied');",
+                  "});",
+                  "pm.test('warp-refusal: the message says what is missing and keeps the governance reason', function () {",
+                  "  pm.expect(body.error.message, pm.response.text()).to.include('no model access');",
+                  "  pm.expect(body.error.message, pm.response.text()).to.include('access not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-warp-refusal-key-that-does-not-exist"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai warp-refusal cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The config was never snapshotted, so setup did not change it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpRefusalConfigWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('warpRefusalConfigBody');",
+                  "pm.collectionVariables.unset('warpRefusalConversation');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpRefusalConfigWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-refusal cleanup: restore warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The flag was never snapshotted, so setup did not touch it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpRefusalFlagWas')) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('warpRefusalFlagBody', JSON.stringify({ enabled: pm.collectionVariables.get('warpRefusalFlagWas') === 'true' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: flag restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Last request of the folder: once the flag is back, nothing of this case is left behind.",
+                  "if (pm.response.code === 200) {",
+                  "  ['warpRefusalFlagWas', 'warpRefusalFlagBody', 'warpRefusalConfigWas', 'warpRefusalConfigBody', 'warpRefusalConversation'].forEach(function (name) {",
+                  "    pm.collectionVariables.unset(name);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpRefusalFlagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
+    },
+    {
+      "name": "175. OpenAI Codex OAuth passthrough preserves caller auth (codex-oauth-passthrough)",
       "description": "OpenAI passthrough must preserve caller OAuth credentials when the transport sets SkipKeySelection. Previously the core honored that flag only for Anthropic, so a configured OpenAI API key replaced the caller Authorization header. Unary and streaming probes use an invalid synthetic JWT and require ChatGPT to return an OAuth authentication-token rejection (401), not api_key_not_supported. Requires a configured OpenAI provider/key and no dashboard auth. No valid subscription credentials are needed; successful inference and subscription billing are not covered.",
       "item": [
         {

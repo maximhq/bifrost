@@ -33,6 +33,11 @@ const UNPARSEABLE_TRIGGER = "trigger-unparseable";
 // event — the shape that carried no status at all and so was never retried.
 const SSE_ERROR_TRIGGER = "trigger-sse-error";
 
+// Makes the mock upstream stall so the client can disconnect mid-flight. A caller that
+// leaves hands the request to its worker, which still writes cost and model onto the
+// span; the trace must not be exported until that finishes.
+const SLOW_TRIGGER = "trigger-slow-upstream";
+
 const state = {
 	otelTraceRequests: [],
 	otelMetricRequests: [],
@@ -102,6 +107,10 @@ function createOpenAIMock() {
 				headers: req.headers,
 				body: body.toString("utf8"),
 			});
+			// Stall, then answer normally: the client aborts during the stall.
+			if (body.toString("utf8").includes(SLOW_TRIGGER)) {
+				await new Promise((resolve) => setTimeout(resolve, 1500));
+			}
 			// A 200 whose body is not JSON: Bifrost raises the parse failure itself, so
 			// the error has no upstream status to carry.
 			if (body.toString("utf8").includes(UNPARSEABLE_TRIGGER)) {
@@ -500,6 +509,43 @@ async function assertOtelMetricsReceived() {
 	]);
 }
 
+// abortMidFlight sends a request against the stalling upstream and drops the client
+// connection while it is still in flight, reproducing a 499.
+async function abortMidFlight(id) {
+	const controller = new AbortController();
+	const pending = fetch(`${baseURL}/v1/chat/completions`, {
+		method: "POST",
+		headers: {
+			...(adminAuthHeader ? { Authorization: adminAuthHeader } : {}),
+			"content-type": "application/json",
+			"x-request-id": id,
+		},
+		body: JSON.stringify({
+			model: `${providerName}/${modelName}`,
+			messages: [{ role: "user", content: SLOW_TRIGGER }],
+		}),
+		signal: controller.signal,
+	});
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	controller.abort();
+	await pending.catch(() => {});
+}
+
+// assertOtelAbandonedTrace is the end-to-end guard for the abandoned-request path: the
+// worker writes cost and model after the handler has already returned, so a trace
+// flushed at handler return reaches every connector without them.
+async function assertOtelAbandonedTrace(id) {
+	const entry = await poll("OTEL abandoned trace receiver", 20000, () =>
+		state.otelTraceRequests.find((item) => item.body.includes(Buffer.from(id))),
+	);
+	assertBufferContainsAll("OTEL abandoned trace export", entry.body, [
+		id,
+		"gen_ai.request.model",
+		"gen_ai.usage.input_tokens",
+		"gen_ai.usage.output_tokens",
+	]);
+}
+
 // assertOtelErrorTrace checks the error span export carries the provider error
 // attributes. The stream case pins core's deferred-span error stamping, which
 // regressed silently before (spans exported with no gen_ai.error.* when a
@@ -832,6 +878,10 @@ async function main() {
 		await assertOtelErrorTrace(errorRequestID, "error");
 		await chatError(streamErrorRequestID, true);
 		await assertOtelErrorTrace(streamErrorRequestID, "stream-error");
+
+		const abandonedRequestID = `${requestID}-abandoned`;
+		await abortMidFlight(abandonedRequestID);
+		await assertOtelAbandonedTrace(abandonedRequestID);
 		await assertPrometheusErrorScrape();
 
 		// Failures that carry no upstream status. Both used to be labelled
@@ -845,7 +895,8 @@ async function main() {
 		// chat completion does.
 		await responsesRefusal();
 		await assertOtelResponsesFinishReason();
-		assertMockProviderRequest(6);
+		// 7, not 6: the abandoned request reaches the upstream before the client aborts.
+		assertMockProviderRequest(7);
 
 		console.log(`  OTEL trace exports received: ${state.otelTraceRequests.length}`);
 		console.log(`  OTEL metric exports received: ${state.otelMetricRequests.length}`);
