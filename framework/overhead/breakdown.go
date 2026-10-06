@@ -328,6 +328,10 @@ const (
 	CategoryProcessing    = "processing"
 	CategoryNetworking    = "networking"
 	CategoryStreaming     = "streaming"
+	// CategoryProtocolSDK: time spent inside the third-party A2A protocol library
+	// (request decode, method routing, response marshal), kept separate from
+	// "processing" so library cost is not read as Bifrost pipeline cost.
+	CategoryProtocolSDK = "protocol_sdk"
 	// CategoryMiscellaneous: overhead not worth its own span. Folds the core "miscellaneous"
 	// glue span and the "scheduling" residual (overhead minus the measured phases).
 	CategoryMiscellaneous = "miscellaneous"
@@ -356,6 +360,22 @@ var bucketCategory = map[string]string{
 	"stream-backpressure":        CategoryStreaming,
 	"stream-client-write":        CategoryStreaming,
 	"scheduling":                 CategoryMiscellaneous,
+	// A2A agent-gateway phases (transport + core/agent), mirroring the LLM path.
+	"a2a.push.db.authenticate": CategoryProcessing,
+	"a2a.push.db.bind":         CategoryProcessing,
+	"a2a.push.db.enqueue":      CategoryProcessing,
+	"a2a.push.db.config":       CategoryProcessing,
+	"a2a.push.db.outcome":      CategoryProcessing,
+	"a2a.push.db.local":        CategoryProcessing,
+	"a2a.push.db.save":         CategoryProcessing,
+	"a2a.push.db.delete":       CategoryProcessing,
+	"a2a.push.db.list-due":     CategoryProcessing,
+	"a2a.push.db.prune":        CategoryProcessing,
+	"a2a.normalize":            CategorySerialization,
+	"a2a.auth":                 CategoryMiddleware,
+	"a2a.prepare":              CategoryProcessing,
+	"a2a.encode":               CategorySerialization,
+	"a2a.dispatch":             CategoryProtocolSDK,
 }
 
 // MetricComponent maps one bucket to its category, mirroring the UI's overheadCategoryKey:
