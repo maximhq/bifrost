@@ -14,6 +14,12 @@ describe("logs constants", () => {
 		expect(RequestTypeColors["realtime.turn"]).toBeTruthy();
 	});
 
+	it("registers model retrieve as a known request type", () => {
+		expect(RequestTypes).toContain("model_retrieve");
+		expect(RequestTypeLabels.model_retrieve).toBe("Retrieve Model");
+		expect(RequestTypeColors.model_retrieve).toBeTruthy();
+	});
+
 	it("maps backend app names to display metadata", () => {
 		expect(mapAppToClientApp("Claude Code").name).toBe("Claude Code");
 		expect(mapAppToClientApp("Claude Code").icon).toBe("/images/claude-code.png");

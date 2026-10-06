@@ -1038,7 +1038,7 @@ func (a *Agent) executeTool(ctx context.Context, name, arguments string) (string
 	if err != nil {
 		return fmt.Sprintf(`{"error":%q}`, misplacedArgumentHint(err, name, accepted)), true
 	}
-	return boundToolResult(result), false
+	return boundToolResult(noteCallerVisibility(result, a.deps.scope)), false
 }
 
 // misplacedArgumentHint is the mirror of the refusal above. That one catches a

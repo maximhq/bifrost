@@ -45,6 +45,12 @@ export const MATCH_ORDER = [
   "gemini",
   "anthropic",
   "openai",
+  // Last, so a row that also names an earlier provider keeps its existing owner.
+  "groq",
+  "xai",
+  "mistral",
+  "cohere",
+  "deepseek",
 ];
 
 // Long base64 runs are media payloads, not searchable text; a 2-char keyword like
