@@ -411,6 +411,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	if streamResponse.Data.TokenUsage != nil {
 		usage := streamResponse.Data.TokenUsage.DeepCopy()
 		entry.TokenUsageParsed = usage
+		p.dropIgnoredProviderCost(entry)
 		entry.PromptTokens = usage.PromptTokens
 		entry.CompletionTokens = usage.CompletionTokens
 		entry.TotalTokens = usage.TotalTokens
@@ -577,6 +578,7 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	if usage != nil {
 		usage = usage.DeepCopy()
 		entry.TokenUsageParsed = usage
+		p.dropIgnoredProviderCost(entry)
 		entry.PromptTokens = usage.PromptTokens
 		entry.CompletionTokens = usage.CompletionTokens
 		entry.TotalTokens = usage.TotalTokens
@@ -741,6 +743,7 @@ func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *s
 	if usage := result.ResponsesResponse.Usage; usage != nil {
 		bifrostUsage := usage.ToBifrostLLMUsage()
 		entry.TokenUsageParsed = bifrostUsage
+		p.dropIgnoredProviderCost(entry)
 		entry.PromptTokens = bifrostUsage.PromptTokens
 		entry.CompletionTokens = bifrostUsage.CompletionTokens
 		entry.TotalTokens = bifrostUsage.TotalTokens
@@ -1858,7 +1861,6 @@ func (p *LoggerPlugin) attachCostBreakdown(ctx *schemas.BifrostContext, entry *l
 	if p.pricingManager == nil || result == nil {
 		return
 	}
-	p.dropIgnoredProviderCost(entry)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 	breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes)
 	if breakdown == nil {
@@ -1877,8 +1879,9 @@ func (p *LoggerPlugin) attachCostBreakdown(ctx *schemas.BifrostContext, entry *l
 	}
 }
 
-// dropIgnoredProviderCost clears a provider-reported cost from the logged usage
+// dropIgnoredProviderCost clears a provider-reported cost from freshly copied usage
 // when that provider is configured to ignore it, so Bifrost's own breakdown is stored.
+// Call it only where provider usage is copied onto the entry, never after pricing.
 func (p *LoggerPlugin) dropIgnoredProviderCost(entry *logstore.Log) {
 	if entry == nil || entry.TokenUsageParsed == nil || entry.TokenUsageParsed.Cost == nil {
 		return

@@ -312,12 +312,12 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	}
 	if entry.TokenUsageParsed == nil {
 		entry.TokenUsageParsed = billed.DeepCopy()
+		p.dropIgnoredProviderCost(entry)
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
 	}
 	if entry.Cost == nil && p.pricingManager != nil {
-		p.dropIgnoredProviderCost(entry)
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 		if bd := p.pricingManager.CalculateCostBreakdownForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); bd != nil && bd.TotalCost > 0 {
 			total := bd.TotalCost
@@ -2519,7 +2519,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	entry.CacheDebugParsed = cacheMetadata
 	if p.pricingManager != nil {
-		p.dropIgnoredProviderCost(entry)
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 		if breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes); breakdown != nil && breakdown.TotalCost > 0 {
 			cost := breakdown.TotalCost

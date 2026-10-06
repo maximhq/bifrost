@@ -90,3 +90,41 @@ func TestCalculateCostForLogIgnoresStoredProviderCostWhenToggled(t *testing.T) {
 	require.NoError(t, err)
 	assertCostsEqual(t, "recalc ignores provider cost", got, 100*2.5e-6+50*1e-5)
 }
+
+// A stream error with a response chunk prices BilledUsage first; the later
+// attachCostBreakdown must not discard that catalog-priced breakdown.
+func TestErrorBillingBreakdownSurvivesAttachWhenToggled(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	plugin.pricingManager.SetIgnoreProviderCost(schemas.OpenAI, true)
+	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	billed := &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+		Cost:             &schemas.BifrostCost{TotalCost: 1067},
+	}
+	plugin.applyErrorBillingFromBilledUsage(ctx, entry, billed, schemas.ChatCompletionStreamRequest)
+
+	want := 100*2.5e-6 + 50*1e-5
+	require.NotNil(t, entry.Cost)
+	assert.InDelta(t, want, *entry.Cost, 1e-12)
+	require.NotNil(t, entry.TokenUsageParsed.Cost)
+	assert.InDelta(t, want, entry.TokenUsageParsed.Cost.TotalCost, 1e-12)
+	assert.InDelta(t, 1067, billed.Cost.TotalCost, 1e-12, "caller's billed usage is untouched")
+
+	// The response chunk carries no usage, so it prices to nothing.
+	chunk := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionStreamRequest,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+			},
+		},
+	}
+	plugin.attachCostBreakdown(ctx, entry, chunk)
+
+	require.NotNil(t, entry.TokenUsageParsed.Cost)
+	assert.InDelta(t, want, entry.TokenUsageParsed.Cost.TotalCost, 1e-12)
+}
