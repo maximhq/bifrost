@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -273,4 +275,52 @@ func TestListAllProviderModelPages(t *testing.T) {
 	}
 	_, bifrostErr = listAllProviderModelPages(ctx, failing, &schemas.BifrostListModelsRequest{Provider: "f"})
 	require.NotNil(t, bifrostErr, "a failed page must fail the listing")
+
+	// A provider with more pages than the walk follows must not come back as a complete list:
+	// tagged models past the cap would be missing with nothing to say so.
+	n := 0
+	endless := func(_ *schemas.BifrostContext, _ *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+		n++
+		return &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: fmt.Sprintf("e/m%d", n)}}, NextPageToken: fmt.Sprintf("t%d", n)}, nil
+	}
+	resp, bifrostErr = listAllProviderModelPages(ctx, endless, &schemas.BifrostListModelsRequest{Provider: "e"})
+	require.NotNil(t, bifrostErr, "a walk cut off by the page cap must fail")
+	assert.Nil(t, resp)
+	assert.Contains(t, bifrostErr.Error.Message, fmt.Sprintf("%d pages", schemas.MaxPaginationRequests))
+}
+
+// closeTrackingReader records whether the handler released a streamed large-response body.
+type closeTrackingReader struct {
+	io.Reader
+	closed bool
+}
+
+func (r *closeTrackingReader) Close() error { r.closed = true; return nil }
+
+// TestRejectTagFilteredLargeResponse pins that a tag-filtered listing which came back in
+// large-response mode (streamed straight through, never parsed) is refused with a 400 and its
+// stream released, instead of sending the whole unfiltered list as if it were filtered.
+func TestRejectTagFilteredLargeResponse(t *testing.T) {
+	SetLogger(&mockLogger{})
+	newCtx := func(large bool) (*schemas.BifrostContext, *closeTrackingReader) {
+		bctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		reader := &closeTrackingReader{Reader: strings.NewReader(`{"data":[]}`)}
+		if large {
+			bctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
+			bctx.SetValue(schemas.BifrostContextKeyLargeResponseReader, io.ReadCloser(reader))
+		}
+		return bctx, reader
+	}
+
+	bctx, reader := newCtx(true)
+	ctx := &fasthttp.RequestCtx{}
+	require.True(t, rejectTagFilteredLargeResponse(ctx, bctx, []string{"prod"}))
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.Contains(t, string(ctx.Response.Body()), "tags filter")
+	assert.True(t, reader.closed, "the unused stream must be released")
+
+	bctx, _ = newCtx(true)
+	assert.False(t, rejectTagFilteredLargeResponse(&fasthttp.RequestCtx{}, bctx, nil), "an unfiltered listing may stream")
+	bctx, _ = newCtx(false)
+	assert.False(t, rejectTagFilteredLargeResponse(&fasthttp.RequestCtx{}, bctx, []string{"prod"}), "a parsed listing is filtered normally")
 }

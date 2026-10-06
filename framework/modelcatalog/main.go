@@ -280,11 +280,9 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	if err := mc.datasheet.LoadOverridesFromStore(ctx); err != nil {
 		return nil, fmt.Errorf("failed to load pricing overrides: %w", err)
 	}
-	// Tags are labels, not pricing: a failed load is logged rather than failing startup, and the
-	// next ReloadModelTags (after a tag write or a cluster reload) retries it.
-	if err := mc.ReloadModelTags(ctx); err != nil {
-		logger.Warn("failed to load model tags: %v", err)
-	}
+	// Tags are labels, not pricing: a failed load does not fail startup and is retried in the
+	// background (loadModelTagsAtStartup), then on the hourly sync tick.
+	mc.loadModelTagsAtStartup(mc.syncCtx, modelTagsStartupRetryDelays)
 
 	mc.startSyncWorker(mc.syncCtx)
 	initSucceeded = true
@@ -470,6 +468,13 @@ func (mc *ModelCatalog) syncWorker(ctx context.Context) {
 }
 
 func (mc *ModelCatalog) syncTick(ctx context.Context) {
+	// A tag overlay that never loaded (the startup load and its retries all failed) is retried on
+	// every tick until it does.
+	if mc.configStore != nil && mc.modelTags.Load() == nil {
+		if err := mc.ReloadModelTags(ctx); err != nil && mc.logger != nil {
+			mc.logger.Warn("model tags are still not loaded: %v", err)
+		}
+	}
 	pricingDue := time.Since(mc.datasheet.LastSyncedAt()) >= mc.datasheet.SyncInterval()
 	mcpLibraryDue := mc.isMCPLibrarySyncDue()
 	if !pricingDue && !mcpLibraryDue {

@@ -1566,6 +1566,16 @@ func TestVirtualKeyMetadata_PersistsThroughCreateAndUpdate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, result.Metadata, "an update must replace the metadata")
 
+	// An update that does not set metadata (nil), such as a config.json sync of an entry without a
+	// metadata field, keeps what is stored; only an explicit empty map clears it.
+	vk.Metadata = nil
+	vk.Description = "edited elsewhere"
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, result.Metadata, "a nil metadata must keep the stored value")
+	assert.Equal(t, "edited elsewhere", result.Description)
+
 	vk.Metadata = map[string]string{}
 	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
 	var raw *string
@@ -5158,6 +5168,19 @@ func TestProviderMetadataAndTags_PersistThroughAddUpdateAndSync(t *testing.T) {
 	assert.Equal(t, map[string]string{"owner": "team-b"}, all[schemas.OpenAI].Metadata, "an update must replace the metadata")
 	assert.Equal(t, []string{"staging"}, all[schemas.OpenAI].Tags)
 
+	// An update that does not carry labels (nil), such as an edit of other provider settings,
+	// keeps the stored labels; only explicit empty values clear them.
+	unrelated := *got
+	unrelated.Metadata = nil
+	unrelated.Tags = nil
+	unrelated.SendBackRawResponse = true
+	require.NoError(t, store.UpdateProvider(ctx, schemas.OpenAI, unrelated))
+	all, err = store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"owner": "team-b"}, all[schemas.OpenAI].Metadata, "nil metadata must keep the stored value")
+	assert.Equal(t, []string{"staging"}, all[schemas.OpenAI].Tags, "nil tags must keep the stored value")
+	assert.True(t, all[schemas.OpenAI].SendBackRawResponse)
+
 	got.Metadata = map[string]string{}
 	got.Tags = []string{}
 	require.NoError(t, store.UpdateProvider(ctx, schemas.OpenAI, *got))
@@ -5176,6 +5199,20 @@ func TestProviderMetadataAndTags_PersistThroughAddUpdateAndSync(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"owner": "file"}, got.Metadata, "the config-file upsert must write metadata")
 	assert.Equal(t, []string{"from-file"}, got.Tags)
+
+	// The bulk upsert keeps stored labels the same way for a provider config that carries none.
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{schemas.OpenAI: {}}))
+	got, err = store.GetProviderConfig(ctx, schemas.OpenAI)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"owner": "file"}, got.Metadata, "the bulk upsert must keep labels it is not given")
+	assert.Equal(t, []string{"from-file"}, got.Tags)
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		schemas.OpenAI: {Metadata: map[string]string{}, Tags: []string{}},
+	}))
+	got, err = store.GetProviderConfig(ctx, schemas.OpenAI)
+	require.NoError(t, err)
+	assert.Empty(t, got.Metadata, "explicit empty labels must clear them in the bulk upsert")
+	assert.Empty(t, got.Tags)
 
 	got.Tags = []string{"bad tag"}
 	require.ErrorContains(t, store.UpdateProvider(ctx, schemas.OpenAI, *got), "invalid tag")

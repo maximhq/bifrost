@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -76,4 +77,49 @@ func NewTestCatalogWithConfigStore(store configstore.ConfigStore) *ModelCatalog 
 	mc := NewTestCatalog(nil)
 	mc.configStore = store
 	return mc
+}
+
+// modelTagsStartupRetryDelays spaces the background retries of a failed startup load of the tag
+// overlay. After the last one, syncTick keeps retrying on its hourly tick while the overlay is
+// still unloaded.
+var modelTagsStartupRetryDelays = []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute}
+
+// loadModelTagsAtStartup loads the tag overlay. Tags are labels, not pricing, so a failed load
+// does not fail startup; it is retried in the background after each of delays instead, so a
+// config store that is briefly unavailable at startup does not leave every listing without tags
+// (and tags= filters matching nothing) until the next tag write or cluster reload. The retries
+// stop on success, once another path (a tag write or a cluster reload) has published an overlay,
+// or when the catalog shuts down.
+func (mc *ModelCatalog) loadModelTagsAtStartup(ctx context.Context, delays []time.Duration) {
+	err := mc.ReloadModelTags(ctx)
+	if err == nil {
+		return
+	}
+	if mc.logger != nil {
+		mc.logger.Warn("failed to load model tags (retrying in background): %v", err)
+	}
+	mc.wg.Add(1)
+	go func() {
+		defer mc.wg.Done()
+		for _, delay := range delays {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-mc.done:
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			if mc.modelTags.Load() != nil {
+				return
+			}
+			if err := mc.ReloadModelTags(ctx); err == nil {
+				return
+			} else if mc.logger != nil {
+				mc.logger.Warn("retrying model tags load failed: %v", err)
+			}
+		}
+	}()
 }

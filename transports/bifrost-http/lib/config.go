@@ -1728,6 +1728,7 @@ func processAuthoritativeProvider(
 		providerCfgInFile.Keys = mergeProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
 		providerCfgInFile.Status = existingCfg.Status
 		providerCfgInFile.Description = existingCfg.Description
+		keepStoredProviderLabels(&providerCfgInFile, existingCfg)
 	}
 	providers[provider] = providerCfgInFile
 }
@@ -1750,6 +1751,7 @@ func mergeProviderWithHash(
 		logger.Debug("config hash mismatch for provider %s, syncing from config file", provider)
 		mergedKeys := mergeProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
 		providerCfgInFile.Keys = mergedKeys
+		keepStoredProviderLabels(&providerCfgInFile, existingCfg)
 		providersInConfigStore[provider] = providerCfgInFile
 	} else {
 		// Provider hash matches - but still check individual keys
@@ -8158,24 +8160,53 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 // independently: a field that fails is cleared and the other is kept, so a caller that drops
 // invalid labels instead of rejecting the provider loses only the invalid one. The returned
 // error is the metadata error if there is one, otherwise the tags error.
+//
+// A field that is absent (nil) stays nil, which means "keep the stored labels". A field that is
+// present but empty ({} or []) stays an explicit empty value, which clears them; an invalid
+// field that is cleared becomes nil (keep).
 func NormalizeProviderLabels(config *configstore.ProviderConfig) error {
 	var firstErr error
+	metadataSet := config.Metadata != nil
 	if err := configstoreTables.ValidateMetadata(config.Metadata, nil); err != nil {
 		firstErr = err
 		config.Metadata = nil
+		metadataSet = false
 	}
 	if len(config.Metadata) == 0 {
 		config.Metadata = nil
+		if metadataSet {
+			config.Metadata = map[string]string{}
+		}
 	}
+	tagsSet := config.Tags != nil
 	tags, err := configstoreTables.NormalizeTags(config.Tags)
 	if err != nil {
 		if firstErr == nil {
 			firstErr = err
 		}
 		tags = nil
+		tagsSet = false
+	}
+	if len(tags) == 0 {
+		tags = nil
+		if tagsSet {
+			tags = []string{}
+		}
 	}
 	config.Tags = tags
 	return firstErr
+}
+
+// keepStoredProviderLabels fills labels the config.json entry leaves out (nil) from the stored
+// provider, so a sync does not erase labels set through the API or UI. Explicit empty values in
+// the file are left alone and clear the stored labels.
+func keepStoredProviderLabels(fromFile *configstore.ProviderConfig, stored configstore.ProviderConfig) {
+	if fromFile.Metadata == nil {
+		fromFile.Metadata = stored.Metadata
+	}
+	if fromFile.Tags == nil {
+		fromFile.Tags = stored.Tags
+	}
 }
 
 // PromptCacheTTLExtended is the only explicit prompt-cache TTL the gateway accepts.

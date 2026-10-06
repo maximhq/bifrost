@@ -2745,6 +2745,17 @@ func TestProviderLabels_CreateUpdateAndListFilters(t *testing.T) {
 	assert.Contains(t, string(ctx.Response.Body()), "at most 50 entries, got 51")
 	assert.Equal(t, []string{"eu", "prod"}, store.Providers["mock-c"].Tags, "a refused update must write nothing")
 
+	// null clears, and must reach the store as an explicit empty value: the store keeps labels
+	// for nil (an update that does not carry them).
+	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`,"tags":null,"metadata":null}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.NotNil(t, store.Providers["mock-c"].Tags, "null tags must be an explicit clear")
+	assert.Empty(t, store.Providers["mock-c"].Tags)
+	assert.NotNil(t, store.Providers["mock-c"].Metadata, "null metadata must be an explicit clear")
+	assert.Empty(t, store.Providers["mock-c"].Metadata)
+	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`,"tags":["eu","prod"],"metadata":{"owner":"team-a"}}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
 	list := func(query string) ([]string, int) {
 		ctx := call(fasthttp.MethodGet, "/api/providers"+query, "", "")
 		if ctx.Response.StatusCode() != fasthttp.StatusOK {
@@ -2773,6 +2784,9 @@ func TestProviderLabels_CreateUpdateAndListFilters(t *testing.T) {
 		{query: "?metadata_owner=team-a&metadata_region=eu", want: []string{"mock-a"}},
 		{query: "?metadata_owner=team-a&tags=prod", want: []string{"mock-a", "mock-c"}},
 		{query: "?tags=a%20b", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?tags=", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?tags=,", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?tags=prod,", wantStatus: fasthttp.StatusBadRequest},
 		{query: "?metadata_bad%20key=x", wantStatus: fasthttp.StatusBadRequest},
 		{query: "?metadata_=x", wantStatus: fasthttp.StatusBadRequest},
 		{query: "?metadata_owner=team-a&metadata_=x", wantStatus: fasthttp.StatusBadRequest},
@@ -2849,6 +2863,13 @@ func TestListModels_FiltersAndReturnsTags(t *testing.T) {
 
 	ctx = get(h.listModels, "/api/models?provider=openai&tags=a%20b")
 	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	// An empty tags filter is invalid, not "no filter": it must not list every model.
+	for _, uri := range []string{"/api/models?provider=openai&tags=", "/api/models?provider=openai&tags=prod,"} {
+		ctx = get(h.listModels, uri)
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), uri)
+		ctx = get(h.listModelDetails, strings.Replace(uri, "/api/models", "/api/models/details", 1))
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), uri)
+	}
 }
 
 // TestSetModelTags_ValidatesBeforeWriting pins PUT /api/models/tags: the whole batch is checked
@@ -2876,6 +2897,8 @@ func TestSetModelTags_ValidatesBeforeWriting(t *testing.T) {
 		{name: "valid batch", body: `[{"provider":"openai","model":" gpt-5.1 ","tags":[" prod","eu","prod"]},{"provider":"openai","model":"my-finetune","tags":[]}]`, wantStatus: fasthttp.StatusNoContent,
 			wantCall: []ModelTagsEntry{{Provider: "openai", Model: "gpt-5.1", Tags: []string{"eu", "prod"}}, {Provider: "openai", Model: "my-finetune"}}},
 		{name: "invalid json", body: `{`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "unknown entry field", body: `[{"provider":"openai","model":"gpt-5.1","tags":["prod"],"tgas":["eu"]}]`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "trailing json value", body: `[{"provider":"openai","model":"gpt-5.1","tags":["prod"]}] []`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "empty batch", body: `[]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "missing model", body: `[{"provider":"openai","tags":["prod"]}]`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "missing tags", body: `[{"provider":"openai","model":"gpt-5.1"}]`, wantStatus: fasthttp.StatusBadRequest},
