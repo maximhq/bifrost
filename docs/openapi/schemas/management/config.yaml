@@ -80,6 +80,10 @@ ClientConfig:
     log_retention_days:
       type: integer
       description: Number of days to retain logs
+    delete_expired_virtual_keys:
+      type: boolean
+      default: false
+      description: Delete expired virtual keys automatically. A daily cleanup job removes every key whose expiry has passed unless the key sets delete_after_expire to false; keys with delete_after_expire true are removed regardless.
     header_filter_config:
       $ref: '#/HeaderFilterConfig'
     mcp_agent_depth:

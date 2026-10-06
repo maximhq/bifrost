@@ -331,144 +331,6 @@
           "})();"
         ]
       }
-    },
-    {
-      "name": "142. Tool-result cache marker survives translation to gpt-5.6 function_call_output (tool-result cache breakpoint)",
-      "description": "Claude Code places its per-turn cache_control marker on the last block of the conversation, which is a tool_result after every tool call. The Anthropic converter carries that marker on the function_call_output item; the OpenAI Responses converter used to translate only input_text blocks, so the marker was stripped and the tool body flattened to a plain string: no prompt_cache_breakpoint, no explicit mode, and caching stopped after the first tool turn on gpt-5.6 / gpt-6. The fix marks the function_call_output content part (OpenAI documents prompt_cache_breakpoint there) and keeps the output in array form. Case 1 pins the explicit-mode switch OpenAI echoes back. Case 2 pins the Claude Code shape through the drop-in messages route: system and tool_result both marked, so the cold write must extend past the 2000-token tool result (a write pinned at the system prefix is the pre-fix signature). Case 3 pins the Chat Completions path, where cache_control on text parts is now translated too: the caller asks for explicit mode, so a stripped marker means no breakpoint and no write at all.",
-      "item": [
-        {
-          "name": "openai gpt-5.6-sol native responses: cache_control on function_call_output switches on explicit mode - tool-result cache breakpoint",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status below 400', function(){ pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
-                  "var j = pm.response.json();",
-                  "pm.test('tool-result marker reached OpenAI as a breakpoint: prompt_cache_options.mode echoed as explicit', function(){ pm.expect(j.prompt_cache_options, 'prompt_cache_options (absent means the marker was stripped and the request stayed implicit): ' + pm.response.text()).to.be.an('object'); pm.expect(j.prompt_cache_options.mode, 'mode').to.eql('explicit'); });",
-                  "pm.test('usage present', function(){ pm.expect(j.usage, 'usage').to.be.an('object'); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-toolresult-native-{{pcNonce}}\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} toolresult-native] Call the echo tool with the word hello, then answer in one short word: is the sky blue?\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_bf_toolresult_1\",\n      \"name\": \"echo\",\n      \"arguments\": \"{\\\"text\\\":\\\"hello\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_bf_toolresult_1\",\n      \"output\": \"hello\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"echo\",\n      \"description\": \"Echo the given text back.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/responses",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "responses"
-              ]
-            }
-          }
-        },
-        {
-          "name": "openai gpt-5.6-sol drop-in messages route: Claude Code shaped tool_result cache_control writes the whole conversation - tool-result cache breakpoint",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status below 400', function(){ pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
-                  "var j = pm.response.json();",
-                  "pm.test('usage present', function(){ pm.expect(j.usage, 'usage').to.be.an('object'); });",
-                  "// The system prefix is ~5900 tokens and the tool_result ~2000. With the breakpoint on the tool_result the explicit cache write must cover both; a write anchored before the tool_result (marker dropped) stays under 7000.",
-                  "pm.test('cold cache write extends past the tool_result (cache_creation_input_tokens > 7000)', function(){ var w = (j.usage && j.usage.cache_creation_input_tokens) || 0; pm.expect(w, 'cache_creation_input_tokens: ' + pm.response.text()).to.be.above(7000); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "x-api-key",
-                "value": "{{anthropicKey}}"
-              },
-              {
-                "key": "anthropic-version",
-                "value": "2023-06-01"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 64,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} toolresult-dropin]\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"echo\",\n      \"description\": \"Echo the given text back.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the echo tool with the word hello, then answer in one short word: is the sky blue?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_bf_toolresult_1\",\n          \"name\": \"echo\",\n          \"input\": {\n            \"text\": \"hello\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_bf_toolresult_1\",\n          \"content\": \"hello Record 1: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 2: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 3: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 4: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 5: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 6: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 7: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 8: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 9: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 10: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 11: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 12: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 13: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 14: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 15: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 16: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 17: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 18: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 19: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 20: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 21: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 22: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 23: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 24: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 25: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 26: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 27: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 28: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 29: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 30: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 31: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 32: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 33: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 34: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 35: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 36: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 37: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 38: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 39: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 40: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 41: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 42: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 43: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 44: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 45: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 46: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 47: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 48: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 49: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 50: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 51: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 52: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 53: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 54: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 55: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 56: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 57: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 58: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 59: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 60: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 61: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 62: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 63: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 64: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 65: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 66: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 67: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 68: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 69: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 70: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 71: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 72: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 73: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 74: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 75: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 76: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 77: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 78: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 79: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 80: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 81: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 82: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 83: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 84: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 85: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 86: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 87: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 88: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 89: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 90: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 91: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 92: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 93: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 94: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 95: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 96: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 97: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 98: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 99: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 100: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 101: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 102: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 103: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 104: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 105: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 106: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 107: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 108: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 109: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 110: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 111: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 112: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 113: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 114: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 115: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 116: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 117: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 118: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 119: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 120: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/anthropic/v1/messages",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "anthropic",
-                "v1",
-                "messages"
-              ]
-            }
-          }
-        },
-        {
-          "name": "openai gpt-5.6-sol native chat completions: cache_control on system and tool text parts becomes prompt_cache_breakpoint under explicit mode - tool-result cache breakpoint",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status below 400', function(){ pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
-                  "var j = pm.response.json();",
-                  "pm.test('usage present', function(){ pm.expect(j.usage, 'usage').to.be.an('object'); });",
-                  "// The caller asked for explicit mode. With the markers translated the cold write covers the ~5900-token system prefix plus the ~2000-token tool result; with them stripped, explicit mode has no breakpoint and OpenAI caches nothing.",
-                  "pm.test('cold cache write covers system prefix and tool result (cache write tokens > 7000)', function(){ var d = (j.usage && j.usage.prompt_tokens_details) || {}; var w = (typeof d.cached_write_tokens === 'number' ? d.cached_write_tokens : 0) || (typeof d.cache_write_tokens === 'number' ? d.cache_write_tokens : 0); pm.expect(w, 'cache write tokens: ' + pm.response.text()).to.be.above(7000); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_completion_tokens\": 64,\n  \"prompt_cache_key\": \"bf-harness-toolresult-chat-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"explicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} toolresult-chat]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the echo tool with the word hello, then answer in one short word: is the sky blue?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf_toolresult_chat_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"echo\",\n            \"arguments\": \"{\\\"text\\\":\\\"hello\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf_toolresult_chat_1\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"hello Record 1: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 2: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 3: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 4: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 5: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 6: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 7: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 8: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 9: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 10: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 11: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 12: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 13: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 14: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 15: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 16: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 17: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 18: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 19: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 20: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 21: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 22: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 23: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 24: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 25: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 26: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 27: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 28: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 29: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 30: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 31: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 32: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 33: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 34: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 35: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 36: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 37: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 38: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 39: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 40: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 41: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 42: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 43: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 44: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 45: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 46: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 47: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 48: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 49: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 50: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 51: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 52: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 53: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 54: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 55: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 56: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 57: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 58: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 59: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 60: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 61: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 62: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 63: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 64: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 65: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 66: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 67: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 68: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 69: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 70: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 71: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 72: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 73: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 74: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 75: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 76: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 77: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 78: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 79: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 80: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 81: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 82: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 83: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 84: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 85: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 86: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 87: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 88: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 89: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 90: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 91: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 92: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 93: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 94: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 95: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 96: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 97: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 98: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 99: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 100: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 101: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 102: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 103: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 104: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 105: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 106: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 107: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 108: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 109: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 110: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 111: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 112: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 113: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 114: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 115: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 116: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 117: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 118: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 119: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 120: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"echo\",\n        \"description\": \"Echo the given text back.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"text\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"text\"\n          ]\n        }\n      }\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "chat",
-                "completions"
-              ]
-            }
-          }
-        }
-      ]
     }
   ],
   "variable": [
@@ -17474,6 +17336,168 @@
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        }\n      },\n      \"defer_loading\": true\n    },\n    {\n      \"name\": \"plain_tool\",\n      \"description\": \"Plain tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "12.B19 Beta header defaulted for custom tools -> bedrock converse path (fine-grained-tool-streaming in additionalModelRequestFields)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var txt = pm.response.text() || '';",
+                      "var body = {};",
+                      "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                      "var rr = (body.extra_fields || {}).raw_request;",
+                      "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                      "var wire = JSON.stringify(rr || null);",
+                      "",
+                      "// Claude Code pointed at a gateway sends its tools WITHOUT eager_input_streaming and no",
+                      "// fine-grained-tool-streaming beta (it only opts in when it talks to Bedrock or Vertex itself).",
+                      "// Without the opt-in Claude emits tool input one complete JSON value at a time, so a long Write",
+                      "// content argument arrived as a single burst after minutes of silence and Claude Code aborted",
+                      "// with 'Stream idle timeout - no chunks received'. Bifrost must opt in on the model's behalf.",
+                      "//",
+                      "// A plain request like this one is served by CONVERSE, which has no per-tool slot for the flag,",
+                      "// and Bedrock's edge swallows the outer anthropic-beta HTTP header. The only carrier that reaches",
+                      "// Claude is additionalModelRequestFields.anthropic_beta, so that is what this row pins.",
+                      "pm.test('bedrock converse: request succeeds with the fine-grained beta in the body', function () {",
+                      "  pm.expect(pm.response.code, 'want 200; a 400 means Bedrock rejected the tunneled beta, and any other status is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                      "});",
+                      "",
+                      "pm.test('bedrock converse: the request went out on the Converse wire', function () {",
+                      "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                      "  pm.expect(rr.toolConfig, 'toolConfig absent, so this was not a Converse request and the row no longer pins the Converse carrier: ' + wire.slice(0, 500)).to.be.an('object');",
+                      "  var names = (rr.toolConfig.tools || []).map(function (t) { return t && t.toolSpec ? t.toolSpec.name : null; });",
+                      "  pm.expect(names, 'the custom tool vanished from toolConfig.tools: ' + wire.slice(0, 500)).to.include('Write');",
+                      "});",
+                      "",
+                      "pm.test('bedrock converse: additionalModelRequestFields.anthropic_beta opts into fine-grained tool streaming', function () {",
+                      "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                      "  var amrf = rr.additionalModelRequestFields || {};",
+                      "  var betas = amrf.anthropic_beta;",
+                      "  if (typeof betas === 'string') { betas = betas.split(','); }",
+                      "  pm.expect(betas, 'additionalModelRequestFields.anthropic_beta is absent, so Claude buffers each tool argument value until it is complete: ' + wire.slice(0, 600)).to.be.an('array');",
+                      "  pm.expect(betas, 'fine-grained-tool-streaming-2025-05-14 missing from additionalModelRequestFields.anthropic_beta: ' + JSON.stringify(betas)).to.include('fine-grained-tool-streaming-2025-05-14');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-request",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"Write\",\n      \"description\": \"Write a file to the local filesystem\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"file_path\": {\n            \"type\": \"string\"\n          },\n          \"content\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"file_path\",\n          \"content\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "12.B20 Beta header defaulted for custom tools -> vertex (eager_input_streaming + fine-grained-tool-streaming in body)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var txt = pm.response.text() || '';",
+                      "var body = {};",
+                      "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                      "var rr = (body.extra_fields || {}).raw_request;",
+                      "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                      "var wire = JSON.stringify(rr || null);",
+                      "",
+                      "// Claude Code pointed at a gateway sends its tools WITHOUT eager_input_streaming (it only opts in",
+                      "// when it talks to Vertex or Bedrock itself). On Vertex, Claude then emits tool input one complete",
+                      "// JSON value at a time, so a long tool argument arrives as one burst after a long silence. Bifrost",
+                      "// must set the flag on custom tools that leave it unset and derive the beta into the body.",
+                      "pm.test('vertex: request succeeds with the defaulted fine-grained opt-in', function () {",
+                      "  pm.expect(pm.response.code, 'want 200; a 400 means the flag went out without its beta, and any other status is a real failure too: ' + txt.slice(0, 400)).to.eql(200);",
+                      "});",
+                      "",
+                      "pm.test('vertex: the custom tool carries eager_input_streaming on the wire', function () {",
+                      "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                      "  var write = null;",
+                      "  (rr.tools || []).forEach(function (t) { if (t && t.name === 'Write') { write = t; } });",
+                      "  pm.expect(write, 'the Write tool vanished from the outbound body: ' + wire.slice(0, 500)).to.be.an('object');",
+                      "  pm.expect(write.eager_input_streaming, 'Bifrost did not default eager_input_streaming on a custom tool for Vertex: ' + JSON.stringify(write).slice(0, 400)).to.eql(true);",
+                      "  pm.expect(write.input_schema, 'tools[].input_schema was stripped from the outbound body: ' + wire.slice(0, 400)).to.be.an('object');",
+                      "});",
+                      "",
+                      "pm.test('vertex: anthropic_beta in the body carries fine-grained-tool-streaming-2025-05-14', function () {",
+                      "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                      "  pm.expect(rr.anthropic_beta, 'anthropic_beta absent from the Vertex body: ' + wire.slice(0, 500)).to.be.an('array');",
+                      "  pm.expect(rr.anthropic_beta, 'fine-grained-tool-streaming-2025-05-14 not derived from the defaulted flag: ' + JSON.stringify(rr.anthropic_beta)).to.include('fine-grained-tool-streaming-2025-05-14');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-request",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"Write\",\n      \"description\": \"Write a file to the local filesystem\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"file_path\": {\n            \"type\": \"string\"\n          },\n          \"content\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"file_path\",\n          \"content\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -181098,7 +181122,7 @@
     },
     {
       "name": "130. Anthropic per-message effort override (mid-conversation output_config) forwarded on /anthropic/v1/messages (per-message-effort)",
-      "description": "Pi 0.87.1 with supportsMidConvoEffort sends a top-level output_config.effort (\"high\") and overrides it for the current turn with an effort-only mid-conversation system message: {\"role\":\"system\",\"content\":[],\"output_config\":{\"effort\":\"low\"}} under beta mid-conversation-output-config-2026-07-01. Bifrost's AnthropicMessage (core/providers/anthropic/types.go) kept only role and content, so on the normalized /anthropic/v1/messages path (any non-Claude-Code user agent) the override was dropped on ingress (no content blocks -> no neutral item) and the upstream request ran at the top-level effort; changing effort between turns was silently ignored and the beta header was never derived.\n\nThe fix carries the per-message output_config on AnthropicMessage and on the neutral ResponsesMessage, re-emits it as an effort-only role:\"system\" message (empty content array, placement-exempt) when the provider+model supports per-turn effort (Anthropic direct: Opus 5+, Sonnet 5.5, Fable/Mythos), injects mid-conversation-output-config-2026-07-01 from the body on both the typed and raw-body paths, and drops the item fail-soft elsewhere (unsupported Claude models, and the OpenAI-shaped egress, which has no equivalent and rejects an empty-content system item).\n\nCases: (1) anthropic/claude-opus-5-5 non-streaming with x-bf-send-back-raw-request -> 200 with text AND the echoed raw_request carries exactly one role:system message with content [] and output_config.effort low while the top-level effort stays high (pre-fix: the override is absent from raw_request); (2) the same request streaming (Pi's actual shape) -> 200 SSE with content_block_delta and message_stop, no error event; (3) anthropic/claude-opus-4-8 (mid-conversation system supported, per-turn effort not) -> 200 and raw_request carries no system message, pinning the fail-soft drop instead of a forwarded 400.",
+      "description": "Pi 0.87.1 with supportsMidConvoEffort sends a top-level output_config.effort (\"high\") and overrides it for the current turn with an effort-only mid-conversation system message: {\"role\":\"system\",\"content\":[],\"output_config\":{\"effort\":\"low\"}} under beta mid-conversation-output-config-2026-07-01. Bifrost's AnthropicMessage (core/providers/anthropic/types.go) kept only role and content, so on the normalized /anthropic/v1/messages path (any non-Claude-Code user agent) the override was dropped on ingress (no content blocks -> no neutral item) and the upstream request ran at the top-level effort; changing effort between turns was silently ignored and the beta header was never derived.\n\nThe fix carries the per-message output_config on AnthropicMessage and on the neutral ResponsesMessage, re-emits it as an effort-only role:\"system\" message (empty content array, placement-exempt) when the provider+model supports per-turn effort (Anthropic direct: Opus 5+, Sonnet 5.5, Fable/Mythos), injects mid-conversation-output-config-2026-07-01 from the body on both the typed and raw-body paths, and drops the item fail-soft elsewhere (unsupported Claude models, and the OpenAI-shaped egress, which has no equivalent and rejects an empty-content system item).\n\nCases: (1) anthropic/claude-opus-5-5 non-streaming with x-bf-send-back-raw-request -> 200 with text AND the echoed raw_request carries exactly one role:system message with content [] and output_config.effort low while the top-level effort stays high (pre-fix: the override is absent from raw_request); (2) the same request streaming (Pi's actual shape) -> 200 SSE with content_block_delta and message_stop, no error event; (3) anthropic/claude-opus-4-8 (mid-conversation system supported, per-turn effort not) -> 200 and raw_request carries no system message, pinning the fail-soft drop instead of a forwarded 400.\n\nVertex rows (Claude Code raw passthrough): Claude Code 2.1.285 also sends output_config on a text-bearing role:\"system\" message. Vertex rejects it with \"messages.1.output_config: Extra inputs are not permitted\" (seen in production on Opus 5.5, Fable 5.1 and Sonnet 5.5). StripUnsupportedFieldsFromRawBody and the typed stripUnsupportedAnthropicFields now remove messages[].output_config wherever per-message effort is unsupported, keep the system text and top-level effort, and drop effort-only system items whole. Red pre-fix (400), green post-fix (200).",
       "item": [
         {
           "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort override (system content [] + output_config.effort low) reaches the provider - per-message-effort",
@@ -181679,6 +181703,337 @@
                 "anthropic",
                 "v1",
                 "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 Claude Code passthrough text-bearing system item with output_config (Claude Code 2.1.285 shape) - per-message effort stripped for Vertex - per-message-effort",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no per-message effort",
+                  "// and rejected the nested field with 'messages.1.output_config: Extra inputs are not permitted'.",
+                  "// Bifrost now strips messages[].output_config off Anthropic direct (StripUnsupportedFieldsFromRawBody),",
+                  "// keeping the system text and the top-level output_config.effort; effort-only system items are dropped.",
+                  "pm.test('vertex/claude-opus-5-5 Claude Code passthrough text-bearing system item with output_config (Claude Code 2.1.285 shape): accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'per-message output_config reached Vertex: ' + txt.slice(0, 400)).to.not.include('Extra inputs are not permitted');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Answer in lowercase.\"\n        }\n      ],\n      \"output_config\": {\n        \"effort\": \"medium\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-5-5 Claude Code passthrough text-bearing system item with output_config (Claude Code 2.1.285 shape) - per-message effort stripped for Vertex - per-message-effort",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no per-message effort",
+                  "// and rejected the nested field with 'messages.1.output_config: Extra inputs are not permitted'.",
+                  "// Bifrost now strips messages[].output_config off Anthropic direct (StripUnsupportedFieldsFromRawBody),",
+                  "// keeping the system text and the top-level output_config.effort; effort-only system items are dropped.",
+                  "pm.test('vertex/claude-sonnet-5-5 Claude Code passthrough text-bearing system item with output_config (Claude Code 2.1.285 shape): accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'per-message output_config reached Vertex: ' + txt.slice(0, 400)).to.not.include('Extra inputs are not permitted');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Answer in lowercase.\"\n        }\n      ],\n      \"output_config\": {\n        \"effort\": \"medium\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-fable-5-1 Claude Code passthrough effort-only system item - per-message effort stripped for Vertex - per-message-effort",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no per-message effort",
+                  "// and rejected the nested field with 'messages.1.output_config: Extra inputs are not permitted'.",
+                  "// Bifrost now strips messages[].output_config off Anthropic direct (StripUnsupportedFieldsFromRawBody),",
+                  "// keeping the system text and the top-level output_config.effort; effort-only system items are dropped.",
+                  "pm.test('vertex/claude-fable-5-1 Claude Code passthrough effort-only system item: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'per-message output_config reached Vertex: ' + txt.slice(0, 400)).to.not.include('Extra inputs are not permitted');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-fable-5-1\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [],\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-5-5 /v1/responses per-message effort on a leading (hoisted) system item survives as an effort-only message - per-message-effort",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// A system item carrying text AND output_config.effort can only go out natively at a valid",
+                  "// placement. On the hoist/inline fallbacks the override is re-emitted as an effort-only",
+                  "// system message, which Anthropic exempts from placement rules (PR #8018 review).",
+                  "pm.test('anthropic claude-opus-5-5 leading system item hoisted: accepted (200 with text)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var out = Array.isArray(body.output) ? body.output : [];",
+                  "  var hasText = out.some(function (o) { return Array.isArray(o.content) && o.content.some(function (c) { return c.text; }); });",
+                  "  pm.expect(hasText, 'expected output text: ' + txt.slice(0, 300)).to.be.true;",
+                  "});",
+                  "pm.test('anthropic claude-opus-5-5 leading system item hoisted: effort-only override reaches the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var sys = msgs.filter(function (m) { return m && m.role === 'system'; });",
+                  "  pm.expect(sys.length, 'want exactly one effort-only system message: ' + wire.slice(0, 600)).to.eql(1);",
+                  "  pm.expect(sys[0].output_config && sys[0].output_config.effort, 'override lost: ' + JSON.stringify(sys[0])).to.eql('low');",
+                  "  pm.expect(Array.isArray(sys[0].content) && sys[0].content.length, 'effort-only message must carry an empty content array: ' + JSON.stringify(sys[0])).to.eql(0);",
+                  "  pm.expect(JSON.stringify(rr.system || ''), 'leading system text not hoisted: ' + wire.slice(0, 600)).to.include('Answer in lowercase.');",
+                  "  pm.expect(msgs[0] && msgs[0].role, 'effort-only override must be the first message: ' + wire.slice(0, 600)).to.eql('system');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Answer in lowercase.\",\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-5-5 /v1/responses per-message effort on a placement-rejected (inlined) system item survives as an effort-only message - per-message-effort",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// A system item carrying text AND output_config.effort can only go out natively at a valid",
+                  "// placement. On the hoist/inline fallbacks the override is re-emitted as an effort-only",
+                  "// system message, which Anthropic exempts from placement rules (PR #8018 review).",
+                  "pm.test('anthropic claude-opus-5-5 placement-rejected system item inlined: accepted (200 with text)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var out = Array.isArray(body.output) ? body.output : [];",
+                  "  var hasText = out.some(function (o) { return Array.isArray(o.content) && o.content.some(function (c) { return c.text; }); });",
+                  "  pm.expect(hasText, 'expected output text: ' + txt.slice(0, 300)).to.be.true;",
+                  "});",
+                  "pm.test('anthropic claude-opus-5-5 placement-rejected system item inlined: effort-only override reaches the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var sys = msgs.filter(function (m) { return m && m.role === 'system'; });",
+                  "  pm.expect(sys.length, 'want exactly one effort-only system message: ' + wire.slice(0, 600)).to.eql(1);",
+                  "  pm.expect(sys[0].output_config && sys[0].output_config.effort, 'override lost: ' + JSON.stringify(sys[0])).to.eql('low');",
+                  "  pm.expect(Array.isArray(sys[0].content) && sys[0].content.length, 'effort-only message must carry an empty content array: ' + JSON.stringify(sys[0])).to.eql(0);",
+                  "  var at = msgs.indexOf(sys[0]);",
+                  "  var next = JSON.stringify(msgs[at + 1] || null);",
+                  "  pm.expect(next, 'effort-only override must precede the inlined reminder: ' + wire.slice(0, 600)).to.include('system-reminder');",
+                  "  pm.expect(next, 'inlined reminder lost the system text: ' + wire.slice(0, 600)).to.include('Answer in lowercase.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Remember the word: blue\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"Answer in lowercase.\",\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }
@@ -186290,6 +186645,184 @@
               ]
             }
           }]
+        }
+      ]
+    },
+    {
+      "name": "129. OSS Setup-Token API Lock (openai fork) (setup token)",
+      "description": "Pins the OSS setup lock: while dashboard auth is not active (no admin account, or auth disabled), every non-public /api call needs the operator's setup token in X-Bifrost-Setup-Token. Missing header is 401, a wrong token is 403, the right token runs as the admin. is-auth-enabled stays public and reports setup_required / setup_token_configured so the dashboard can show the setup screen. The python profile sets setup_token=bifrost-e2e-setup-token and creates no admin, so this run is locked; augment-provider-harness.mjs injects the header on every row and the lockout rows remove it. Once dashboard auth is enabled the setup token stops working, so the wrong-token row then expects 401. Read-only: nothing is created or changed.",
+      "item": [
+        {
+          "name": "openai setup-lock status reports lock state - setup token",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/session/is-auth-enabled"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('setup-lock status is public and reports the lock state', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.setup_required, 'setup_required missing: ' + pm.response.text()).to.be.a('boolean');",
+                  "  pm.expect(body.setup_token_configured, 'setup_token_configured missing: ' + pm.response.text()).to.be.a('boolean');",
+                  "  pm.expect(body.setup_required, 'setup_required must mirror is_auth_enabled: ' + pm.response.text()).to.equal(!body.is_auth_enabled);",
+                  "  pm.collectionVariables.set('setupLockActive', String(body.setup_required));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] openai setup-lock rejects /api without the setup token - setup token",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var setupLockActive = pm.collectionVariables.get('setupLockActive');",
+                  "pm.test('setup-lock missing token is 401', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "  if (setupLockActive === 'true') {",
+                  "    pm.expect(pm.response.text(), 'lockout must name the header').to.include('X-Bifrost-Setup-Token');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai setup-lock rejects /api with a wrong setup token - setup token",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: 'not-the-setup-token' });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var setupLockActive = pm.collectionVariables.get('setupLockActive');",
+                  "pm.test('setup-lock wrong token is 403 while locked, 401 once auth is on', function () {",
+                  "  var want = setupLockActive === 'true' ? 403 : 401;",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(want);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai setup-lock accepts /api with the setup token - setup token",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var setupLockActive = pm.collectionVariables.get('setupLockActive');",
+                  "pm.test('setup-lock correct token runs the admin call', function () {",
+                  "  pm.expect(setupLockActive, 'this row needs the locked python profile (no admin account); is-auth-enabled reported setup_required=' + setupLockActive).to.equal('true');",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json(), 'failed: ' + pm.response.text()).to.have.property('providers');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai setup-lock trades the setup token for an HttpOnly session cookie - setup token",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/session/setup"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var setupLockActive = pm.collectionVariables.get('setupLockActive');",
+                  "pm.test('setup-lock session cookie is HttpOnly, SameSite=Strict and carries no token', function () {",
+                  "  pm.expect(setupLockActive, 'this row needs the locked python profile (no admin account); is-auth-enabled reported setup_required=' + setupLockActive).to.equal('true');",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var raw = pm.response.headers.all().filter(function (h) { return h.key.toLowerCase() === 'set-cookie'; }).map(function (h) { return h.value; }).join('\\n');",
+                  "  pm.expect(raw, 'Set-Cookie: ' + raw).to.include('bifrost_setup_session=');",
+                  "  pm.expect(raw.toLowerCase(), 'Set-Cookie: ' + raw).to.include('httponly');",
+                  "  pm.expect(raw.toLowerCase(), 'Set-Cookie: ' + raw).to.include('samesite=strict');",
+                  "  pm.expect(raw, 'cookie must not carry the setup token').to.not.include(pm.variables.get('setupToken'));",
+                  "  pm.expect(pm.response.json().expires_at, 'failed: ' + pm.response.text()).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -201419,6 +201952,254 @@
               }
             },
             "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
+    },
+    {
+      "name": "142. Tool-result cache marker survives translation to gpt-5.6 function_call_output (tool-result cache breakpoint)",
+      "description": "Claude Code places its per-turn cache_control marker on the last block of the conversation, which is a tool_result after every tool call. The Anthropic converter carries that marker on the function_call_output item; the OpenAI Responses converter used to translate only input_text blocks, so the marker was stripped and the tool body flattened to a plain string: no prompt_cache_breakpoint, no explicit mode, and caching stopped after the first tool turn on gpt-5.6 / gpt-6. The fix marks the function_call_output content part (OpenAI documents prompt_cache_breakpoint there) and keeps the output in array form. Case 1 pins the explicit-mode switch OpenAI echoes back. Case 2 pins the Claude Code shape through the drop-in messages route: system and tool_result both marked, so the cold write must extend past the 2000-token tool result (a write pinned at the system prefix is the pre-fix signature). Case 3 pins the Chat Completions path, where cache_control on text parts is now translated too: the caller asks for explicit mode, so a stripped marker means no breakpoint and no write at all.",
+      "item": [
+        {
+          "name": "openai gpt-5.6-sol native responses: cache_control on function_call_output switches on explicit mode - tool-result cache breakpoint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status below 400', function(){ pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "var j = pm.response.json();",
+                  "pm.test('tool-result marker reached OpenAI as a breakpoint: prompt_cache_options.mode echoed as explicit', function(){ pm.expect(j.prompt_cache_options, 'prompt_cache_options (absent means the marker was stripped and the request stayed implicit): ' + pm.response.text()).to.be.an('object'); pm.expect(j.prompt_cache_options.mode, 'mode').to.eql('explicit'); });",
+                  "pm.test('usage present', function(){ pm.expect(j.usage, 'usage').to.be.an('object'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-toolresult-native-{{pcNonce}}\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} toolresult-native] Call the echo tool with the word hello, then answer in one short word: is the sky blue?\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_bf_toolresult_1\",\n      \"name\": \"echo\",\n      \"arguments\": \"{\\\"text\\\":\\\"hello\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_bf_toolresult_1\",\n      \"output\": \"hello\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"echo\",\n      \"description\": \"Echo the given text back.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.6-sol drop-in messages route: Claude Code shaped tool_result cache_control writes the whole conversation - tool-result cache breakpoint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status below 400', function(){ pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "var j = pm.response.json();",
+                  "pm.test('usage present', function(){ pm.expect(j.usage, 'usage').to.be.an('object'); });",
+                  "// The system prefix is ~5900 tokens and the tool_result ~2000. With the breakpoint on the tool_result the explicit cache write must cover both; a write anchored before the tool_result (marker dropped) stays under 7000.",
+                  "pm.test('cold cache write extends past the tool_result (cache_creation_input_tokens > 7000)', function(){ var w = (j.usage && j.usage.cache_creation_input_tokens) || 0; pm.expect(w, 'cache_creation_input_tokens: ' + pm.response.text()).to.be.above(7000); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 64,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} toolresult-dropin]\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"echo\",\n      \"description\": \"Echo the given text back.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the echo tool with the word hello, then answer in one short word: is the sky blue?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_bf_toolresult_1\",\n          \"name\": \"echo\",\n          \"input\": {\n            \"text\": \"hello\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_bf_toolresult_1\",\n          \"content\": \"hello Record 1: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 2: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 3: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 4: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 5: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 6: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 7: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 8: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 9: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 10: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 11: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 12: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 13: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 14: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 15: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 16: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 17: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 18: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 19: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 20: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 21: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 22: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 23: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 24: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 25: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 26: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 27: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 28: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 29: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 30: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 31: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 32: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 33: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 34: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 35: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 36: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 37: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 38: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 39: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 40: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 41: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 42: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 43: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 44: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 45: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 46: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 47: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 48: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 49: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 50: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 51: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 52: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 53: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 54: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 55: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 56: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 57: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 58: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 59: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 60: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 61: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 62: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 63: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 64: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 65: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 66: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 67: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 68: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 69: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 70: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 71: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 72: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 73: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 74: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 75: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 76: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 77: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 78: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 79: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 80: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 81: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 82: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 83: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 84: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 85: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 86: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 87: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 88: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 89: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 90: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 91: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 92: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 93: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 94: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 95: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 96: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 97: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 98: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 99: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 100: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 101: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 102: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 103: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 104: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 105: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 106: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 107: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 108: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 109: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 110: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 111: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 112: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 113: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 114: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 115: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 116: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 117: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 118: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 119: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 120: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.6-sol native chat completions: cache_control on system and tool text parts becomes prompt_cache_breakpoint under explicit mode - tool-result cache breakpoint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status below 400', function(){ pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "var j = pm.response.json();",
+                  "pm.test('usage present', function(){ pm.expect(j.usage, 'usage').to.be.an('object'); });",
+                  "// The caller asked for explicit mode. With the markers translated the cold write covers the ~5900-token system prefix plus the ~2000-token tool result; with them stripped, explicit mode has no breakpoint and OpenAI caches nothing.",
+                  "pm.test('cold cache write covers system prefix and tool result (cache write tokens > 7000)', function(){ var d = (j.usage && j.usage.prompt_tokens_details) || {}; var w = (typeof d.cached_write_tokens === 'number' ? d.cached_write_tokens : 0) || (typeof d.cache_write_tokens === 'number' ? d.cache_write_tokens : 0); pm.expect(w, 'cache write tokens: ' + pm.response.text()).to.be.above(7000); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_completion_tokens\": 64,\n  \"prompt_cache_key\": \"bf-harness-toolresult-chat-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"explicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} toolresult-chat]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the echo tool with the word hello, then answer in one short word: is the sky blue?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_bf_toolresult_chat_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"echo\",\n            \"arguments\": \"{\\\"text\\\":\\\"hello\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_bf_toolresult_chat_1\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"hello Record 1: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 2: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 3: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 4: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 5: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 6: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 7: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 8: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 9: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 10: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 11: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 12: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 13: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 14: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 15: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 16: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 17: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 18: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 19: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 20: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 21: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 22: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 23: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 24: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 25: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 26: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 27: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 28: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 29: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 30: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 31: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 32: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 33: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 34: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 35: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 36: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 37: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 38: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 39: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 40: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 41: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 42: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 43: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 44: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 45: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 46: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 47: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 48: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 49: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 50: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 51: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 52: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 53: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 54: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 55: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 56: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 57: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 58: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 59: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 60: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 61: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 62: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 63: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 64: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 65: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 66: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 67: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 68: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 69: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 70: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 71: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 72: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 73: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 74: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 75: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 76: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 77: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 78: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 79: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 80: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 81: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 82: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 83: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 84: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 85: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 86: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 87: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 88: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 89: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 90: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 91: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 92: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 93: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 94: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 95: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 96: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 97: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 98: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 99: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 100: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 101: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 102: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 103: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 104: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 105: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 106: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 107: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 108: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 109: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 110: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 111: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 112: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 113: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 114: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 115: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 116: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 117: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 118: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 119: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required. Record 120: tool-result padding line kept verbatim so the cached prefix extends past the tool result boundary; status nominal, no action required.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"echo\",\n        \"description\": \"Echo the given text back.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"text\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"text\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "143. Compat convert params clamps over-limit max output tokens (gemini fork) (convert params)",
+      "description": "The compat plugin's should_convert_params (UI: Convert Unsupported Param Values) lowers a token cap above the model's datasheet max_output_tokens to that limit, instead of letting the provider reject it. Red before: Gemini returns 400 for max output tokens 1000000. Green after: the request is clamped to the catalog limit and served. Enabled per request via x-bf-compat so the row does not depend on the profile's compat config.",
+      "item": [
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/responses max_output_tokens 1000000 clamped to model limit - convert params",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Over-limit token cap is clamped, not rejected upstream (convert params)', function () {",
+                  "  // Without the clamp Gemini rejects max output tokens above the model limit (65535 in the",
+                  "  // datasheet for gemini-2.5-flash) with a 400. x-bf-compat should_convert_params lowers it.",
+                  "  pm.expect(pm.response.code, 'expected 200, got ' + pm.response.code + ': ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Responses output carries text (convert params)', function () {",
+                  "  var j = pm.response.json();",
+                  "  var out = (j.output || []).filter(function (o) { return o.type === 'message'; });",
+                  "  pm.expect(out.length, 'no message item in output: ' + pm.response.text()).to.be.above(0);",
+                  "  var text = (out[0].content || []).map(function (c) { return c.text || ''; }).join('');",
+                  "  pm.expect(text.length, 'empty output text: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"should_convert_params\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"input\":\"Reply with the single word: ok\",\"max_output_tokens\":1000000}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/chat/completions max_tokens 1000000 clamped to model limit - convert params",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Over-limit token cap is clamped, not rejected upstream (convert params)', function () {",
+                  "  // Without the clamp Gemini rejects max output tokens above the model limit (65535 in the",
+                  "  // datasheet for gemini-2.5-flash) with a 400. x-bf-compat should_convert_params lowers it.",
+                  "  pm.expect(pm.response.code, 'expected 200, got ' + pm.response.code + ': ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Chat message carries text (convert params)', function () {",
+                  "  var j = pm.response.json();",
+                  "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
+                  "  pm.expect(msg, 'no assistant message: ' + pm.response.text()).to.exist;",
+                  "  pm.expect((msg.content || '').toString().length, 'empty content: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"should_convert_params\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":1000000}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
           }
         }
       ]

@@ -787,7 +787,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	disable_db_pings_in_health: false,
 	dump_errors_in_console_logs: false,
 	log_retention_days: 365,
-	enforce_auth_on_inference: false,
+	enforce_auth_on_inference: true,
 	dual_credential_conflict_behavior: "prefer_idp",
 	allowed_origins: [],
 	max_request_body_size_mb: 100,

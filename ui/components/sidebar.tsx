@@ -78,7 +78,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { useBranding } from "@/lib/hooks/useBranding";
-import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery } from "@/lib/store";
+import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useIsAuthEnabledQuery } from "@/lib/store";
 import PoweredByBifrost from "@enterprise/components/branding/poweredByBifrost";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -627,6 +627,10 @@ export default function AppSidebar() {
 		hasProjectsAccess ||
 		hasGovernanceLegacyAccess;
 	const { data: coreConfig } = useGetCoreConfigQuery({});
+	// OSS setup lock: true while dashboard auth is not configured, so management APIs
+	// accept only the setup token. Drives the non-dismissible setup card below.
+	const { data: authState } = useIsAuthEnabledQuery(undefined, { skip: IS_ENTERPRISE });
+	const setupRequired = !IS_ENTERPRISE && !!authState?.setup_required;
 	const isDbConnected = coreConfig?.is_db_connected ?? false;
 	const envLabel = coreConfig?.env_label ?? null;
 
@@ -1423,6 +1427,38 @@ export default function AppSidebar() {
 	// Memoize promo cards array to prevent duplicates and unnecessary re-renders
 	const promoCards = useMemo(() => {
 		const cards = [];
+		// OSS setup lock card - non-dismissible, shown first: until an admin account
+		// exists, management APIs run on the operator's setup token.
+		if (setupRequired) {
+			cards.push({
+				id: "setup-required",
+				title: "Dashboard auth not configured",
+				description: (
+					<div className="flex h-full flex-col gap-2 text-xs text-amber-700 dark:text-amber-300/80" data-testid="setup-required-banner">
+						<p>
+							All management APIs accept the setup token in the <code className="font-semibold">X-Bifrost-Setup-Token</code> header until
+							you create an admin account.
+						</p>
+						<div className="mt-auto flex items-center gap-3 pb-1">
+							<Link to="/workspace/config/security" className="text-primary font-medium underline" data-testid="setup-required-banner-link">
+								Create admin
+							</Link>
+							<a
+								href="https://docs.getbifrost.ai/quickstart/gateway/setting-up-auth"
+								target="_blank"
+								rel="noopener noreferrer"
+								className="text-primary font-medium underline"
+								data-testid="setup-required-banner-docs-link"
+							>
+								Docs
+							</a>
+						</div>
+					</div>
+				),
+				dismissible: false,
+				variant: "warning" as const,
+			});
+		}
 		// Restart required card - non-dismissible, shown first
 		if (coreConfig?.restart_required?.required) {
 			cards.push({
@@ -1490,6 +1526,7 @@ export default function AppSidebar() {
 		}
 		return cards;
 	}, [
+		setupRequired,
 		coreConfig?.restart_required,
 		showNewReleaseBanner,
 		latestRelease,

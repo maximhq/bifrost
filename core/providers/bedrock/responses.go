@@ -2205,6 +2205,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 					Name:                  &tool.ToolSpec.Name,
 					Description:           tool.ToolSpec.Description,
 					DeferLoading:          tool.ToolSpec.DeferLoading,
+					EagerInputStreaming:   tool.ToolSpec.EagerInputStreaming,
 					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
 				}
 
@@ -2904,6 +2905,14 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	if dropped := append(append([]string{}, providerDroppedTools...), modelDroppedTools...); len(dropped) > 0 {
 		ctx.SetValue(schemas.BifrostContextKeyDroppedUnsupportedTools, dropped)
 	}
+
+	var eagerFlags []*bool
+	for _, tool := range keepTools {
+		if tool.ResponsesToolFunction != nil {
+			eagerFlags = append(eagerFlags, tool.EagerInputStreaming)
+		}
+	}
+	applyBedrockFineGrainedToolStreaming(ctx, bedrockReq, bifrostReq.Model, caps, eagerFlags)
 
 	// Convert tool choice
 	if bifrostReq.Params != nil && bifrostReq.Params.ToolChoice != nil {
