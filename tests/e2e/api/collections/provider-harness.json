@@ -207863,6 +207863,146 @@
           }
         }
       ]
+    },
+    {
+      "name": "172. A provider refusing a direct key returns its own error whatever max_retries is (direct-key-refusal)",
+      "description": "A direct key (x-bf-direct-key: true plus the caller's own provider key, enabled by client.allow_direct_keys) is a one-key pool. When the provider refused it and the provider's max_retries left a retry in the budget, the dead pool collapsed into 502 upstream_credentials_exhausted, which tells the caller the gateway's keys ran out and invites a retry with the same bad key. A refused direct key now returns the provider's own error whatever max_retries is; a configured key pinned within the budget still collapses into the 502.\n\nThe row creates a run-scoped OpenAI-backed custom provider with max_retries 1 and no keys, sends a chat completion with a throwaway direct key, and requires OpenAI's own 401 with a single attempt in the log row's attempt trail, then deletes the provider. Free: OpenAI rejects the key before any tokens. Run with FEATURE=\"direct-key-refusal\".",
+      "item": [
+        {
+          "name": "[EXPECT-401] openai direct key refused on a provider with max_retries 1 keeps the provider error - direct-key-refusal",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-directrefusal-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var provider = PREFIX + 'run-' + Date.now();",
+                  "pm.collectionVariables.set('directRefusalProvider', provider);",
+                  "pm.collectionVariables.set('directRefusalKey', 'sk-harness-direct-refusal-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('directRefusalRequestId', 'direct-key-refusal-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+                  "call('GET', '/api/providers', null, function (res, j) {",
+                  "  var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  var i = 0;",
+                  "  (function next() {",
+                  "    if (i < stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); }",
+                  "    // max_retries 1 leaves a retry in the budget: the case where a refused key used to collapse into",
+                  "    // 502 upstream_credentials_exhausted. The provider needs no keys of its own: a direct key replaces them.",
+                  "    call('POST', '/api/providers', { provider: provider, custom_provider_config: { base_provider_type: 'openai', is_key_less: false }, network_config: { max_retries: 1 } }, function (r1) {",
+                  "      expectOk('setup: created the run-scoped OpenAI-backed provider with max_retries 1', r1);",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-directrefusal-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "var provider = pm.collectionVariables.get('directRefusalProvider');",
+                  "var reqId = pm.collectionVariables.get('directRefusalRequestId');",
+                  "var text = pm.response.text();",
+                  "pm.test('the provider refusing the caller\\u2019s own key answers with its own 401', function () {",
+                  "  pm.expect(pm.response.code, 'a refused direct key is the caller\\u2019s error, not exhausted gateway keys: ' + text).to.eql(401);",
+                  "  pm.expect(text, 'expected OpenAI\\u2019s own rejection').to.include('Incorrect API key');",
+                  "  pm.expect(text).to.not.include('upstream_credentials_exhausted');",
+                  "});",
+                  "// The log row is written by the batching writer, so poll for it until it has settled.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('the refused key is tried once: there is no other key to reach', function () {",
+                  "        pm.expect((j.attempt_trail || []).length, JSON.stringify(j.attempt_trail || [])).to.eql(1);",
+                  "      });",
+                  "      return finish();",
+                  "    }",
+                  "    if (attempt < 15) { return setTimeout(function () { checkLog(attempt + 1); }, 1000); }",
+                  "    pm.test('the refused key is tried once: there is no other key to reach', function () { pm.expect.fail('log ' + reqId + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "    finish();",
+                  "  });",
+                  "}",
+                  "function finish() { call('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (res) { expectOk('cleanup: deleted the run-scoped provider', res); }); }",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{directRefusalKey}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{directRefusalRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{directRefusalProvider}}/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }
