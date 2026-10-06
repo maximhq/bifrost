@@ -1230,3 +1230,192 @@ func TestBuildAnthropicResponsesRequestBody_IncludeFields(t *testing.T) {
 		}
 	})
 }
+
+// installMaxOutputRow answers every provider's lookup for model with a datasheet
+// row capping output at ceiling, mirroring the live claude-haiku-4-5 rows.
+func installMaxOutputRow(t *testing.T, model string, ceiling int) {
+	t.Helper()
+	providerUtils.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m == model {
+			return &schemas.ModelCapabilities{MaxOutputTokens: new(ceiling)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+}
+
+// A routing rule or fallback can retarget a request sized for a 128K model onto a
+// smaller one; upstream rejects max_tokens above the target's ceiling with a 400
+// ("max_tokens: 128000 > 64000, which is the maximum allowed number of output
+// tokens for claude-haiku-4-5-20251001"), so every builder path clamps to the row.
+func TestMaxTokensClampedToModelCeiling(t *testing.T) {
+	const haiku = "claude-haiku-4-5-20251001"
+	installMaxOutputRow(t, haiku, 64000)
+
+	build := func(t *testing.T, ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, chat bool, maxTokens int) int64 {
+		t.Helper()
+		body := fmt.Appendf(nil, `{"model":%q,"max_tokens":%d,"messages":[{"role":"user","content":"hi"}]}`, model, maxTokens)
+		cfg := AnthropicRequestBuildConfig{Provider: provider, Model: model}
+		var out []byte
+		var err *schemas.BifrostError
+		if chat {
+			out, err = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: model, RawRequestBody: body, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}, Params: &schemas.ChatParameters{MaxCompletionTokens: new(maxTokens)}}, cfg)
+		} else {
+			out, err = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: model, RawRequestBody: body, Input: makeSimpleInput("hi"), Params: &schemas.ResponsesParameters{MaxOutputTokens: new(maxTokens)}}, cfg)
+		}
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		return providerUtils.GetJSONField(out, "max_tokens").Int()
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex} {
+		for _, raw := range []bool{false, true} {
+			for _, chat := range []bool{false, true} {
+				newCtx := func() *schemas.BifrostContext {
+					ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+					ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
+					return ctx
+				}
+				name := fmt.Sprintf("%s/raw=%v/chat=%v", provider, raw, chat)
+				t.Run(name+"/above_ceiling_clamped", func(t *testing.T) {
+					if got := build(t, newCtx(), provider, haiku, chat, 128000); got != 64000 {
+						t.Errorf("max_tokens = %d, want 64000", got)
+					}
+				})
+				t.Run(name+"/below_ceiling_kept", func(t *testing.T) {
+					if got := build(t, newCtx(), provider, haiku, chat, 32000); got != 32000 {
+						t.Errorf("max_tokens = %d, want 32000", got)
+					}
+				})
+				t.Run(name+"/no_known_ceiling_kept", func(t *testing.T) {
+					if got := build(t, newCtx(), provider, "claude-unknown-9", chat, 128000); got != 128000 {
+						t.Errorf("max_tokens = %d, want 128000", got)
+					}
+				})
+				// No datasheet row: the static Claude table still knows Haiku 4.5 caps at 64K.
+				t.Run(name+"/no_row_uses_claude_table", func(t *testing.T) {
+					if got := build(t, newCtx(), provider, "claude-haiku-4-5", chat, 128000); got != 64000 {
+						t.Errorf("max_tokens = %d, want 64000", got)
+					}
+				})
+				// output-300k is Message Batches only, and these builders serve synchronous Messages.
+				t.Run(name+"/output_300k_beta_still_clamped", func(t *testing.T) {
+					ctx := newCtx()
+					ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{AnthropicBetaHeader: {"output-300k-2026-03-24"}})
+					if got := build(t, ctx, provider, haiku, chat, 128000); got != 64000 {
+						t.Errorf("max_tokens = %d, want 64000", got)
+					}
+				})
+			}
+		}
+	}
+}
+
+// The body a Claude Code session sized for an Opus model, forwarded verbatim after
+// a routing rule retargeted it to Haiku 4.5. Haiku caps output at 64K and has no
+// adaptive thinking ("adaptive thinking is not supported on this model"), so the
+// raw path must clamp max_tokens and turn adaptive into a budget the model takes.
+func TestClaudeCodeBodyRetargetedToHaiku(t *testing.T) {
+	const haiku = "claude-haiku-4-5-20251001"
+	installMaxOutputRow(t, haiku, 64000)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	out, err := BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{
+		Provider:       schemas.Anthropic,
+		Model:          haiku,
+		RawRequestBody: []byte(`{"model":"claude-opus-4-6","max_tokens":128000,"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"},"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]},"messages":[{"role":"user","content":"hi"}]}`),
+	}, AnthropicRequestBuildConfig{Provider: schemas.Anthropic, IsStreaming: true})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	if got := providerUtils.GetJSONField(out, "max_tokens").Int(); got != 64000 {
+		t.Errorf("max_tokens = %d, want 64000; body: %s", got, out)
+	}
+	if got := providerUtils.GetJSONField(out, "thinking.type").String(); got != "enabled" {
+		t.Errorf("thinking.type = %q, want \"enabled\"; body: %s", got, out)
+	}
+	// medium effort over the clamped 64000: 1024 + int(0.425 * 62976).
+	if got := providerUtils.GetJSONField(out, "thinking.budget_tokens").Int(); got != 27788 {
+		t.Errorf("thinking.budget_tokens = %d, want 27788; body: %s", got, out)
+	}
+	if providerUtils.JSONFieldExists(out, "output_config.effort") {
+		t.Errorf("output_config.effort survived on a model without the effort parameter; body: %s", out)
+	}
+	if got := providerUtils.GetJSONField(out, "context_management.edits.0.type").String(); got != "clear_thinking_20251015" {
+		t.Errorf("context_management edit = %q, want clear_thinking_20251015 kept; body: %s", got, out)
+	}
+}
+
+// Enabled thinking needs budget_tokens < max_tokens. When the clamp lowers
+// max_tokens (128000 -> 64000 on Haiku 4.5) below the caller's explicit budget,
+// the budget is refit from effort (default "high") like an unfitting adaptive
+// budget; a pair the caller sent invalid without any clamp is left as sent.
+func TestClampedMaxTokensRefitsThinkingBudget(t *testing.T) {
+	const haiku = "claude-haiku-4-5-20251001"
+	installMaxOutputRow(t, haiku, 64000)
+	const highBudget, lowBudget = 51404, 10470 // 1024 + int(ratio * (64000 - 1024))
+
+	type sent struct{ maxTokens, budget int64 }
+	build := func(t *testing.T, raw, chat bool, maxTokens, budget int, effort string) sent {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
+		oc := ""
+		if effort != "" {
+			oc = fmt.Sprintf(`,"output_config":{"effort":%q}`, effort)
+		}
+		body := fmt.Appendf(nil, `{"model":%q,"max_tokens":%d,"thinking":{"type":"enabled","budget_tokens":%d}%s,"messages":[{"role":"user","content":"hi"}]}`, haiku, maxTokens, budget, oc)
+		var eff *string
+		if effort != "" {
+			eff = new(effort)
+		}
+		cfg := AnthropicRequestBuildConfig{Provider: schemas.Anthropic}
+		var out []byte
+		var err *schemas.BifrostError
+		if chat {
+			out, err = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: haiku, RawRequestBody: body,
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+				Params: &schemas.ChatParameters{MaxCompletionTokens: new(maxTokens), Reasoning: &schemas.ChatReasoning{MaxTokens: new(budget), Effort: eff}}}, cfg)
+		} else {
+			out, err = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: haiku, RawRequestBody: body,
+				Input:  makeSimpleInput("hi"),
+				Params: &schemas.ResponsesParameters{MaxOutputTokens: new(maxTokens), Reasoning: &schemas.ResponsesParametersReasoning{MaxTokens: new(budget), Effort: eff}}}, cfg)
+		}
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		if got := providerUtils.GetJSONField(out, "thinking.type").String(); got != "enabled" {
+			t.Fatalf("thinking.type = %q, want enabled; body: %s", got, out)
+		}
+		return sent{providerUtils.GetJSONField(out, "max_tokens").Int(), providerUtils.GetJSONField(out, "thinking.budget_tokens").Int()}
+	}
+
+	for _, raw := range []bool{false, true} {
+		for _, chat := range []bool{false, true} {
+			name := fmt.Sprintf("raw=%v/chat=%v", raw, chat)
+			t.Run(name+"/budget_above_clamped_max_refit_from_default_effort", func(t *testing.T) {
+				if got := build(t, raw, chat, 128000, 80000, ""); got != (sent{64000, highBudget}) {
+					t.Errorf("sent max_tokens=%d budget=%d, want 64000/%d", got.maxTokens, got.budget, highBudget)
+				}
+			})
+			t.Run(name+"/budget_above_clamped_max_refit_from_effort", func(t *testing.T) {
+				if got := build(t, raw, chat, 128000, 80000, "low"); got != (sent{64000, lowBudget}) {
+					t.Errorf("sent max_tokens=%d budget=%d, want 64000/%d", got.maxTokens, got.budget, lowBudget)
+				}
+			})
+			t.Run(name+"/budget_still_fitting_clamped_max_kept", func(t *testing.T) {
+				if got := build(t, raw, chat, 128000, 30000, ""); got != (sent{64000, 30000}) {
+					t.Errorf("sent max_tokens=%d budget=%d, want 64000/30000", got.maxTokens, got.budget)
+				}
+			})
+			t.Run(name+"/unclamped_pair_left_as_sent", func(t *testing.T) {
+				if got := build(t, raw, chat, 16000, 20000, ""); got != (sent{16000, 20000}) {
+					t.Errorf("sent max_tokens=%d budget=%d, want 16000/20000", got.maxTokens, got.budget)
+				}
+			})
+		}
+	}
+}

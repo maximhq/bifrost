@@ -27,6 +27,8 @@ export interface RoutingTarget {
 	model?: string;
 	key_id?: string;
 	weight: number;
+	/** Time-to-first-token deadline (ms) for streaming requests; unset when off. 0 clears it on update. */
+	ttft_timeout_ms?: number | null;
 }
 
 export interface RoutingRule {
@@ -36,8 +38,6 @@ export interface RoutingRule {
 	cel_expression: string;
 	targets: RoutingTarget[];
 	fallbacks?: RoutingFallbackWire[];
-	/** Time-to-first-token deadline (ms) for streaming requests; unset when off. */
-	ttft_timeout_ms?: number | null;
 	scope: "global" | "team" | "customer" | "virtual_key" | "user";
 	scope_id?: string;
 	priority: number;
@@ -54,8 +54,6 @@ export interface CreateRoutingRuleRequest {
 	cel_expression?: string;
 	targets: RoutingTarget[];
 	fallbacks?: RoutingFallbackWire[];
-	/** 0 turns the TTFT deadline off (and clears it on update). */
-	ttft_timeout_ms?: number;
 	scope: string;
 	scope_id?: string;
 	priority: number;
@@ -90,6 +88,8 @@ export interface RoutingTargetFormData {
 	model: string;
 	key_id: string;
 	weight: number;
+	/** Deadline loaded from the stored rule; kept so mixed values survive a save. */
+	ttft_timeout_ms?: number;
 }
 
 export interface RoutingRuleFormData {
