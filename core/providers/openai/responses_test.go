@@ -3519,6 +3519,18 @@ func TestSamplingParamGateReadsDatasheet(t *testing.T) {
 		}
 	})
 
+	t.Run("default_reasoning_effort_row_drives_omitted_effort", func(t *testing.T) {
+		const sol = "gpt-5.6-sol"
+		installCapabilityRecord(t, sol, &schemas.ModelCapabilities{DefaultReasoningEffort: schemas.Ptr(schemas.ReasoningEffortNone)})
+		require.False(t, samplingParamUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, sol), schemas.FieldTemperature, sol, ""),
+			"a row defaulting to none keeps sampling fields when effort is omitted")
+
+		const g54 = "gpt-5.4"
+		installCapabilityRecord(t, g54, &schemas.ModelCapabilities{DefaultReasoningEffort: schemas.Ptr(schemas.ReasoningEffortMedium)})
+		require.True(t, samplingParamUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, g54), schemas.FieldTemperature, g54, ""),
+			"a row defaulting to medium strips them")
+	})
+
 	t.Run("outright_entry_beats_name_fallback", func(t *testing.T) {
 		const model = "o3-with-top-p"
 		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
