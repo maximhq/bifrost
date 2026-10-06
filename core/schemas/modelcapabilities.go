@@ -183,6 +183,9 @@ type ModelCapabilities struct {
 	// budget. False on models that reject it, which need the config omitted.
 	SupportsReasoningDisable *bool `json:"supports_reasoning_disable,omitempty"`
 
+	// Effort the model applies when the request omits it ("none" means it does not reason).
+	DefaultReasoningEffort *string `json:"default_reasoning_effort,omitempty"`
+
 	// Model accepts thinking:{type:"between_tools"} (no up-front thinking).
 	SupportsBetweenToolsThinking *bool `json:"supports_between_tools_thinking,omitempty"`
 

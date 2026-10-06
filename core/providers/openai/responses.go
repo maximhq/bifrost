@@ -1106,13 +1106,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 // unsupported outright, or conditionally via "when_effort_none" — accepted only
 // while reasoning is off. The fallback is name detection: OpenAI reasoning models
 // (o1/o3 series, GPT-6) reject it, except GPT-5.x while effort is "none". An
-// omitted effort counts as "none" only where that is the model's default
-// (GPT-5.1 through 5.4). The -pro variants always reason, so they always strip.
+// omitted effort counts as "none" only where that is the model's default: the
+// datasheet's default_reasoning_effort, else GPT-5.1 through 5.4 by name. The
+// -pro variants always reason, so they always strip.
 // Gated on the OpenAI-family name rather than caps.SupportsReasoning:
 // this asks whether the API rejects the field, which is not the same question for
 // xAI/Groq.
 func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort string) bool {
-	effortIsNone := effort == schemas.ReasoningEffortNone || (effort == "" && !omittedEffortReasons(model))
+	effortIsNone := effort == schemas.ReasoningEffortNone || (effort == "" && !omittedEffortReasons(caps, model))
 	// An outright unsupported_fields entry outranks the conditional label: the
 	// row rejects the field whatever the effort. Probed with a false fallback so
 	// only an explicit true short-circuits.
