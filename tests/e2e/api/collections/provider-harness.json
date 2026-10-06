@@ -200747,7 +200747,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.collectionVariables.set('providerLabelsName', 'harness-labels-' + pm.variables.replaceIn('{{$timestamp}}'));"
+                  "pm.collectionVariables.set('providerLabelsName', 'harness-labels-' + pm.variables.replaceIn('{{$timestamp}}') + '-' + Math.random().toString(36).slice(2, 8));"
                 ]
               }
             },
