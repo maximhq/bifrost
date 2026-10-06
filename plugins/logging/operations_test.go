@@ -3857,7 +3857,8 @@ func TestAccountBatchResults_RepeatedFetchDisplaysPriceWithoutBilling(t *testing
 	}
 
 	first := &logstore.Log{ID: "req-fetch-1", Provider: string(schemas.OpenAI), Model: "gpt-4o"}
-	plugin.accountBatchResults(first, newResult(), nil)
+	firstResult := newResult()
+	plugin.accountBatchResults(first, firstResult, nil)
 
 	if first.BatchDebugParsed == nil || first.BatchDebugParsed.Accounting == nil || first.BatchDebugParsed.Accounting.Cost == nil {
 		t.Fatalf("expected first call's own row to show the settled price, got %#v", first.BatchDebugParsed)
@@ -3874,7 +3875,25 @@ func TestAccountBatchResults_RepeatedFetchDisplaysPriceWithoutBilling(t *testing
 	}
 
 	second := &logstore.Log{ID: "req-fetch-2", Provider: string(schemas.OpenAI), Model: "gpt-4o"}
-	plugin.accountBatchResults(second, newResult(), nil)
+	secondResult := newResult()
+	plugin.accountBatchResults(second, secondResult, nil)
+
+	// Both the settling call and the repeat fetch return the settled price to the caller.
+	for name, res := range map[string]*schemas.BifrostResponse{"first": firstResult, "second": secondResult} {
+		acct := res.BatchResultsResponse.Accounting
+		if acct == nil || acct.Cost == nil {
+			t.Fatalf("%s response: expected accounting with the settled cost, got %#v", name, acct)
+		}
+		if diff := *acct.Cost - wantCost; diff < -1e-12 || diff > 1e-12 {
+			t.Fatalf("%s response: cost %v does not match settled price %v", name, *acct.Cost, wantCost)
+		}
+		if acct.Incomplete || acct.Echo {
+			t.Fatalf("%s response: expected a complete, non-echo accounting block, got %#v", name, acct)
+		}
+		if len(acct.ModelBreakdowns) == 0 {
+			t.Fatalf("%s response: expected per-model breakdowns", name)
+		}
+	}
 
 	if second.BatchDebugParsed == nil || second.BatchDebugParsed.Accounting == nil || second.BatchDebugParsed.Accounting.Cost == nil {
 		t.Fatalf("expected the repeat fetch's own row to also show the settled price, got %#v", second.BatchDebugParsed)

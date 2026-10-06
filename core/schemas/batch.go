@@ -459,5 +459,7 @@ type BifrostBatchResultsResponse struct {
 	HasMore    bool    `json:"has_more,omitempty"`
 	NextCursor *string `json:"next_cursor,omitempty"`
 
+	Accounting *BatchAccountingDebug `json:"accounting,omitempty"` // Settled price, set by the logging plugin
+
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

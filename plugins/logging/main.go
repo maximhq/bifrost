@@ -596,6 +596,10 @@ func attachBatchResultsDisplay(entry *logstore.Log, batchResp *schemas.BifrostBa
 				accounting.Cost = &cost
 			}
 			debug.Accounting = accounting
+			// Return the settled price to the caller too; Echo is a log-row marker only.
+			respAccounting := *accounting
+			respAccounting.Echo = false
+			batchResp.Accounting = &respAccounting
 		}
 	}
 	if debug.IsZero() {
