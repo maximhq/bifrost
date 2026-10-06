@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -737,8 +738,27 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 		}
 	}
 
+	// Stored labels, so a provider config that carries none (nil) keeps them instead of the upsert
+	// below writing NULL. Explicit empty values still clear them.
+	storedLabels := make(map[string]tables.TableProvider)
+	var labelRows []tables.TableProvider
+	if err := txDB.WithContext(ctx).Select("name", "metadata", "tags").Find(&labelRows).Error; err != nil {
+		return fmt.Errorf("failed to prefetch provider labels: %w", err)
+	}
+	for _, p := range labelRows {
+		storedLabels[p.Name] = p
+	}
+
 	for _, providerName := range sortedProviderNames(providers) {
 		providerConfig := providers[providerName]
+		if stored, ok := storedLabels[string(providerName)]; ok {
+			if providerConfig.Metadata == nil {
+				providerConfig.Metadata = stored.Metadata
+			}
+			if providerConfig.Tags == nil {
+				providerConfig.Tags = stored.Tags
+			}
+		}
 		dbProvider := tables.TableProvider{
 			Name:                     string(providerName),
 			NetworkConfig:            providerConfig.NetworkConfig,
@@ -1035,8 +1055,16 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
 	dbProvider.PromptCache = configCopy.PromptCache
-	dbProvider.Metadata = configCopy.Metadata
-	dbProvider.Tags = configCopy.Tags
+	// Labels the caller did not set (nil), such as an edit of other provider settings, keep the
+	// stored values; an explicit empty map or list clears them (written as NULL, see BeforeSave).
+	// Decided from config rather than configCopy: deepCopy round-trips through JSON, and omitempty
+	// turns an explicit empty map into nil.
+	if config.Metadata != nil {
+		dbProvider.Metadata = maps.Clone(config.Metadata)
+	}
+	if config.Tags != nil {
+		dbProvider.Tags = slices.Clone(config.Tags)
+	}
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -4320,8 +4348,16 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 				virtualKey.RateLimitID = nil
 			}
 		}
+		columns := []string{"name", "description", "value", "is_active", "expires_at", "delete_after_expire", "team_id", "customer_id", "business_unit_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "disable_content_logging", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at"}
+		// Nil metadata means the caller did not set it (a config.json entry without a metadata
+		// field, or an update of other fields), so the stored metadata is kept. An empty map is an
+		// explicit clear and is written (as NULL, see BeforeSave). Decided here, before BeforeSave
+		// collapses the empty map to nil.
+		if virtualKey.Metadata != nil {
+			columns = append(columns, "metadata")
+		}
 		if err := txDB.WithContext(ctx).
-			Select("name", "description", "value", "is_active", "expires_at", "delete_after_expire", "team_id", "customer_id", "business_unit_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "disable_content_logging", "metadata", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
+			Select(columns).
 			Updates(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
 		}
