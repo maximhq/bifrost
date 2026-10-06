@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -76,7 +77,8 @@ type webrtcRelay struct {
 	cancel           context.CancelFunc
 	onClose          func()
 
-	closeOnce sync.Once
+	closeOnce  sync.Once
+	setupState atomic.Int32 // relaySettingUp until establishment and a close race for it
 
 	channelMu                sync.Mutex
 	pendingToUpstream        []queuedDataChannelMessage
@@ -192,7 +194,31 @@ func establishWebRTCRelay(setup webrtcRelaySetup) (string, *schemas.BifrostError
 		return "", setup.fail(fasthttp.StatusInternalServerError, "server_error", "failed to create browser SDP answer", err)
 	}
 
+	// A close that landed while the answer was being made wins: the session never ran, and the
+	// caller's failure path accounts for it; returning success would leave its meter open.
+	if !relay.markEstablished() {
+		return "", setup.fail(fasthttp.StatusBadGateway, "upstream_connection_error", "the WebRTC session closed during setup", nil)
+	}
 	return browserAnswer, nil
+}
+
+// Setup and close race for a relay once: whichever transition happens first decides whether the
+// relay ran a session (established) or never did (closed during setup).
+const (
+	relaySettingUp int32 = iota
+	relayEstablished
+	relayClosedDuringSetup
+)
+
+// markEstablished records that setup completed, unless a close got there first.
+func (r *webrtcRelay) markEstablished() bool {
+	return r.setupState.CompareAndSwap(relaySettingUp, relayEstablished)
+}
+
+// closedDuringSetup records a close that beat establishment and reports whether it did; a close
+// on an established relay reports false and is handled as the end of a session.
+func (r *webrtcRelay) closedDuringSetup() bool {
+	return r != nil && r.setupState.CompareAndSwap(relaySettingUp, relayClosedDuringSetup)
 }
 
 // fail builds a relay setup error attributed to the relayed API.

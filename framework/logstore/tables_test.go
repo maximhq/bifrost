@@ -1,6 +1,8 @@
 package logstore
 
 import (
+	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -296,6 +298,57 @@ func TestMCPToolLogGovernanceSetsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAgentLogGovernanceSetsRoundTrip(t *testing.T) {
+	entry := &AgentLog{
+		TeamIDsParsed: []string{"team1", "team2"}, TeamNamesParsed: []string{"Team One", "Team Two"},
+		CustomerIDsParsed: []string{"cust1"}, CustomerNamesParsed: []string{"Customer One"},
+		BusinessUnitIDsParsed: []string{"bu1"}, BusinessUnitNamesParsed: []string{"BU One"},
+		BudgetIDsParsed: []string{"budget1"}, RateLimitIDsParsed: []string{"rl1"},
+	}
+	require.NoError(t, entry.SerializeFields())
+	stored := &AgentLog{
+		TeamIDs: entry.TeamIDs, TeamNames: entry.TeamNames,
+		CustomerIDs: entry.CustomerIDs, CustomerNames: entry.CustomerNames,
+		BusinessUnitIDs: entry.BusinessUnitIDs, BusinessUnitNames: entry.BusinessUnitNames,
+		BudgetIDs: entry.BudgetIDs, RateLimitIDs: entry.RateLimitIDs,
+	}
+	require.NoError(t, stored.DeserializeFields())
+	assert.Equal(t, entry.TeamIDsParsed, stored.TeamIDsParsed)
+	assert.Equal(t, entry.TeamNamesParsed, stored.TeamNamesParsed)
+	assert.Equal(t, entry.CustomerIDsParsed, stored.CustomerIDsParsed)
+	assert.Equal(t, entry.CustomerNamesParsed, stored.CustomerNamesParsed)
+	assert.Equal(t, entry.BusinessUnitIDsParsed, stored.BusinessUnitIDsParsed)
+	assert.Equal(t, entry.BusinessUnitNamesParsed, stored.BusinessUnitNamesParsed)
+	assert.Equal(t, entry.BudgetIDsParsed, stored.BudgetIDsParsed)
+	assert.Equal(t, entry.RateLimitIDsParsed, stored.RateLimitIDsParsed)
+}
+
+// TestAgentLogOverheadBreakdownUsesCurrentShape verifies A2A rows use the compact LLM storage shape.
+func TestAgentLogOverheadBreakdownUsesCurrentShape(t *testing.T) {
+	buckets := []OverheadBucket{
+		{Name: "a2a.transport", Kind: "internal", DurationUs: 12.5},
+		{Name: "plugin.logging", Kind: "plugin", DurationUs: 3.75},
+	}
+	entry := &AgentLog{OverheadBreakdownParsed: buckets}
+	require.NoError(t, entry.SerializeFields())
+	assert.Equal(t, `{"a2a.transport":12.5,"plugin.logging":3.75}`, entry.OverheadBreakdown)
+
+	stored := &AgentLog{OverheadBreakdown: entry.OverheadBreakdown}
+	require.NoError(t, stored.DeserializeFields())
+	require.Len(t, stored.OverheadBreakdownParsed, 2)
+	assert.Equal(t, "a2a.transport", stored.OverheadBreakdownParsed[0].Name)
+	assert.Equal(t, 12.5, stored.OverheadBreakdownParsed[0].DurationUs)
+	assert.Equal(t, "plugin.logging", stored.OverheadBreakdownParsed[1].Name)
+	assert.Equal(t, 3.75, stored.OverheadBreakdownParsed[1].DurationUs)
+}
+
+// TestAgentLogOverheadBreakdownDoesNotReadUnshippedLegacyShape avoids compatibility for unreleased A2A rows.
+func TestAgentLogOverheadBreakdownDoesNotReadUnshippedLegacyShape(t *testing.T) {
+	entry := &AgentLog{OverheadBreakdown: `[{"name":"a2a.transport","duration_us":12.5}]`}
+	require.NoError(t, entry.DeserializeFields())
+	assert.Nil(t, entry.OverheadBreakdownParsed)
+}
+
 // TestMCPToolLogGovernanceSetsTolerateCorruptJSON keeps one unreadable column
 // from failing the whole read: the row is still worth serving without it.
 func TestMCPToolLogGovernanceSetsTolerateCorruptJSON(t *testing.T) {
@@ -351,4 +404,144 @@ func TestDeserializeFieldsRebuildsToolUsageFromNumSearchQueries(t *testing.T) {
 	require.NoError(t, read.DeserializeFields())
 	assert.Equal(t, 5, read.TokenUsageParsed.ToolUsage.WebSearch.NumRequests)
 	assert.Equal(t, 5, *read.TokenUsageParsed.CompletionTokensDetails.NumSearchQueries)
+}
+
+func TestOverheadBreakdownRoundTripsNameKeyedObject(t *testing.T) {
+	buckets := []OverheadBucket{
+		{Name: "transport-context", Kind: "internal", DurationUs: 25.937},
+		{Name: "plugin.logging", Kind: "plugin", DurationUs: 405.708},
+		{Name: "middleware.auth", Kind: "internal", DurationUs: 12},
+		{Name: "scheduling", Kind: "scheduling", DurationUs: 641.4669999999996},
+	}
+	log := &Log{OverheadBreakdownParsed: buckets}
+	require.NoError(t, log.SerializeFields())
+
+	// Names as keys, microseconds as values, in arrival order (not map-sorted).
+	assert.Equal(t,
+		`{"transport-context":25.937,"plugin.logging":405.708,"middleware.auth":12,"scheduling":641.4669999999996}`,
+		log.OverheadBreakdown)
+
+	out := &Log{OverheadBreakdown: log.OverheadBreakdown}
+	out.DeserializeFields()
+	require.Len(t, out.OverheadBreakdownParsed, len(buckets))
+	for i, want := range buckets {
+		assert.Equal(t, want.Name, out.OverheadBreakdownParsed[i].Name, "bucket %d", i)
+		assert.Equal(t, want.DurationUs, out.OverheadBreakdownParsed[i].DurationUs, "bucket %d", i)
+	}
+}
+
+func TestOverheadBreakdownPreservesChronologicalOrder(t *testing.T) {
+	// framework/warp truncates by position, so map-order decoding would pick at random.
+	names := []string{"transport-context", "middleware.auth", "request-unmarshal", "convertor",
+		"handle-setup", "plugin.logging", "key.selection", "queue-wait", "response-parse", "scheduling"}
+	in := make([]OverheadBucket, 0, len(names))
+	for i, n := range names {
+		in = append(in, OverheadBucket{Name: n, DurationUs: float64(i + 1)})
+	}
+	log := &Log{OverheadBreakdownParsed: in}
+	require.NoError(t, log.SerializeFields())
+
+	for attempt := 0; attempt < 20; attempt++ {
+		out := &Log{OverheadBreakdown: log.OverheadBreakdown}
+		out.DeserializeFields()
+		require.Len(t, out.OverheadBreakdownParsed, len(names))
+		got := make([]string, 0, len(names))
+		for _, b := range out.OverheadBreakdownParsed {
+			got = append(got, b.Name)
+		}
+		assert.Equal(t, names, got, "order must be stable across reads (attempt %d)", attempt)
+	}
+}
+
+func TestOverheadBreakdownEscapesUnusualNames(t *testing.T) {
+	// An out-of-tree plugin name needing escapes must not reach the fast append path.
+	odd := "plugin.od\"d\\name\twith\ncontrols"
+	log := &Log{OverheadBreakdownParsed: []OverheadBucket{
+		{Name: odd, DurationUs: 3.5},
+		{Name: "key.selection", DurationUs: 1.75},
+	}}
+	require.NoError(t, log.SerializeFields())
+
+	// Parsed rather than compared to a hand-escaped literal.
+	var probe map[string]float64
+	require.NoError(t, json.Unmarshal([]byte(log.OverheadBreakdown), &probe),
+		"stored value must be valid JSON: %s", log.OverheadBreakdown)
+	assert.Equal(t, 3.5, probe[odd])
+	assert.Equal(t, 1.75, probe["key.selection"])
+
+	out := &Log{OverheadBreakdown: log.OverheadBreakdown}
+	out.DeserializeFields()
+	require.Len(t, out.OverheadBreakdownParsed, 2)
+	assert.Equal(t, odd, out.OverheadBreakdownParsed[0].Name)
+	assert.Equal(t, "key.selection", out.OverheadBreakdownParsed[1].Name)
+}
+
+func TestOverheadBreakdownReadsLegacyArrayForm(t *testing.T) {
+	// Rows from before the switch, with and without the kind field that used to be there.
+	for _, raw := range []string{
+		`[{"name":"key.selection","kind":"internal","duration_us":1.8},{"name":"plugin.otel","kind":"plugin","duration_us":2.7}]`,
+		`[{"name":"key.selection","duration_us":1.8},{"name":"plugin.otel","duration_us":2.7}]`,
+	} {
+		log := &Log{OverheadBreakdown: raw}
+		log.DeserializeFields()
+		require.Len(t, log.OverheadBreakdownParsed, 2, raw)
+		assert.Equal(t, "key.selection", log.OverheadBreakdownParsed[0].Name)
+		assert.Equal(t, 1.8, log.OverheadBreakdownParsed[0].DurationUs)
+		assert.Equal(t, "plugin.otel", log.OverheadBreakdownParsed[1].Name)
+	}
+}
+
+func TestOverheadBreakdownToleratesMalformedInput(t *testing.T) {
+	cases := map[string]int{
+		"":                                 0,
+		"not json":                         0,
+		"{}":                               0,
+		"[]":                               0,
+		`{"key.selection":}`:               0, // truncated value
+		`{"key.selection":"nope"}`:         0, // non-numeric duration
+		`{"key.selection":1.5,"x":"nope"}`: 1, // keeps what it can
+		// An unreleased tuple encoding briefly existed on a branch. Deliberately not
+		// decoded: nothing shipped it, so no row in the wild carries it.
+		`[[4,25.937]]`:  0,
+		`[2,[4,25937]]`: 0,
+	}
+	for raw, want := range cases {
+		log := &Log{OverheadBreakdown: raw}
+		log.DeserializeFields()
+		assert.Len(t, log.OverheadBreakdownParsed, want, "raw=%q", raw)
+	}
+}
+
+func TestOverheadBreakdownDropsNonFiniteDurations(t *testing.T) {
+	// A bare NaN/±Inf is invalid JSON and would cost every bucket on the row.
+	cases := []struct {
+		label string
+		in    []OverheadBucket
+		want  string
+	}{
+		{"NaN first", []OverheadBucket{
+			{Name: "scheduling", DurationUs: math.NaN()},
+			{Name: "key.selection", DurationUs: 1.75},
+		}, `{"key.selection":1.75}`},
+		{"NaN last", []OverheadBucket{
+			{Name: "key.selection", DurationUs: 1.75},
+			{Name: "scheduling", DurationUs: math.NaN()},
+		}, `{"key.selection":1.75}`},
+		{"Inf in the middle", []OverheadBucket{
+			{Name: "key.selection", DurationUs: 1.75},
+			{Name: "scheduling", DurationUs: math.Inf(1)},
+			{Name: "queue-wait", DurationUs: 2.5},
+		}, `{"key.selection":1.75,"queue-wait":2.5}`},
+		{"all non-finite", []OverheadBucket{
+			{Name: "scheduling", DurationUs: math.Inf(-1)},
+		}, ""},
+	}
+	for _, c := range cases {
+		log := &Log{OverheadBreakdownParsed: c.in}
+		require.NoError(t, log.SerializeFields(), c.label)
+		assert.Equal(t, c.want, log.OverheadBreakdown, c.label)
+		if c.want != "" {
+			assert.True(t, json.Valid([]byte(log.OverheadBreakdown)), "%s: must stay valid JSON", c.label)
+		}
+	}
 }

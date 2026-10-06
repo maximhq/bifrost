@@ -185,6 +185,70 @@ test("--shard composes with the other predicates instead of replacing them", () 
   for (const n of sliced) assert.ok(whole.includes(n), `${n} passed the slice but not the folder filter`);
 });
 
+// ----- [SERIAL] folders --------------------------------------------------------------------------
+
+// A folder that changes gateway-wide state: setup, the request under test, cleanup. Nothing chains
+// them through a variable, so producer expansion does not hold them together - the request under
+// test only works because the setup before it already ran against the same gateway.
+const serialStep = (name) => ({ ...row(0), name });
+const SERIAL_STEPS = ["serial setup", "serial act", "serial cleanup"];
+const OTHER_SERIAL_STEPS = ["other setup", "other act", "other cleanup"];
+const SERIAL_SOURCE = join(WORK, "source-serial.json");
+writeFileSync(
+  SERIAL_SOURCE,
+  JSON.stringify({
+    ...COLLECTION,
+    item: [
+      { name: "Chat folder", item: Array.from({ length: 20 }, (_, i) => row(i + 1)) },
+      { name: "Gateway state case [SERIAL]", item: SERIAL_STEPS.map(serialStep) },
+      { name: "Another gateway state case [SERIAL]", item: OTHER_SERIAL_STEPS.map(serialStep) },
+    ],
+  })
+);
+const serialRowsOf = (names) => names.filter((n) => /^(serial|other) /.test(n));
+
+// Split across slices, the request under test runs in a process that never did its setup, while
+// the cleanup in another slice undoes the setup under a third. Two such folders in different
+// slices would do the same to each other, so every one of them rides in the first slice.
+test("a [SERIAL] folder is never split across --shard slices", () => {
+  for (const count of [2, 3, 4, 6]) {
+    const slices = Array.from({ length: count }, (_, k) =>
+      serialRowsOf(runFilter(["--provider", "anthropic", "--shard", `${k + 1}/${count}`], { source: SERIAL_SOURCE }))
+    );
+    assert.deepEqual(slices[0], [...SERIAL_STEPS, ...OTHER_SERIAL_STEPS], `slice 1/${count} must hold both folders whole, in order`);
+    for (const [k, rows] of slices.slice(1).entries()) {
+      assert.deepEqual(rows, [], `slice ${k + 2}/${count} holds part of a [SERIAL] folder`);
+    }
+  }
+});
+
+// The class axis forks concurrently too, and the steps of one folder classify differently (a
+// config PUT is "other", the chat it sets up is "chat"). All of them go to one class.
+test("a [SERIAL] folder lands whole in the other class", () => {
+  assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--class", "chat"], { source: SERIAL_SOURCE })), []);
+  assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--class", "other"], { source: SERIAL_SOURCE })), [
+    ...SERIAL_STEPS,
+    ...OTHER_SERIAL_STEPS,
+  ]);
+});
+
+// A filter that names one step (a rerun of the failed request, a narrow FEATURE) must not replay
+// it without its setup, nor leave the gateway changed by dropping the cleanup.
+test("selecting one step of a [SERIAL] folder selects the whole folder", () => {
+  assert.deepEqual(runFilter(["--feature", "serial act"], { source: SERIAL_SOURCE }), SERIAL_STEPS);
+});
+
+test("[SERIAL] folders keep the slices a partition", () => {
+  const whole = runFilter(["--provider", "anthropic"], { source: SERIAL_SOURCE });
+  const seen = new Map();
+  for (const k of [1, 2, 3]) {
+    for (const n of runFilter(["--provider", "anthropic", "--shard", `${k}/3`], { source: SERIAL_SOURCE })) {
+      seen.set(n, (seen.get(n) || 0) + 1);
+    }
+  }
+  assert.deepEqual(whole.filter((n) => seen.get(n) !== 1), [], "rows that do not run exactly once across the slices");
+});
+
 // ----- rejected forms ----------------------------------------------------------------------------
 
 // An out-of-range or malformed shard must fail loudly. Silently treating it as "no sharding" would

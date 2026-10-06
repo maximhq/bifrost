@@ -36,6 +36,11 @@ reviews:
         always check the stack if there is one for the current PR. do not give localized reviews for the PR,
         always see all changes in the light of the whole stack of PRs (if there is a stack, if there is no stack you can
         continue to make localized suggestions/reviews)
+        This is a multi-module Go repository. Local cross-module dependencies resolve through go.work during development,
+        and the coordinated release process publishes modules in dependency order and updates their required versions.
+        Do not report a stale published version in a module's go.mod as a compile failure when the referenced API exists in
+        the stack's local module and the workspace build resolves it. Do not suggest temporary replace directives or
+        unreleased dependency versions for this situation.
     - path: "**/*.go"
       instructions: |
         Rule: No raw context keys in Go.

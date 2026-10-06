@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -764,12 +765,15 @@ func TestNativeRoundTrip(t *testing.T) {
 }
 
 func TestToTypesafeNativeDecisionResponse(t *testing.T) {
+	answerConfidence, abstention, truncated := 0.75, "passed", true
 	resp := &schemas.BifrostDecisionResponse{
 		Model: "jev-1.13.0",
 		Answers: map[string]schemas.DecisionAnswer{
-			"approve": {Kind: schemas.DecisionKindNoul, Value: 0.25, Probabilities: map[string]float64{"true": 0.25, "false": 0.75}},
+			"approve": {Kind: schemas.DecisionKindNoul, Value: 0.25, Probabilities: map[string]float64{"true": 0.25, "false": 0.75},
+				AnswerConfidence: &answerConfidence, Abstention: &abstention, Action: json.RawMessage(`{"act_probability":1.0}`)},
 		},
-		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 0, TotalTokens: 10},
+		Usage:   &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 0, TotalTokens: 10, Truncated: &truncated, TruncatedQuestions: []string{"approve"}},
+		Routing: json.RawMessage(`{"model":"english"}`),
 	}
 
 	native, err := ToTypesafeNativeDecisionResponse(resp)
@@ -785,6 +789,12 @@ func TestToTypesafeNativeDecisionResponse(t *testing.T) {
 	}
 	if native.Usage == nil || native.Usage.InputTokens != 10 {
 		t.Errorf("usage lost: %+v", native.Usage)
+	}
+	if answer.AnswerConfidence == nil || *answer.AnswerConfidence != 0.75 || answer.Abstention == nil || *answer.Abstention != "passed" || string(answer.Action) != `{"act_probability":1.0}` {
+		t.Errorf("Laya answer fields not rebuilt: %+v", answer)
+	}
+	if native.Usage.Truncated == nil || !*native.Usage.Truncated || !reflect.DeepEqual(native.Usage.TruncatedQuestions, []string{"approve"}) || string(native.Routing) != `{"model":"english"}` {
+		t.Errorf("Laya usage or routing not rebuilt: %+v routing=%s", native.Usage, native.Routing)
 	}
 }
 
@@ -1435,5 +1445,236 @@ func TestCustomProviderKeylessListModels(t *testing.T) {
 	}
 	if sawAuth {
 		t.Errorf("keyless provider must not send an Authorization header")
+	}
+}
+
+// layaBody is a synthetic Laya-shaped systemone response (not captured from a
+// live server) carrying every Laya-specific answer, response, and usage field.
+const layaBody = `{"model":"laya-rl-agent",` +
+	`"answers":{` +
+	`"frustrated":{"type":"noul","noul":0.84,"confidence":0.84,"answer_confidence":0.84,"action":{"act_probability":1.0},"abstention":"abstained","abstention_threshold":0.9,"low_confidence":true},` +
+	`"category":{"type":"choice","choice":"billing","probabilities":{"billing":0.97,"bug":0.03},"confidence":0.84,"answer_confidence":0.97,"action":{"act_probability":1.0},"abstention":"passed","abstention_threshold":0.9},` +
+	`"urgency":{"type":"score","score":1.93,"legend":{"0":"low","1":"mid","2":"high"},"probabilities":{"0":0.01,"1":0.06,"2":0.93},"confidence":0.75,"answer_confidence":0.93,"action":{"act_probability":0.5}}},` +
+	`"usage":{"input_tokens":39,"output_tokens":0,"state_tokens":13,"state_tokens_dropped":0,"truncated":false,"truncated_questions":["urgency"]},` +
+	`"routing":{"model":"english","reason":"explicit model='english'"}}`
+
+// layaQuestions are the questions layaBody answers, one per kind.
+func layaQuestions() map[string]schemas.DecisionQuestion {
+	return map[string]schemas.DecisionQuestion{
+		"frustrated": {Kind: schemas.DecisionKindNoul, Instructions: "Is the customer frustrated?"},
+		"category":   {Kind: schemas.DecisionKindChoice, Instructions: "Ticket category", Criteria: map[string]any{"billing": "charges", "bug": "defects"}},
+		"urgency":    {Kind: schemas.DecisionKindScore, Instructions: "How urgent?", Criteria: []any{"low", "mid", "high"}},
+	}
+}
+
+// decideFixture serves body from a fixture endpoint and returns the shared
+// response alongside its wire encoding decoded into a generic map.
+func decideFixture(t *testing.T, body string, questions map[string]schemas.DecisionQuestion) (*schemas.BifrostDecisionResponse, map[string]any) {
+	t.Helper()
+	_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", questions))
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	encoded, err := sonic.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("decode encoded response %s: %v", encoded, err)
+	}
+	return resp, wire
+}
+
+// TestDecisionLayaFieldsPerKind pins that Laya's answer fields map onto the
+// typed answer fields for every kind and encode under Laya's own names.
+func TestDecisionLayaFieldsPerKind(t *testing.T) {
+	resp, wire := decideFixture(t, layaBody, layaQuestions())
+
+	frustrated := resp.Answers["frustrated"]
+	if frustrated.AnswerConfidence == nil || *frustrated.AnswerConfidence != 0.84 ||
+		frustrated.Abstention == nil || *frustrated.Abstention != "abstained" ||
+		frustrated.AbstentionThreshold == nil || *frustrated.AbstentionThreshold != 0.9 ||
+		frustrated.LowConfidence == nil || !*frustrated.LowConfidence ||
+		string(frustrated.Action) != `{"act_probability":1.0}` {
+		t.Errorf("noul Laya fields not mapped: %+v", frustrated)
+	}
+
+	answers := wire["answers"].(map[string]any)
+	want := map[string]map[string]any{
+		"frustrated": {"kind": "noul", "value": 0.84, "confidence": 0.84, "answer_confidence": 0.84, "action": map[string]any{"act_probability": 1.0}, "abstention": "abstained", "abstention_threshold": 0.9, "low_confidence": true},
+		"category":   {"kind": "choice", "value": "billing", "confidence": 0.84, "probabilities": map[string]any{"billing": 0.97, "bug": 0.03}, "answer_confidence": 0.97, "action": map[string]any{"act_probability": 1.0}, "abstention": "passed", "abstention_threshold": 0.9},
+		"urgency":    {"kind": "score", "value": 1.93, "confidence": 0.75, "probabilities": map[string]any{"0": 0.01, "1": 0.06, "2": 0.93}, "legend": map[string]any{"0": "low", "1": "mid", "2": "high"}, "answer_confidence": 0.93, "action": map[string]any{"act_probability": 0.5}},
+	}
+	for name, expected := range want {
+		if !reflect.DeepEqual(answers[name], any(expected)) {
+			t.Errorf("answer %q:\n got %v\nwant %v", name, answers[name], expected)
+		}
+	}
+}
+
+// TestDecisionLayaFieldsRoutingAndUsage pins that routing passes through
+// untouched and Laya's usage fields sit beside the shared token counts, with
+// zero values kept.
+func TestDecisionLayaFieldsRoutingAndUsage(t *testing.T) {
+	_, wire := decideFixture(t, layaBody, layaQuestions())
+	if routing := wire["routing"]; !reflect.DeepEqual(routing, any(map[string]any{"model": "english", "reason": "explicit model='english'"})) {
+		t.Errorf("routing not passed through: %v", routing)
+	}
+	wantUsage := map[string]any{"prompt_tokens": 39.0, "total_tokens": 39.0, "state_tokens": 13.0, "state_tokens_dropped": 0.0, "truncated": false, "truncated_questions": []any{"urgency"}}
+	if !reflect.DeepEqual(wire["usage"], any(wantUsage)) {
+		t.Errorf("usage:\n got %v\nwant %v", wire["usage"], wantUsage)
+	}
+}
+
+// TestDecisionWithoutLayaFieldsUnchanged pins that a Jev response, which
+// carries none of Laya's fields, encodes with exactly the keys it had before.
+func TestDecisionWithoutLayaFieldsUnchanged(t *testing.T) {
+	_, wire := decideFixture(t, `{"model":"jev-1.13.0","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":0.9,"b":0.1},"confidence":0.8}},"usage":{"input_tokens":3,"output_tokens":1}}`,
+		map[string]schemas.DecisionQuestion{"q": {Kind: schemas.DecisionKindChoice, Instructions: "Pick", Criteria: map[string]any{"a": "first", "b": "second"}}})
+
+	keys := func(m any) []string {
+		var out []string
+		for key := range m.(map[string]any) {
+			out = append(out, key)
+		}
+		sort.Strings(out)
+		return out
+	}
+	if got := keys(wire); !reflect.DeepEqual(got, []string{"answers", "extra_fields", "model", "usage"}) {
+		t.Errorf("top-level keys = %v", got)
+	}
+	if got := keys(wire["answers"].(map[string]any)["q"]); !reflect.DeepEqual(got, []string{"confidence", "kind", "probabilities", "value"}) {
+		t.Errorf("answer keys = %v", got)
+	}
+	if got := keys(wire["usage"]); !reflect.DeepEqual(got, []string{"completion_tokens", "prompt_tokens", "total_tokens"}) {
+		t.Errorf("usage keys = %v", got)
+	}
+}
+
+// clefEnvelopeBody is a Cloudflare Workers AI REST response for @cf/cloudflare/clef,
+// captured from the live API: the systemone body sits inside "result".
+const clefEnvelopeBody = `{"result":{"model":"clef","answers":{` +
+	`"frustrated":{"type":"noul","noul":0.9894},` +
+	`"category":{"type":"choice","choice":"billing","probabilities":{"billing":0.9668,"bug":0.0136,"other":0.0196},"confidence":0.9029},` +
+	`"urgency":{"type":"score","score":1.9729,"legend":{"0":"can wait","1":"soon","2":"today"},"probabilities":{"0":0.0052,"1":0.0167,"2":0.9781},"confidence":0.9356}},` +
+	`"usage":{"input_tokens":313,"output_tokens":0}},"success":true,"errors":[],"messages":[]}`
+
+// TestDecisionCloudflareEnvelope pins that a Cloudflare-enveloped systemone body
+// is unwrapped: every kind maps, usage maps, and the native relay is the inner body.
+func TestDecisionCloudflareEnvelope(t *testing.T) {
+	questions := map[string]schemas.DecisionQuestion{
+		"frustrated": {Kind: schemas.DecisionKindNoul, Instructions: "Is the customer frustrated?"},
+		"category":   {Kind: schemas.DecisionKindChoice, Instructions: "Ticket category", Criteria: map[string]any{"billing": "charges", "bug": "defects", "other": "else"}},
+		"urgency":    {Kind: schemas.DecisionKindScore, Instructions: "How urgent?", Criteria: []any{"can wait", "soon", "today"}},
+	}
+	resp, _ := decideFixture(t, clefEnvelopeBody, questions)
+
+	if resp.Model != "clef" {
+		t.Errorf("model = %q, want clef", resp.Model)
+	}
+	if v := resp.Answers["frustrated"].Value; v != 0.9894 {
+		t.Errorf("noul value = %v", v)
+	}
+	if a := resp.Answers["category"]; a.Value != "billing" || a.Confidence == nil || *a.Confidence != 0.9029 || a.Probabilities["bug"] != 0.0136 {
+		t.Errorf("choice answer = %+v", a)
+	}
+	if a := resp.Answers["urgency"]; a.Value != 1.9729 || a.Legend["2"] != "today" || a.Probabilities["2"] != 0.9781 {
+		t.Errorf("score answer = %+v", a)
+	}
+	if resp.Usage == nil || resp.Usage.PromptTokens != 313 {
+		t.Errorf("usage = %+v", resp.Usage)
+	}
+	if got := string(resp.NativeResponse); !strings.HasPrefix(got, `{"model":"clef","answers":`) {
+		t.Errorf("native relay is not the inner systemone body: %s", got)
+	}
+}
+
+// TestDecisionTopLevelAnswersNotUnwrapped pins that a body with answers at the
+// top level is parsed as is, even if it also carries a "result" key.
+func TestDecisionTopLevelAnswersNotUnwrapped(t *testing.T) {
+	resp, _ := decideFixture(t, `{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.25}},"result":{"answers":{"q":{"type":"noul","noul":0.99}}}}`,
+		map[string]schemas.DecisionQuestion{"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."}})
+	if v := resp.Answers["q"].Value; v != 0.25 {
+		t.Errorf("value = %v, want the top-level 0.25", v)
+	}
+}
+
+// TestDecisionCloudflareEnvelopeError pins that Cloudflare envelope errors keep
+// their status, surface errors[].message, and leave the native relay to rebuild
+// a Typesafe-shaped error. Bodies are captured from the live API.
+func TestDecisionCloudflareEnvelopeError(t *testing.T) {
+	cases := map[string]struct {
+		status      int
+		body        string
+		wantMessage string
+	}{
+		"validation": {http.StatusUnprocessableEntity, `{"errors":[{"message":"AiError: AiError: {\"error\":{\"type\":\"invalid_request\",\"message\":\"Unsupported model 'clef-flash'. Use 'clef'.\"}} (beac2b74)","code":5012}],"success":false,"result":{},"messages":[]}`,
+			`AiError: AiError: {"error":{"type":"invalid_request","message":"Unsupported model 'clef-flash'. Use 'clef'."}} (beac2b74)`},
+		"auth": {http.StatusUnauthorized, `{"result":null,"success":false,"errors":[{"code":10000,"message":"Authentication error"}],"messages":[]}`, "Authentication error"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+				"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."},
+			}))
+			if bifrostErr == nil {
+				t.Fatal("expected an error")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.status {
+				t.Errorf("status = %v, want %d", bifrostErr.StatusCode, tc.status)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != tc.wantMessage {
+				t.Errorf("message = %+v, want %q", bifrostErr.Error, tc.wantMessage)
+			}
+			native, ok := ToTypesafeNativeErrorBody(bifrostErr).(*TypesafeNativeError)
+			if !ok || native.Detail.Message != tc.wantMessage {
+				t.Errorf("native error body = %#v, want a Typesafe error carrying the message", ToTypesafeNativeErrorBody(bifrostErr))
+			}
+		})
+	}
+}
+
+// TestDecisionCloudflareEnvelopeSuccessFalseOn200 pins that a 200 envelope with
+// success:false surfaces errors[].message, even when result is empty or carries
+// answers, while success:true and non-enveloped bodies are unaffected.
+func TestDecisionCloudflareEnvelopeSuccessFalseOn200(t *testing.T) {
+	cases := map[string]string{
+		"empty result":   `{"result":{},"success":false,"errors":[{"code":1001,"message":"quota exceeded"}],"messages":[]}`,
+		"null result":    `{"result":null,"success":false,"errors":[{"code":1001,"message":"quota exceeded"}],"messages":[]}`,
+		"partial result": `{"result":{"model":"clef","answers":{"q":{"type":"noul","noul":0.5}}},"success":false,"errors":[{"code":1001,"message":"quota exceeded"}],"messages":[]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+				"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."},
+			}))
+			if bifrostErr == nil {
+				t.Fatal("expected an error")
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != "quota exceeded" {
+				t.Errorf("message = %+v, want quota exceeded", bifrostErr.Error)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadGateway {
+				t.Errorf("status = %v, want 502", bifrostErr.StatusCode)
+			}
+		})
 	}
 }
