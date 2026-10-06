@@ -142297,6 +142297,233 @@
               }
             }
           }
+        },
+        {
+          "name": "azure/gpt-5.6-luna /bedrock converse turn 1: summarized reasoning comes back as signed reasoningText (#7730) - converse-redacted-reasoning",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// When Azure returns a reasoning item with a summary, the Converse response carries the",
+                  "// summary as reasoningText and the encrypted token as its signature. The next row replays",
+                  "// that block unchanged, so this row must prove one came back.",
+                  "var body = pm.response.text() || '';",
+                  "var j = null;",
+                  "var signed = [];",
+                  "pm.test('capture turn returns signed reasoningText', function () {",
+                  "  pm.expect(pm.response.code, 'capture request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  j = pm.response.json();",
+                  "  var content = ((j.output || {}).message || {}).content || [];",
+                  "  signed = content.filter(function (c) { return c && c.reasoningContent && c.reasoningContent.reasoningText && c.reasoningContent.reasoningText.signature; });",
+                  "  pm.expect(signed.length, 'no reasoningText with a signature came back, so the replay row would test nothing - Azure returned no summary, or the token was dropped: ' + body.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "// Save the conversation only when the capture proved what turn 2 needs, so a failed",
+                  "// capture fails here instead of cascading into a misleading replay error. The replay",
+                  "// carries output.message exactly as Bifrost sent it: its source text is cut out of the",
+                  "// response body rather than re-serialized from the parsed copy, so no escape or number",
+                  "// is rewritten on the way back. The parsed copy only drives the assertions above.",
+                  "function rawJsonAt(text, path) {",
+                  "  var i = 0;",
+                  "  function ws() { while (i < text.length && ' \\t\\n\\r'.indexOf(text[i]) !== -1) { i++; } }",
+                  "  function str() { var s = i; i++; while (i < text.length && text[i] !== '\"') { if (text[i] === '\\\\') { i++; } i++; } i++; return text.slice(s, i); }",
+                  "  function skip() {",
+                  "    ws();",
+                  "    if (text[i] === '\"') { str(); return; }",
+                  "    if (text[i] === '{' || text[i] === '[') {",
+                  "      var depth = 0;",
+                  "      do {",
+                  "        if (text[i] === '\"') { str(); continue; }",
+                  "        if (text[i] === '{' || text[i] === '[') { depth++; } else if (text[i] === '}' || text[i] === ']') { depth--; }",
+                  "        i++;",
+                  "      } while (depth > 0 && i < text.length);",
+                  "      return;",
+                  "    }",
+                  "    while (i < text.length && ',}] \\t\\n\\r'.indexOf(text[i]) === -1) { i++; }",
+                  "  }",
+                  "  for (var p = 0; p < path.length; p++) {",
+                  "    ws();",
+                  "    if (text[i] !== '{') { return null; }",
+                  "    i++;",
+                  "    for (;;) {",
+                  "      ws();",
+                  "      if (i >= text.length || text[i] === '}') { return null; }",
+                  "      var key = JSON.parse(str());",
+                  "      ws();",
+                  "      i++;",
+                  "      if (key === path[p]) { break; }",
+                  "      skip();",
+                  "      ws();",
+                  "      if (text[i] === ',') { i++; }",
+                  "    }",
+                  "  }",
+                  "  ws();",
+                  "  var start = i;",
+                  "  skip();",
+                  "  return text.slice(start, i);",
+                  "}",
+                  "try {",
+                  "  var rawMsg = rawJsonAt(body, ['output', 'message']);",
+                  "  if (rawMsg && signed.length) {",
+                  "    // The signature is brid_<id>:<token> when Bifrost carries the upstream id inside it.",
+                  "    var sig = String(signed[0].reasoningContent.reasoningText.signature);",
+                  "    var m = /^brid_([^:]+):([\\s\\S]*)$/.exec(sig);",
+                  "    pm.collectionVariables.set('bedrockConverseReasoningTextToken', m ? m[2] : sig);",
+                  "    pm.collectionVariables.set('bedrockConverseReasoningTextItemId', m ? m[1] : '');",
+                  "    pm.collectionVariables.set(",
+                  "      'bedrockConverseReasoningTextMessages',",
+                  "      '[{\"role\":\"user\",\"content\":[{\"text\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]},' +",
+                  "        rawMsg +",
+                  "        ',{\"role\":\"user\",\"content\":[{\"text\":\"Now restate the meeting time in one sentence.\"}]}]'",
+                  "    );",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-5.6-luna",
+                "converse"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}],\"inferenceConfig\":{\"maxTokens\":2048},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"detailed\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "azure/gpt-5.6-luna /bedrock converse turn 2: replayed reasoningText reaches Azure as encrypted_content under its upstream id (#7730) - converse-redacted-reasoning",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('converseReasoningTextReplayRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Replayed unchanged, the reasoningText signature used to stay a content-block signature",
+                  "// only: encrypted_content stayed empty, the OpenAI converter dropped the content-only item,",
+                  "// and Azure answered 200 without the earlier reasoning. The token must reach Azure as",
+                  "// encrypted_content, under the id Azure bound it to. A 200 alone proves none of that, so",
+                  "// this row reads the provider-bound request back from the log. The unit test",
+                  "// TestConverseReasoningTextReplayReachesOpenAIUpstream pins the exact bytes.",
+                  "var body = pm.response.text() || '';",
+                  "var reqId = pm.variables.get('converseReasoningTextReplayRequestId');",
+                  "var token = pm.collectionVariables.get('bedrockConverseReasoningTextToken');",
+                  "var BIFROST_MINTED = /^rs_[0-9]{19}$/;",
+                  "pm.test('capture turn produced a conversation to replay', function () {",
+                  "  pm.expect(pm.request.body.raw.indexOf('{{'), 'turn 1 did not set bedrockConverseReasoningTextMessages, so nothing was replayed').to.equal(-1);",
+                  "});",
+                  "pm.test('replayed turn answered', function () {",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "});",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = null;",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      row = res.json();",
+                  "      rr = row.raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var trail = row.attempt_trail || [];",
+                  "      var engine = String(row.routing_engine_logs || '');",
+                  "      pm.test('the replay reached Azure on the first attempt, with no strip-and-retry', function () {",
+                  "        var failed = trail.filter(function (a) { return a && a.fail_reason; });",
+                  "        pm.expect(failed, 'an attempt failed before the answer, so Azure rejected the replayed reasoning: ' + JSON.stringify(trail)).to.be.empty;",
+                  "        pm.expect(engine, 'Bifrost stripped the reasoning and retried, so the model answered without it: ' + engine.slice(0, 400)).to.not.include('Stripped unverifiable encrypted reasoning');",
+                  "      });",
+                  "      pm.test('the reasoningText signature reached Azure as encrypted_content under its upstream id', function () {",
+                  "        var input = Array.isArray(rr.input) ? rr.input : [];",
+                  "        var reasoning = input.filter(function (i) { return i && i.type === 'reasoning' && i.encrypted_content; });",
+                  "        pm.expect(reasoning.length, 'no reasoning item with encrypted_content reached Azure - the replayed reasoningText was dropped: ' + JSON.stringify(rr).slice(0, 400)).to.be.above(0);",
+                  "        pm.expect(reasoning.some(function (i) { return i.encrypted_content === token; }), 'the token Azure issued did not come back byte for byte').to.be.true;",
+                  "        var wantId = pm.collectionVariables.get('bedrockConverseReasoningTextItemId');",
+                  "        pm.expect(wantId, 'turn 1 carried no upstream id in its reasoningText signature, so the id never reached the client').to.be.a('string').and.not.empty;",
+                  "        pm.expect(reasoning.some(function (i) { return i.encrypted_content === token && i.id === wantId; }), 'the token did not reach Azure under upstream id ' + wantId + ', got ' + JSON.stringify(reasoning.map(function (i) { return i.id; }))).to.be.true;",
+                  "        reasoning.forEach(function (i) {",
+                  "          pm.expect(BIFROST_MINTED.test(String(i.id)), 'the replay carried Bifrost-minted id ' + i.id + ' instead of the id Azure bound the token to').to.be.false;",
+                  "        });",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-5.6-luna",
+                "converse"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":{{bedrockConverseReasoningTextMessages}},\"inferenceConfig\":{\"maxTokens\":1024},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"detailed\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
         }
       ]
     },

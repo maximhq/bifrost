@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
@@ -436,7 +437,7 @@ func TestConverseResponseSummarySignatureIsNotRedactedContent(t *testing.T) {
 			Summary:          []schemas.ResponsesReasoningSummary{{Text: "summary"}},
 			EncryptedContent: schemas.Ptr("summary-signature"),
 		},
-	}, false)
+	}, false, false)
 	require.Len(t, blocks, 1, "summary encrypted_content is its signature, not a second opaque block")
 	require.Equal(t, "summary-signature", *blocks[0].ReasoningContent.ReasoningText.Signature)
 	require.Nil(t, blocks[0].ReasoningContent.RedactedContent)
@@ -479,4 +480,254 @@ func TestConverseRequestTreatsNullReasoningSummaryAsAbsent(t *testing.T) {
 	require.NotNil(t, bifrostReq.Params.Reasoning)
 	require.NotNil(t, bifrostReq.Params.Reasoning.Summary, "a null reasoning_summary must still get the auto default")
 	require.Equal(t, "auto", *bifrostReq.Params.Reasoning.Summary, "a null reasoning_summary must not suppress the auto default")
+}
+
+// renderSummarizedReasoning renders a reasoning item that carries a summary and
+// an encrypted token the way the upstream issued it, and returns the assistant
+// content a Converse client receives.
+func renderSummarizedReasoning(t *testing.T, provider schemas.ModelProvider, model, id, token string) []BedrockContentBlock {
+	t.Helper()
+	resp, err := ToBedrockConverseResponse(&schemas.BifrostResponsesResponse{
+		Model: model,
+		Output: []schemas.ResponsesMessage{
+			{
+				ID:   &id,
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary: []schemas.ResponsesReasoningSummary{
+						{Type: "summary_text", Text: "count the legs"},
+						{Type: "summary_text", Text: "then add them"},
+					},
+					EncryptedContent: &token,
+				},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("44")},
+				}},
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RoutingInfo: schemas.RoutingInfo{Provider: provider, Model: model},
+		},
+	})
+	require.NoError(t, err)
+	content := resp.Output.Message.Content
+	require.NotEmpty(t, content)
+	require.NotNil(t, content[0].ReasoningContent)
+	require.NotNil(t, content[0].ReasoningContent.ReasoningText, "a summary renders as reasoningText")
+	require.NotNil(t, content[0].ReasoningContent.ReasoningText.Signature, "the encrypted token rides on the first block's signature")
+
+	// The client keeps the assistant message and sends it back unchanged.
+	raw, err := sonic.Marshal(content)
+	require.NoError(t, err)
+	var replayed []BedrockContentBlock
+	require.NoError(t, sonic.Unmarshal(raw, &replayed))
+	return replayed
+}
+
+// When Azure returns a reasoning item with a summary, the Converse response
+// carries the summary as reasoningText and the encrypted token as its signature.
+// Replayed unchanged, the token used to stay a content-block signature only:
+// encrypted_content stayed empty, ToOpenAIResponsesRequest dropped the
+// content-only item, and the reasoning never reached the upstream. It must reach
+// the upstream as encrypted_content, byte for byte, under the id it was issued
+// with, since OpenAI and Azure bind the token to that id (#7730).
+func TestConverseReasoningTextReplayReachesOpenAIUpstream(t *testing.T) {
+	const upstreamID = "rs_0d858eaa5e1b7c2f0068f3a1d2c4b8e19c"
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{schemas.Azure, "gpt-5.6-luna"},
+		{schemas.OpenAI, "gpt-5"},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			replayed := renderSummarizedReasoning(t, tc.provider, tc.model, upstreamID, foreignReasoningToken)
+
+			req := &BedrockConverseRequest{
+				ModelID: string(tc.provider) + "/" + tc.model,
+				Messages: []BedrockMessage{
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("how many legs do 11 spiders have?")}}},
+					{Role: BedrockMessageRoleAssistant, Content: replayed},
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("and 12?")}}},
+				},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := req.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+
+			upstream := openai.ToOpenAIResponsesRequest(ctx, bifrostReq)
+			require.NotNil(t, upstream)
+			var reasoning []schemas.ResponsesMessage
+			for _, item := range upstream.Input.OpenAIResponsesRequestInputArray {
+				if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeReasoning {
+					reasoning = append(reasoning, item)
+				}
+			}
+			require.Len(t, reasoning, 1, "the replayed reasoning item must reach the upstream, got input %+v", upstream.Input.OpenAIResponsesRequestInputArray)
+			require.NotNil(t, reasoning[0].ResponsesReasoning)
+			require.NotNil(t, reasoning[0].ResponsesReasoning.EncryptedContent, "the signature must reach the upstream as encrypted_content")
+			require.Equal(t, foreignReasoningToken, *reasoning[0].ResponsesReasoning.EncryptedContent, "the upstream must get back exactly the token it minted")
+			require.NotNil(t, reasoning[0].ID)
+			require.Equal(t, upstreamID, *reasoning[0].ID, "the token is bound to the id the upstream issued it under")
+		})
+	}
+}
+
+// Bedrock verifies the signatures of its own reasoning models, so a signature
+// from a native Bedrock model must reach the client and come back unchanged,
+// and must not be mistaken for an encrypted token on the way back in.
+func TestConverseReasoningTextSignatureFromBedrockIsUnchanged(t *testing.T) {
+	const signature = "EqQBCkYIBxgCKkBnative-bedrock-signature"
+	replayed := renderSummarizedReasoning(t, schemas.Bedrock, unsignedReasoningClaude, "rs_1790658165393622867", signature)
+	require.Equal(t, signature, *replayed[0].ReasoningContent.ReasoningText.Signature, "the client must receive the signature Bedrock issued")
+
+	req := &BedrockConverseRequest{
+		ModelID: unsignedReasoningClaude,
+		Messages: []BedrockMessage{
+			{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("how many legs do 11 spiders have?")}}},
+			{Role: BedrockMessageRoleAssistant, Content: replayed},
+			{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("and 12?")}}},
+		},
+	}
+	bifrostReq, err := req.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	var reasoning *schemas.ResponsesMessage
+	for i := range bifrostReq.Input {
+		if msg := &bifrostReq.Input[i]; msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning {
+			reasoning = msg
+		}
+	}
+	require.NotNil(t, reasoning)
+	require.Nil(t, reasoning.ResponsesReasoning.EncryptedContent, "a Bedrock signature is not an encrypted token")
+	require.NotNil(t, reasoning.Content)
+	require.Equal(t, signature, *reasoning.Content.ContentBlocks[0].Signature, "Bedrock must get back exactly the signature it issued")
+}
+
+// History captured before the id rode inside the signature carries the bare
+// token. Promoting it to encrypted_content under a fresh id would only earn a 400
+// ("Encrypted content item_id did not match") and a strip-and-retry, so it stays
+// a block signature and the item keeps the shape it always had.
+func TestConverseReasoningTextUnmarkedSignatureIsNotEncryptedContent(t *testing.T) {
+	req := &BedrockConverseRequest{
+		ModelID: "azure/gpt-5.6-luna",
+		Messages: []BedrockMessage{
+			{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("how many legs do 11 spiders have?")}}},
+			{Role: BedrockMessageRoleAssistant, Content: []BedrockContentBlock{
+				{ReasoningContent: &BedrockReasoningContent{ReasoningText: &BedrockReasoningContentText{
+					Text: schemas.Ptr("count the legs"), Signature: schemas.Ptr(foreignReasoningToken),
+				}}},
+				{Text: schemas.Ptr("88")},
+			}},
+		},
+	}
+	bifrostReq, err := req.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	var reasoning *schemas.ResponsesMessage
+	for i := range bifrostReq.Input {
+		if msg := &bifrostReq.Input[i]; msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning {
+			reasoning = msg
+		}
+	}
+	require.NotNil(t, reasoning)
+	require.Nil(t, reasoning.ResponsesReasoning.EncryptedContent, "a token without its id cannot be replayed")
+	require.Equal(t, foreignReasoningToken, *reasoning.Content.ContentBlocks[0].Signature)
+}
+
+// replayConverseToOpenAI sends a rendered assistant turn back through Converse
+// ingress and returns the reasoning items the OpenAI-family upstream receives.
+func replayConverseToOpenAI(t *testing.T, modelID string, assistant []BedrockContentBlock) []schemas.ResponsesMessage {
+	t.Helper()
+	raw, err := sonic.Marshal(assistant)
+	require.NoError(t, err)
+	var replayed []BedrockContentBlock
+	require.NoError(t, sonic.Unmarshal(raw, &replayed))
+	req := &BedrockConverseRequest{
+		ModelID: modelID,
+		Messages: []BedrockMessage{
+			{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("how many legs do 11 spiders have?")}}},
+			{Role: BedrockMessageRoleAssistant, Content: replayed},
+			{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("and 12?")}}},
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := req.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	upstream := openai.ToOpenAIResponsesRequest(ctx, bifrostReq)
+	require.NotNil(t, upstream)
+	var reasoning []schemas.ResponsesMessage
+	for _, item := range upstream.Input.OpenAIResponsesRequestInputArray {
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeReasoning {
+			reasoning = append(reasoning, item)
+		}
+	}
+	return reasoning
+}
+
+// A Converse reply is one assistant message, so every reasoning item of an
+// OpenAI-family response lands in it. Replay used to fold all of them into one
+// item: the first id and token won, and the others were stripped as content-block
+// signatures before reaching the upstream. Each item must come back on its own,
+// with its own id and token, in order.
+func TestConverseReplayKeepsEachReasoningItem(t *testing.T) {
+	const secondToken = "gAAAAABo2y-Second_reasoning-token_8Zr2vJ3mNcY0tW5bQ=="
+	summarized := func(id, token string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			ID:   schemas.Ptr(id),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary:          []schemas.ResponsesReasoningSummary{{Type: "summary_text", Text: "step for " + id}},
+				EncryptedContent: schemas.Ptr(token),
+			},
+		}
+	}
+	redacted := func(id, token string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			ID:   schemas.Ptr(id),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary:          []schemas.ResponsesReasoningSummary{},
+				EncryptedContent: schemas.Ptr(token),
+			},
+		}
+	}
+	for name, second := range map[string]func(id, token string) schemas.ResponsesMessage{
+		"two summarized items":          summarized,
+		"summarized then redacted item": redacted,
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, err := ToBedrockConverseResponse(&schemas.BifrostResponsesResponse{
+				Model: "gpt-5.6-luna",
+				Output: []schemas.ResponsesMessage{
+					summarized("rs_first0d858eaabfe10a85016abb4673", foreignReasoningToken),
+					second("rs_second7c2f0068f3a1d2c4b8e19c0a11", secondToken),
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("88")},
+						}},
+					},
+				},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RoutingInfo: schemas.RoutingInfo{Provider: schemas.Azure, Model: "gpt-5.6-luna"},
+				},
+			})
+			require.NoError(t, err)
+			reasoning := replayConverseToOpenAI(t, "azure/gpt-5.6-luna", resp.Output.Message.Content)
+			require.Len(t, reasoning, 2, "each reasoning item must reach the upstream on its own")
+			for i, want := range []struct{ id, token string }{
+				{"rs_first0d858eaabfe10a85016abb4673", foreignReasoningToken},
+				{"rs_second7c2f0068f3a1d2c4b8e19c0a11", secondToken},
+			} {
+				require.NotNil(t, reasoning[i].ID)
+				require.Equal(t, want.id, *reasoning[i].ID, "item %d", i)
+				require.NotNil(t, reasoning[i].ResponsesReasoning.EncryptedContent, "item %d", i)
+				require.Equal(t, want.token, *reasoning[i].ResponsesReasoning.EncryptedContent, "item %d must carry its own token", i)
+			}
+		})
+	}
 }
