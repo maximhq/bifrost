@@ -473,11 +473,11 @@ func TestWebRTCRealtimeRelayCloseFinalizesActiveTurnHooks(t *testing.T) {
 		},
 	})
 
-	relay := &webrtcRealtimeRelay{
+	relay := &webrtcRelay{handler: &realtimeWebRTCMessages{
 		session:     session,
 		providerKey: schemas.OpenAI,
 		model:       "gpt-realtime",
-	}
+	}}
 
 	relay.close()
 
@@ -580,7 +580,7 @@ const malformedSimulcastOffer = "v=0\r\n" +
 	"a=simulcast:send ;\r\n"
 
 func TestSetRemoteDescription_MalformedSimulcastOfferDoesNotPanic(t *testing.T) {
-	pc, err := newRealtimePeerConnection()
+	pc, err := newWebRTCPeerConnection()
 	if err != nil {
 		t.Fatalf("new peer connection: %v", err)
 	}

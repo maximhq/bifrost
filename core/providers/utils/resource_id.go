@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -14,6 +15,19 @@ func EscapeResourceID(id, field string) (string, *schemas.BifrostError) {
 		return "", NewBifrostBadRequestError(fmt.Sprintf("invalid %s: %v", field, err))
 	}
 	return url.PathEscape(id), nil
+}
+
+// EscapeResourcePath validates a namespaced ID ("openai/gpt-oss-120b") segment by segment and escapes each.
+// Every segment passes the EscapeResourceID checks, so no empty, "." or ".." segment reaches fasthttp.
+func EscapeResourcePath(id, field string) (string, *schemas.BifrostError) {
+	segments := strings.Split(id, "/")
+	for i, segment := range segments {
+		if err := validateOpaquePathSegment(segment); err != nil {
+			return "", NewBifrostBadRequestError(fmt.Sprintf("invalid %s: %v", field, err))
+		}
+		segments[i] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/"), nil
 }
 
 func validateOpaquePathSegment(id string) error {

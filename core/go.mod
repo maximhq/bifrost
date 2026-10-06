@@ -21,7 +21,6 @@ require (
 	github.com/fasthttp/websocket v1.5.12
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
-	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/klauspost/compress v1.20.0
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/rs/zerolog v1.34.0
