@@ -1856,6 +1856,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.2.6",
               "changelogs/v2.2.5",
               {
                 "group": "September 2026",
