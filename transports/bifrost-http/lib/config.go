@@ -1864,6 +1864,7 @@ func mergeProviderWithHash(
 		logger.Debug("config hash matches for provider %s, checking individual keys", provider)
 		mergedKeys := reconcileProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
 		existingCfg.Keys = mergedKeys
+		applyExplicitProviderLabelClears(&existingCfg, providerCfgInFile)
 		providersInConfigStore[provider] = existingCfg
 	}
 }
@@ -8529,6 +8530,20 @@ func keepStoredProviderLabels(fromFile *configstore.ProviderConfig, stored confi
 	}
 	if fromFile.Tags == nil {
 		fromFile.Tags = stored.Tags
+	}
+}
+
+// applyExplicitProviderLabelClears applies the file's explicit empty labels ({} or []) to the
+// stored provider. Labels are hashed only when non-empty, so adding "metadata": {} or "tags": []
+// to a file that omitted them leaves the config hash unchanged; without this the hash-match path
+// would keep the stored labels and silently ignore the clear. Omitted (nil) labels keep the
+// stored value, as on the hash-mismatch path.
+func applyExplicitProviderLabelClears(stored *configstore.ProviderConfig, fromFile configstore.ProviderConfig) {
+	if fromFile.Metadata != nil && len(fromFile.Metadata) == 0 && len(stored.Metadata) > 0 {
+		stored.Metadata = map[string]string{}
+	}
+	if fromFile.Tags != nil && len(fromFile.Tags) == 0 && len(stored.Tags) > 0 {
+		stored.Tags = []string{}
 	}
 }
 
