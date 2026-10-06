@@ -3092,13 +3092,14 @@
         },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
+          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS/R2 while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
           "properties": {
             "type": {
               "type": "string",
               "enum": [
                 "s3",
-                "gcs"
+                "gcs",
+                "r2"
               ],
               "description": "Object storage backend type"
             },
@@ -3158,7 +3159,10 @@
           "if": {
             "properties": {
               "type": {
-                "const": "s3"
+                "enum": [
+                  "s3",
+                  "r2"
+                ]
               }
             }
           },
@@ -3202,7 +3206,7 @@
                     "additionalProperties": false
                   }
                 ],
-                "description": "AWS region. Supports env var reference"
+                "description": "AWS region, or R2 region (defaults to auto). Supports env var reference"
               },
               "endpoint": {
                 "anyOf": [
@@ -3239,7 +3243,7 @@
                     "additionalProperties": false
                   }
                 ],
-                "description": "Custom S3-compatible endpoint for MinIO/R2. Supports env var reference"
+                "description": "Custom S3-compatible endpoint. Required for R2; supports env var reference"
               },
               "access_key_id": {
                 "anyOf": [
@@ -3408,7 +3412,28 @@
                 "secret_access_key"
               ]
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "r2"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "endpoint",
+                    "access_key_id",
+                    "secret_access_key"
+                  ],
+                  "properties": {
+                    "role_arn": false
+                  }
+                }
+              }
+            ]
           },
           "else": {
             "properties": {
@@ -10903,13 +10928,14 @@
         },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for archiving audit events to S3/GCS. Setting this enables archival; there is no separate on/off flag. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as one or more JSONL part objects plus a manifest listing them: {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/part-00000.jsonl[.gz] and .../manifest.json[.gz]. Read the manifest to enumerate a window and ignore any object it does not list. The database remains the source of truth and archival never deletes rows (retention_days handles that independently). In a cluster only one node archives a given window. Archival is going-forward only; existing rows are not backfilled. See archive_interval, archive_grace_period and archive_max_object_bytes to tune it.",
+          "description": "Optional object storage for archiving audit events to S3/GCS/R2. Setting this enables archival; there is no separate on/off flag. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as one or more JSONL part objects plus a manifest listing them: {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/part-00000.jsonl[.gz] and .../manifest.json[.gz]. Read the manifest to enumerate a window and ignore any object it does not list. The database remains the source of truth and archival never deletes rows (retention_days handles that independently). In a cluster only one node archives a given window. Archival is going-forward only; existing rows are not backfilled. See archive_interval, archive_grace_period and archive_max_object_bytes to tune it.",
           "properties": {
             "type": {
               "type": "string",
               "enum": [
                 "s3",
-                "gcs"
+                "gcs",
+                "r2"
               ],
               "description": "Object storage backend type"
             },
@@ -10969,7 +10995,10 @@
           "if": {
             "properties": {
               "type": {
-                "const": "s3"
+                "enum": [
+                  "s3",
+                  "r2"
+                ]
               }
             }
           },
@@ -11013,7 +11042,7 @@
                     "additionalProperties": false
                   }
                 ],
-                "description": "AWS region. Supports env var reference"
+                "description": "AWS region, or R2 region (defaults to auto). Supports env var reference"
               },
               "endpoint": {
                 "anyOf": [
@@ -11050,7 +11079,7 @@
                     "additionalProperties": false
                   }
                 ],
-                "description": "Custom S3-compatible endpoint for MinIO/R2. Supports env var reference"
+                "description": "Custom S3-compatible endpoint. Required for R2; supports env var reference"
               },
               "access_key_id": {
                 "anyOf": [
@@ -11219,7 +11248,28 @@
                 "secret_access_key"
               ]
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "r2"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "endpoint",
+                    "access_key_id",
+                    "secret_access_key"
+                  ],
+                  "properties": {
+                    "role_arn": false
+                  }
+                }
+              }
+            ]
           },
           "else": {
             "properties": {

@@ -284,7 +284,7 @@ Unlike the earlier per-flush implementation, archival is **no longer best-effort
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
-| `type` | string | Yes | Backend type: `s3` or `gcs`. |
+| `type` | string | Yes | Backend type: `s3`, `gcs`, or `r2`. For R2, use its S3 API endpoint and access credentials; see [R2 configuration](/deployment-guides/config-json/storage#cloudflare-r2). |
 | `bucket` | string | Yes | Bucket name. Supports `env.` references. |
 | `prefix` | string | No | Configurable base key path; `audit-logs/` is appended under it. Default: `bifrost`. |
 | `compress` | boolean | No | Gzip stored objects (objects use a `.jsonl.gz` extension). Default: `false`. |

@@ -1,6 +1,6 @@
 // Package objectstore provides an S3-compatible object storage abstraction.
 // It can be used by any part of the system that needs to store or retrieve
-// objects from S3, GCS (via S3 interop), MinIO, R2, or other S3-compatible stores.
+// objects from S3, GCS, MinIO, R2, or other S3-compatible stores.
 package objectstore
 
 import (
