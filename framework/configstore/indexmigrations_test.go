@@ -116,8 +116,15 @@ func TestMigrationScopeVirtualKeyNameUniqueness(t *testing.T) {
 				team_id VARCHAR(255), customer_id VARCHAR(255), business_unit_id VARCHAR(255))`).Error)
 			require.NoError(t, db.Exec("CREATE UNIQUE INDEX idx_virtual_key_name ON governance_virtual_keys (name)").Error)
 			require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys (id, name, value, team_id) VALUES ('vk-1', 'prod', 'v1', 'team-1')").Error)
+			// Rows written before blank owner ids were normalized: a blank or whitespace-only owner
+			// column is no owner, so these keys must land in the unowned namespace.
+			require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys (id, name, value, team_id) VALUES ('vk-legacy-1', 'legacy-blank', 'l1', '')").Error)
+			require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys (id, name, value, customer_id) VALUES ('vk-legacy-2', 'legacy-space', 'l2', '   ')").Error)
 
 			require.NoError(t, migrationScopeVirtualKeyNameUniqueness(ctx, db, testMigrationLogger))
+			var blankOwners int64
+			require.NoError(t, db.Raw("SELECT COUNT(*) FROM governance_virtual_keys WHERE TRIM(team_id) = '' OR TRIM(customer_id) = '' OR TRIM(business_unit_id) = ''").Scan(&blankOwners).Error)
+			require.Zero(t, blankOwners, "blank owner ids must be normalized to NULL")
 			for _, idx := range virtualKeyNameIndexes {
 				require.True(t, indexExists(t, db, table, idx.name), "index %s must exist after the migration", idx.name)
 			}
@@ -137,6 +144,8 @@ func TestMigrationScopeVirtualKeyNameUniqueness(t *testing.T) {
 			require.Error(t, insert("vk-7", "prod", "customer_id", "customer-1"))
 			require.NoError(t, insert("vk-8", "prod", "business_unit_id", "bu-1"))
 			require.Error(t, insert("vk-9", "prod", "business_unit_id", "bu-1"))
+			require.Error(t, insert("vk-10", "legacy-blank", "", ""), "a legacy key with a blank owner keeps its name among unowned keys")
+			require.Error(t, insert("vk-11", "legacy-space", "", ""), "a whitespace-only owner is no owner either")
 
 			require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", id).Error)
 			require.NoError(t, migrationScopeVirtualKeyNameUniqueness(ctx, db, testMigrationLogger))

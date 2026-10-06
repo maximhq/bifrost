@@ -15247,6 +15247,16 @@ func virtualKeyNameUniquenessMigration(ctx context.Context, id string) *migrator
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			table := tables.TableVirtualKey{}.TableName()
+			// Rows written before blank owner ids were normalized can hold '' (or only
+			// whitespace) in an owner column. Such a row matches none of the unowned
+			// predicate's IS NULL checks, so once the global index is gone a new unowned
+			// key could take its name. Blank means no owner, so store NULL first. The global
+			// name index still holds while this runs, so no duplicate unowned name can appear.
+			for _, column := range []string{"team_id", "customer_id", "business_unit_id"} {
+				if err := tx.Exec("UPDATE " + table + " SET " + column + " = NULL WHERE TRIM(" + column + ") = ''").Error; err != nil {
+					return fmt.Errorf("normalize blank virtual key %s: %w", column, err)
+				}
+			}
 			for _, idx := range virtualKeyNameIndexes {
 				if err := ensurePartialIndexConcurrently(tx, table, idx.name, idx.columns, idx.where, true); err != nil {
 					return fmt.Errorf("create index %s: %w", idx.name, err)
