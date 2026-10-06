@@ -28,10 +28,11 @@ func TestConfigureDialer_SetsRetryIfErr(t *testing.T) {
 		t.Fatal("ConfigureDialer should set RetryIfErr")
 	}
 
-	// Verify it behaves like StaleConnectionRetryIfErr
+	// Verify it behaves like StaleConnectionRetryIfErr: retry within the
+	// original deadline, never with a reset timeout.
 	reset, retry := client.RetryIfErr(nil, 1, fmt.Errorf("cannot find whitespace in the first line of response"))
-	if !reset || !retry {
-		t.Error("RetryIfErr should retry on whitespace error")
+	if reset || !retry {
+		t.Errorf("RetryIfErr on whitespace error = (reset %t, retry %t), want (false, true)", reset, retry)
 	}
 	reset, retry = client.RetryIfErr(nil, 1, fmt.Errorf("dial tcp: no such host"))
 	if reset || retry {
@@ -287,8 +288,8 @@ func TestConfigureRetry_Deprecated(t *testing.T) {
 
 	// Verify it uses the same StaleConnectionRetryIfErr
 	reset, retry := client.RetryIfErr(nil, 1, fmt.Errorf("cannot find whitespace"))
-	if !reset || !retry {
-		t.Error("ConfigureRetry should install StaleConnectionRetryIfErr")
+	if reset || !retry {
+		t.Errorf("ConfigureRetry RetryIfErr = (reset %t, retry %t), want StaleConnectionRetryIfErr's (false, true)", reset, retry)
 	}
 }
 
