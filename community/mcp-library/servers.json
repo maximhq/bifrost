@@ -2318,6 +2318,23 @@
         "hosted"
       ],
       "icon_url": "https://magichour.ai/logo.png"
+    },
+    {
+      "name": "Parlel",
+      "description": "Search people, companies, open roles, and published watch agents on Parlel, an open professional network.",
+      "category": "Human Resources",
+      "connection_type": "http",
+      "connection_url": "https://api.parlel.com/mcp",
+      "auth_type": "none",
+      "docs_url": "https://parlel.com/guides/parlel-mcp-guide",
+      "publisher": "Parlel",
+      "tags": [
+        "jobs",
+        "recruiting",
+        "people-search",
+        "companies",
+        "hosted"
+      ]
     }
   ]
 }
