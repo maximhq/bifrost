@@ -2195,6 +2195,59 @@ func TestMergeGovernanceConfig_AmbiguousVirtualKeyFailsSync(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_AmbiguousVirtualKeyFailsBeforeAnyWrite covers a config.json whose id-less virtual
+// key is ambiguous while other sections changed too. LoadConfig must fail before it writes anything:
+// the client settings and providers from the previous load stay as stored, including the provider a
+// source_of_truth=config.json load would otherwise have deleted.
+func TestLoadConfig_AmbiguousVirtualKeyFailsBeforeAnyWrite(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	team1, team2, team3 := "team-1", "team-2", "team-3"
+	first := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
+	}, tempDir)
+	first.Governance = &configstore.GovernanceConfig{
+		Teams: []tables.TableTeam{{ID: team1, Name: "Team 1"}, {ID: team2, Name: "Team 2"}, {ID: team3, Name: "Team 3"}},
+		VirtualKeys: []tables.TableVirtualKey{
+			{ID: "vk-prod-team1", Name: "prod", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-team1"), IsActive: new(true)},
+			{ID: "vk-prod-team2", Name: "prod", TeamID: &team2, Value: *schemas.NewSecretVar("sk-bf-team2"), IsActive: new(true)},
+		},
+	}
+	createConfigFile(t, tempDir, first)
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	second := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"anthropic": makeProviderConfig("anthropic-key-1", "sk-ant-123"),
+	}, tempDir)
+	second.SourceOfTruth = SourceOfTruthConfigJSON
+	second.Client.InitialPoolSize = 77
+	second.Governance = &configstore.GovernanceConfig{
+		Teams:       first.Governance.Teams,
+		VirtualKeys: []tables.TableVirtualKey{{Name: "prod", TeamID: &team3, Value: *schemas.NewSecretVar("sk-bf-team3"), IsActive: new(true)}},
+	}
+	createConfigFile(t, tempDir, second)
+	_, err = LoadConfig(ctx, tempDir)
+	require.Error(t, err, "an ambiguous id-less virtual key must fail the load")
+	assert.Contains(t, err.Error(), `"prod"`)
+
+	// Inspect what the failed load left in the store.
+	store, err := configstore.NewConfigStore(ctx, first.ConfigStoreConfig, logger)
+	require.NoError(t, err)
+	defer store.Close(ctx)
+	clientConfig, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, clientConfig)
+	assert.Equal(t, 10, clientConfig.InitialPoolSize, "client settings must not be written by a failed load")
+	providers, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, providers, schemas.OpenAI, "a failed load must not delete stored providers")
+	assert.NotContains(t, providers, schemas.Anthropic, "a failed load must not add providers")
+}
+
 func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	initTestLogger()
 

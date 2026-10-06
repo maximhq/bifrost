@@ -34,4 +34,4 @@
 
 ## 🗄️ Database Migrations
 
-- No new database migrations in this release.
+- `scope_virtual_key_name_uniqueness` - Replaces the global unique index on `governance_virtual_keys.name` with unique indexes per team, customer and business unit (plus one for keys with no owner). The new indexes are built before the old one is dropped, concurrently on PostgreSQL, and existing rows need no cleanup. Non-rollbackable: once two owners share a key name, the global index cannot be rebuilt.

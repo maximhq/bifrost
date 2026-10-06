@@ -1116,6 +1116,11 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
 		return nil, err
 	}
+	// 2a. Refuse a config.json with an ambiguous id-less virtual key before any
+	// step below writes to the store, so a failed load leaves it unchanged.
+	if err := checkConfigVirtualKeysResolvable(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	// 3. KV store
 	if err := initKVStore(config); err != nil {
 		return nil, err
@@ -3461,6 +3466,21 @@ func ambiguousConfigVirtualKeysError(entries []configstoreTables.TableVirtualKey
 		return nil
 	}
 	return fmt.Errorf("config.json virtual key %s has no id and its name matches more than one existing virtual key of other owners, so Bifrost cannot tell which key it refers to; set the entry's id to the key it should update (or to a new id to create one)", strings.Join(names, ", "))
+}
+
+// checkConfigVirtualKeysResolvable fails the load when an id-less config.json virtual key is
+// ambiguous against the stored keys (see ambiguousConfigVirtualKeysError). LoadConfig runs it before
+// the client, provider and webhook steps write anything, since governance is only merged after them.
+func checkConfigVirtualKeysResolvable(ctx context.Context, config *Config, configData *ConfigData) error {
+	if config.ConfigStore == nil || configData.Governance == nil || len(configData.Governance.VirtualKeys) == 0 {
+		return nil
+	}
+	stored, err := config.ConfigStore.GetVirtualKeys(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to read stored virtual keys: %w", err)
+	}
+	return ambiguousConfigVirtualKeysError(configData.Governance.VirtualKeys,
+		matchConfigVirtualKeys(stored, configData.Governance.VirtualKeys))
 }
 
 // describeVirtualKeyOwner names a virtual key's owner for error messages.
