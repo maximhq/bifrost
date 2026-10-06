@@ -161,6 +161,27 @@ func TestResponses_AnthropicEndpointRejectsDocumentBeforeEgress(t *testing.T) {
 	}
 	assertUnsupportedDocument(t, bifrostErr)
 
+	// A replayed web_fetch result carries its page as a web_fetch_document rather
+	// than a file content block, and the Anthropic egress still renders it as a
+	// document block -- so it has to be refused on the same terms.
+	webFetchCallID := "call_wf"
+	webFetchReplay := &schemas.BifrostResponsesRequest{Provider: schemas.DeepSeek, Model: "deepseek-v4-pro",
+		Input: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: &webFetchCallID,
+				ResponsesWebFetchCall: &schemas.ResponsesWebFetchCall{
+					URL:      schemas.Ptr("https://example.com/report.pdf"),
+					Document: &schemas.ResponsesWebFetchDocument{Title: schemas.Ptr("report")},
+				},
+			},
+		}}}
+	resp, bifrostErr = provider.Responses(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), documentKey(), webFetchReplay)
+	if resp != nil {
+		t.Fatalf("replayed web_fetch document produced a response")
+	}
+	assertUnsupportedDocument(t, bifrostErr)
+
 	if got := atomic.LoadInt32(&hits); got != 0 {
 		t.Fatalf("upstream received %d request(s); want 0", got)
 	}

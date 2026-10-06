@@ -49,8 +49,19 @@ func rejectUnsupportedResponsesContent(request *schemas.BifrostResponsesRequest)
 		if message.Content != nil && hasResponsesFileBlock(message.Content.ContentBlocks) {
 			return newUnsupportedDocumentError()
 		}
-		if message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Output != nil &&
+		if message.ResponsesToolMessage == nil {
+			continue
+		}
+		if message.ResponsesToolMessage.Output != nil &&
 			hasResponsesFileBlock(message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
+			return newUnsupportedDocumentError()
+		}
+		// A replayed web_fetch result carries its page as a web_fetch_document,
+		// not as a file content block, and the Anthropic egress renders it as a
+		// document block (convertBifrostWebFetchCallToAnthropicBlocks defaults an
+		// untyped document to type "document"). Reading only content blocks would
+		// let that reach DeepSeek as exactly the shape this guard refuses.
+		if wf := message.ResponsesToolMessage.ResponsesWebFetchCall; wf != nil && wf.Document != nil {
 			return newUnsupportedDocumentError()
 		}
 	}
