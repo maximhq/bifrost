@@ -57,6 +57,92 @@ func TestValidateConfigSchema_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_AgentOAuthRequiresCompleteConfig(t *testing.T) {
+	validConfig := `{
+		"agents": [{
+			"name": "oauth-agent",
+			"agent_card_url": "https://agent.example/.well-known/agent-card.json",
+			"runtime_auth": {
+				"type": "oauth",
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}
+			}
+		}]
+	}`
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected complete Agent OAuth config to pass validation: %v", err)
+	}
+
+	invalidConfigs := map[string]string{
+		"missing oauth object": strings.Replace(validConfig, `,
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}`, "", 1),
+		"empty oauth object": strings.Replace(validConfig, `"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}`, `"oauth": {}`, 1),
+		"missing client ID": strings.Replace(validConfig, `
+					"client_id": "client-id",`, "", 1),
+		"missing client secret": strings.Replace(validConfig, `
+					"client_secret": "client-secret"`, "", 1),
+		"missing OAuth endpoint": strings.Replace(validConfig, `
+					"token_url": "https://auth.example/token",`, "", 1),
+		"environment reference endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "env.OAUTH_TOKEN_URL", 1),
+		"vault reference endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "vault.oauth-token-url", 1),
+		"non-HTTP endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "ftp://auth.example/token", 1),
+		"endpoint with userinfo": strings.Replace(validConfig,
+			"https://auth.example/token", "https://user:pass@auth.example/token", 1),
+		"endpoint without host": strings.Replace(validConfig,
+			"https://auth.example/token", "https:///token", 1),
+		"malformed endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "not-a-url", 1),
+	}
+	for name, config := range invalidConfigs {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateConfigSchema([]byte(config), loadLocalSchema(t)); err == nil {
+				t.Fatal("expected incomplete Agent OAuth config to fail validation")
+			}
+		})
+	}
+}
+
+func TestValidateConfigSchema_AgentOAuthRejectsUnknownFields(t *testing.T) {
+	validConfig := `{
+		"agents": [{
+			"name": "oauth-agent",
+			"agent_card_url": "https://agent.example/.well-known/agent-card.json",
+			"runtime_auth": {
+				"type": "oauth",
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret",
+					"scopes": ["agent.invoke"],
+					"resource": "https://agent.example"
+				}
+			}
+		}]
+	}`
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected documented Agent OAuth fields to pass validation: %v", err)
+	}
+
+	invalidConfig := strings.Replace(validConfig, `"client_secret": "client-secret"`, `"client_secert": "client-secret"`, 1)
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Fatal("expected an unknown Agent OAuth field to fail validation")
+	}
+}
+
 func TestValidateConfigSchema_EmptyObject(t *testing.T) {
 	// Empty object should be valid (all properties are optional)
 	emptyConfig := `{}`

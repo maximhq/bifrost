@@ -980,6 +980,96 @@ func TestToAnthropicResponsesRequest_PerMessageEffortFromNeutralInput(t *testing
 	assertEffortOnlySystemMessage(t, msgs[1], "low", wire)
 }
 
+// TestToAnthropicResponsesRequest_PerMessageEffortSurvivesTextFallbacks: a system item that
+// carries text AND a per-message effort can only go out natively when its placement is
+// valid. On the hoist (leading run) and inline (rejected placement) fallbacks the text cannot
+// carry the override, so it is re-emitted as an effort-only system message, which Anthropic
+// exempts from placement rules ("It can appear anywhere in messages, including as the first
+// entry", https://platform.claude.com/docs/en/build-with-claude/effort). Without it the
+// caller's effort change is silently lost (PR #8018 review).
+func TestToAnthropicResponsesRequest_PerMessageEffortSurvivesTextFallbacks(t *testing.T) {
+	t.Parallel()
+
+	convert := func(t *testing.T, provider schemas.ModelProvider, inputJSON string) ([]map[string]any, string, *AnthropicMessageRequest) {
+		t.Helper()
+		var input []schemas.ResponsesMessage
+		if err := schemas.Unmarshal([]byte(inputJSON), &input); err != nil {
+			t.Fatalf("decode neutral input: %v", err)
+		}
+		out, err := ToAnthropicResponsesRequest(effortTestCtx(t), &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    "claude-opus-5-5",
+			Input:    input,
+			Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(128)},
+		})
+		if err != nil {
+			t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+		}
+		msgs, wire := jsonArrayOfObjects(t, out.Messages)
+		return msgs, wire, out
+	}
+
+	t.Run("hoisted leading system item keeps its effort", func(t *testing.T) {
+		t.Parallel()
+		msgs, wire, out := convert(t, schemas.Anthropic, `[
+			{"type":"message","role":"system","content":"Be terse.","output_config":{"effort":"low"}},
+			{"type":"message","role":"user","content":"Say hello."}
+		]`)
+		system, _ := sonic.Marshal(out.System)
+		if !strings.Contains(string(system), "Be terse.") {
+			t.Fatalf("leading system text was not hoisted into system: %s", system)
+		}
+		if len(msgs) != 2 {
+			t.Fatalf("messages = %d, want 2 (effort-only override + user): %s", len(msgs), wire)
+		}
+		assertEffortOnlySystemMessage(t, msgs[0], "low", wire)
+		if msgs[1]["role"] != "user" {
+			t.Fatalf("messages[1].role = %v, want user: %s", msgs[1]["role"], wire)
+		}
+	})
+
+	t.Run("inlined mid-conversation system item keeps its effort", func(t *testing.T) {
+		t.Parallel()
+		// Followed by a user turn, so the native placement is rejected and the text is inlined.
+		msgs, wire, _ := convert(t, schemas.Anthropic, `[
+			{"type":"message","role":"user","content":"First question."},
+			{"type":"message","role":"system","content":"Be terse.","output_config":{"effort":"low"}},
+			{"type":"message","role":"user","content":"Second question."}
+		]`)
+		effortAt := -1
+		for i, m := range msgs {
+			if m["role"] == "system" {
+				if effortAt != -1 {
+					t.Fatalf("more than one system message: %s", wire)
+				}
+				effortAt = i
+				assertEffortOnlySystemMessage(t, m, "low", wire)
+			}
+		}
+		if effortAt == -1 {
+			t.Fatalf("per-message effort lost on the inline fallback: %s", wire)
+		}
+		if effortAt+1 >= len(msgs) {
+			t.Fatalf("effort-only message must precede the inlined reminder: %s", wire)
+		}
+		next, _ := sonic.Marshal(msgs[effortAt+1])
+		if !strings.Contains(string(next), "system-reminder") || !strings.Contains(string(next), "Be terse.") {
+			t.Fatalf("message after the effort-only override is not the inlined reminder: %s", wire)
+		}
+	})
+
+	t.Run("unsupported surface emits no override on the hoist", func(t *testing.T) {
+		t.Parallel()
+		msgs, wire, _ := convert(t, schemas.Vertex, `[
+			{"type":"message","role":"system","content":"Be terse.","output_config":{"effort":"low"}},
+			{"type":"message","role":"user","content":"Say hello."}
+		]`)
+		if len(msgs) != 1 || msgs[0]["role"] != "user" {
+			t.Fatalf("Vertex must receive only the user turn: %s", wire)
+		}
+	})
+}
+
 // TestAnthropicRoundTrip_PerMessageEffortDroppedWhenModelLacksSupport pins the fail-soft
 // side: Opus 4.8 accepts mid-conversation system messages but not per-turn effort
 // (Anthropic 400s "output_config.effort requires a model that supports per-turn effort"),

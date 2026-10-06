@@ -5073,6 +5073,12 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 	if bifrostResp.Status != nil && *bifrostResp.Status == schemas.ResponsesResponseStatusIncomplete {
 		schemas.MarkTruncatedOutputItem(bifrostResp.Output)
 	}
+	// Surface truncation/refusal per the Responses contract; without Status a
+	// max_tokens turn is indistinguishable from a complete one.
+	bifrostResp.Status, bifrostResp.IncompleteDetails = anthropicResponsesStatus(bifrostResp.StopReason)
+	if bifrostResp.Status != nil && *bifrostResp.Status == schemas.ResponsesResponseStatusIncomplete {
+		schemas.MarkTruncatedOutputItem(bifrostResp.Output)
+	}
 	bifrostResp.StopDetails = stopDetailsToBifrost(response.StopDetails)
 
 	if response.Usage != nil && response.Usage.ServiceTier != nil {
@@ -5282,8 +5288,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// Per-message effort (output_config.effort on a role:"system" message) is a separate,
 	// narrower gate: models without per-turn effort 400 on the field, so the override is
 	// dropped fail-soft for them rather than forwarded.
-	midConvOutputConfigSupported := isRequestMessage &&
-		DefaultSupportsMidConversationOutputConfig(caps.Provider(), caps.Model())
+	midConvOutputConfigSupported := isRequestMessage && supportsPerMessageOutputConfig(caps)
 	// When the native role:"system" form isn't available, inline the reminder as a user turn
 	// rather than hoisting it into the top-level system block: hoisting preserves the
 	// breakpoint but invalidates the cached prefix behind it, costing roughly half the prompt on
@@ -5561,11 +5566,13 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				}
 				// Per-message effort override (beta mid-conversation-output-config). The
 				// effort-only form carries no text, is exempt from the placement rules and can
-				// sit anywhere in messages, so it is emitted where it appears. A system message
-				// that also carries text keeps the placement rules and gains the override only
-				// on the native emission; the inline and hoist fallbacks cannot carry it.
+				// sit anywhere in messages, including as the first entry (Anthropic effort
+				// docs), so it is emitted where it appears. A system message that also carries
+				// text keeps the placement rules and carries the override itself only on the
+				// native emission; on the inline and hoist fallbacks the text cannot carry it,
+				// so the override goes out as a separate effort-only message instead.
 				perMessageOutputConfig := perMessageOutputConfigFor(&msg, midConvOutputConfigSupported)
-				if content == nil {
+				appendEffortOnly := func() {
 					if perMessageOutputConfig != nil {
 						anthropicMessages = append(anthropicMessages, AnthropicMessage{
 							Role:         AnthropicMessageRoleSystem,
@@ -5573,6 +5580,9 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 							OutputConfig: perMessageOutputConfig,
 						})
 					}
+				}
+				if content == nil {
+					appendEffortOnly()
 					continue
 				}
 				switch {
@@ -5586,13 +5596,17 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				case seenConversation && inlineMidConvSystem:
 					// Native form unavailable (unsupported model, or a placement Anthropic
 					// rejects). Inline in place so the cache anchor stays inside `messages`
-					// instead of collapsing the prefix from the system block.
+					// instead of collapsing the prefix from the system block. The override goes
+					// first: effort applies "from the next user turn on", so the reply to the
+					// reminder turn already runs at the new level, as the native item would.
+					appendEffortOnly()
 					if inlined := inlineMidConversationSystem(content); inlined != nil {
 						anthropicMessages = append(anthropicMessages, *inlined)
 					}
 				default:
 					// Leading system run, or a non-Anthropic model: hoist (historical behavior).
 					systemContent = appendToSystemContent(systemContent, *content)
+					appendEffortOnly()
 				}
 				continue
 			}
