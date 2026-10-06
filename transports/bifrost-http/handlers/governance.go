@@ -2177,6 +2177,11 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				if err := pc.KeyIDs.Validate(); err != nil {
 					return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 				}
+				if pc.Weight != nil {
+					if err := validateWeight(*pc.Weight); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid weight for provider %s: %w", pc.Provider, err)}
+					}
+				}
 
 				// Get keys for this provider config if specified
 				var keys []configstoreTables.TableKey
@@ -2632,6 +2637,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if err := pc.KeyIDs.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 					}
+					if pc.Weight != nil {
+						if err := validateWeight(*pc.Weight); err != nil {
+							return &badRequestError{err: fmt.Errorf("invalid weight for provider %s: %w", pc.Provider, err)}
+						}
+					}
 
 					// Get keys for this provider config if specified
 					var keys []configstoreTables.TableKey
@@ -2696,6 +2706,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 					if err := pc.KeyIDs.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
+					}
+					if pc.Weight != nil {
+						if err := validateWeight(*pc.Weight); err != nil {
+							return &badRequestError{err: fmt.Errorf("invalid weight for provider %s: %w", pc.Provider, err)}
+						}
 					}
 					existing.Provider = string(providerName)
 					existing.Weight = pc.Weight
