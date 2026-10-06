@@ -136,3 +136,41 @@ func TestReloadModelTags_OlderSnapshotCannotPublishLast(t *testing.T) {
 
 	assert.Equal(t, []string{"new"}, mc.GetModelTags(schemas.OpenAI, "gpt-5.1"), "the newer snapshot must be the one left live")
 }
+
+// flakyModelTagsStore fails GetModelTags for the first failures calls, then serves tags.
+type flakyModelTagsStore struct {
+	configstore.ConfigStore
+	mu       sync.Mutex
+	calls    int
+	failures int
+	tags     map[string]map[string][]string
+}
+
+func (f *flakyModelTagsStore) GetModelTags(context.Context) (map[string]map[string][]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls <= f.failures {
+		return nil, errors.New("config store unavailable")
+	}
+	return f.tags, nil
+}
+
+// TestLoadModelTagsAtStartup_RetriesAfterFailure pins that a failed startup load of the tag
+// overlay is retried in the background instead of leaving every listing without tags until the
+// next tag write, and that the retry stops when the catalog shuts down.
+func TestLoadModelTagsAtStartup_RetriesAfterFailure(t *testing.T) {
+	store := &flakyModelTagsStore{failures: 2, tags: map[string]map[string][]string{"openai": {"gpt-5.1": {"prod"}}}}
+	mc := &ModelCatalog{configStore: store, done: make(chan struct{})}
+	mc.loadModelTagsAtStartup(context.Background(), []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond})
+	require.Eventually(t, func() bool { return len(mc.GetModelTags(schemas.OpenAI, "gpt-5.1")) == 1 }, time.Second, 5*time.Millisecond,
+		"the overlay must load once the config store recovers")
+	mc.wg.Wait()
+
+	down := &flakyModelTagsStore{failures: 1000}
+	stopped := &ModelCatalog{configStore: down, done: make(chan struct{})}
+	stopped.loadModelTagsAtStartup(context.Background(), []time.Duration{time.Hour})
+	close(stopped.done)
+	stopped.wg.Wait()
+	assert.Nil(t, stopped.modelTags.Load(), "a shut-down catalog stops retrying")
+}
