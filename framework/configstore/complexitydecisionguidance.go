@@ -9,54 +9,54 @@ import (
 	"unicode/utf8"
 )
 
-// Jev tier keys. They mirror the complexity package's tier names; configstore
+// decision-model tier keys. They mirror the complexity package's tier names; configstore
 // cannot import that package, so the three values are restated here.
 const (
-	complexityJevTierSimple  = "SIMPLE"
-	complexityJevTierMedium  = "MEDIUM"
-	complexityJevTierComplex = "COMPLEX"
+	complexityDecisionTierSimple  = "SIMPLE"
+	complexityDecisionTierMedium  = "MEDIUM"
+	complexityDecisionTierComplex = "COMPLEX"
 )
 
-// Bounds on the administrator's Jev guidance. Every value is sent with each
+// Bounds on the administrator's decision-model guidance. Every value is sent with each
 // classification, so these cap the per-request token cost as much as they
 // guard input size.
 const (
-	MaxComplexityJevDefinitionCharacters   = 500
-	MaxComplexityJevCriteriaItems          = 12
-	MaxComplexityJevCriteriaItemCharacters = 300
+	MaxComplexityDecisionDefinitionCharacters   = 500
+	MaxComplexityDecisionCriteriaItems          = 12
+	MaxComplexityDecisionCriteriaItemCharacters = 300
 )
 
-// ComplexityJevTierCriteria is one tier's editable Jev criteria. An empty
+// ComplexityDecisionTierCriteria is one tier's editable decision-model criteria. An empty
 // definition or nil list means the shipped default for that field is sent.
-type ComplexityJevTierCriteria struct {
+type ComplexityDecisionTierCriteria struct {
 	Definition string   `json:"definition,omitempty"`
 	Signals    []string `json:"signals,omitempty"`
 	Examples   []string `json:"examples,omitempty"`
 }
 
-// ComplexityJevTierDefaults is one tier's shipped Jev criteria.
-type ComplexityJevTierDefaults struct {
+// ComplexityDecisionTierDefaults is one tier's shipped decision-model criteria.
+type ComplexityDecisionTierDefaults struct {
 	Definition string   `json:"definition"`
 	Signals    []string `json:"signals"`
 	Examples   []string `json:"examples"`
 }
 
-// ComplexityJevGuidanceDefaults is the shipped Jev guidance, served to
+// ComplexityDecisionGuidanceDefaults is the shipped decision-model guidance, served to
 // configuration clients so they can seed editors and offer resets without
 // holding a copy that drifts from the gateway's.
-type ComplexityJevGuidanceDefaults struct {
-	Criteria map[string]ComplexityJevTierDefaults `json:"criteria"`
+type ComplexityDecisionGuidanceDefaults struct {
+	Criteria map[string]ComplexityDecisionTierDefaults `json:"criteria"`
 }
 
-// complexityJevTierOrder is the canonical tier order for validation messages.
-var complexityJevTierOrder = []string{complexityJevTierSimple, complexityJevTierMedium, complexityJevTierComplex}
+// complexityDecisionTierOrder is the canonical tier order for validation messages.
+var complexityDecisionTierOrder = []string{complexityDecisionTierSimple, complexityDecisionTierMedium, complexityDecisionTierComplex}
 
-// DefaultComplexityJevGuidance returns an independent copy of the shipped Jev
+// DefaultComplexityDecisionGuidance returns an independent copy of the shipped decision-model
 // per-tier criteria.
-func DefaultComplexityJevGuidance() ComplexityJevGuidanceDefaults {
-	return ComplexityJevGuidanceDefaults{
-		Criteria: map[string]ComplexityJevTierDefaults{
-			complexityJevTierSimple: {
+func DefaultComplexityDecisionGuidance() ComplexityDecisionGuidanceDefaults {
+	return ComplexityDecisionGuidanceDefaults{
+		Criteria: map[string]ComplexityDecisionTierDefaults{
+			complexityDecisionTierSimple: {
 				Definition: "Direct work answerable from the request itself or common knowledge in one straightforward step, with little interpretation.",
 				Signals: []string{
 					"The needed information is stated in the request or is common, broadly familiar knowledge",
@@ -69,7 +69,7 @@ func DefaultComplexityJevGuidance() ComplexityJevGuidanceDefaults {
 					"Reformat text or perform basic arithmetic",
 				},
 			},
-			complexityJevTierMedium: {
+			complexityDecisionTierMedium: {
 				Definition: "Focused work that needs subject-specific knowledge not supplied in the request, or an established method applied across a few steps, even when the question is short or asks for one answer.",
 				Signals: []string{
 					"Answer a focused technical or academic question using subject knowledge not stated in the prompt",
@@ -86,7 +86,7 @@ func DefaultComplexityJevGuidance() ComplexityJevGuidanceDefaults {
 					"Make a focused code change with a known approach",
 				},
 			},
-			complexityJevTierComplex: {
+			complexityDecisionTierComplex: {
 				Definition: "Advanced expertise combined with substantial reasoning, derivation, design, or synthesis.",
 				Signals: []string{
 					"Several dependent reasoning stages, or a nontrivial derivation or proof using multiple concepts",
@@ -107,8 +107,8 @@ func DefaultComplexityJevGuidance() ComplexityJevGuidanceDefaults {
 
 // ResolvedCriteria returns every tier's criteria with administrator overrides
 // layered over the shipped defaults, field by field.
-func (c *ComplexityJevConfig) ResolvedCriteria() map[string]ComplexityJevTierDefaults {
-	resolved := DefaultComplexityJevGuidance().Criteria
+func (c *ComplexityDecisionConfig) ResolvedCriteria() map[string]ComplexityDecisionTierDefaults {
+	resolved := DefaultComplexityDecisionGuidance().Criteria
 	if c == nil {
 		return resolved
 	}
@@ -131,24 +131,24 @@ func (c *ComplexityJevConfig) ResolvedCriteria() map[string]ComplexityJevTierDef
 	return resolved
 }
 
-// normalizeComplexityJevCriteria trims the definition and deduplicates every
+// normalizeComplexityDecisionCriteria trims the definition and deduplicates every
 // list, preserving order, and drops fields that equal the shipped default and
 // tiers left empty.
 // Unknown tier keys are kept so Validate can reject them by name.
-func normalizeComplexityJevCriteria(criteria map[string]ComplexityJevTierCriteria) map[string]ComplexityJevTierCriteria {
+func normalizeComplexityDecisionCriteria(criteria map[string]ComplexityDecisionTierCriteria) map[string]ComplexityDecisionTierCriteria {
 	if len(criteria) == 0 {
 		return nil
 	}
-	defaults := DefaultComplexityJevGuidance().Criteria
-	out := make(map[string]ComplexityJevTierCriteria, len(criteria))
+	defaults := DefaultComplexityDecisionGuidance().Criteria
+	out := make(map[string]ComplexityDecisionTierCriteria, len(criteria))
 	for tier, tierCriteria := range criteria {
 		// Tier keys are matched exactly, never case-folded: folding would let
 		// "simple" and "SIMPLE" collapse onto one key, and Go's map order would
 		// then pick which override survives. An unmatched key is kept so
 		// Validate rejects it by name.
 		definition := strings.TrimSpace(tierCriteria.Definition)
-		signals := normalizeComplexityJevList(tierCriteria.Signals)
-		examples := normalizeComplexityJevList(tierCriteria.Examples)
+		signals := normalizeComplexityDecisionList(tierCriteria.Signals)
+		examples := normalizeComplexityDecisionList(tierCriteria.Examples)
 		if base, ok := defaults[tier]; ok {
 			if definition == base.Definition {
 				definition = ""
@@ -165,7 +165,7 @@ func normalizeComplexityJevCriteria(criteria map[string]ComplexityJevTierCriteri
 				continue
 			}
 		}
-		out[tier] = ComplexityJevTierCriteria{Definition: definition, Signals: signals, Examples: examples}
+		out[tier] = ComplexityDecisionTierCriteria{Definition: definition, Signals: signals, Examples: examples}
 	}
 	if len(out) == 0 {
 		return nil
@@ -173,10 +173,10 @@ func normalizeComplexityJevCriteria(criteria map[string]ComplexityJevTierCriteri
 	return out
 }
 
-// normalizeComplexityJevList trims entries and drops blanks and exact
+// normalizeComplexityDecisionList trims entries and drops blanks and exact
 // duplicates. Unlike semantic phrases it keeps case and order: these are
 // sentences read by a model, and their order is the administrator's.
-func normalizeComplexityJevList(values []string) []string {
+func normalizeComplexityDecisionList(values []string) []string {
 	if len(values) == 0 {
 		return nil
 	}
@@ -199,34 +199,34 @@ func normalizeComplexityJevList(values []string) []string {
 	return out
 }
 
-// validateComplexityJevGuidance checks the tier keys, definition lengths, and
-// per-list bounds of a normalized Jev config.
-func validateComplexityJevGuidance(c *ComplexityJevConfig) error {
+// validateComplexityDecisionGuidance checks the tier keys, definition lengths, and
+// per-list bounds of a normalized decision-model config.
+func validateComplexityDecisionGuidance(c *ComplexityDecisionConfig) error {
 	for tier, criteria := range c.Criteria {
-		if !slices.Contains(complexityJevTierOrder, tier) {
-			return fmt.Errorf("jev criteria tier must be one of %s, got %q", strings.Join(complexityJevTierOrder, ", "), tier)
+		if !slices.Contains(complexityDecisionTierOrder, tier) {
+			return fmt.Errorf("decision criteria tier must be one of %s, got %q", strings.Join(complexityDecisionTierOrder, ", "), tier)
 		}
-		if n := utf8.RuneCountInString(criteria.Definition); n > MaxComplexityJevDefinitionCharacters {
-			return fmt.Errorf("jev criteria %s definition must be at most %d characters, got %d", tier, MaxComplexityJevDefinitionCharacters, n)
+		if n := utf8.RuneCountInString(criteria.Definition); n > MaxComplexityDecisionDefinitionCharacters {
+			return fmt.Errorf("decision criteria %s definition must be at most %d characters, got %d", tier, MaxComplexityDecisionDefinitionCharacters, n)
 		}
-		if err := validateComplexityJevList(tier, "signals", criteria.Signals); err != nil {
+		if err := validateComplexityDecisionList(tier, "signals", criteria.Signals); err != nil {
 			return err
 		}
-		if err := validateComplexityJevList(tier, "examples", criteria.Examples); err != nil {
+		if err := validateComplexityDecisionList(tier, "examples", criteria.Examples); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// validateComplexityJevList bounds one tier list's item count and item length.
-func validateComplexityJevList(tier, field string, values []string) error {
-	if len(values) > MaxComplexityJevCriteriaItems {
-		return fmt.Errorf("jev criteria %s %s must have at most %d items, got %d", tier, field, MaxComplexityJevCriteriaItems, len(values))
+// validateComplexityDecisionList bounds one tier list's item count and item length.
+func validateComplexityDecisionList(tier, field string, values []string) error {
+	if len(values) > MaxComplexityDecisionCriteriaItems {
+		return fmt.Errorf("decision criteria %s %s must have at most %d items, got %d", tier, field, MaxComplexityDecisionCriteriaItems, len(values))
 	}
 	for _, value := range values {
-		if n := utf8.RuneCountInString(value); n > MaxComplexityJevCriteriaItemCharacters {
-			return fmt.Errorf("jev criteria %s %s items must be at most %d characters, got %d", tier, field, MaxComplexityJevCriteriaItemCharacters, n)
+		if n := utf8.RuneCountInString(value); n > MaxComplexityDecisionCriteriaItemCharacters {
+			return fmt.Errorf("decision criteria %s %s items must be at most %d characters, got %d", tier, field, MaxComplexityDecisionCriteriaItemCharacters, n)
 		}
 	}
 	return nil
@@ -234,14 +234,14 @@ func validateComplexityJevList(tier, field string, values []string) error {
 
 // UnmarshalJSON rejects unknown fields so a misspelled field name in
 // config.json fails loudly instead of silently sending the default.
-func (c *ComplexityJevTierCriteria) UnmarshalJSON(data []byte) error {
-	type alias ComplexityJevTierCriteria
+func (c *ComplexityDecisionTierCriteria) UnmarshalJSON(data []byte) error {
+	type alias ComplexityDecisionTierCriteria
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var aux alias
 	if err := decoder.Decode(&aux); err != nil {
-		return fmt.Errorf("invalid jev tier criteria: %w", err)
+		return fmt.Errorf("invalid decision tier criteria: %w", err)
 	}
-	*c = ComplexityJevTierCriteria(aux)
+	*c = ComplexityDecisionTierCriteria(aux)
 	return nil
 }

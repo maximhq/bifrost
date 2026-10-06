@@ -5059,7 +5059,7 @@
       },
       "additionalProperties": false
     },
-    "complexity_jev_tier_criteria": {
+    "complexity_decision_tier_criteria": {
       "type": "object",
       "properties": {
         "definition": {
@@ -5796,7 +5796,7 @@
     },
     "complexity_analyzer_config": {
       "type": "object",
-      "description": "Runtime configuration for complexity_tier CEL routing with Semantic or Typesafe Jev classification",
+      "description": "Runtime configuration for complexity_tier CEL routing with semantic or decision-model classification",
       "properties": {
         "tier_boundaries": {
           "$ref": "#/$defs/complexity_tier_boundaries"
@@ -5808,7 +5808,7 @@
           "type": "string",
           "enum": [
             "semantic",
-            "jev"
+            "decision"
           ],
           "default": "semantic",
           "description": "Primary complexity classifier. Defaults to semantic."
@@ -5816,8 +5816,8 @@
         "semantic": {
           "$ref": "#/$defs/complexity_semantic_config"
         },
-        "jev": {
-          "$ref": "#/$defs/complexity_jev_config"
+        "decision": {
+          "$ref": "#/$defs/complexity_decision_config"
         },
         "llm": {
           "$ref": "#/$defs/complexity_llm_config"
@@ -5853,7 +5853,7 @@
               ],
               "properties": {
                 "classifier": {
-                  "const": "jev"
+                  "const": "decision"
                 }
               }
             }
@@ -5963,9 +5963,9 @@
           "enum": [
             "none",
             "llm",
-            "jev"
+            "decision"
           ],
-          "description": "What answers when semantic classification produces no tier: none (default), the configured llm classifier, or Typesafe Jev."
+          "description": "What answers when semantic classification produces no tier: none (default), the configured llm classifier, or the configured decision model."
         }
       },
       "required": [
@@ -12363,10 +12363,18 @@
         "additionalProperties": false
       }
     },
-    "complexity_jev_config": {
+    "complexity_decision_config": {
       "type": "object",
-      "description": "Typesafe Jev complexity-classifier request settings. Uses the configured Typesafe provider credentials.",
+      "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
       "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider serving the decision model, e.g. typesafe, or a custom provider with base_provider_type typesafe (Laya, Nimble, Clef). Set together with model; leave both empty for typesafe/jev-latest."
+        },
+        "model": {
+          "type": "string",
+          "description": "Decision model to call on the provider, e.g. jev-latest, nimble-latest, english, clef. Set together with provider; leave both empty for typesafe/jev-latest."
+        },
         "previous_message_count": {
           "type": "integer",
           "minimum": 0,
@@ -12375,7 +12383,7 @@
           "description": "Number of preceding user messages sent with the current request. Assistant messages are excluded."
         },
         "timeout": {
-          "description": "Maximum Jev classification latency (duration string or milliseconds as a number; default 1500ms).",
+          "description": "Maximum decision-model classification latency (duration string or milliseconds as a number; default 1500ms).",
           "oneOf": [
             {
               "type": "string",
@@ -12390,11 +12398,11 @@
         },
         "criteria": {
           "type": "object",
-          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+          "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
           "properties": {
-            "SIMPLE": { "$ref": "#/$defs/complexity_jev_tier_criteria" },
-            "MEDIUM": { "$ref": "#/$defs/complexity_jev_tier_criteria" },
-            "COMPLEX": { "$ref": "#/$defs/complexity_jev_tier_criteria" }
+            "SIMPLE": { "$ref": "#/$defs/complexity_decision_tier_criteria" },
+            "MEDIUM": { "$ref": "#/$defs/complexity_decision_tier_criteria" },
+            "COMPLEX": { "$ref": "#/$defs/complexity_decision_tier_criteria" }
           },
           "additionalProperties": false
         }
