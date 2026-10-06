@@ -31,8 +31,8 @@ func NewR2ObjectStore(ctx context.Context, cfg *Config, logger schemas.Logger) (
 	}
 	endpoint := cfg.Endpoint.GetValue()
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, fmt.Errorf("objectstore: r2 endpoint must be an HTTP or HTTPS URL without credentials, query, or fragment")
+	if err != nil || parsed.Host == "" || parsed.Scheme != "https" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fmt.Errorf("objectstore: r2 endpoint must be an HTTPS URL without credentials, query, or fragment")
 	}
 	if cfg.AccessKeyID == nil || cfg.SecretAccessKey == nil || cfg.AccessKeyID.GetValue() == "" || cfg.SecretAccessKey.GetValue() == "" {
 		return nil, fmt.Errorf("objectstore: r2 access_key_id and secret_access_key must resolve to non-empty values")

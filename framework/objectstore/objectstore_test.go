@@ -5,7 +5,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func TestGzipRoundTrip(t *testing.T) {
@@ -160,5 +163,47 @@ func TestConfigGetPrefix(t *testing.T) {
 	c2 := &Config{}
 	if got := c2.GetPrefix(); got != "bifrost" {
 		t.Fatalf("GetPrefix default: got %q, want %q", got, "bifrost")
+	}
+}
+
+// TestObjectStoreEndpointSecurity ensures R2 requires HTTPS while S3 retains
+// HTTP support for local and internal S3-compatible services.
+func TestObjectStoreEndpointSecurity(t *testing.T) {
+	t.Setenv("AWS_CONFIG_FILE", t.TempDir()+"/config")
+	t.Setenv("BIFROST_TEST_R2_ENDPOINT", "http://account.r2.cloudflarestorage.com")
+	for _, tc := range []struct {
+		name     string
+		backend  StoreType
+		endpoint string
+		valid    bool
+	}{
+		{"r2 https", StoreTypeR2, "https://account.r2.cloudflarestorage.com", true},
+		{"r2 jurisdiction https", StoreTypeR2, "https://account.eu.r2.cloudflarestorage.com", true},
+		{"r2 http", StoreTypeR2, "http://account.r2.cloudflarestorage.com", false},
+		{"r2 local http", StoreTypeR2, "http://localhost:9000", false},
+		{"r2 http from environment", StoreTypeR2, "env.BIFROST_TEST_R2_ENDPOINT", false},
+		{"s3 local http", StoreTypeS3, "http://localhost:9000", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				Type:            tc.backend,
+				Bucket:          *schemas.NewSecretVar("test-bucket"),
+				Region:          schemas.NewSecretVar("auto"),
+				Endpoint:        schemas.NewSecretVar(tc.endpoint),
+				AccessKeyID:     schemas.NewSecretVar("test-key"),
+				SecretAccessKey: schemas.NewSecretVar("test-secret"),
+			}
+			store, err := NewObjectStore(context.Background(), cfg, nil)
+			if tc.valid {
+				if err != nil {
+					t.Fatalf("valid endpoint rejected: %v", err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "HTTPS") {
+				t.Fatalf("expected HTTPS validation error, got %v", err)
+			}
+		})
 	}
 }
