@@ -259,6 +259,18 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
 			}
+			if maxTokens := providerUtils.GetJSONField(jsonBody, "max_tokens"); maxTokens.Exists() {
+				if clamped := clampToModelOutputCeiling(schemas.ResolveModelCaps(cfg.Provider, capModel), int(maxTokens.Int())); int64(clamped) != maxTokens.Int() {
+					jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", clamped)
+					if err != nil {
+						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+					}
+					jsonBody, err = fitRawThinkingBudget(jsonBody, clamped)
+					if err != nil {
+						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+					}
+				}
+			}
 
 		}
 
@@ -582,6 +594,18 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(cfg.Provider, modelForTokens, AnthropicDefaultMaxTokens))
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+		if maxTokens := providerUtils.GetJSONField(jsonBody, "max_tokens"); maxTokens.Exists() {
+			if clamped := clampToModelOutputCeiling(schemas.ResolveModelCaps(cfg.Provider, capModel), int(maxTokens.Int())); int64(clamped) != maxTokens.Int() {
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", clamped)
+				if err != nil {
+					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+				}
+				jsonBody, err = fitRawThinkingBudget(jsonBody, clamped)
+				if err != nil {
+					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+				}
 			}
 		}
 
