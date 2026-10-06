@@ -1348,6 +1348,115 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 	}
 }
 
+// directKeyHandlerStore is the shared mock store with direct keys allowed.
+type directKeyHandlerStore struct{ *mockHandlerStore }
+
+func (directKeyHandlerStore) ShouldAllowDirectKeys() bool { return true }
+
+// directKeyTestAccount configures OpenAI and Anthropic, each against its own upstream.
+type directKeyTestAccount struct{ openAIURL, anthropicURL string }
+
+func (a directKeyTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}, nil
+}
+
+func (a directKeyTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "operator-" + string(p), Value: *schemas.NewSecretVar("sk-operator-" + string(p)), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a directKeyTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	switch p {
+	case schemas.OpenAI:
+		nc.BaseURL = a.openAIURL
+	case schemas.Anthropic:
+		nc.BaseURL = a.anthropicURL
+	default:
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// A direct key is the caller's credential for the provider whose SDK called the route. A drop-in
+// model listing that names no provider used to ask every configured provider and send the key to
+// each of them; it now asks only the route's own provider, refuses when that provider is not
+// configured, and refuses an explicit "all".
+func TestListModelsDirectKeyStaysOnTheRouteProvider(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string][]string{}
+	recording := func(name string, body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			seen[name] = append(seen[name], r.Header.Get("Authorization")+r.Header.Get("x-api-key"))
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+	}
+	openAISrv := recording("openai", `{"object":"list","data":[{"id":"gpt-4o-mini","object":"model","created":1700000000,"owned_by":"test"}]}`)
+	defer openAISrv.Close()
+	anthropicSrv := recording("anthropic", `{"data":[{"id":"claude-test","type":"model","display_name":"Claude Test","created_at":"2026-01-01T00:00:00Z"}],"has_more":false}`)
+	defer anthropicSrv.Close()
+	take := func() map[string][]string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := seen
+		seen = map[string][]string{}
+		return out
+	}
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: directKeyTestAccount{openAIURL: openAISrv.URL, anthropicURL: anthropicSrv.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	store := directKeyHandlerStore{&mockHandlerStore{availableProviders: []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}}}
+	NewOpenAIRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewAnthropicRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	list := func(uri string, headers map[string]string) *fasthttp.RequestCtx {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.Header.Set("x-bf-direct-key", "true")
+		for k, v := range headers {
+			ctx.Request.Header.Set(k, v)
+		}
+		r.Handler(&ctx)
+		return &ctx
+	}
+
+	ctx := list("/openai/v1/models", map[string]string{"Authorization": "Bearer sk-caller-openai"})
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Equal(t, map[string][]string{"openai": {"Bearer sk-caller-openai"}}, take(), "the caller's OpenAI key must reach OpenAI only")
+
+	ctx = list("/anthropic/v1/models", map[string]string{"x-api-key": "sk-caller-anthropic"})
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Equal(t, map[string][]string{"anthropic": {"sk-caller-anthropic"}}, take(), "the caller's Anthropic key must reach Anthropic only")
+
+	ctx = list("/openai/v1/models", map[string]string{"Authorization": "Bearer sk-caller-openai", "x-bf-model-provider": "all"})
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Contains(t, string(ctx.Response.Body()), "must name its provider")
+	require.Empty(t, take(), "a refused listing must reach no provider")
+
+	// The same route on a gateway where its provider is not configured has no provider to ask.
+	anthropicOnly := router.New()
+	NewOpenAIRouter(client, directKeyHandlerStore{&mockHandlerStore{availableProviders: []schemas.ModelProvider{schemas.Anthropic}}}, nil, &testLogger{}).RegisterRoutes(anthropicOnly, identity)
+	var unconfigured fasthttp.RequestCtx
+	unconfigured.Request.Header.SetMethod(fasthttp.MethodGet)
+	unconfigured.Request.SetRequestURI("/openai/v1/models")
+	unconfigured.Request.Header.Set("x-bf-direct-key", "true")
+	unconfigured.Request.Header.Set("Authorization", "Bearer sk-caller-openai")
+	anthropicOnly.Handler(&unconfigured)
+	require.Equal(t, fasthttp.StatusBadRequest, unconfigured.Response.StatusCode(), "body: %s", unconfigured.Response.Body())
+	require.Contains(t, string(unconfigured.Response.Body()), "provider openai is not configured")
+	require.Empty(t, take(), "a listing for an unconfigured provider must reach no provider")
+}
+
 // The Bedrock passthrough is a restricted route: it targets the Bedrock provider and is mounted
 // at /bedrock_passthrough, so it can never be mistaken for the native /bedrock integration.
 func TestBedrockPassthroughRouterTargetsBedrockAtItsOwnPrefix(t *testing.T) {

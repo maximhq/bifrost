@@ -204778,6 +204778,171 @@
           }
         }
       ]
+    },
+    {
+      "name": "170. A direct key never fans out on a model listing (direct-key-model-listing)",
+      "description": "A direct key (x-bf-direct-key: true plus the caller's own provider key, enabled by client.allow_direct_keys) belongs to one provider. A model listing that named no provider asked every configured provider and selected the direct key in place of each provider's own keys, so one SDK models.list() call sent the caller's OpenAI key to Anthropic, Gemini, every custom provider's upstream and the rest.\n\nThe listing across every provider is now refused with 400 (GET /v1/models without ?provider=, or x-bf-model-provider: all), and a drop-in route lists only its own provider: /openai/v1/models asks OpenAI, /anthropic/v1/models asks Anthropic, and a route whose provider is not configured answers 400. Each row sends a throwaway key no provider accepts, so the provider's own 401 shows which one was asked. Every request is a free model listing. Run with FEATURE=\"direct-key-model-listing\".",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai direct key: GET /v1/models without a provider is refused - direct-key-model-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('directKeyProbe', 'sk-harness-direct-key-probe-' + pm.variables.replaceIn('{{$guid}}'));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "var msg = JSON.stringify(j.error || j);",
+                  "pm.test('a listing across every provider with a direct key is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'the direct key must not be sent to every provider: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(msg, pm.response.text()).to.include('must name its provider');",
+                  "});",
+                  "// x-bf-model-provider: all asks for the same fan-out on a drop-in route.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/openai/v1/models', method: 'GET', header: { 'x-bf-direct-key': 'true', 'Authorization': 'Bearer ' + pm.collectionVariables.get('directKeyProbe'), 'x-bf-model-provider': 'all' } }, function (err, res) {",
+                  "  pm.test('x-bf-model-provider: all with a direct key is refused with 400', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(400);",
+                  "    pm.expect(res.text()).to.include('must name its provider');",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{directKeyProbe}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openai direct key: /openai/v1/models asks only OpenAI - direct-key-model-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('directKeyProbe', 'sk-harness-direct-key-probe-' + pm.variables.replaceIn('{{$guid}}'));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the listing asks only openai, which rejects the probe key with 401', function () {",
+                  "  pm.expect(pm.response.code, 'the key must reach openai alone: ' + pm.response.text()).to.eql(401);",
+                  "  pm.expect(pm.response.text(), 'expected the rejection openai itself sends').to.include('Incorrect API key');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{directKeyProbe}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] anthropic direct key: /anthropic/v1/models asks only Anthropic - direct-key-model-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('directKeyProbe', 'sk-harness-direct-key-probe-' + pm.variables.replaceIn('{{$guid}}'));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the listing asks only anthropic, which rejects the probe key with 401', function () {",
+                  "  pm.expect(pm.response.code, 'the key must reach anthropic alone: ' + pm.response.text()).to.eql(401);",
+                  "  pm.expect(pm.response.text(), 'expected the rejection anthropic itself sends').to.include('authentication_error');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{directKeyProbe}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

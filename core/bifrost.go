@@ -590,6 +590,22 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		ctx = bifrost.ctx
 	}
 
+	// A direct key is the caller's own credential for one provider. Every provider's poll below
+	// would select it in place of that provider's keys and send it upstream, so a request carrying
+	// one has to name the provider it belongs to.
+	if _, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     schemas.Ptr(400),
+			Error: &schemas.ErrorField{
+				Message: "a request with a direct key must name its provider: listing models from every provider would send the key to each of them",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ListModelsRequest,
+			},
+		}
+	}
+
 	providerKeys, err := bifrost.GetConfiguredProviders()
 	if err != nil {
 		return nil, &schemas.BifrostError{
