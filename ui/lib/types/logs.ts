@@ -876,7 +876,9 @@ export interface LogFilters {
 	tool_call_names?: string[]; // Requests whose response called any of these function names
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
 	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, jev, llm, session, skipped)
+	agent_names?: string[]; // Registered Agents whose context IDs correlate the matching logs
 	session_id?: string; // Exact session ID used for key stickiness and request correlation
+	agent_correlation_id?: string; // Exact Agent correlation ID shared across related protocol activity
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
@@ -1444,6 +1446,7 @@ export interface MCPToolLogEntry {
 	source?: string;
 	id: string;
 	llm_request_id?: string; // Links to the LLM request that triggered this tool call
+	session_id?: string;
 	timestamp: string; // ISO string format
 	tool_name: string;
 	server_label?: string; // MCP server that provided the tool
@@ -1478,6 +1481,9 @@ export interface MCPToolLogFilters {
 	status?: string[];
 	virtual_key_ids?: string[];
 	llm_request_ids?: string[];
+	agent_names?: string[];
+	session_id?: string;
+	agent_correlation_id?: string;
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
 	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time

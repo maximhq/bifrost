@@ -304,6 +304,39 @@ func TestAgentLogLatencyBreakdownRoundTrip(t *testing.T) {
 	require.Equal(t, breakdown, result.Logs[0].OverheadBreakdown)
 }
 
+func TestListAgentLogOperationsGroupsScopedEventsOutsideRequestWindow(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AgentLog{}))
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	now := time.Now().UTC()
+	alice, bob := "alice", "bob"
+	requestBody := `{"message":{"parts":[{"text":"question"}]}}`
+	earlyEventBody := `{"artifactUpdate":{"artifact":{"artifactId":"answer","parts":[{"text":"first"}]}}}`
+	lateEventBody := `{"artifactUpdate":{"artifact":{"artifactId":"answer","parts":[{"text":"second"}]},"append":true}}`
+	foreignEventBody := `{"artifactUpdate":{"artifact":{"artifactId":"answer","parts":[{"text":"secret"}]}}}`
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(context.Background(), []*AgentLog{
+		{ID: "alice-request", Timestamp: now, RecordKind: "request", Operation: "SendStreamingMessage", Status: "success", AgentName: "fixture", RequestID: "request-1", UserID: &alice, RequestBody: &requestBody},
+		{ID: "alice-early", Timestamp: now.Add(-time.Minute), RecordKind: "event", Operation: "SendStreamingMessage", Status: "success", AgentName: "fixture", RequestID: "request-1", UserID: &alice, EventBody: &earlyEventBody},
+		{ID: "alice-late", Timestamp: now.Add(time.Minute), RecordKind: "event", Operation: "SendStreamingMessage", Status: "success", AgentName: "fixture", RequestID: "request-1", UserID: &alice, EventBody: &lateEventBody},
+		{ID: "bob-event", Timestamp: now.Add(time.Second), RecordKind: "event", Operation: "SendStreamingMessage", Status: "success", AgentName: "fixture", RequestID: "request-1", UserID: &bob, EventBody: &foreignEventBody},
+		{ID: "unselected-request", Timestamp: now.Add(-time.Hour), RecordKind: "request", Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "request-2", UserID: &alice},
+		{ID: "unselected-event", Timestamp: now.Add(time.Second), RecordKind: "event", Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "request-2", UserID: &alice, EventBody: &lateEventBody},
+	})))
+	ctx := queryscope.WithQueryScope(context.Background(), func(db *gorm.DB) *gorm.DB {
+		return db.Where("user_id = ?", alice)
+	})
+	start, end := now.Add(-time.Second), now.Add(time.Second)
+
+	result, err := store.ListAgentLogOperations(ctx, AgentLogHistoryFilter{StartTime: &start, EndTime: &end}, PaginationOptions{Limit: 1, Order: "desc"})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, result.Pagination.TotalCount)
+	require.Len(t, result.Logs, 1)
+	require.Equal(t, "alice-request", result.Logs[0].ID)
+	require.Equal(t, []string{"alice-early", "alice-late"}, []string{result.Logs[0].Events[0].ID, result.Logs[0].Events[1].ID})
+	require.Equal(t, earlyEventBody, *result.Logs[0].Events[0].EventBody)
+}
+
 func TestListAgentLogHistoryAppliesScopeBeforeCountAndPagination(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)

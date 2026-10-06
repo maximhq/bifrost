@@ -1570,6 +1570,46 @@ func (h *HybridLogStore) ListAgentLogHistory(ctx context.Context, filter AgentLo
 	return h.inner.ListAgentLogHistory(ctx, filter, pagination)
 }
 
+// ListAgentLogOperations hydrates payload objects for the bounded operation page.
+func (h *HybridLogStore) ListAgentLogOperations(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogOperationResult, error) {
+	result, err := h.inner.ListAgentLogOperations(ctx, filter, pagination)
+	if err != nil {
+		return nil, err
+	}
+	for i := range result.Logs {
+		h.hydrateAgentLogDetail(ctx, &result.Logs[i].AgentLogDetail)
+		for j := range result.Logs[i].Events {
+			h.hydrateAgentLogDetail(ctx, &result.Logs[i].Events[j])
+		}
+	}
+	return result, nil
+}
+
+// FindAgentLogOperation hydrates the request and correlated event payload objects.
+func (h *HybridLogStore) FindAgentLogOperation(ctx context.Context, id string) (*AgentLogOperation, error) {
+	operation, err := h.inner.FindAgentLogOperation(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	h.hydrateAgentLogDetail(ctx, &operation.AgentLogDetail)
+	for i := range operation.Events {
+		h.hydrateAgentLogDetail(ctx, &operation.Events[i])
+	}
+	return operation, nil
+}
+
+// hydrateAgentLogDetail hydrates one public detail through the existing Agent log object path.
+func (h *HybridLogStore) hydrateAgentLogDetail(ctx context.Context, detail *AgentLogDetail) {
+	if !detail.hasObject || detail.contentHidden {
+		return
+	}
+	entry := &AgentLog{ID: detail.ID, Timestamp: detail.Timestamp, HasObject: detail.hasObject, ContentHidden: detail.contentHidden, PayloadReference: detail.payloadReference}
+	h.hydrateAgentLog(ctx, entry)
+	detail.RequestBody = entry.RequestBody
+	detail.ResponseBody = entry.ResponseBody
+	detail.EventBody = entry.EventBody
+}
+
 func (h *HybridLogStore) hydrateAgentLog(ctx context.Context, entry *AgentLog) {
 	if entry == nil || !entry.HasObject || entry.ContentHidden {
 		return
