@@ -224,5 +224,10 @@ func (m *liveWebRTCMessages) browserGone(_ *webrtcRelay) {
 
 // closed bills what OpenAI last reported when the relay ends before session.closed.
 func (m *liveWebRTCMessages) closed() {
+	// A relay closed during setup never ran a session: establishment then fails and the create
+	// handler aborts the meter with the failure, instead of finish billing a minimum as a success.
+	if m.relay.closedDuringSetup() {
+		return
+	}
 	m.upstreamEnded()
 }

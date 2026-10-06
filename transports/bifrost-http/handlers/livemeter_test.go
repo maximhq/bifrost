@@ -310,6 +310,19 @@ func TestLiveMeterSwitchBackend(t *testing.T) {
 	runner.setRefuse(true)
 	require.NotNil(t, meter.switchBackend("gpt-5.6-sol"))
 	assert.Equal(t, "gpt-5.6-terra", meter.activeBackend)
+
+	// A switch that lands after the session ended opens nothing: finish ran its post-hooks already
+	// and never runs again, so a unit opened now would leak its pipeline.
+	runner.setRefuse(false)
+	meter.finish(10)
+	opens, _, cleanups := runner.snapshot()
+	bifrostErr := meter.switchBackend("gpt-5.6-nova")
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "ended")
+	opensAfter, _, cleanupsAfter := runner.snapshot()
+	assert.Len(t, opensAfter, len(opens), "no unit is opened on a finished meter")
+	assert.Equal(t, cleanups, cleanupsAfter)
+	assert.Equal(t, "gpt-5.6-terra", meter.activeBackend)
 }
 
 func TestLiveMeterStaleCheckReadmitsWithoutEstimating(t *testing.T) {

@@ -1323,8 +1323,8 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// Set by core on every retry iteration.
 		attemptNumber := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 		routingMetadata, _ := schemas.InitialAttemptRoutingMetadataFromContext(ctx)
-		// A session continuation bills its usage but was already counted as a request at admission.
-		sessionContinuation := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySessionContinuation)
+		// A live session's continuation bills its usage but was already counted as a request at admission.
+		sessionContinuation := isLiveSessionContinuation(ctx)
 
 		p.wg.Add(1)
 		go func() {

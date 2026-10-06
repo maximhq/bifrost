@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +25,8 @@ import (
 type fakeOpenAI struct {
 	srv      *http.Server
 	upgrader websocket.Upgrader
+
+	refuseStatus atomic.Int32 // when set, every primary dial and WebRTC create is refused with it
 
 	mu             sync.Mutex
 	run            string // per-process nonce: ids stay unique across runs against the same gateway
@@ -50,7 +54,10 @@ type fakeSession struct {
 	conns   []fakeConn
 	frames  []gjson.Result
 	seconds float64
-	closed  bool
+
+	recordingBytes int           // a recording of this size replaces the one-second default
+	recordingPace  time.Duration // pause between 1 MiB chunks of a large recording
+	closed         bool
 }
 
 // fakeConn is one connection of a session: a WebSocket, or a WebRTC data channel.
@@ -198,6 +205,10 @@ func (f *fakeOpenAI) lookup(id string) *fakeSession {
 
 // servePrimary is the WebSocket a session lives on: session.start first, then the conversation.
 func (f *fakeOpenAI) servePrimary(w http.ResponseWriter, r *http.Request) {
+	if status := int(f.refuseStatus.Load()); status != 0 {
+		writeOpenAIError(w, status, "server_error", "the provider refused the session")
+		return
+	}
 	auth := r.Header.Get("Authorization")
 	conn, err := f.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -218,6 +229,10 @@ func (f *fakeOpenAI) servePrimary(w http.ResponseWriter, r *http.Request) {
 	s.readLoop(conn, c)
 }
 
+// SetRefuse makes the fake refuse every primary dial and WebRTC create with status until it is
+// called with 0. It is process-wide, so only a test that does not run in parallel may use it.
+func (f *fakeOpenAI) SetRefuse(status int) { f.refuseStatus.Store(int32(status)) }
+
 // serveAttach is a sideband: only a WebRTC (or SIP) primary accepts one, as OpenAI does.
 func (f *fakeOpenAI) serveAttach(w http.ResponseWriter, r *http.Request, id string) {
 	s := f.lookup(id)
@@ -237,6 +252,10 @@ func (f *fakeOpenAI) serveAttach(w http.ResponseWriter, r *http.Request, id stri
 
 // serveWebRTCCreate answers Bifrost's SDP offer with a pion peer and waits for its data channel.
 func (f *fakeOpenAI) serveWebRTCCreate(w http.ResponseWriter, r *http.Request) {
+	if status := int(f.refuseStatus.Load()); status != 0 {
+		writeOpenAIError(w, status, "server_error", "the provider refused the session")
+		return
+	}
 	var body struct {
 		Session   json.RawMessage `json:"session"`
 		Transport struct {
@@ -332,7 +351,42 @@ func (f *fakeOpenAI) serveContent(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 	w.Header().Set("Content-Type", "audio/wav")
-	_, _ = w.Write(fakeRecording())
+	s.mu.Lock()
+	size, pace := s.recordingBytes, s.recordingPace
+	s.mu.Unlock()
+	if size == 0 {
+		_, _ = w.Write(fakeRecording())
+		return
+	}
+	// A long call's recording: the header, then silence in paced chunks so a gateway that waits
+	// for the whole body is told apart from one that relays it as it arrives.
+	w.Header().Set("Content-Length", strconv.Itoa(size))
+	flusher, _ := w.(http.Flusher)
+	header := fakeRecording()[:44]
+	binary.LittleEndian.PutUint32(header[4:], uint32(size-8))
+	binary.LittleEndian.PutUint32(header[40:], uint32(size-44))
+	if _, err := w.Write(header); err != nil {
+		return
+	}
+	chunk := make([]byte, 1<<20)
+	for written := len(header); written < size; {
+		n := min(len(chunk), size-written)
+		if _, err := w.Write(chunk[:n]); err != nil {
+			return
+		}
+		written += n
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(pace)
+	}
+}
+
+// SetRecording makes the session's recording size bytes long, written in paced 1 MiB chunks.
+func (s *fakeSession) SetRecording(size int, pace time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordingBytes, s.recordingPace = size, pace
 }
 
 // fakeRecording is one second of 24 kHz mono silence as a WAV file.

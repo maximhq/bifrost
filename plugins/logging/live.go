@@ -131,7 +131,8 @@ func (p *LoggerPlugin) postLiveUnit(ctx *schemas.BifrostContext, kind string, re
 		return result, bifrostErr, nil
 	}
 	p.pendingLogsEntries.Delete(sessionID)
-	p.enqueueLogEntry(p.buildLiveSessionEntry(ctx, pending, result, contentLoggingEnabled, shouldStoreRaw), p.makePostWriteCallback(nil))
+	// The same policy path as every row: content hidden or retained per the caller's settings.
+	p.storeOrEnqueueEntry(ctx, p.buildLiveSessionEntry(ctx, pending, result, contentLoggingEnabled, shouldStoreRaw), p.makePostWriteCallback(nil))
 	return result, bifrostErr, nil
 }
 
@@ -221,6 +222,14 @@ func (p *LoggerPlugin) buildLiveSessionEntry(ctx *schemas.BifrostContext, pendin
 	if result != nil && result.LiveSession != nil {
 		copied := *result.LiveSession
 		session = &copied
+	}
+	// A session aborted before it ran closes with an error and no response; the meter stamps
+	// the session facts on every unit's context, so the row still names how it was connected.
+	if session.Transport == "" {
+		session.Transport, _ = ctx.Value(schemas.BifrostContextKeyRealtimeTransport).(string)
+	}
+	if session.ProviderSessionID == "" {
+		session.ProviderSessionID, _ = ctx.Value(schemas.BifrostContextKeyRealtimeProviderSessionID).(string)
 	}
 	session.VoiceSeconds = state.voiceSeconds
 	if state.voiceCost > 0 {

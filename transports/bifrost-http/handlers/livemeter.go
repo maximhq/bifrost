@@ -226,6 +226,13 @@ func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse
 func (m *liveMeter) switchBackend(model string) *schemas.BifrostError {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// finish ran the open units' post-hooks and never runs again, so a unit opened now would leak.
+	if m.finished {
+		return newRealtimeWireBifrostError(409, "invalid_request_error", "the live session has ended")
+	}
+	if m.refusal != nil {
+		return m.refusal
+	}
 	if _, open := m.backends[model]; !open {
 		if bifrostErr := m.openBackendLane(model); bifrostErr != nil {
 			return bifrostErr

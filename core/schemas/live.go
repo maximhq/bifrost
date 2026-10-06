@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/tidwall/gjson"
 )
@@ -297,11 +298,14 @@ type BifrostLiveContentRequest struct {
 	SessionID string        `json:"session_id"`
 }
 
-// LiveContentResponse is a session recording: stereo WAV, caller left and assistant right.
+// LiveContentResponse is a session recording: stereo WAV, caller left and assistant right. Body
+// streams it from the provider; closing Body releases the upstream response. ContentLength is 0
+// when the provider did not state one.
 type LiveContentResponse struct {
-	SessionID   string `json:"session_id"`
-	Content     []byte `json:"-"`
-	ContentType string `json:"content_type,omitempty"`
+	SessionID     string        `json:"session_id"`
+	Body          io.ReadCloser `json:"-"`
+	ContentType   string        `json:"content_type,omitempty"`
+	ContentLength int64         `json:"content_length,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

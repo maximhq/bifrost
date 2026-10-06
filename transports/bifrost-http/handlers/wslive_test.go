@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -295,6 +296,22 @@ func TestReadLiveSessionStart(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+
+	// The cap is the connection's read limit: an oversized frame fails the read at the limit
+	// instead of being buffered whole and then measured. The sender's write outlives that read
+	// (nothing drains the rest), so it runs aside and is released by closing its socket.
+	t.Run("oversized", func(t *testing.T) {
+		bifrostSide, app, cleanup := dialRealtimeTestConn(t)
+		defer cleanup()
+		oversized := `{"type":"session.start","session":{"model":"gpt-live-1","instructions":"` + strings.Repeat("a", liveMaxFrameBytes) + `"}}`
+		written := make(chan error, 1)
+		go func() { written <- app.WriteMessage(ws.TextMessage, []byte(oversized)) }()
+		_, _, err := readLiveSessionStart(newRealtimeClientConn(bifrostSide))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read limit")
+		_ = app.Close()
+		<-written
+	})
 
 	bifrostSide, app, cleanup := dialRealtimeTestConn(t)
 	defer cleanup()

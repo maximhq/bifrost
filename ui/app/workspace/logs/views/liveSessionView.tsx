@@ -6,11 +6,13 @@ import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { LiveDelegationLog, LiveSessionLog, LiveTranscriptLine, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
+import { applyRedactionMapping } from "@/lib/utils/redaction";
 
 import { ResponsesItemRow, extractReasoningParts } from "./responsesItemRow";
 
 interface LiveSessionViewProps {
 	session: LiveSessionLog;
+	mapping?: Record<string, string>; // the reveal mapping the detail view holds for this row
 }
 
 // formatClock renders a point on the session timeline as m:ss.
@@ -34,7 +36,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 	);
 }
 
-function TranscriptLine({ line, last }: { line: LiveTranscriptLine; last: boolean }) {
+function TranscriptLine({ line, last, mapping }: { line: LiveTranscriptLine; last: boolean; mapping?: Record<string, string> }) {
 	const assistant = line.role === "assistant";
 	const range = line.start_ms !== undefined ? `${formatClock(line.start_ms)}–${formatClock(line.end_ms)}` : "";
 	return (
@@ -56,7 +58,7 @@ function TranscriptLine({ line, last }: { line: LiveTranscriptLine; last: boolea
 							: "bg-blue-50/60 border-blue-200 dark:bg-blue-950/30 dark:border-blue-900",
 					)}
 				>
-					{line.text}
+					{applyRedactionMapping(line.text, mapping)}
 				</div>
 			</div>
 		</div>
@@ -88,7 +90,7 @@ function hasVisibleContent(item: ResponsesMessage): boolean {
 
 // DelegationCard is one task the backend ran for the session: when, on which model, what it
 // cost, and its items on the same timeline the Responses view draws.
-function DelegationCard({ delegation }: { delegation: LiveDelegationLog }) {
+function DelegationCard({ delegation, mapping }: { delegation: LiveDelegationLog; mapping?: Record<string, string> }) {
 	const usage = delegation.usage;
 	const tokens = usage ? `${formatCompactNumber(usage.prompt_tokens)} in / ${formatCompactNumber(usage.completion_tokens)} out` : "";
 	const cost = delegation.cost !== undefined ? formatCost(delegation.cost) : "";
@@ -112,7 +114,7 @@ function DelegationCard({ delegation }: { delegation: LiveDelegationLog }) {
 			{items.length > 0 ? (
 				<div className="bg-card rounded-sm border p-5">
 					{items.map((item, index) => (
-						<ResponsesItemRow key={item.id ?? index} msg={item} last={index === items.length - 1} />
+						<ResponsesItemRow key={item.id ?? index} msg={item} mapping={mapping} last={index === items.length - 1} />
 					))}
 				</div>
 			) : !delegation.error ? (
@@ -131,7 +133,7 @@ function DelegationCard({ delegation }: { delegation: LiveDelegationLog }) {
 
 // LiveSessionView is the detail panel of a GPT Live session: how it ran, the conversation on
 // its timeline, and every call the backend made on its behalf.
-export default function LiveSessionView({ session }: LiveSessionViewProps) {
+export default function LiveSessionView({ session, mapping }: LiveSessionViewProps) {
 	const transcript = session.transcript ?? [];
 	const delegations = session.delegations ?? [];
 	const voiceCost = session.voice_cost ?? 0;
@@ -162,7 +164,12 @@ export default function LiveSessionView({ session }: LiveSessionViewProps) {
 					<div className="border-b px-6 py-2 text-sm font-medium">Transcript</div>
 					<div className="p-6">
 						{transcript.map((line, index) => (
-							<TranscriptLine key={`${line.start_ms ?? index}-${index}`} line={line} last={index === transcript.length - 1} />
+							<TranscriptLine
+								key={`${line.start_ms ?? index}-${index}`}
+								line={line}
+								mapping={mapping}
+								last={index === transcript.length - 1}
+							/>
 						))}
 					</div>
 				</div>
@@ -173,7 +180,7 @@ export default function LiveSessionView({ session }: LiveSessionViewProps) {
 					<div className="border-b px-6 py-2 text-sm font-medium">Delegations</div>
 					<div className="divide-y">
 						{delegations.map((delegation) => (
-							<DelegationCard key={delegation.request_id} delegation={delegation} />
+							<DelegationCard key={delegation.request_id} delegation={delegation} mapping={mapping} />
 						))}
 					</div>
 				</div>

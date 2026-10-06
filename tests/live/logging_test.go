@@ -1,10 +1,13 @@
 package live
 
 import (
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Logging: one row per session, carrying everything the panel shows, on both transports.
@@ -70,4 +73,33 @@ func TestLogging_ErrorSessionKeepsItsRow(t *testing.T) {
 		assert.Equal(t, 20.0, row.Get("token_usage.audio_seconds").Float())
 		require.Len(t, row.Get("live_session.transcript").Array(), 1, "what was said before the drop is kept")
 	})
+}
+
+// A session the provider refuses before it runs is an error row that bills nothing: the dial or
+// create failed, so no transport minimum applies. The fake's refusal is process-wide, so this test
+// runs alone, before the parallel ones.
+func TestLogging_SetupFailureIsAnErrorRow(t *testing.T) {
+	requireFake(t)
+	for _, tr := range transports {
+		t.Run(string(tr), func(t *testing.T) {
+			vk := createVirtualKey(t, virtualKeySpec{})
+			fake.SetRefuse(http.StatusServiceUnavailable)
+			t.Cleanup(func() { fake.SetRefuse(0) })
+			refusal := openRefused(t, tr, clientOptions{headers: vkHeaders(vk), session: sessionFor(t, voiceModel, backendModel, nil)})
+			assert.NotEmpty(t, errorMessage(refusal))
+			fake.SetRefuse(0)
+
+			var rows []gjson.Result
+			deadline := time.Now().Add(rowWaitTimeout)
+			for len(rows) == 0 && time.Now().Before(deadline) {
+				rows = liveLogRowsForVirtualKey(t, vk.ID)
+				time.Sleep(300 * time.Millisecond)
+			}
+			require.Len(t, rows, 1, "a refused setup logs one row")
+			row := rows[0]
+			assert.Equal(t, "error", row.Get("status").Str, "the provider's refusal is the session's outcome")
+			assert.Equal(t, 0.0, row.Get("token_usage.audio_seconds").Float(), "no transport minimum is billed for a session that never ran")
+			assert.Equal(t, 0.0, row.Get("cost").Float())
+		})
+	}
 }
