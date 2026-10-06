@@ -195,3 +195,80 @@ func TestLargeRequestPassthroughPreservesRawCacheCounterPresence(t *testing.T) {
 		})
 	}
 }
+
+// TestOrdinaryUnaryResponsesPreservesRawCacheCounterPresence covers the plain
+// unary path, which the large-payload test above does not reach: that one needs
+// BifrostContextKeyLargePayloadMode to take the passthrough shortcut, so the
+// request every ordinary caller makes was going unasserted. Post hooks read
+// ExtraFields.RawResponsesCacheCountersKnown, and WithDefaults materializes an
+// absent detail object, so once defaults have run the only remaining record of
+// whether the upstream actually reported cache counters is this flag.
+func TestOrdinaryUnaryResponsesPreservesRawCacheCounterPresence(t *testing.T) {
+	tests := []struct {
+		name         string
+		usageDetails string
+		want         bool
+	}{
+		{"present even when empty", `,"input_tokens_details":{}`, true},
+		{"missing before defaults", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, err := io.Copy(io.Discard, r.Body); err != nil {
+					http.Error(w, "request read failed", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"resp_ordinary","object":"response","status":"completed","model":"gpt-test","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2` + tt.usageDetails + `}}`))
+			}))
+			defer server.Close()
+
+			// No large-payload keys: this is the ordinary typed request path, which
+			// converts and marshals the request rather than streaming a raw body
+			// through, so it needs a real Input.
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			request := &schemas.BifrostResponsesRequest{
+				Model: "gpt-test",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("ordinary request")},
+				}},
+			}
+
+			response, bifrostErr := HandleOpenAIResponsesRequest(
+				ctx,
+				&fasthttp.Client{},
+				server.URL,
+				request,
+				nil,
+				nil,
+				false,
+				false,
+				schemas.OpenAI,
+				nil,
+				nil,
+				nil,
+				testNoopLogger{},
+			)
+			if bifrostErr != nil {
+				t.Fatalf("ordinary Responses request failed: %v", bifrostErr)
+			}
+			if response == nil {
+				t.Fatal("expected a typed response")
+			}
+			known := response.ExtraFields.RawResponsesCacheCountersKnown
+			if known == nil {
+				t.Fatal("raw cache-counter knownness is nil; want it recorded on the ordinary unary path")
+			}
+			if *known != tt.want {
+				t.Fatalf("raw cache-counter knownness = %t, want %t", *known, tt.want)
+			}
+			normalized := response.WithDefaults()
+			if normalized.Usage == nil || normalized.Usage.InputTokensDetails == nil {
+				t.Fatal("expected WithDefaults to materialize input token details")
+			}
+		})
+	}
+}
