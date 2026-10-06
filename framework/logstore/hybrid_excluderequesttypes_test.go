@@ -122,7 +122,24 @@ func TestConfig_UnmarshalObjectStorageExcludeRequestTypes(t *testing.T) {
 	assert.Equal(t, []string{"list_models"}, cfg.ObjectStorageExcludeRequestTypes)
 }
 
-func TestHybrid_ExcludeRequestTypes_HiddenContentNotKeptInDB(t *testing.T) {
+func TestHybrid_ExcludeRequestTypes_VisibleLogKeepsSearchSummary(t *testing.T) {
+	hybrid, inner, _ := newTestHybridWithExcludedRequestTypes(t, []string{string(schemas.ListModelsRequest)})
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	require.NoError(t, hybrid.Create(ctx, newRequestTypeTestLog(t, "lm-1", string(schemas.ListModelsRequest))))
+	require.NoError(t, hybrid.BatchCreateIfNotExists(ctx, []*Log{newRequestTypeTestLog(t, "lm-2", string(schemas.ListModelsRequest))}))
+
+	for _, id := range []string{"lm-1", "lm-2"} {
+		row, err := inner.FindByID(ctx, id)
+		require.NoError(t, err)
+		assert.Contains(t, row.ContentSummary, "hello "+id, "excluded logs must stay searchable by message text")
+	}
+}
+
+// Hidden logs ignore the request-type exclusion, as they ignore the field
+// exclusion list: content is offloaded as hidden and never kept in the DB row.
+func TestHybrid_ExcludeRequestTypes_HiddenContentStillOffloaded(t *testing.T) {
 	hybrid, inner, objStore := newTestHybridWithExcludedRequestTypes(t, []string{"chat.completion"})
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
@@ -135,16 +152,24 @@ func TestHybrid_ExcludeRequestTypes_HiddenContentNotKeptInDB(t *testing.T) {
 	require.NoError(t, hybrid.BatchCreateIfNotExists(ctx, []*Log{batched}))
 
 	for _, id := range []string{"hidden-1", "hidden-2"} {
+		waitForOffload(t, inner, id)
 		row, err := inner.FindByID(ctx, id)
 		require.NoError(t, err)
 		assert.True(t, row.ContentHidden)
-		assert.False(t, row.HasObject)
+		assert.True(t, row.HasObject, "hidden content must be retained in object storage")
 		assert.Empty(t, row.InputHistory)
 		assert.Empty(t, row.OutputMessage)
 		assert.Empty(t, row.EmbeddingInput)
 		assert.Empty(t, row.ContentSummary)
 	}
-	assert.Equal(t, 0, objStore.Len())
+	assert.Equal(t, 2, objStore.Len())
+	for _, key := range objStore.Keys() {
+		data, err := objStore.Get(ctx, key)
+		require.NoError(t, err)
+		var payload map[string]string
+		require.NoError(t, json.Unmarshal(data, &payload))
+		assert.NotEmpty(t, payload["output_message"], "hidden payload must be uploaded in full")
+	}
 	// The caller's entry is not mutated.
 	assert.NotNil(t, single.OutputMessageParsed)
 }

@@ -350,32 +350,21 @@ func (h *HybridLogStore) extractUploadPayload(entry *Log) map[string]string {
 	return ExtractPayloadFiltered(entry, h.excludedPayloadFields)
 }
 
-// skipsOffload reports whether entry's request type is excluded from object storage.
+// skipsOffload reports whether entry's request type is excluded from object
+// storage. Excluded entries are written to the inner store unchanged, which
+// builds their content summary on write. Hidden entries are always offloaded:
+// their content may only live in object storage, never in the DB row.
 func (h *HybridLogStore) skipsOffload(entry *Log) bool {
+	if entry.ContentHidden {
+		return false
+	}
 	_, ok := h.excludedRequestTypes[entry.Object]
 	return ok
 }
 
-// excludedDBEntry returns the row to write for an entry that is not offloaded. Hidden entries are cleared, since their content may only live in object storage.
-func excludedDBEntry(entry *Log) (*Log, error) {
-	if !entry.ContentHidden {
-		return entry, nil
-	}
-	if err := entry.SerializeFields(); err != nil {
-		return nil, fmt.Errorf("logstore: serialize before extract: %w", err)
-	}
-	dbEntry := *entry
-	prepareDBEntry(&dbEntry, nil)
-	return &dbEntry, nil
-}
-
 func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	if h.skipsOffload(entry) {
-		dbEntry, err := excludedDBEntry(entry)
-		if err != nil {
-			return err
-		}
-		return h.inner.Create(ctx, dbEntry)
+		return h.inner.Create(ctx, entry)
 	}
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
@@ -398,11 +387,7 @@ func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 // Same payload-stripping and shallow-copy semantics as Create.
 func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
 	if h.skipsOffload(entry) {
-		dbEntry, err := excludedDBEntry(entry)
-		if err != nil {
-			return err
-		}
-		return h.inner.CreateIfNotExists(ctx, dbEntry)
+		return h.inner.CreateIfNotExists(ctx, entry)
 	}
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
@@ -442,11 +427,7 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 			continue
 		}
 		if h.skipsOffload(entry) {
-			dbEntry, err := excludedDBEntry(entry)
-			if err != nil {
-				return err
-			}
-			dbEntries = append(dbEntries, dbEntry)
+			dbEntries = append(dbEntries, entry)
 			origEntries = append(origEntries, entry)
 			continue
 		}

@@ -3648,7 +3648,7 @@
         },
         "object_storage_exclude_request_types": {
           "type": "array",
-          "description": "Request types (log object type, e.g. list_models, embedding) whose logs are never offloaded to object storage. These logs are written to the logs database in full instead.",
+          "description": "Request types (log object type, e.g. list_models, embedding) whose logs are not offloaded to object storage. These logs are written to the logs database in full instead. Hidden logs (content logging disabled with client.retain_content_in_object_storage on) are still offloaded, so their content never lands in the database.",
           "items": {
             "type": "string"
           }
