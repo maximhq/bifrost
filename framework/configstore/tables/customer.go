@@ -26,6 +26,10 @@ type TableCustomer struct {
 	// count without carrying (or even loading) the full VirtualKeys relation.
 	VirtualKeyCount int `gorm:"-" json:"virtual_key_count"`
 
+	// TeamCount is the number of teams attached to this customer. Not persisted;
+	// the list read path sets it so the table can show a count without teams.
+	TeamCount int `gorm:"-" json:"team_count"`
+
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
 	// AccessProfile is a config-file-only field naming the enterprise access profile the customer holds
