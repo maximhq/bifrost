@@ -204784,7 +204784,7 @@
       ]
     },
     {
-      "name": "175. Model tags filter on /v1/models (model-tags)",
+      "name": "185. Model tags filter on /v1/models (model-tags)",
       "description": "PR #7945 returns operator-assigned model tags (set through PUT /api/models/tags) on GET /v1/models and filters that listing with tags=a,b (every listed tag must match). The filter runs in the gateway after the provider listing, is not forwarded upstream, and pagination is cut from the filtered list. These rows record openai/gpt-4o-mini's current tags, tag it, list with the filter (only tagged models, each carrying the tag), check the every-tag rule, then restore the recorded tags and confirm the filtered listing is empty. Before the PR /v1/models carries no tags and ignores the tags parameter, so the filter rows fail. Needs a config store (the default harness profile has one). The list calls hit the OpenAI models endpoint only; no tokens are spent.",
       "item": [
         {
