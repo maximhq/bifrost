@@ -518,6 +518,51 @@ func TestUpdateKeyStatus_SkipsWriteWhenUnchanged(t *testing.T) {
 	}
 }
 
+// TestUpdateKeyStatus_DoesNotMutateSharedKeys pins that a status update leaves
+// the Keys slice already handed out by GetProviderConfigRaw untouched. Core
+// iterates that slice on every key selection without holding Config.Mu, so an
+// in-place write races with in-flight requests (go test -race reports it when
+// model discovery runs alongside a list-models call at startup).
+func TestUpdateKeyStatus_DoesNotMutateSharedKeys(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	store := &updateStatusOnlyConfigStore{}
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ConfigStore: store,
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"openai": {
+					Keys: []schemas.Key{{ID: "key-1", Status: schemas.KeyStatusSuccess}},
+				},
+			},
+		},
+	}
+
+	before, err := server.Config.GetProviderConfigRaw("openai")
+	if err != nil {
+		t.Fatalf("GetProviderConfigRaw: %v", err)
+	}
+
+	server.updateKeyStatus(context.Background(), []schemas.KeyStatus{{
+		Provider: "openai",
+		KeyID:    "key-1",
+		Status:   schemas.KeyStatusListModelsFailed,
+		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream 503"}},
+	}})
+
+	if got := before.Keys[0].Status; got != schemas.KeyStatusSuccess {
+		t.Fatalf("expected previously returned keys to stay %q, got %q", schemas.KeyStatusSuccess, got)
+	}
+	if got := server.Config.Providers["openai"].Keys[0].Status; got != schemas.KeyStatusListModelsFailed {
+		t.Fatalf("expected in-memory status to become %q, got %q", schemas.KeyStatusListModelsFailed, got)
+	}
+	if got := server.Config.Providers["openai"].Keys[0].Description; got != "upstream 503" {
+		t.Fatalf("expected in-memory description to be updated, got %q", got)
+	}
+}
+
 // TestUpdateKeyStatus_WritesWhenKeyMissingFromMemory guards the fallback: with
 // nothing to compare against, the gate must let the write through rather than
 // silently swallowing it.
