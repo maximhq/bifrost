@@ -45,8 +45,13 @@ test.describe('Model Catalog Tags', () => {
       await expect(page.getByTestId('model-catalog-attribute-sheet')).toBeHidden()
       expect(await modelTags(request)).toEqual([...originalTags, tag].sort())
 
-      // The row shows the tag, and the tags filter keeps only models carrying it.
-      await expect(page.getByTestId(`model-catalog-tags-${ROW_KEY}`)).toContainText(tag)
+      // The row shows the tag, and the tags filter keeps only models carrying it. The cell shows
+      // two tags and folds the rest into a "+N" button, so the new tag is either a visible badge
+      // or listed in that button's accessible name.
+      const tagsCell = page.getByTestId(`model-catalog-tags-${ROW_KEY}`)
+      await expect(
+        tagsCell.getByText(tag, { exact: true }).or(tagsCell.getByRole('button', { name: tag })),
+      ).toBeVisible()
       await page.goto(`/workspace/model-catalog?tab=attributes&tags=${tag}`)
       await waitForNetworkIdle(page)
       const rows = page.getByTestId('model-catalog-attributes-table').locator('tbody tr')

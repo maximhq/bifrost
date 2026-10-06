@@ -148,7 +148,9 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 	const isLoading = isSavingAttributes || isSavingTags;
 
 	// Tags live in their own store (not on the pricing row), so any model can carry them.
-	const initialTags = model.tags ?? [];
+	// The saved tags are the baseline for tagsDirty. They move forward once a save writes them,
+	// so a retry after a failed attributes write does not send the same tags again.
+	const [initialTags, setInitialTags] = useState<string[]>(() => model.tags ?? []);
 	const [tags, setTags] = useState<string[]>(initialTags);
 	const tagsCheck = normalizeTags(tags);
 	const tagsDirty = JSON.stringify(tagsCheck.error ? tags : tagsCheck.tags) !== JSON.stringify(initialTags);
@@ -231,6 +233,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 			if (tagsDirty) {
 				await setModelTags([{ provider: model.provider, model: model.name, tags: tagsCheck.tags }]).unwrap();
 				tagsSaved = true;
+				setInitialTags(tagsCheck.tags);
 			}
 			if (attributesDirty) {
 				await upsertEntries([
