@@ -45,6 +45,7 @@ const (
 const (
 	ErrNotConfigured = "not_configured"
 	ErrUpstream      = "upstream_error"
+	ErrAccessDenied  = "access_denied"
 	ErrToolFailed    = "tool_error"
 	ErrMaxIterations = "max_iterations"
 	ErrTimeout       = "timeout"
@@ -650,15 +651,17 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			Params:   params,
 		})
 		if bifrostErr != nil {
-			code := ErrUpstream
+			code, message := ErrUpstream, errorMessage(bifrostErr)
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				code = ErrTimeout
 			} else if ctx.Err() != nil {
 				code = ErrCancelled
+			} else if refusal, refused := governanceRefusal(bifrostErr); refused {
+				code, message = ErrAccessDenied, refusal
 			}
 			// An error frame is terminal. Never emit done after it, or a client
 			// keyed on done reads a failed request as a successful one.
-			emit(Event{Type: EventError, Code: code, Message: errorMessage(bifrostErr), Usage: usage})
+			emit(Event{Type: EventError, Code: code, Message: message, Usage: usage})
 			return
 		}
 		// Counted before the reply is judged, so an empty one is still paid for
@@ -1087,6 +1090,36 @@ func errorMessage(err *schemas.BifrostError) string {
 		return err.Error.Message
 	}
 	return "the model provider returned an error"
+}
+
+// governanceRefusal reports whether a failed model call was refused by this
+// deployment's own governance rather than by the provider, and what to tell
+// the person asking.
+//
+// Warp's model calls are governed as whoever asked (see WithGrant), so a
+// signed-in user with no model access, an exhausted budget or a blocked model
+// is refused before any provider is reached. Reported as an upstream error,
+// that read as an outage and sent the reader to check the provider's key.
+//
+// The refusal's own reason is always kept: it is what an administrator needs.
+// The case of no access at all gets a sentence in front of it, because its
+// reason speaks of a revoked credential to someone who is signed in, and names
+// nothing they could ask for.
+func governanceRefusal(err *schemas.BifrostError) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	switch err.ExtraFields.ErrorType {
+	case schemas.ErrorTypePolicyAccessDenied:
+		if err.Type != nil && *err.Type == "access_not_found" {
+			return "Your account has no model access on this deployment, so Warp could not call its model for you. Ask an administrator to give you access, such as an access profile that allows Warp's model. Governance said: " + errorMessage(err), true
+		}
+	case schemas.ErrorTypePolicyBudgetExceeded, schemas.ErrorTypePolicyRateLimited,
+		schemas.ErrorTypePolicyModelBlocked, schemas.ErrorTypePolicyProviderBlocked:
+	default:
+		return "", false
+	}
+	return "This deployment's governance rules refused Warp's model call for your account: " + errorMessage(err), true
 }
 
 // responsesText concatenates the assistant prose in an output list.

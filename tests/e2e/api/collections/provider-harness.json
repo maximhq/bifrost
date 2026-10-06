@@ -175618,7 +175618,7 @@
       ]
     },
     {
-      "name": "119. Warp chats in-process with no base URL (warp-inprocess)",
+      "name": "119. Warp chats in-process with no base URL (warp-inprocess) [SERIAL]",
       "description": "Warp used to reach its model over HTTP: a private Bifrost instance whose OpenAI-transport provider pointed at base_url, which the dashboard defaulted to the page origin + /openai. Behind Tailscale, a reverse proxy or split DNS the server often cannot reach its own public origin, so Warp failed on exactly those deployments. Warp now calls the gateway client in-process and base_url is gone from the config API. These cases configure Warp with no base_url and ask one cheap question over the non-streaming chat route. Red before the change: with base_url empty the private instance called api.openai.com with a placeholder bearer, so the turn came back with error.code upstream. The log read pins that the in-process calls still carry Warp's labels (app Warp, grouped by the conversation's session id), which used to travel as HTTP headers. Requires the warp flag to be unlocked and the profile's vector store to be reachable; the flag and the previous Warp config are restored at the end.",
       "item": [
         {
@@ -184776,7 +184776,7 @@
       ]
     },
     {
-      "name": "131. Warp runs on one of several exposed models (warp-models)",
+      "name": "131. Warp runs on one of several exposed models (warp-models) [SERIAL]",
       "description": "Warp ran on exactly one provider and model, set in its config and used for every question. An administrator can now expose several: provider and model stay the default, additional_models lists the others, and POST /api/warp/chat may name any of them with provider and model. The pair is a selection among what the config exposes and nothing else: a pair that is not listed is refused with 400 before any model is called, and the provider key is always the configured entry's own, never something the request can name. These cases save a default (openai/gpt-4o-mini) with one additional model (openai/gpt-4.1-nano), ask one cheap question on the additional model, and read the log row back to pin that the call really went to it. Red before the change: the config write dropped additional_models, the chat body's provider and model were ignored so the turn ran on the default and was logged as gpt-4o-mini, and an unlisted model answered 200 on the default instead of 400. Writing the list is a config write, so it sits behind the existing admin gate on PUT /api/warp/config (local admin in OSS, Warp Update in enterprise); the handler tests pin that. Requires the warp flag to be unlocked and the profile's vector store to be reachable; the flag and the previous Warp config are restored at the end.",
       "item": [
         {
@@ -200736,7 +200736,7 @@
       ]
     },
     {
-      "name": "173. Warp chat resolves calendar days in the asker's time zone (warp-calendar)",
+      "name": "173. Warp chat resolves calendar days in the asker's time zone (warp-calendar) [SERIAL]",
       "description": "Warp's tools took a window as a relative offset (-7d) or an RFC3339 timestamp. A rolling window was resolved on the server, but a calendar day was not: for \"yesterday\" or a named date the prompt told the model to work out the day's UTC boundaries itself from the asker's zone name, daylight saving included, and the server only validated what it was sent. A wrong offset moved the day by hours and the answer still read as \"yesterday\". start_time and end_time now accept the day itself (today, yesterday, 2026-09-03) or a local time with no offset, and the server resolves it at midnight in the zone the chat request named in timezone. The case has an Asia/Kolkata caller ask for one count_logs call with \"yesterday\" as both bounds, then reads the tool_calls the turn reports and the window the answer quotes. The arguments are dictated because which form a model picks unprompted varies from run to run, and the thing under test is what the server does with the day once it is named. Red before the change: a bare \"yesterday\" was refused by the tool. Requires the warp flag to be unlocked; the flag and the previous Warp config are restored at the end.",
       "item": [
         {
@@ -201070,6 +201070,348 @@
             "body": {
               "mode": "raw",
               "raw": "{{warpCalendarFlagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
+    },
+    {
+      "name": "174. Warp chat names a model call governance refused (warp-refusal) [SERIAL]",
+      "description": "Warp's model calls are governed as whoever asked: the chat handler settles a grant from the dashboard request, including a virtual key sent in x-bf-vk. When governance refused that call - no access configured for the caller, an exhausted budget, a blocked model - Warp reported it as upstream_error, the code it uses for a provider outage, so the dashboard said Warp's model could not be reached and pointed the reader at the provider key. A signed-in user with no model access was told a credential had been revoked. Governance refusals now carry their own code, access_denied, and the no-access case says what to ask an administrator for while keeping governance's own reason. The case sends one chat with a virtual key that does not exist, which governance refuses before any provider is called, so no model tokens are spent. Red before the change: error.code was upstream_error. Requires the warp flag to be unlocked and the governance plugin enabled; the flag and the previous Warp config are restored at the end.",
+      "item": [
+        {
+          "name": "openai warp-refusal setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned the flag (see the test script).",
+                  "pm.collectionVariables.unset('warpRefusalFlagWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag;",
+                  "try { flag = (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0]; } catch (e) { flag = undefined; }",
+                  "pm.test('warp-refusal: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(flag.enabled, 'warp flag has no enabled state: ' + pm.response.text()).to.be.a('boolean');",
+                  "});",
+                  "// A failed read or a missing entry is not a disabled flag: record nothing, so the",
+                  "// enable and restore requests skip instead of switching off a flag that was on.",
+                  "if (pm.response.code === 200 && flag && typeof flag.enabled === 'boolean') {",
+                  "  pm.collectionVariables.set('warpRefusalFlagWas', flag.enabled ? 'true' : 'false');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai warp-refusal setup: enable warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the flag to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpRefusalFlagWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        },
+        {
+          "name": "openai warp-refusal setup: read current warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned a config (see the test script).",
+                  "pm.collectionVariables.unset('warpRefusalConfigWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var config;",
+                  "try { config = pm.response.json(); } catch (e) { config = undefined; }",
+                  "var isConfig = pm.response.code === 200 && config !== null && typeof config === 'object' && !Array.isArray(config);",
+                  "pm.test('warp-refusal: warp config is a config object', function () {",
+                  "  pm.expect(isConfig, 'not a config: ' + pm.response.text()).to.equal(true);",
+                  "});",
+                  "// Saved unchanged, and only when it is a config: an error body must never be written",
+                  "// back by the restore. Without it the configure and restore requests skip.",
+                  "if (isConfig) { pm.collectionVariables.set('warpRefusalConfigWas', pm.response.text()); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-refusal: configure Warp on gpt-4o-mini",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the previous config to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpRefusalConfigWas')) { pm.execution.skipRequest(); return; }",
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpRefusalConfigWas') || '{}');",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || ''",
+                  "};",
+                  "pm.collectionVariables.set('warpRefusalConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpRefusalConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-refusal: a model call governance refused is access_denied, not upstream_error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('warp-refusal: the turn failed without an answer', function () {",
+                  "  pm.expect(body.error, 'expected a refused turn: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.answer, 'a refused turn has no answer: ' + pm.response.text()).to.equal('');",
+                  "});",
+                  "pm.test('warp-refusal: the refusal is not reported as a provider failure', function () {",
+                  "  pm.expect(body.error.code, 'wrong code: ' + pm.response.text()).to.equal('access_denied');",
+                  "});",
+                  "pm.test('warp-refusal: the message says what is missing and keeps the governance reason', function () {",
+                  "  pm.expect(body.error.message, pm.response.text()).to.include('no model access');",
+                  "  pm.expect(body.error.message, pm.response.text()).to.include('access not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-warp-refusal-key-that-does-not-exist"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai warp-refusal cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The config was never snapshotted, so setup did not change it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpRefusalConfigWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('warpRefusalConfigBody');",
+                  "pm.collectionVariables.unset('warpRefusalConversation');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpRefusalConfigWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-refusal cleanup: restore warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The flag was never snapshotted, so setup did not touch it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpRefusalFlagWas')) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('warpRefusalFlagBody', JSON.stringify({ enabled: pm.collectionVariables.get('warpRefusalFlagWas') === 'true' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: flag restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Last request of the folder: once the flag is back, nothing of this case is left behind.",
+                  "if (pm.response.code === 200) {",
+                  "  ['warpRefusalFlagWas', 'warpRefusalFlagBody', 'warpRefusalConfigWas', 'warpRefusalConfigBody', 'warpRefusalConversation'].forEach(function (name) {",
+                  "    pm.collectionVariables.unset(name);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpRefusalFlagBody}}",
               "options": {
                 "raw": {
                   "language": "json"
