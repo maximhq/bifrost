@@ -69,7 +69,8 @@ if [ -n "$mirror" ]; then
   if [ "$(git rev-parse --abbrev-ref HEAD)" = "$mirror" ]; then
     git merge --ff-only "$upstream_ref"
   else
-    git branch -f "$mirror" "$upstream_ref"
+    # --no-track: keep whatever the branch tracks (origin/<mirror>) instead of upstream.
+    git branch -f --no-track "$mirror" "$upstream_ref"
   fi
 fi
 
