@@ -388,6 +388,52 @@ func TestClampMaxTokensRecognisesAliasedProfile(t *testing.T) {
 	})
 }
 
+// A routing rule that retargets a request onto a smaller Claude model (e.g.
+// Opus -> Haiku) must not forward the larger model's max_tokens unchanged,
+// the same way clampToModelOutputCeiling guards the Anthropic-family
+// builders (core/providers/anthropic/utils.go). Without this, Bedrock
+// rejects the retargeted request with a 400.
+// https://github.com/maximhq/bifrost/issues/8060
+func TestClampMaxTokensCeiling(t *testing.T) {
+	const haiku = "anthropic.claude-haiku-4-5-20251001-v1:0"
+	t.Run("lowers to the Claude ceiling the family table knows", func(t *testing.T) {
+		given := 200000
+		caps := capsFor(t, haiku, nil)
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 64000 {
+			t.Errorf("got %v, want 64000", got)
+		}
+	})
+	t.Run("already under the ceiling is untouched", func(t *testing.T) {
+		given := 4096
+		caps := capsFor(t, haiku, nil)
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 4096 {
+			t.Errorf("got %v, want 4096 (unchanged)", got)
+		}
+	})
+	t.Run("non-Claude model has no known ceiling to apply", func(t *testing.T) {
+		given := 200000
+		caps := capsFor(t, "amazon.nova-pro-v1:0", nil)
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 200000 {
+			t.Errorf("got %v, want 200000 (no known ceiling)", got)
+		}
+	})
+	t.Run("datasheet ceiling overrides the static Claude table", func(t *testing.T) {
+		max := 32000
+		schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if m != haiku {
+				return nil
+			}
+			return &schemas.ModelCapabilities{MaxOutputTokens: &max}
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+		given := 64000
+		caps := schemas.ResolveModelCaps(schemas.Bedrock, haiku)
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 32000 {
+			t.Errorf("got %v, want 32000 (datasheet ceiling)", got)
+		}
+	})
+}
+
 // ---- Converse reasoning shape ----
 
 // reasoningFields converts a Responses request and returns the

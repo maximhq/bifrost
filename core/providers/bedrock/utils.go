@@ -2698,6 +2698,12 @@ func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCa
 // The mantle path gets the same clamp for free from the OpenAI request builder;
 // Converse builds its own body and needs its own. The datasheet's
 // min_output_tokens overrides the name-based guess.
+//
+// It also lowers maxTokens to the target model's output ceiling, the same way
+// clampToModelOutputCeiling does for the Anthropic-family builders. A routing
+// rule that retargets a request onto a smaller Claude model (e.g. Opus → Haiku)
+// otherwise forwards the larger model's max_tokens unchanged and Bedrock
+// rejects it with a 400.
 func clampMaxTokens(ctx *schemas.BifrostContext, maxTokens *int, caps schemas.ModelCaps) *int {
 	if maxTokens == nil {
 		return nil
@@ -2712,6 +2718,9 @@ func clampMaxTokens(ctx *schemas.BifrostContext, maxTokens *int, caps schemas.Mo
 	}
 	if floor := caps.MinOutputTokens(fallback); floor > 0 && *maxTokens < floor {
 		return schemas.Ptr(floor)
+	}
+	if ceiling := caps.MaxOutputTokens(providerUtils.KnownClaudeMaxOutputTokens(caps.Model())); ceiling > 0 && *maxTokens > ceiling {
+		return schemas.Ptr(ceiling)
 	}
 	return maxTokens
 }
