@@ -509,6 +509,7 @@ export interface ModelProviderConfig {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
@@ -538,6 +539,7 @@ export interface AddProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
@@ -551,6 +553,7 @@ export interface UpdateProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
