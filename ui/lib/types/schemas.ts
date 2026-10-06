@@ -568,6 +568,12 @@ export const networkConfigSchema = z
 			.min(1, "Keep-alive timeout must be at least 1 second")
 			.max(3600, "Keep-alive timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		stream_read_buffer_size_kb: z
+			.number()
+			.int("Stream read buffer size must be a whole number")
+			.min(1, "Stream read buffer size must be at least 1 KB")
+			.max(16384, "Stream read buffer size must be at most 16384 KB")
+			.optional(),
 		max_conns_per_host: z
 			.number()
 			.int("Max connections must be a whole number")
@@ -632,6 +638,12 @@ export const networkFormConfigSchema = z
 			.int("Keep-alive timeout must be a whole number of seconds")
 			.min(1, "Keep-alive timeout must be at least 1 second")
 			.max(3600, "Keep-alive timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
+		stream_read_buffer_size_kb: z.coerce
+			.number("Stream read buffer size must be a number")
+			.int("Stream read buffer size must be a whole number")
+			.min(1, "Stream read buffer size must be at least 1 KB")
+			.max(16384, "Stream read buffer size must be at most 16384 KB")
 			.optional(),
 		max_conns_per_host: z.coerce
 			.number("Max connections must be a number")
