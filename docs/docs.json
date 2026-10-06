@@ -2087,6 +2087,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.2.6",
               "changelogs/ent-v2.2.5",
               {
                 "group": "September 2026",
