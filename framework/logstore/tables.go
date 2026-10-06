@@ -2994,7 +2994,8 @@ type DimensionRankingResult struct {
 	Dimension RankingDimension            `json:"dimension"`
 	// TotalActualRequests / TotalAttributedRequests are set for every rollup
 	// dimension (team / business unit / customer / user / virtual key), and both
-	// include the "Unassigned" bucket that owner-less traffic falls into.
+	// include the "Unassigned" bucket that owner-less traffic falls into and the
+	// "Other" bucket holding traffic whose entity the caller may not be shown.
 	//
 	// TotalActualRequests is the real number of requests in the window.
 	// TotalAttributedRequests is the sum of every ranking row. For team /
