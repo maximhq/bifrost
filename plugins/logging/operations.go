@@ -1858,6 +1858,7 @@ func (p *LoggerPlugin) attachCostBreakdown(ctx *schemas.BifrostContext, entry *l
 	if p.pricingManager == nil || result == nil {
 		return
 	}
+	p.dropIgnoredProviderCost(entry)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 	breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes)
 	if breakdown == nil {
@@ -1873,6 +1874,17 @@ func (p *LoggerPlugin) attachCostBreakdown(ctx *schemas.BifrostContext, entry *l
 		entry.InputCost = breakdown.InputCost
 		entry.OutputCost = breakdown.OutputCost
 		entry.AdditionalCost = breakdown.AdditionalCost
+	}
+}
+
+// dropIgnoredProviderCost clears a provider-reported cost from the logged usage
+// when that provider is configured to ignore it, so Bifrost's own breakdown is stored.
+func (p *LoggerPlugin) dropIgnoredProviderCost(entry *logstore.Log) {
+	if entry == nil || entry.TokenUsageParsed == nil || entry.TokenUsageParsed.Cost == nil {
+		return
+	}
+	if p.pricingManager.IsProviderCostIgnored(schemas.ModelProvider(entry.Provider)) {
+		entry.TokenUsageParsed.Cost = nil
 	}
 }
 
