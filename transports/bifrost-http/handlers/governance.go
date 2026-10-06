@@ -63,7 +63,7 @@ type GovernanceManager interface {
 	// ModelConfigIndexKey is the spelling the governance store indexes a config for
 	// (model, provider) under; two configs with the same key shadow each other.
 	ModelConfigIndexKey(model string, provider *string) string
-	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error)
+	ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*configstoreTables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
