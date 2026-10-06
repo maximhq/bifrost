@@ -900,6 +900,10 @@ governance_model_pricing|input_cost_per_token_ultrafast|NULL|id = 1
 governance_model_pricing|output_cost_per_token_ultrafast|NULL|id = 1
 governance_model_pricing|cache_read_input_token_cost_ultrafast|NULL|id = 1
 governance_model_pricing|cache_creation_input_token_cost_ultrafast|NULL|id = 1
+governance_model_pricing|input_cost_per_token_above_272k_tokens_ultrafast|NULL|id = 1
+governance_model_pricing|output_cost_per_token_above_272k_tokens_ultrafast|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_above_272k_tokens_ultrafast|NULL|id = 1
+governance_model_pricing|cache_creation_input_token_cost_above_272k_tokens_ultrafast|NULL|id = 1
 governance_model_pricing|output_cost_per_image_above_4_megapixels|NULL|id = 1
 governance_model_pricing|output_cost_per_image_above_8_megapixels|NULL|id = 1
 governance_model_pricing|output_cost_per_image_above_16_megapixels|NULL|id = 1
@@ -2544,6 +2548,7 @@ append_dynamic_columns_postgres() {
     cache_creation_input_token_cost_flex \
     cache_creation_input_token_cost_flex_above_272k_tokens \
     cache_creation_input_token_cost_priority \
+    cache_creation_input_token_cost_above_272k_tokens_priority \
     cache_creation_input_token_cost_fast \
     cache_creation_input_token_cost_above_1hr_fast \
     cache_read_input_token_cost_fast \
@@ -2592,6 +2597,7 @@ append_dynamic_columns_postgres() {
     cache_creation_input_token_cost_flex \
     cache_creation_input_token_cost_flex_above_272k_tokens \
     cache_creation_input_token_cost_priority \
+    cache_creation_input_token_cost_above_272k_tokens_priority \
     cache_creation_input_token_cost_fast \
     cache_creation_input_token_cost_above_1hr_fast \
     cache_read_input_token_cost_fast \
@@ -3804,6 +3810,7 @@ append_dynamic_columns_sqlite() {
       cache_creation_input_token_cost_flex \
       cache_creation_input_token_cost_flex_above_272k_tokens \
       cache_creation_input_token_cost_priority \
+      cache_creation_input_token_cost_above_272k_tokens_priority \
       cache_creation_input_token_cost_fast \
       cache_creation_input_token_cost_above_1hr_fast \
       cache_read_input_token_cost_fast \

@@ -57,6 +57,92 @@ func TestValidateConfigSchema_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_AgentOAuthRequiresCompleteConfig(t *testing.T) {
+	validConfig := `{
+		"agents": [{
+			"name": "oauth-agent",
+			"agent_card_url": "https://agent.example/.well-known/agent-card.json",
+			"runtime_auth": {
+				"type": "oauth",
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}
+			}
+		}]
+	}`
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected complete Agent OAuth config to pass validation: %v", err)
+	}
+
+	invalidConfigs := map[string]string{
+		"missing oauth object": strings.Replace(validConfig, `,
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}`, "", 1),
+		"empty oauth object": strings.Replace(validConfig, `"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}`, `"oauth": {}`, 1),
+		"missing client ID": strings.Replace(validConfig, `
+					"client_id": "client-id",`, "", 1),
+		"missing client secret": strings.Replace(validConfig, `
+					"client_secret": "client-secret"`, "", 1),
+		"missing OAuth endpoint": strings.Replace(validConfig, `
+					"token_url": "https://auth.example/token",`, "", 1),
+		"environment reference endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "env.OAUTH_TOKEN_URL", 1),
+		"vault reference endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "vault.oauth-token-url", 1),
+		"non-HTTP endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "ftp://auth.example/token", 1),
+		"endpoint with userinfo": strings.Replace(validConfig,
+			"https://auth.example/token", "https://user:pass@auth.example/token", 1),
+		"endpoint without host": strings.Replace(validConfig,
+			"https://auth.example/token", "https:///token", 1),
+		"malformed endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "not-a-url", 1),
+	}
+	for name, config := range invalidConfigs {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateConfigSchema([]byte(config), loadLocalSchema(t)); err == nil {
+				t.Fatal("expected incomplete Agent OAuth config to fail validation")
+			}
+		})
+	}
+}
+
+func TestValidateConfigSchema_AgentOAuthRejectsUnknownFields(t *testing.T) {
+	validConfig := `{
+		"agents": [{
+			"name": "oauth-agent",
+			"agent_card_url": "https://agent.example/.well-known/agent-card.json",
+			"runtime_auth": {
+				"type": "oauth",
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret",
+					"scopes": ["agent.invoke"],
+					"resource": "https://agent.example"
+				}
+			}
+		}]
+	}`
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected documented Agent OAuth fields to pass validation: %v", err)
+	}
+
+	invalidConfig := strings.Replace(validConfig, `"client_secret": "client-secret"`, `"client_secert": "client-secret"`, 1)
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Fatal("expected an unknown Agent OAuth field to fail validation")
+	}
+}
+
 func TestValidateConfigSchema_EmptyObject(t *testing.T) {
 	// Empty object should be valid (all properties are optional)
 	emptyConfig := `{}`
@@ -3780,5 +3866,68 @@ func TestSchemaVirtualMCPByName(t *testing.T) {
 				t.Error("expected rejection")
 			}
 		})
+	}
+}
+
+// TestValidateConfigSchema_IssuerURLRequiredForDiscovery pins the schema's own
+// statement of the load-time invariant: enabling OAuth discovery without a
+// pinned issuer_url is rejected by the schema, not only by validateClientConfig.
+func TestValidateConfigSchema_IssuerURLRequiredForDiscovery(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	t.Setenv(ConfigSchemaURLEnv, schemaPath)
+
+	for _, tc := range []struct {
+		name    string
+		config  string
+		wantErr bool
+	}{
+		{"oauth without issuer_url", `{"client":{"mcp_server_auth_mode":"oauth"}}`, true},
+		{"both without issuer_url", `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{}}}`, true},
+		{"oauth with issuer_url", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://issuer.example.com"}}}`, false},
+		{"headers without issuer_url", `{"client":{"mcp_server_auth_mode":"headers"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(tc.config))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected schema validation to reject discovery without issuer_url")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected config to pass schema validation, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestSchemaCodeModeLimitsValueBytes keeps config.schema.json aligned with the server:
+// max_value_bytes is 0 (the default) or at least 1024, in both places the limits live.
+func TestSchemaCodeModeLimitsValueBytes(t *testing.T) {
+	wrap := map[string]func(string) string{
+		"client.mcp_code_mode_limits": func(limits string) string {
+			return `{"client": {"mcp_code_mode_limits": ` + limits + `}}`
+		},
+		"mcp.tool_manager_config.code_mode_limits": func(limits string) string {
+			return `{"mcp": {"tool_manager_config": {"code_mode_limits": ` + limits + `}}}`
+		},
+	}
+	for where, config := range wrap {
+		for _, tc := range []struct {
+			limits  string
+			wantErr bool
+		}{
+			{`{}`, false},
+			{`{"max_value_bytes": 0}`, false},
+			{`{"max_value_bytes": 1024}`, false},
+			{`{"max_value_bytes": 1048576}`, false},
+			{`{"max_value_bytes": 10}`, true},
+			{`{"max_value_bytes": 1023}`, true},
+		} {
+			err := ValidateConfigSchema([]byte(config(tc.limits)), loadLocalSchema(t))
+			if (err != nil) != tc.wantErr {
+				t.Errorf("%s %s: err=%v, wantErr=%v", where, tc.limits, err, tc.wantErr)
+			}
+		}
 	}
 }

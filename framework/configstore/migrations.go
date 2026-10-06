@@ -18,9 +18,9 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
-	"github.com/maximhq/bifrost/framework/queryscope"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -260,14 +260,40 @@ func pendingMigrationStepIDs(ctx context.Context, db *gorm.DB, steps []migration
 	return migrator.PendingIDs(ctx, db, migrator.DefaultOptions, migrationStepIDs(steps))
 }
 
-// runMigrationSteps runs migration steps in their declared order.
+// runMigrationSteps runs migration steps in their declared order. It reads the
+// pending IDs once and skips steps whose IDs are all recorded, so a deploy with
+// one new migration does not pay a round trip per already-applied step. If the
+// preflight read fails, every step runs and each one checks its own row.
 func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep) error {
+	pending, err := pendingMigrationStepIDs(ctx, db, steps)
+	var pendingSet map[string]struct{}
+	if err != nil {
+		logger.Warn("[configstore] migration preflight failed; running every step: %v", err)
+	} else {
+		pendingSet = make(map[string]struct{}, len(pending))
+		for _, id := range pending {
+			pendingSet[id] = struct{}{}
+		}
+	}
 	for _, step := range steps {
+		if pendingSet != nil && !stepHasPendingID(step, pendingSet) {
+			continue
+		}
 		if err := step.run(ctx, db, logger); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// stepHasPendingID reports whether any ID the step writes is still pending.
+func stepHasPendingID(step migrationStep, pending map[string]struct{}) bool {
+	for _, id := range step.IDs {
+		if _, ok := pending[id]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // configstoreMigrationSteps is the ordered source of truth for configstore
@@ -506,6 +532,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_discovered_instructions_column"}, run: migrationAddMCPDiscoveredInstructionsColumn},
 	{IDs: []string{"add_mcp_instruction_cap_columns"}, run: migrationAddMCPInstructionCapColumns},
 	{IDs: []string{"add_mcp_client_max_instructions_length_column"}, run: migrationAddMCPClientMaxInstructionsLengthColumn},
+	{IDs: []string{"add_mcp_client_require_public_target_column"}, run: migrationAddMCPClientRequirePublicTargetColumn},
 	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
 	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
@@ -523,6 +550,12 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_keys_created_at_id_index"}, run: migrationAddVirtualKeysCreatedAtIDIndex},
 	{IDs: []string{"add_batch_jobs_due_index"}, run: migrationAddBatchJobsDueIndex},
 	{IDs: []string{"make_mcp_oauth_flows_state_unique"}, run: migrationMakeMCPOauthFlowsStateUnique},
+	{IDs: []string{"add_ultrafast_above_272k_pricing_columns"}, run: migrationAddUltrafastAbove272kPricingColumns},
+	{IDs: []string{"add_priority_above_272k_cache_creation_pricing_column"}, run: migrationAddPriorityAbove272kCacheCreationPricingColumn},
+	{IDs: []string{"add_mcp_code_mode_limits_client_column"}, run: migrationAddMCPCodeModeLimitsClientColumn},
+	{IDs: []string{"add_compat_force_reasoning_only_models_to_responses_column"}, run: migrationAddCompatForceReasoningOnlyModelsToResponsesColumn},
+	{IDs: []string{"backfill_compat_force_reasoning_only_models_to_responses"}, run: migrationBackfillCompatForceReasoningOnlyModelsToResponses},
+	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -964,6 +997,31 @@ func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger sch
 		Rollback: func(tx *gorm.DB) error {
 			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableNotification{})
 		},
+	})
+}
+
+func rollbackAgentGatewayTables(*gorm.DB) error {
+	return fmt.Errorf("add_agent_gateway_tables is non-rollbackable: dropping Agent Gateway tables or configuration would permanently delete registrations, credentials, push configuration, or queued deliveries")
+}
+
+func migrationAddAgentGatewayTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_agent_gateway_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.AutoMigrate(
+				&tables.TableAgentRegistration{},
+				&tables.TableVirtualKeyAgentGrant{},
+				&tables.TableAgentPushConfig{},
+				&tables.TableAgentPushDelivery{},
+			); err != nil {
+				return err
+			}
+			// External base URL override for Agent Gateway card and push callback URLs.
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "A2AExternalClientURL")
+		},
+		Rollback: rollbackAgentGatewayTables,
 	})
 }
 
@@ -13353,6 +13411,46 @@ func migrationAddUltrafastPricingColumns(ctx context.Context, db *gorm.DB, logge
 	return nil
 }
 
+// migrationAddUltrafastAbove272kPricingColumns adds the OpenAI Ultrafast rates
+// for prompts above 272k tokens. The fields are nullable so catalogs without them
+// keep the flat Ultrafast rate as the fallback.
+func migrationAddUltrafastAbove272kPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_ultrafast_above_272k_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"input_cost_per_token_above_272k_tokens_ultrafast",
+		"output_cost_per_token_above_272k_tokens_ultrafast",
+		"cache_read_input_token_cost_above_272k_tokens_ultrafast",
+		"cache_creation_input_token_cost_above_272k_tokens_ultrafast",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
 // migrationAddImageSizeQualityPricingColumns adds the per-size and joint
 // size+quality per-image output rate columns to the model pricing table.
 func migrationAddImageSizeQualityPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -14381,6 +14479,31 @@ func migrationAddMCPClientMaxInstructionsLengthColumn(ctx context.Context, db *g
 	return nil
 }
 
+// migrationAddMCPClientRequirePublicTargetColumn adds the flag recording that an MCP client
+// was registered over the management API with no credential check, which restricts every
+// later dial to public addresses. Defaults to false: existing rows keep the dial policy they
+// ran with, since nothing on record says how they were registered.
+func migrationAddMCPClientRequirePublicTargetColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_require_public_target_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "require_public_target")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "require_public_target")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client require public target migration: %s", err.Error())
+	}
+	return nil
+}
+
 // postgresIndexOnTable looks up index name among the indexes of table (the
 // table visible on the current search_path). It returns the index's
 // schema-qualified name and whether it is valid, or found=false when table has
@@ -15035,4 +15158,127 @@ func migrationAddVertexAWSWorkloadIdentityColumn(ctx context.Context, db *gorm.D
 // safely ignore it, which is the same contract the other non-rollbackable operator-settings columns use.
 func rollbackVertexAWSWorkloadIdentityColumn(context.Context, *gorm.DB, schemas.Logger) error {
 	return fmt.Errorf("add_vertex_aws_workload_identity_column is non-rollbackable: dropping vertex_aws_workload_identity_json would permanently delete the AWS workload identity configuration of every Vertex key that uses it; the column is additive and older binaries safely ignore it")
+}
+
+// migrationAddPriorityAbove272kCacheCreationPricingColumn adds the OpenAI
+// Priority/Fast cache-write rate for prompts above 272k tokens. The input,
+// output, and cache-read >272k priority columns already exist; this is the
+// one the datasheet publishes that the table had no home for. Nullable so
+// catalogs without it keep the flat priority cache-write rate as the fallback.
+func migrationAddPriorityAbove272kCacheCreationPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_priority_above_272k_cache_creation_pricing_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	column := "cache_creation_input_token_cost_above_272k_tokens_priority"
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
+				return fmt.Errorf("failed to add column %s: %w", column, err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
+				return fmt.Errorf("failed to drop column %s: %w", column, err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPCodeModeLimitsClientColumn adds the mcp_code_mode_limits_json
+// column to config_client.
+func migrationAddMCPCodeModeLimitsClientColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_code_mode_limits_client_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableClientConfig{}, "mcp_code_mode_limits_json") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "MCPCodeModeLimitsJSON"); err != nil {
+					return fmt.Errorf("add mcp_code_mode_limits_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableClientConfig{}, "mcp_code_mode_limits_json") {
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "MCPCodeModeLimitsJSON"); err != nil {
+					return fmt.Errorf("drop mcp_code_mode_limits_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp code mode limits client column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCompatForceReasoningOnlyModelsToResponsesColumn adds compat_force_reasoning_only_models_to_responses
+// to config_client.
+func migrationAddCompatForceReasoningOnlyModelsToResponsesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_compat_force_reasoning_only_models_to_responses_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "CompatForceReasoningOnlyModelsToResponses"); err != nil {
+				return fmt.Errorf("failed to add compat_force_reasoning_only_models_to_responses column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "compat_force_reasoning_only_models_to_responses"); err != nil {
+				return fmt.Errorf("failed to drop compat_force_reasoning_only_models_to_responses column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationBackfillCompatForceReasoningOnlyModelsToResponses sets compat_force_reasoning_only_models_to_responses
+// TRUE on existing config_client rows so the toggle is on for existing deployments.
+func migrationBackfillCompatForceReasoningOnlyModelsToResponses(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "backfill_compat_force_reasoning_only_models_to_responses"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("UPDATE config_client SET compat_force_reasoning_only_models_to_responses = TRUE").Error; err != nil {
+				return fmt.Errorf("failed to backfill compat_force_reasoning_only_models_to_responses: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Forward-only: the backfilled values are not reverted; rolling back the column migration drops them.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
 }

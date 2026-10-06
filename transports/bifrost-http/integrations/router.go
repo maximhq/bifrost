@@ -68,6 +68,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -543,6 +544,18 @@ type PassthroughConfig struct {
 	// AllowedRoutes, when non-empty, restricts the passthrough catch-all to exactly
 	// these method+path pairs instead of forwarding every request under StripPrefix.
 	AllowedRoutes []PassthroughRoute
+	StreamingPath func(method, path string) bool // optional: decides which requests stream, replacing the generic markers
+}
+
+// streams reports whether a passthrough request is served by the streaming handler. When the provider
+// supplies StreamingPath its answer is final, because a restricted route knows exactly which operations
+// stream and an accepted identifier (a knowledge-base id containing "stream") must not change that.
+// Without it the path names a stream or the body asks for one.
+func (c *PassthroughConfig) streams(method, path string, bodyStream bool) bool {
+	if c.StreamingPath != nil {
+		return c.StreamingPath(method, path)
+	}
+	return strings.Contains(strings.ToLower(path), "stream") || bodyStream
 }
 
 // PassthroughRoute is an exact method+path pair a restricted passthrough router
@@ -3402,29 +3415,68 @@ func extractModelFromPath(path string) string {
 	return ""
 }
 
-// parsePassthroughBody extracts model and streaming flag from the request body in a
-// single unmarshal pass. Pass the raw Content-Type header value so multipart boundaries
-// are resolved from the header rather than scraped from the body bytes.
-func parsePassthroughBody(contentType string, body []byte) (model string, isStream bool) {
+// parsePassthroughBody extracts model and streaming flag from the request body.
+// Pass the raw Content-Type header value so multipart boundaries are resolved from
+// the header rather than scraped from the body bytes.
+//
+// The body is forwarded upstream byte for byte, so the model this reports is what
+// governance checks while the upstream decides for itself what it executes. The two
+// must agree: a JSON body may carry the model key at most once, spelled exactly
+// "model", holding a string. A body that breaks that rule is refused with an error
+// rather than guessed at, because a different decoder's guess (case-folded key,
+// last duplicate wins, whole decode dropped on an unrelated field) is exactly what
+// would let one model be checked while another runs. Bodies with no model key are
+// fine; many passthrough endpoints have none.
+func parsePassthroughBody(contentType string, body []byte) (model string, isStream bool, err error) {
 	if len(body) == 0 {
 		return
 	}
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	if err == nil && strings.HasPrefix(mediaType, "multipart/") {
+	mediaType, params, mimeErr := mime.ParseMediaType(contentType)
+	if mimeErr == nil && strings.HasPrefix(mediaType, "multipart/") {
 		if boundary := params["boundary"]; boundary != "" {
-			return parseMultipartPassthroughBody(body, boundary)
+			model, isStream = parseMultipartPassthroughBody(body, boundary)
+			return
 		}
 	}
-	// JSON (or unknown) body — one unmarshal for both fields.
-	var parsed struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+	if !gjson.ValidBytes(body) {
+		if mimeErr == nil && isJSONMediaType(mediaType) {
+			return "", false, errors.New("passthrough request body is not valid JSON")
+		}
+		// Not JSON and not declared as JSON: nothing here to govern or stream on.
+		return
 	}
-	if err := sonic.Unmarshal(body, &parsed); err == nil {
-		model = strings.TrimSpace(parsed.Model)
-		isStream = parsed.Stream
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return
 	}
+	var modelKeys int
+	var modelValue gjson.Result
+	root.ForEach(func(key, value gjson.Result) bool {
+		if strings.EqualFold(key.Str, "model") {
+			modelKeys++
+			if key.Str == "model" {
+				modelValue = value
+			}
+		}
+		return true
+	})
+	switch {
+	case modelKeys > 1:
+		return "", false, errors.New("passthrough request body must carry the model key at most once")
+	case modelKeys == 1 && !modelValue.Exists():
+		return "", false, errors.New("passthrough request body model key must be spelled \"model\"")
+	case modelKeys == 1 && modelValue.Type != gjson.String:
+		return "", false, errors.New("passthrough request body model must be a string")
+	case modelKeys == 1:
+		model = strings.TrimSpace(modelValue.Str)
+	}
+	isStream = root.Get("stream").Type == gjson.True
 	return
+}
+
+// isJSONMediaType reports whether a parsed media type declares a JSON body.
+func isJSONMediaType(mediaType string) bool {
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
 
 // parseMultipartPassthroughBody scans multipart parts and extracts model and stream.
@@ -3510,28 +3562,51 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return true
 	})
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
+	passthroughErr := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+		return err
+	}
 
-	path := string(ctx.Path())
-	for _, prefix := range g.passthroughCfg.StripPrefix {
-		if strings.HasPrefix(path, prefix) {
-			path = path[len(prefix):]
-			break
-		}
+	// The remainder after the prefix is concatenated onto the provider BaseURL by the
+	// provider, so it must be anchored at a segment boundary and shaped like a rooted path
+	// before anything else happens. Both checks run before the Bifrost context exists so a
+	// rejected request never reaches key selection or the upstream.
+	path, ok := stripPassthroughPrefix(string(ctx.Path()), cfg.StripPrefix)
+	if !ok {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "no passthrough route matches the request path", fasthttp.StatusNotFound))
+		return
+	}
+	if err := validatePassthroughPath(path); err != nil {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+		return
+	}
+
+	if !passthroughInferenceRoute(cfg, string(ctx.Method()), path) {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "passthrough requires a supported inference endpoint and method", fasthttp.StatusForbidden))
+		return
 	}
 
 	body := ctx.Request.Body()
 	// Parse body once to get both model and stream flag.
 	contentType := string(ctx.Request.Header.ContentType())
-	bodyModel, bodyStream := parsePassthroughBody(contentType, body)
+	bodyModel, bodyStream, err := parsePassthroughBody(contentType, body)
+	if err != nil {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+		return
+	}
 	resolvedModel := extractPassthroughModel(path, bodyModel)
 	provider := cfg.Provider
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, bodyModel)
 	}
-	provider = getProviderFromHeader(ctx, provider)
+	provider, err = getPassthroughProvider(ctx, provider)
+	if err != nil {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
-	isStreaming := strings.Contains(strings.ToLower(path), "stream") || bodyStream
+	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream)
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{
 		Method:      string(ctx.Method()),

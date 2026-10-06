@@ -701,6 +701,7 @@ func HandleOpenAITextCompletionStreaming(
 		var finishReason *string
 		var messageID string
 		var created int
+		modelName := request.Model
 		lastChunkTime := startTime
 
 		for {
@@ -805,6 +806,10 @@ func HandleOpenAITextCompletionStreaming(
 				} else {
 					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
 				}
+			}
+
+			if response.Model != "" {
+				modelName = response.Model
 			}
 
 			// Only usage observed at or after finish_reason ends a wait_for_usage wait. Some
@@ -916,7 +921,7 @@ func HandleOpenAITextCompletionStreaming(
 			return
 		}
 
-		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, request.Model, created)
+		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, modelName, created)
 		if postResponseConverter != nil {
 			response = postResponseConverter(response)
 			if response == nil {
@@ -8218,7 +8223,10 @@ func (provider *OpenAIProvider) Passthrough(
 		return nil, err
 	}
 
-	url := provider.buildPassthroughURL(req)
+	url, err := provider.buildPassthroughURL(req)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -8275,20 +8283,17 @@ func (provider *OpenAIProvider) Passthrough(
 	return bifrostResponse, nil
 }
 
-// buildPassthroughURL returns the upstream URL for raw passthrough requests.
-func (provider *OpenAIProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) string {
+// buildPassthroughURL returns the upstream URL for raw passthrough requests. The resolved
+// URL is checked against the base URL's authority (see providerUtils.BuildPassthroughURL).
+func (provider *OpenAIProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) (string, error) {
 	path := req.Path
 	baseURL := provider.networkConfig.BaseURL
 	if req.UpstreamURL != "" {
-		baseURL = strings.TrimRight(req.UpstreamURL, "/")
+		baseURL = req.UpstreamURL
 		if !strings.HasPrefix(path, "/") {
 			path = "/" + path
 		}
-		url := baseURL + path
-		if req.RawQuery != "" {
-			url += "?" + req.RawQuery
-		}
-		return url
+		return providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
 	}
 
 	// if path has v1 or v1/ remove it
@@ -8296,11 +8301,7 @@ func (provider *OpenAIProvider) buildPassthroughURL(req *schemas.BifrostPassthro
 		path = after
 	}
 
-	url := baseURL + "/v1" + path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
-	}
-	return url
+	return providerUtils.BuildPassthroughURL(baseURL, "/v1"+path, req.RawQuery)
 }
 
 func (provider *OpenAIProvider) PassthroughStream(
@@ -8315,7 +8316,10 @@ func (provider *OpenAIProvider) PassthroughStream(
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	url := provider.buildPassthroughURL(req)
+	url, err := provider.buildPassthroughURL(req)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -8344,7 +8348,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 
 	startTime := time.Now()
 
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
+	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

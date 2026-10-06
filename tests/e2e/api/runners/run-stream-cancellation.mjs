@@ -11,7 +11,7 @@ import { resolveVariables } from "./lib/resolve-variables.mjs";
 const require = createRequire(import.meta.url);
 
 // Shared with newman-reporter-dbverify so provider alias normalization stays in sync.
-const { resolvePricingEntry } = require("../lib/pricing");
+const { resolvePricingEntry, expectedCostFromRow } = require("../lib/pricing");
 const { readLogsDbUrl } = require("../lib/logs-db-url");
 
 const args = Object.fromEntries(
@@ -102,7 +102,7 @@ async function connectLogsDb(url) {
 
 async function pollLogRow(db, id) {
   const sql =
-    "SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status FROM logs WHERE id = $1";
+    "SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status, service_tier FROM logs WHERE id = $1";
   let last = null;
   for (const ms of [300, 700, 1200, 2000]) {
     await new Promise((r) => setTimeout(r, ms));
@@ -115,30 +115,10 @@ async function pollLogRow(db, id) {
   return last;
 }
 
+// Shared with the dbverify reporter via lib/pricing: recomputes at the rates of
+// the served tier recorded in the row's service_tier column.
 function expectedCost(entry, row) {
-  const input = entry.input_cost_per_token || 0,
-    output = entry.output_cost_per_token || 0;
-  const cr = entry.cache_read_input_token_cost || 0,
-    cw = entry.cache_creation_input_token_cost || 0;
-  const prompt = Number(row.prompt_tokens || 0),
-    completion = Number(row.completion_tokens || 0);
-  let cachedRead = Number(row.cached_read_tokens || 0),
-    cachedWrite = 0;
-  if (row.token_usage) {
-    try {
-      const d = JSON.parse(row.token_usage)?.prompt_tokens_details;
-      if (d) {
-        if (cachedRead === 0 && d.cached_read_tokens) cachedRead = Number(d.cached_read_tokens);
-        if (d.cached_write_tokens) cachedWrite = Number(d.cached_write_tokens);
-      }
-    } catch (_) {
-      /* ignore */
-    }
-  }
-  cachedRead = Math.min(cachedRead, prompt);
-  cachedWrite = Math.min(cachedWrite, Math.max(0, prompt - cachedRead));
-  const nonCached = Math.max(0, prompt - cachedRead - cachedWrite);
-  return nonCached * input + cachedRead * cr + cachedWrite * cw + completion * output;
+  return expectedCostFromRow(entry, row);
 }
 
 // A streaming cancel is logged status=cancelled (dedicated status since #4930;

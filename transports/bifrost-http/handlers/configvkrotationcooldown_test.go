@@ -20,11 +20,12 @@ type stubConfigManager struct{}
 
 func (stubConfigManager) UpdateAuthConfig(context.Context, *configstore.AuthConfig) error { return nil }
 func (stubConfigManager) ValidateSetupToken(string) bool                                  { return true }
+func (stubConfigManager) ValidateConfiguredSetupToken(string) bool                        { return false }
 func (stubConfigManager) ReloadClientConfigFromConfigStore(context.Context) error         { return nil }
 func (stubConfigManager) UpdateSyncConfig(context.Context) error                          { return nil }
 func (stubConfigManager) ForceReloadPricing(context.Context) error                        { return nil }
 func (stubConfigManager) UpdateDropExcessRequests(context.Context, bool)                  {}
-func (stubConfigManager) UpdateMCPToolManagerConfig(context.Context, int, int, string, bool, int, int) error {
+func (stubConfigManager) UpdateMCPToolManagerConfig(context.Context, int, int, string, bool, int, int, *schemas.MCPCodeModeLimits) error {
 	return nil
 }
 func (stubConfigManager) ReloadPlugin(context.Context, string, *string, any, *schemas.PluginPlacement, *int) error {

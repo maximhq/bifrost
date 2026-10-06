@@ -7,6 +7,8 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +18,60 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+func TestProviderKeyReadRedactsNestedSecrets(t *testing.T) {
+	const canary = "synthetic-provider-key-secret-canary-0123456789"
+	const ref = "env.BIFROST_PROVIDER_KEY_REDACTION_TEST"
+	t.Setenv("BIFROST_PROVIDER_KEY_REDACTION_TEST", canary)
+	secret := func() *schemas.SecretVar { return schemas.NewSecretVar(ref) }
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle} {
+		t.Run(string(provider), func(t *testing.T) {
+			key := schemas.Key{
+				ID: "redaction-key", Name: "redaction-key", Value: *secret(),
+				Aliases: schemas.KeyAliases{"test": {ModelID: "model", Region: secret(), ProjectID: secret()}},
+			}
+			if provider == schemas.Bedrock {
+				key.BedrockKeyConfig = &schemas.BedrockKeyConfig{
+					ProjectID: secret(), Endpoints: &schemas.BedrockEndpoints{Runtime: secret()},
+				}
+			} else {
+				key.BedrockMantleKeyConfig = &schemas.BedrockMantleKeyConfig{
+					ProjectID: secret(), Endpoints: &schemas.BedrockEndpoints{Runtime: secret()},
+				}
+			}
+			h := &ProviderHandler{inMemoryStore: &lib.Config{
+				Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+					provider: {Keys: []schemas.Key{key}},
+				},
+			}}
+			for name, handler := range map[string]func(*fasthttp.RequestCtx){
+				"get": h.getProviderKey, "list": h.listProviderKeys,
+			} {
+				t.Run(name, func(t *testing.T) {
+					ctx := newTestRequestCtx("")
+					ctx.SetUserValue("provider", string(provider))
+					ctx.SetUserValue("key_id", key.ID)
+					handler(ctx)
+					body := string(ctx.Response.Body())
+					if ctx.Response.StatusCode() != fasthttp.StatusOK {
+						t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), body)
+					}
+					if strings.Contains(body, canary) {
+						t.Fatalf("resolved secret leaked: %s", body)
+					}
+					// All five populated fields (including the credential control)
+					// must be present, resolved, masked, and retain their references.
+					if strings.Count(body, ref) != 5 || strings.Count(body, secret().Redacted().GetValue()) != 5 {
+						t.Fatalf("missing masked values or references: %s", body)
+					}
+					if key.Aliases["test"].Region.GetValue() != canary {
+						t.Fatal("reading a key modified the live secret")
+					}
+				})
+			}
+		})
+	}
+}
 
 // TestMergeUpdatedKey_Value locks in the invariant that a masked key preview can
 // never be persisted as the real key value. The provider keys API renders keys
@@ -841,6 +897,320 @@ func TestCreateProviderKey_CustomBedrockRequiresRegion(t *testing.T) {
 	}
 	if body := string(ctx.Response.Body()); !strings.Contains(body, "bedrock_key_config.region") {
 		t.Fatalf("expected bedrock_key_config.region error, got %s", body)
+	}
+}
+
+// TestUpdateProviderKey_EndpointGuardWhenAuthBypassed pins that the fail-open bypass only
+// blocks a key update that moves the dial destination. Keeping the stored endpoint and
+// editing an unrelated field (weight) must still go through, or the auth-disabled UI
+// cannot edit any existing Ollama/SGL/VLLM/Azure key.
+func TestUpdateProviderKey_EndpointGuardWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	const storedURL = "http://localhost:11434"
+	cases := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantURL    string
+		wantWeight float64
+	}{
+		{
+			name:       "unchanged endpoint, weight edit",
+			body:       `{"weight":2,"ollama_key_config":{"url":"` + storedURL + `"}}`,
+			wantStatus: fasthttp.StatusOK,
+			wantURL:    storedURL,
+			wantWeight: 2,
+		},
+		{
+			name:       "changed endpoint",
+			body:       `{"weight":1,"ollama_key_config":{"url":"http://169.254.169.254/"}}`,
+			wantStatus: fasthttp.StatusForbidden,
+			wantURL:    storedURL,
+			wantWeight: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						schemas.Ollama: {Keys: []schemas.Key{{
+							ID:              "key-1",
+							Name:            "ollama-key",
+							Weight:          1,
+							OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar(storedURL)},
+						}}},
+					},
+				},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(schemas.Ollama))
+			ctx.SetUserValue("key_id", "key-1")
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+			h.updateProviderKey(ctx)
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			stored := h.inMemoryStore.Providers[schemas.Ollama].Keys[0]
+			if got := stored.OllamaKeyConfig.URL.GetValue(); got != tc.wantURL {
+				t.Fatalf("stored url got %q, want %q", got, tc.wantURL)
+			}
+			if stored.Weight != tc.wantWeight {
+				t.Fatalf("stored weight got %v, want %v", stored.Weight, tc.wantWeight)
+			}
+		})
+	}
+}
+
+// TestProviderKeyEndpointGuard_CoversEveryDialTarget pins that the fail-open bypass guard
+// keys off the fields Bifrost dials, not a provider-type list. Each of these fields sends the
+// key's credential to the configured host, so a bypassed caller must not be able to set or
+// move any of them. A Bedrock key with only a region carries no caller-chosen host and must
+// still be creatable, which a provider-type guard would wrongly reject.
+func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	copilotPEM := pkcs1TestPEM(t)
+	copilotConfig := func(domain string) string {
+		return `{"app_id":"123","installation_id":"456","repository_id":"789","private_key":` + strconv.Quote(copilotPEM) + `,"github_domain":"` + domain + `"}`
+	}
+
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		stored   *schemas.Key // nil means the request creates the key
+		body     string
+		want403  bool
+	}{
+		{
+			name:     "create bedrock key with region only",
+			provider: schemas.Bedrock,
+			body:     `{"name":"bedrock-key","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1"}}`,
+			want403:  false,
+		},
+		{
+			name:     "create bedrock key with runtime endpoint override",
+			provider: schemas.Bedrock,
+			body:     `{"name":"bedrock-key","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1","endpoints":{"runtime":"evil.example.com"}}}`,
+			want403:  true,
+		},
+		{
+			name:     "update databricks workspace url",
+			provider: schemas.Databricks,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "databricks-key", Weight: 1,
+				Value:               *schemas.NewSecretVar("dapi-token"),
+				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{WorkspaceURL: *schemas.NewSecretVar("https://adb-1.azuredatabricks.net")},
+			},
+			body:    `{"value":"dapi-token","weight":1,"databricks_key_config":{"workspace_url":"https://evil.example.com"}}`,
+			want403: true,
+		},
+		{
+			name:     "update bedrock mantle endpoint override",
+			provider: schemas.BedrockMantle,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "mantle-key", Weight: 1,
+				BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{Region: schemas.NewSecretVar("us-east-1")},
+			},
+			body:    `{"weight":1,"bedrock_mantle_key_config":{"region":"us-east-1","endpoints":{"mantle":"evil.example.com"}}}`,
+			want403: true,
+		},
+		{
+			name:     "update github copilot github_domain",
+			provider: schemas.GithubCopilot,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "copilot-key", Weight: 1,
+				Value: *schemas.NewSecretVar("ghu_copilot_token"),
+				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+					AppID:          *schemas.NewSecretVar("123"),
+					InstallationID: *schemas.NewSecretVar("456"),
+					RepositoryID:   *schemas.NewSecretVar("789"),
+					PrivateKey:     *schemas.NewSecretVar(copilotPEM),
+					GithubDomain:   *schemas.NewSecretVar("acme.ghe.com"),
+				},
+			},
+			body:    `{"value":"ghu_copilot_token","weight":1,"github_copilot_key_config":` + copilotConfig("evil.example.com") + `}`,
+			want403: true,
+		},
+		{
+			name:     "update azure key adding a per-alias endpoint",
+			provider: schemas.Azure,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "azure-key", Weight: 1,
+				Value:          *schemas.NewSecretVar("azure-api-key"),
+				AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://myres.openai.azure.com")},
+			},
+			body:    `{"value":"azure-api-key","weight":1,"azure_key_config":{"endpoint":"https://myres.openai.azure.com"},"aliases":{"gpt-4o":{"model_id":"gpt-4o","endpoint":"https://evil.example.com"}}}`,
+			want403: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			providerConfig := configstore.ProviderConfig{}
+			if tc.stored != nil {
+				providerConfig.Keys = []schemas.Key{*tc.stored}
+			}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: providerConfig}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(tc.provider))
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			if tc.stored != nil {
+				ctx.SetUserValue("key_id", tc.stored.ID)
+				h.updateProviderKey(ctx)
+			} else {
+				h.createProviderKey(ctx)
+			}
+
+			got403 := ctx.Response.StatusCode() == fasthttp.StatusForbidden
+			if got403 != tc.want403 {
+				t.Fatalf("got status %d, want403=%v; body=%s", ctx.Response.StatusCode(), tc.want403, ctx.Response.Body())
+			}
+			keys := h.inMemoryStore.Providers[tc.provider].Keys
+			switch {
+			case tc.want403 && tc.stored != nil:
+				if len(keys) != 1 || !reflect.DeepEqual(keys[0], *tc.stored) {
+					t.Fatalf("expected stored key unchanged after 403, got %+v", keys)
+				}
+			case tc.want403:
+				if len(keys) != 0 {
+					t.Fatalf("expected no key persisted after 403, got %d", len(keys))
+				}
+			default:
+				if ctx.Response.StatusCode() != fasthttp.StatusOK || len(keys) != 1 {
+					t.Fatalf("expected key persisted with 200, got status %d and %d keys; body=%s", ctx.Response.StatusCode(), len(keys), ctx.Response.Body())
+				}
+			}
+		})
+	}
+}
+
+// TestProviderKeyURL_RejectsLinkLocalDestination pins that a key-level server URL
+// (Ollama/SGL/VLLM) is held to the same destination rule as a provider base URL, even for a
+// genuinely authenticated admin: link-local and unspecified addresses are refused with 400,
+// while loopback and private hosts - the documented self-hosted setup - stay allowed.
+func TestProviderKeyURL_RejectsLinkLocalDestination(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	const storedURL = "http://localhost:11434"
+	cases := []struct {
+		name       string
+		stored     bool
+		body       string
+		wantStatus int
+	}{
+		{name: "create with link-local url", body: `{"name":"ollama-key","weight":1,"ollama_key_config":{"url":"http://169.254.169.254/"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "create with unspecified url", body: `{"name":"ollama-key","weight":1,"ollama_key_config":{"url":"http://0.0.0.0:11434"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "create with private url", body: `{"name":"ollama-key","weight":1,"ollama_key_config":{"url":"http://10.0.0.5:11434"}}`, wantStatus: fasthttp.StatusOK},
+		{name: "update to link-local url", stored: true, body: `{"weight":1,"ollama_key_config":{"url":"http://169.254.169.254/"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "update to loopback url", stored: true, body: `{"weight":1,"ollama_key_config":{"url":"http://127.0.0.1:11435"}}`, wantStatus: fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			providerConfig := configstore.ProviderConfig{}
+			if tc.stored {
+				providerConfig.Keys = []schemas.Key{{
+					ID: "key-1", Name: "ollama-key", Weight: 1,
+					OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar(storedURL)},
+				}}
+			}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Ollama: providerConfig}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(schemas.Ollama))
+			if tc.stored {
+				ctx.SetUserValue("key_id", "key-1")
+				h.updateProviderKey(ctx)
+			} else {
+				h.createProviderKey(ctx)
+			}
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			keys := h.inMemoryStore.Providers[schemas.Ollama].Keys
+			switch {
+			case tc.wantStatus != fasthttp.StatusOK && tc.stored:
+				if len(keys) != 1 || keys[0].OllamaKeyConfig.URL.GetValue() != storedURL {
+					t.Fatalf("expected stored url unchanged after 400, got %+v", keys)
+				}
+			case tc.wantStatus != fasthttp.StatusOK:
+				if len(keys) != 0 {
+					t.Fatalf("expected no key persisted after 400, got %d", len(keys))
+				}
+			default:
+				if len(keys) != 1 {
+					t.Fatalf("expected one key persisted, got %d", len(keys))
+				}
+			}
+		})
+	}
+}
+
+// TestProviderKeyRegion_RejectsHostShapedValues pins that a key-level or per-alias region can
+// only name a vendor region. Region is interpolated into the provider host
+// (<region>-aiplatform.googleapis.com, <service>.<region>.amazonaws.com), so a host-shaped value
+// would carry the key's credential to a caller-chosen host while region stays outside the
+// endpoint guard (a region-only Bedrock key must remain creatable without an admin session).
+func TestProviderKeyRegion_RejectsHostShapedValues(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name       string
+		provider   schemas.ModelProvider
+		body       string
+		wantStatus int
+	}{
+		{name: "bedrock valid region", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-gov-west-1"}}`, wantStatus: fasthttp.StatusOK},
+		{name: "bedrock host-shaped region", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"evil.example/#"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "bedrock region with userinfo", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1@evil.example"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "bedrock alias host-shaped region", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1"},"aliases":{"claude":{"model_id":"anthropic.claude-3","region":"evil.example/#"}}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "bedrock alias valid region", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1"},"aliases":{"claude":{"model_id":"anthropic.claude-3","region":"eu-west-1"}}}`, wantStatus: fasthttp.StatusOK},
+		{name: "vertex host-shaped region", provider: schemas.Vertex, body: `{"name":"k","weight":1,"vertex_key_config":{"project_id":"p","region":"attacker.example/x?","auth_credentials":"{}"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "mantle host-shaped region", provider: schemas.BedrockMantle, body: `{"name":"k","weight":1,"bedrock_mantle_key_config":{"region":"evil.example/#"}}`, wantStatus: fasthttp.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: {}}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(tc.provider))
+			h.createProviderKey(ctx)
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			if tc.wantStatus == fasthttp.StatusBadRequest {
+				if !strings.Contains(string(ctx.Response.Body()), "region") {
+					t.Fatalf("rejection must name the region field, got %s", ctx.Response.Body())
+				}
+				if len(h.inMemoryStore.Providers[tc.provider].Keys) != 0 {
+					t.Fatal("a rejected key must not be persisted")
+				}
+			}
+		})
 	}
 }
 

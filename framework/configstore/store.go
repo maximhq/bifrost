@@ -380,6 +380,33 @@ type ConfigStore interface {
 	CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error
+	ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error
+
+	// Agent Gateway registration CRUD. Declared on the interface (not just the
+	// RDB implementation) so wrappers that embed ConfigStore — like the
+	// enterprise config store — forward them and still satisfy agent.Store.
+	CreateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error
+	UpdateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error
+	ListAgentRegistrations(ctx context.Context) ([]schemas.AgentRegistration, error)
+	GetAgentRegistration(ctx context.Context, name string) (*schemas.AgentRegistration, error)
+	DeleteAgentRegistration(ctx context.Context, name string) error
+
+	// Agent Gateway push relay persistence, mirroring agent.PushStore for the
+	// same wrapper-forwarding reason as the registration CRUD above.
+	SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error
+	BindAgentPushConfigTask(ctx context.Context, agentName, ingressTokenHash, pendingTaskID, taskID string) error
+	GetAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error)
+	GetAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (*schemas.AgentPushConfig, error)
+	ListAgentPushConfigs(ctx context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error)
+	ListAgentPushConfigsPaginated(ctx context.Context, query schemas.AgentPushConfigQuery) ([]schemas.AgentPushConfig, int64, error)
+	ListAgentPushConfigAgentNames(ctx context.Context) ([]string, error)
+	DeleteAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error)
+	DeletePendingAgentPushConfig(ctx context.Context, agentName, ingressTokenHash, pendingTaskID string) (bool, error)
+	CreateAgentPushDeliveryIfNotExists(ctx context.Context, delivery *schemas.AgentPushDelivery) (bool, error)
+	ListDueAgentPushDeliveries(ctx context.Context, now time.Time, limit int) ([]schemas.AgentPushDelivery, error)
+	ClaimAgentPushDelivery(ctx context.Context, id, runnerID string, leaseUntil time.Time) (*schemas.AgentPushDelivery, error)
+	UpdateAgentPushDeliveryOutcome(ctx context.Context, delivery *schemas.AgentPushDelivery, runnerID string, leaseUntil time.Time) error
+	PruneAgentPushDeliveries(ctx context.Context, before time.Time) error
 
 	// Virtual key provider config CRUD
 	GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyProviderConfig, error)
@@ -984,6 +1011,9 @@ type ConfigStore interface {
 	// Batch jobs - mutable coordination state for delayed batch accounting
 	UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error
 	GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error)
+	// GetProviderJobsByIDs returns the provider jobs among the given stable ids
+	// that exist; ids with no row are simply absent from the result.
+	GetProviderJobsByIDs(ctx context.Context, jobIDs []string) ([]*tables.TableProviderJob, error)
 	ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error)
 	ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
 	MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
@@ -1077,6 +1107,11 @@ type ConfigStore interface {
 	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error
 	// RevokeOAuth2RefreshTokensByMode revokes all active tokens for a given mode.
 	RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error
+	// RevokeOAuth2GrantsBySubject revokes, in one transaction, every grant bound to
+	// one identity (bf_mode + bf_sub): its consented but not yet exchanged
+	// authorization codes and its active refresh tokens. Used when a virtual key
+	// rotates; pass tx to commit it together with the key update.
+	RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error
 	// SweepOAuth2RefreshTokens deletes revoked tokens older than the given duration.
 	SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error)
 	// SweepOrphanedOAuth2Clients deletes registered clients that back no refresh

@@ -8,9 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -89,11 +89,14 @@ type ConfigManager interface {
 	// ValidateSetupToken checks the one-time bootstrap token required to create the
 	// first admin account. Returns true once an admin account already exists.
 	ValidateSetupToken(token string) bool
+	// ValidateConfiguredSetupToken checks a token against the operator-configured setup
+	// token regardless of whether an admin account exists; false when none is configured.
+	ValidateConfiguredSetupToken(token string) bool
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	UpdateSyncConfig(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
-	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, maxInstructionsPerClient int, maxInstructionsTotal int) error
+	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, maxInstructionsPerClient int, maxInstructionsTotal int, codeModeLimits *schemas.MCPCodeModeLimits) error
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
@@ -105,6 +108,7 @@ type ConfigManager interface {
 type ConfigHandler struct {
 	store         *lib.Config
 	configManager ConfigManager
+	saveMu        sync.Mutex // Serializes updateConfig from snapshot through publication
 }
 
 // NewConfigHandler creates a new handler for configuration management.
@@ -213,6 +217,12 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 	if h.store.EnvLabel != "" {
 		mapConfig["env_label"] = h.store.EnvLabel
 	}
+	if h.store.ServerConfig != nil && h.store.ServerConfig.A2AGRPCBaseDomain != "" && h.store.ServerConfig.A2AGRPCPort > 0 {
+		mapConfig["agent_gateway"] = map[string]any{
+			"grpc_base_domain": h.store.ServerConfig.A2AGRPCBaseDomain,
+			"grpc_port":        h.store.ServerConfig.A2AGRPCPort,
+		}
+	}
 	mapConfig["is_git_available"] = CheckGitAvailability()
 	mapConfig["is_cache_connected"] = h.store.VectorStore != nil
 	mapConfig["is_logs_connected"] = h.store.LogsStore != nil
@@ -287,10 +297,11 @@ func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
 // risk of it ever being written to storage or echoed back by GET /api/config.
 type authConfigWithSetupToken struct {
 	configstore.AuthConfig
-	// SetupToken is the one-time bootstrap token (see AuthMiddleware.bootstrapToken)
-	// required only when this request is creating the very first admin account.
-	// It is never persisted.
-	SetupToken string `json:"setup_token,omitempty"`
+	// SetupToken is the operator-configured bootstrap token (see AuthMiddleware.bootstrapToken):
+	// required to create the very first admin account, and accepted as proof of control for
+	// changes made while dashboard auth is disabled. It is never persisted.
+	SetupToken      string `json:"setup_token,omitempty"`
+	CurrentPassword string `json:"current_password,omitempty"` // stored admin password, proves control while auth is disabled; never persisted
 }
 
 // updateConfig updates the core configuration settings.
@@ -301,6 +312,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Config store not initialized")
 		return
 	}
+	// Overlapping saves would each snapshot the same live config and race its
+	// publication, so a later save could undo an earlier one.
+	h.saveMu.Lock()
+	defer h.saveMu.Unlock()
 
 	payload := struct {
 		ClientConfig    configstore.ClientConfig               `json:"client_config"`
@@ -312,6 +327,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+	var requestFields struct {
+		ClientConfig map[string]json.RawMessage `json:"client_config"`
+	}
+	if err := json.Unmarshal(ctx.PostBody(), &requestFields); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	clientConfigFields := requestFields.ClientConfig
 
 	// Validate MCP external URL overrides up front — the rest of this handler
 	// applies live mutations (drop-excess flag, MCP tool-manager reload, compat
@@ -319,6 +342,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// rejection would leave the process in a partially-updated state.
 	if err := lib.ValidateBaseURL(payload.ClientConfig.MCPExternalClientURL.GetValue()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_external_client_url %v", err))
+		return
+	}
+	if err := lib.ValidateBaseURL(payload.ClientConfig.A2AExternalClientURL.GetValue()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a2a_external_client_url %v", err))
 		return
 	}
 
@@ -403,6 +430,38 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	copied := *currentConfig
 	updatedConfig := &copied
 
+	// Validate first-admin setup before any live mutation or persistence below.
+	var existingAuthConfig *configstore.AuthConfig
+	var initialPasswordHash string
+	if payload.AuthConfig != nil {
+		var err error
+		existingAuthConfig, err = h.store.ConfigStore.GetAuthConfig(ctx)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
+			return
+		}
+		if existingAuthConfig == nil && payload.AuthConfig.IsEnabled {
+			if !isSetupTokenAuthenticated(ctx) && !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
+				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account")
+				return
+			}
+			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" ||
+				payload.AuthConfig.AdminPassword == nil || payload.AuthConfig.AdminPassword.GetValue() == "" || payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+				SendError(ctx, fasthttp.StatusBadRequest, "auth username and password must be provided")
+				return
+			}
+			if failures := getPasswordPolicyFailures(payload.AuthConfig.AdminPassword.GetValue()); len(failures) > 0 {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(failures, ", ")))
+				return
+			}
+			initialPasswordHash, err = encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
+			if err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid auth password: %v", err))
+				return
+			}
+		}
+	}
+
 	// Validate MCP auth-mode / OAuth2 server settings before any live mutation
 	// below (drop-excess flag, MCP tool-manager reload, compat plugin reload,
 	// in-memory MCP config). A late rejection would return 400 while runtime
@@ -429,6 +488,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	effectiveOAuth2Config := currentConfig.OAuth2ServerConfig
 	if payload.ClientConfig.OAuth2ServerConfig != nil {
 		effectiveOAuth2Config = payload.ClientConfig.OAuth2ServerConfig
+		var previousRedirects []string
+		if currentConfig.OAuth2ServerConfig != nil {
+			previousRedirects = currentConfig.OAuth2ServerConfig.AllowedRedirectURIs
+		}
+		if isAuthBypassed(ctx) && !slices.Equal(previousRedirects, effectiveOAuth2Config.AllowedRedirectURIs) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing allowed_redirect_uris requires an authenticated admin session")
+			return
+		}
+		for _, uri := range effectiveOAuth2Config.AllowedRedirectURIs {
+			if !isAllowedRedirectScheme(uri) {
+				SendError(ctx, fasthttp.StatusBadRequest, "allowed_redirect_uris contains an invalid callback URI")
+				return
+			}
+		}
 	}
 
 	// disable_vk_identity only makes sense in oauth mode: in both mode virtual
@@ -440,6 +513,18 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		effectiveOAuth2Config.DisableVKIdentity &&
 		effectiveAuthMode != configstoreTables.MCPServerAuthModeOAuth {
 		SendError(ctx, fasthttp.StatusBadRequest, "disable_vk_identity is only valid when mcp_server_auth_mode is oauth")
+		return
+	}
+
+	// Enabling discovery without a pinned issuer_url would leave every issuer
+	// reference (discovery documents, authorize redirect, JWT iss/aud) derived
+	// from the unauthenticated, per-request Host header - reject the write here
+	// rather than accepting it and requiring a restart to discover the
+	// misconfiguration (validateClientConfig enforces the same invariant at
+	// load time, for config.json and pre-existing DB rows).
+	if (effectiveAuthMode == configstoreTables.MCPServerAuthModeOAuth || effectiveAuthMode == configstoreTables.MCPServerAuthModeBoth) &&
+		(effectiveOAuth2Config == nil || !effectiveOAuth2Config.IssuerURL.IsSet() || effectiveOAuth2Config.IssuerURL.GetValue() == "") {
+		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
 		return
 	}
 
@@ -476,6 +561,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if err := validateMCPInstructionCaps(payload.ClientConfig.MCPMaxInstructionsPerClient, payload.ClientConfig.MCPMaxInstructionsTotal); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
+	}
+	if payload.ClientConfig.LogRetentionDays < 1 {
+		logger.Warn("log_retention_days must be at least 1")
+		SendError(ctx, fasthttp.StatusBadRequest, "log_retention_days must be at least 1")
+		return
+	}
+	if limits := payload.ClientConfig.MCPCodeModeLimits; limits != nil {
+		if err := limits.Validate(); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	var restartReasons []string
@@ -529,6 +625,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MCPMaxInstructionsTotal = payload.ClientConfig.MCPMaxInstructionsTotal
 		shouldReloadMCPToolManagerConfig = true
 	}
+	// Omitted limits keep the current ones; {} resets every limit to its default.
+	if limits := payload.ClientConfig.MCPCodeModeLimits; limits != nil && (currentConfig.MCPCodeModeLimits == nil || *limits != *currentConfig.MCPCodeModeLimits) {
+		updatedConfig.MCPCodeModeLimits = limits
+		shouldReloadMCPToolManagerConfig = true
+	}
 	if err := validateGlobalToolSyncIntervalMinutes(payload.ClientConfig.MCPToolSyncInterval); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -539,27 +640,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MCPToolSyncInterval = payload.ClientConfig.MCPToolSyncInterval
 	}
 	updatedConfig.MCPEnableTempTokenAuth = payload.ClientConfig.MCPEnableTempTokenAuth
-
-	// Reload MCP tool manager config with all current values in one call
-	if shouldReloadMCPToolManagerConfig && h.store.MCPConfig != nil {
-		if err := h.configManager.UpdateMCPToolManagerConfig(ctx, updatedConfig.MCPAgentDepth, updatedConfig.MCPToolExecutionTimeout, updatedConfig.MCPCodeModeBindingLevel, updatedConfig.MCPDisableAutoToolInject, updatedConfig.MCPMaxInstructionsPerClient, updatedConfig.MCPMaxInstructionsTotal); err != nil {
-			logger.Warn(fmt.Sprintf("failed to update mcp tool manager config: %v", err))
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp tool manager config: %v", err))
-			return
-		}
-	}
-	// Keep in-memory MCP config aligned with client-config-backed MCP settings.
-	if h.store.MCPConfig != nil {
-		if h.store.MCPConfig.ToolManagerConfig == nil {
-			h.store.MCPConfig.ToolManagerConfig = &schemas.MCPToolManagerConfig{}
-		}
-		h.store.MCPConfig.ToolManagerConfig.MaxAgentDepth = updatedConfig.MCPAgentDepth
-		h.store.MCPConfig.ToolManagerConfig.ToolExecutionTimeout = schemas.Duration(time.Duration(updatedConfig.MCPToolExecutionTimeout) * time.Second)
-		h.store.MCPConfig.ToolManagerConfig.CodeModeBindingLevel = schemas.CodeModeBindingLevel(updatedConfig.MCPCodeModeBindingLevel)
-		h.store.MCPConfig.ToolManagerConfig.DisableAutoToolInject = updatedConfig.MCPDisableAutoToolInject
-		h.store.MCPConfig.ToolManagerConfig.MaxInstructionsPerClient = updatedConfig.MCPMaxInstructionsPerClient
-		h.store.MCPConfig.ToolManagerConfig.MaxInstructionsTotal = updatedConfig.MCPMaxInstructionsTotal
-	}
 
 	if !slices.Equal(payload.ClientConfig.PrometheusLabels, currentConfig.PrometheusLabels) {
 		updatedConfig.PrometheusLabels = payload.ClientConfig.PrometheusLabels
@@ -603,10 +683,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// which atomically swaps in a fresh immutable snapshot carrying the new value.
 	updatedConfig.DumpErrorsInConsoleLogs = payload.ClientConfig.DumpErrorsInConsoleLogs
 
-	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
+	enforceAuthOnInference := currentConfig.EnforceAuthOnInference
+	if payload.ClientConfig.HasInferenceAuthSetting() {
+		enforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
+	} else if payload.AuthConfig != nil && payload.AuthConfig.IsEnabled && existingAuthConfig == nil {
+		enforceAuthOnInference = true
+	}
+	updatedConfig.EnforceAuthOnInference = enforceAuthOnInference
 	// Sync deprecated columns to match new field so they stay consistent in the DB
-	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference
-	updatedConfig.EnforceSCIMAuth = payload.ClientConfig.EnforceAuthOnInference
+	updatedConfig.EnforceGovernanceHeader = enforceAuthOnInference
+	updatedConfig.EnforceSCIMAuth = enforceAuthOnInference
 
 	// Only update when explicitly provided to avoid clearing the stored default (prefer_idp).
 	// The conflict-vs-token_exchange validation already ran up front, before
@@ -623,34 +709,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MaxRequestBodySizeMB = payload.ClientConfig.MaxRequestBodySizeMB
 	}
 
-	// Handle compat plugin toggle
+	// Compat plugin reload is applied after the save below
 	newCompat := payload.ClientConfig.Compat
-	oldCompat := currentConfig.Compat
-	if newCompat != oldCompat {
-		newEnabled := newCompat.ConvertTextToChat || newCompat.ConvertChatToResponses || newCompat.ShouldDropParams || newCompat.ShouldConvertParams ||
-			newCompat.AzureDeepseek
-		if newEnabled {
-			compatCfg := &compat.Config{
-				ConvertTextToChat:      newCompat.ConvertTextToChat,
-				ConvertChatToResponses: newCompat.ConvertChatToResponses,
-				ShouldDropParams:       newCompat.ShouldDropParams,
-				ShouldConvertParams:    newCompat.ShouldConvertParams,
-				AzureDeepseek:          newCompat.AzureDeepseek,
-			}
-			if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
-				logger.Warn("failed to load compat plugin: %v", err)
-				SendError(ctx, 400, "Failed to load compat plugin")
-				return
-			}
-		} else {
-			disabledCtx := context.WithValue(ctx, PluginDisabledKey, true)
-			if err := h.configManager.RemovePlugin(disabledCtx, compat.PluginName); err != nil {
-				logger.Warn("failed to remove compat plugin: %v", err)
-				SendError(ctx, 400, "Failed to remove compat plugin")
-				return
-			}
-		}
-	}
+	shouldReloadCompat := newCompat != currentConfig.Compat
 	updatedConfig.Compat = newCompat
 	// Only update MCP fields if explicitly provided (non-zero) to avoid clearing stored values
 	if payload.ClientConfig.MCPAgentDepth > 0 {
@@ -713,6 +774,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Validation is performed up front in this handler so a failure here cannot leave the process in a partial state.
 	updatedConfig.MCPExternalClientURL = payload.ClientConfig.MCPExternalClientURL
 
+	// Preserve the stored Agent Gateway URL when an older or partial client omits
+	// the field. An explicit null still clears the override.
+	if _, present := clientConfigFields["a2a_external_client_url"]; present {
+		updatedConfig.A2AExternalClientURL = payload.ClientConfig.A2AExternalClientURL
+	}
+
 	// Only update each field when explicitly provided so partial /api/config
 	// payloads do not clear stored values (matches the MCP field handling above).
 	// The enum, disable_vk_identity, and auth_code_ttl validations for these
@@ -741,12 +808,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	// Validate LogRetentionDays
-	if payload.ClientConfig.LogRetentionDays < 1 {
-		logger.Warn("log_retention_days must be at least 1")
-		SendError(ctx, fasthttp.StatusBadRequest, "log_retention_days must be at least 1")
-		return
-	}
 	updatedConfig.LogRetentionDays = payload.ClientConfig.LogRetentionDays
 
 	if err := h.store.ConfigStore.UpdateClientConfig(ctx, updatedConfig); err != nil {
@@ -755,16 +816,64 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if shouldReloadCompat {
+		compatCfg := &compat.Config{
+			ConvertTextToChat:                   newCompat.ConvertTextToChat,
+			ConvertChatToResponses:              newCompat.ConvertChatToResponses,
+			ShouldDropParams:                    newCompat.ShouldDropParams,
+			ShouldConvertParams:                 newCompat.ShouldConvertParams,
+			AzureDeepseek:                       newCompat.AzureDeepseek,
+			ForceReasoningOnlyModelsToResponses: newCompat.ForceReasoningOnlyModelsToResponses,
+		}
+		if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
+			logger.Warn("failed to load compat plugin: %v", err)
+			if rollbackErr := h.store.ConfigStore.UpdateClientConfig(ctx, currentConfig); rollbackErr != nil {
+				logger.Error("failed to restore configuration after compat plugin reload failure, stored config now differs from the running gateway: %v", rollbackErr)
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to load compat plugin (%v) and the previous configuration could not be restored (%v); stored settings now differ from the running gateway, retry the save or restart", err, rollbackErr))
+				return
+			}
+			SendError(ctx, 400, "Failed to load compat plugin")
+			return
+		}
+	}
+
 	// Apply the in-memory change only after persistence succeeds, copying
 	// into the live struct (the same way ReloadClientConfigFromConfigStore
-	// publishes) so every holder of the pointer observes it.
+	// publishes) so every holder of the pointer observes it. Mu orders the
+	// copy with readers such as the OAuth redirect policy check.
+	h.store.Mu.Lock()
 	*h.store.ClientConfig = *updatedConfig
+	h.store.Mu.Unlock()
 	// Reloading client config from config store
 	if err := h.configManager.ReloadClientConfigFromConfigStore(ctx); err != nil {
 		logger.Warn("failed to reload client config from config store: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload client config from config store: %v", err))
 		return
 	}
+	// MCP settings reach the runtime only once the save has persisted, so a
+	// rejected or failed save never leaves them ahead of the database.
+	// Reload MCP tool manager config with all current values in one call
+	if shouldReloadMCPToolManagerConfig && h.store.MCPConfig != nil {
+		if err := h.configManager.UpdateMCPToolManagerConfig(ctx, updatedConfig.MCPAgentDepth, updatedConfig.MCPToolExecutionTimeout, updatedConfig.MCPCodeModeBindingLevel, updatedConfig.MCPDisableAutoToolInject, updatedConfig.MCPMaxInstructionsPerClient, updatedConfig.MCPMaxInstructionsTotal, updatedConfig.MCPCodeModeLimits); err != nil {
+			logger.Warn(fmt.Sprintf("failed to update mcp tool manager config: %v", err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp tool manager config: %v", err))
+			return
+		}
+	}
+	// Keep in-memory MCP config aligned with client-config-backed MCP settings.
+	if h.store.MCPConfig != nil {
+		if h.store.MCPConfig.ToolManagerConfig == nil {
+			h.store.MCPConfig.ToolManagerConfig = &schemas.MCPToolManagerConfig{}
+		}
+		h.store.MCPConfig.ToolManagerConfig.MaxAgentDepth = updatedConfig.MCPAgentDepth
+		h.store.MCPConfig.ToolManagerConfig.ToolExecutionTimeout = schemas.Duration(time.Duration(updatedConfig.MCPToolExecutionTimeout) * time.Second)
+		h.store.MCPConfig.ToolManagerConfig.CodeModeBindingLevel = schemas.CodeModeBindingLevel(updatedConfig.MCPCodeModeBindingLevel)
+		h.store.MCPConfig.ToolManagerConfig.DisableAutoToolInject = updatedConfig.MCPDisableAutoToolInject
+		h.store.MCPConfig.ToolManagerConfig.MaxInstructionsPerClient = updatedConfig.MCPMaxInstructionsPerClient
+		h.store.MCPConfig.ToolManagerConfig.MaxInstructionsTotal = updatedConfig.MCPMaxInstructionsTotal
+		h.store.MCPConfig.ToolManagerConfig.CodeModeLimits = updatedConfig.MCPCodeModeLimits
+	}
+
 	// Fetching existing framework config
 	frameworkConfig, err := h.store.ConfigStore.GetFrameworkConfig(ctx)
 	if err != nil {
@@ -884,15 +993,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	// Checking auth config and trying to update if required
 	if payload.AuthConfig != nil {
-		// Getting current governance config
-		authConfig, err := h.store.ConfigStore.GetAuthConfig(ctx)
-		if err != nil {
-			if !errors.Is(err, configstore.ErrNotFound) {
-				logger.Warn("failed to get auth config from store: %v", err)
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
-				return
-			}
-		}
+		authConfig := existingAuthConfig
 
 		// Check if auth config has changed
 		authChanged := false
@@ -946,8 +1047,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			// setup_token or BIFROST_SETUP_TOKEN env var) so that action can't be taken by
 			// an unauthenticated network caller racing the real operator to a freshly
 			// exposed instance.
-			if authConfig == nil && !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
+			if authConfig == nil && !isSetupTokenAuthenticated(ctx) && !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
 				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in this request")
+				return
+			}
+			// Stored credentials with auth switched off: the caller was admitted without any
+			// credential check, so switching auth back on (or replacing the credentials in
+			// the same request) must first prove control of the instance.
+			if authConfig != nil && isAuthBypassed(ctx) && !h.verifyStoredAdminCredential(ctx, authConfig, payload.AuthConfig) {
 				return
 			}
 			// Fetching current Auth config
@@ -960,27 +1067,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 					// Assuming that password hasn't been changed
 					payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 				} else {
-					// Password has been changed
-					passwordPolicyFailures := getPasswordPolicyFailures(payload.AuthConfig.AdminPassword.GetValue())
-					if len(passwordPolicyFailures) > 0 {
-						SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(passwordPolicyFailures, ", ")))
+					hashed, ok := h.hashAdminPassword(ctx, payload.AuthConfig.AdminPassword)
+					if !ok {
 						return
 					}
-					// We will hash the password
-					hashedPassword, err := encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
-					if err != nil {
-						logger.Warn("failed to hash password: %v", err)
-						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-						return
+					// First-time setup pre-hashed the password while validating the request
+					// (initialPasswordHash); reuse that hash rather than computing a second one.
+					if initialPasswordHash != "" {
+						hashed.Val = initialPasswordHash
 					}
-					// Preserve env/vault reference metadata when storing hashed password
-					if payload.AuthConfig.AdminPassword.IsFromSecret() {
-						sv := *payload.AuthConfig.AdminPassword
-						sv.Val = hashedPassword
-						payload.AuthConfig.AdminPassword = &sv
-					} else {
-						payload.AuthConfig.AdminPassword = &schemas.SecretVar{Val: hashedPassword}
-					}
+					payload.AuthConfig.AdminPassword = hashed
 				}
 			}
 			// Save auth config - this handles both first-time creation and updates
@@ -991,12 +1087,27 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				return
 			}
 		} else if authConfig != nil {
-			// Auth is being disabled but there's an existing config - preserve credentials and update disabled state
-			if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+			// Auth is being disabled (or kept disabled) over an existing config - preserve the
+			// credentials that were not resubmitted and update the disabled state.
+			passwordReplaced := !payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+			if !passwordReplaced {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 			}
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" {
 				payload.AuthConfig.AdminUserName = authConfig.AdminUserName
+			}
+			// Replacing the stored credentials while auth stays off is the same exposure as
+			// re-enabling with new ones, so it needs the same proof of control.
+			credentialsReplaced := passwordReplaced || !payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
+			if credentialsReplaced && isAuthBypassed(ctx) && !h.verifyStoredAdminCredential(ctx, authConfig, payload.AuthConfig) {
+				return
+			}
+			if passwordReplaced {
+				hashed, ok := h.hashAdminPassword(ctx, payload.AuthConfig.AdminPassword)
+				if !ok {
+					return
+				}
+				payload.AuthConfig.AdminPassword = hashed
 			}
 			err = h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig)
 			if err != nil {
@@ -1094,6 +1205,21 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Under the fail-open bypass (dashboard auth disabled/unconfigured), refuse to point the
+	// global proxy somewhere new or to stop verifying its TLS: either lets whoever runs the
+	// proxy read the provider credentials of every proxied request.
+	if isAuthBypassed(ctx) {
+		existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
+			return
+		}
+		if changed := globalProxyInterceptionChanges(existingConfig, payload); len(changed) > 0 {
+			SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing the global proxy (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
+			return
+		}
+	}
+
 	// Validate proxy config
 	if payload.Enabled {
 		// Validate proxy type
@@ -1103,6 +1229,14 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 			// Make sure the URL is provided
 			if payload.URL == "" {
 				SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
+				return
+			}
+			// Every proxied request carries its provider credentials to this host, so the
+			// proxy URL follows the same destination rule as a provider base URL. Private
+			// and loopback hosts stay allowed (a self-hosted egress proxy is the normal
+			// setup); link-local and unspecified addresses never are.
+			if err := bifrost.ValidateExternalURL(payload.URL, true); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid proxy URL: %v", err))
 				return
 			}
 			// Validate timeout if provided
@@ -1274,38 +1408,90 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 	return nil
 }
 
-// checkURLAccessibility verifies that the given URL is reachable.
-// For file:// URLs it checks that the path exists on disk.
-// For http(s):// URLs it performs a GET and expects a 200 OK.
+// checkURLAccessibilityDialContext is the dial function checkURLAccessibility's
+// HTTP client uses. Overridable in tests that need to reach a loopback-bound
+// httptest.Server; production code must never reassign it.
+var checkURLAccessibilityDialContext = network.SSRFSafeDialContext(10 * time.Second)
+
+// errURLNotReachable is the only failure checkURLAccessibility reports for a
+// URL that could not be fetched, whatever the cause.
+var errURLNotReachable = errors.New("url is not reachable")
+
+// errFileURLOverAPI is returned for a file:// URL supplied over the API.
+var errFileURLOverAPI = errors.New("file:// URLs can only be configured in config.json, not over the API")
+
+// checkURLAccessibility verifies that a datasheet or catalog URL supplied over
+// the API is an http(s) URL that answers 200 OK.
+//
+// file:// URLs are refused here. They are an operator feature for values set
+// in config.json (air-gapped deployments; see
+// docs/deployment-guides/how-to/airgapped.mdx), where whoever writes the file
+// already has the host's filesystem. Accepting one from an API caller would let
+// that caller name any path on the host for the catalog loaders to read.
+//
+// This runs against an admin-supplied URL, and no documented deployment points
+// these at a private-network HTTP(S) target, so private/link-local/CGNAT
+// addresses are rejected outright: both the save-time hostname check
+// (ValidateExternalURL) and the actual dial are guarded, since a save-time-only
+// check leaves a DNS-rebinding window, and the dial guard applies to every
+// redirect hop. A failed fetch reports only errURLNotReachable: the transport
+// error names the address that was dialed and, for a non-HTTP service, quotes
+// the bytes it could not parse, which would turn this endpoint into a
+// port-scan and banner oracle for anyone who can call it. That detail is
+// useful to the operator, so it goes to the server log only.
 func checkURLAccessibility(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
-	if parsed.Scheme == "file" {
-		info, err := os.Stat(parsed.Path)
-		if err != nil {
-			return fmt.Errorf("file not accessible: %w", err)
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("path is not a regular file")
-		}
-		return nil
+	if strings.EqualFold(parsed.Scheme, "file") {
+		return errFileURLOverAPI
 	}
-	if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+	if err := bifrost.ValidateExternalURL(rawURL, false); err != nil {
 		return fmt.Errorf("URL validation failed: %w", err)
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(rawURL)
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+		// The global proxy when it is enabled for API traffic, else the environment's:
+		// the sync that follows a successful check uses the same. A direct dial keeps
+		// the public-only check; a proxied request dials only the proxy, which may be
+		// on a private address, and goes to the host ValidateExternalURL just checked.
+		Transport: &network.ProxyAwareTransport{
+			Proxy:    network.DefaultProxyFunc(network.ClientPurposeAPI),
+			Direct:   &http.Transport{DialContext: checkURLAccessibilityDialContext},
+			ViaProxy: &http.Transport{Proxy: network.DefaultProxyFunc(network.ClientPurposeAPI), DialContext: network.PrivateNetworkDialContext(10 * time.Second)},
+		},
+		// The operator validated this URL, not wherever it redirects: a redirect
+		// is returned as-is and fails the 200 check below instead of being followed.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	reqCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		// Log the host and the underlying transport error only: the full URL
+		// can carry userinfo or query secrets, and *url.Error echoes it back.
+		logErr := err
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			logErr = urlErr.Err
+		}
+		logger.Warn(fmt.Sprintf("URL accessibility check failed for host %s: %v", parsed.Hostname(), logErr))
+		return errURLNotReachable
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		logger.Debug("url accessibility check for %s returned HTTP %d", rawURL, resp.StatusCode)
+		return errURLNotReachable
 	}
 	return nil
 }
@@ -1342,4 +1528,66 @@ func validateMCPInstructionCaps(perClient, total int) error {
 		return fmt.Errorf("mcp_max_instructions_per_client (%d) must not exceed mcp_max_instructions_total (%d)", perClient, total)
 	}
 	return nil
+}
+
+// hashAdminPassword applies the password policy to a newly submitted admin password and
+// returns its hash, keeping env/vault reference metadata so the stored value still records
+// where the password came from. On failure it sends the response and returns false.
+func (h *ConfigHandler) hashAdminPassword(ctx *fasthttp.RequestCtx, password *schemas.SecretVar) (*schemas.SecretVar, bool) {
+	if failures := getPasswordPolicyFailures(password.GetValue()); len(failures) > 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(failures, ", ")))
+		return nil, false
+	}
+	hashed, err := encrypt.Hash(password.GetValue())
+	if err != nil {
+		logger.Warn("failed to hash password: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
+		return nil, false
+	}
+	if password.IsFromSecret() {
+		sv := *password
+		sv.Val = hashed
+		return &sv, true
+	}
+	return &schemas.SecretVar{Val: hashed}, true
+}
+
+// verifyStoredAdminCredential authorizes an auth_config change made while dashboard auth is
+// disabled but admin credentials are stored. Such a request reached the handler without any
+// credential check (BifrostContextKeyAuthBypassed), so switching auth back on or replacing
+// the stored credentials must prove control of the instance: either current_password matches
+// the stored admin password, or setup_token matches the operator-configured setup token
+// (which, unlike the first-admin gate, stays valid for the life of the process). Without that
+// proof anyone who can reach the port could install their own admin account. On failure it
+// sends the 403 and returns false.
+func (h *ConfigHandler) verifyStoredAdminCredential(ctx *fasthttp.RequestCtx, stored *configstore.AuthConfig, payload *authConfigWithSetupToken) bool {
+	if payload.CurrentPassword != "" && stored.AdminPassword != nil {
+		if ok, err := encrypt.CompareHash(stored.AdminPassword.GetValue(), payload.CurrentPassword); err == nil && ok {
+			return true
+		}
+	}
+	if payload.SetupToken != "" && h.configManager.ValidateConfiguredSetupToken(payload.SetupToken) {
+		return true
+	}
+	SendError(ctx, fasthttp.StatusForbidden, "dashboard auth is disabled but an admin account exists; re-enabling it or changing the admin credentials requires current_password (the stored admin password) or a valid setup_token")
+	return false
+}
+
+// globalProxyInterceptionChanges returns the global proxy settings next adds or changes,
+// relative to old (nil when none is stored), that widen who can read proxied traffic: a new
+// proxy URL or TLS verification turned off. Keeping the stored URL while editing other fields,
+// disabling the proxy, or turning verification back on is not reported.
+func globalProxyInterceptionChanges(old *configstoreTables.GlobalProxyConfig, next configstoreTables.GlobalProxyConfig) []string {
+	var prev configstoreTables.GlobalProxyConfig
+	if old != nil {
+		prev = *old
+	}
+	var changed []string
+	if next.URL != "" && next.URL != prev.URL {
+		changed = append(changed, "url")
+	}
+	if next.SkipTLSVerify && !prev.SkipTLSVerify {
+		changed = append(changed, "skip_tls_verify")
+	}
+	return changed
 }

@@ -4,6 +4,7 @@ package starlark
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,40 @@ func TestCreateToolResponseMessageMarksError(t *testing.T) {
 	}
 	if ok.ChatToolMessage.IsError != nil {
 		t.Fatalf("a successful CodeMode result must leave IsError nil, got %v", *ok.ChatToolMessage.IsError)
+	}
+}
+
+func TestHandleExecuteToolCodeBudgetResults(t *testing.T) {
+	mode := NewStarlarkCodeMode(nil, nil)
+	mode.clientManager = &testClientManager{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, tc := range []struct {
+		code, message string
+		failed        bool
+	}{
+		{"result = len([0] * 200000000)", "resource limit", true},
+		{"result = []\nresult.append(result)", "nesting limit", true},
+		{"result = 1 << 128\nfor i in range(6):\n    result *= result", "integer exceeds size limit", true},
+		{"result = 42", "Return value: 42", false},
+	} {
+		args, err := schemas.MarshalSorted(map[string]string{"code": tc.code})
+		if err != nil {
+			t.Fatal(err)
+		}
+		call := schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("budget"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("executeToolCode"), Arguments: string(args)}}
+		msg, err := mode.handleExecuteToolCode(ctx, call)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if msg.ChatToolMessage == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+			t.Fatalf("missing tool response: %+v", msg)
+		}
+		if failed := msg.IsError != nil && *msg.IsError; failed != tc.failed {
+			t.Fatalf("is_error=%v for %s", failed, tc.code)
+		}
+		if !strings.Contains(*msg.Content.ContentStr, tc.message) {
+			t.Fatalf("expected %q in %q", tc.message, *msg.Content.ContentStr)
+		}
 	}
 }
 

@@ -89,6 +89,7 @@ type InMemoryStore interface {
 	GetMCPClientNames() map[string]string             // clientID → clientName, every client
 	// GetMCPClientBySlug resolves a client by its endpoint slug (for serving one client at /mcp/<slug>).
 	GetMCPClientBySlug(slug string) (clientID, clientName string, ok bool)
+	GetEnabledAgents() map[string]bool // agent name → allow by default
 }
 
 type BaseGovernancePlugin interface {
@@ -775,7 +776,7 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	if refusal := unusablePermit(access); refusal != nil {
 		return p.decide(ctx, refusal)
 	}
-	if access == nil && presentedGrantBearingCredential(ctx) {
+	if access == nil && presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx) {
 		return p.decide(ctx, &EvaluationResult{
 			Decision: DecisionAccessNotFound,
 			Reason:   "access not found. The provided credential does not exist or has been revoked.",
@@ -1131,9 +1132,11 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	provider, model, _ := req.GetRequestFields()
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
-		RequestType: req.RequestType,
-		Provider:    provider,
-		Model:       model}
+		RequestType:      req.RequestType,
+		Provider:         provider,
+		Model:            model,
+		OpaqueBatchInput: isOpaqueBatchInput(req),
+	}
 	// A batch create fans out to many completions, each naming its own model, so
 	// every model it will run is evaluated before the request itself. Each pass
 	// settles that model's limits on the access and checks them; the request's own
@@ -1160,7 +1163,22 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		}, nil
 	}
 
+	// A batch addressed by id belongs to the virtual key that created it; see providerjobs.go.
+	if shortCircuit := p.enforceProviderJobOwnership(ctx, req); shortCircuit != nil {
+		return req, shortCircuit, nil
+	}
+
 	return req, nil, nil
+}
+
+// isOpaqueBatchInput reports whether a batch create's work is an uploaded file or blob rather than
+// inline requests, so the models it will run are not visible on the request.
+func isOpaqueBatchInput(req *schemas.BifrostRequest) bool {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil || len(req.BatchCreateRequest.Requests) > 0 {
+		return false
+	}
+	batch := req.BatchCreateRequest
+	return batch.InputFileID != "" || (batch.InputBlob != nil && strings.TrimSpace(*batch.InputBlob) != "")
 }
 
 // BatchCreateModels returns every distinct model an inline batch create will run,
@@ -1222,6 +1240,21 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Extract request type, provider, and model
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
 
+	// A batch list is the provider's answer for the shared operator key; narrow it to what this
+	// virtual key may see before anything downstream reads it. See providerjobs.go.
+	if result != nil && result.BatchListResponse != nil {
+		if filterErr := p.filterProviderJobList(ctx, string(provider), result.BatchListResponse); filterErr != nil {
+			return nil, &schemas.BifrostError{
+				StatusCode: bifrost.Ptr(500),
+				Error:      &schemas.ErrorField{Message: "failed to verify access to the batch list"},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType: requestType,
+					Provider:    provider,
+				},
+			}, nil
+		}
+	}
+
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	billingNonce := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce)
 
@@ -1234,9 +1267,9 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// A request that presented something sees only the models it may use, and a credential that
 	// resolved to nothing lists nothing. A request that presented nothing is unrestricted and its
-	// listing is left alone.
+	// listing is left alone, as is an ungranted user the caller asked to have admitted.
 	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil &&
-		(presentedGrantBearingCredential(ctx) || access != nil) {
+		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
 		result.ListModelsResponse.Data = p.filterModelsForAccess(access, result.ListModelsResponse.Data)
 	}
 
@@ -1291,6 +1324,8 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// Set by core on every retry iteration.
 		attemptNumber := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 		routingMetadata, _ := schemas.InitialAttemptRoutingMetadataFromContext(ctx)
+		// A live session's continuation bills its usage but was already counted as a request at admission.
+		sessionContinuation := isLiveSessionContinuation(ctx)
 
 		p.wg.Add(1)
 		go func() {
@@ -1303,7 +1338,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
 		}()
 	}
 
@@ -1327,8 +1362,13 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, nil, nil
 	}
 
-	// Skip governance for codemode tools
+	// Codemode meta-tools are not governed as tool executions, but their
+	// discovery side (listToolFiles, readToolFile, getToolDocs) enumerates tools
+	// through GetToolPerClient(ctx), which only sees what ctx carries. Stamp the
+	// access's tool allow-list first so that enumeration is scoped to the grant,
+	// exactly as the LLM path and /mcp do, then skip evaluation as before.
 	if bifrost.IsCodemodeTool(toolName) {
+		p.stampMCPToolAccessForCodemode(ctx)
 		return req, nil, nil
 	}
 
@@ -1374,6 +1414,38 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	return req, nil, nil
+}
+
+// stampMCPToolAccessForCodemode narrows the request's MCP include-tools list to
+// the access's grant before a codemode meta-tool runs. A caller-provided list
+// can only narrow the grant, never expand it; with none provided the grant
+// itself is stamped. A request carrying no access is unrestricted and is left
+// untouched, as it is everywhere else. A credential that resolves to nothing,
+// or a context access cannot be resolved for at all (no grant installed), gets
+// an empty list: evaluation will refuse their tool calls, so discovery shows
+// them nothing either. An ungranted user the caller asked to have admitted is
+// the exception on both sides, served and shown everything, as a key-less
+// request is.
+func (p *GovernancePlugin) stampMCPToolAccessForCodemode(ctx *schemas.BifrostContext) {
+	access, err := p.ResolveAccess(ctx)
+	if err != nil {
+		if ctx != nil {
+			ctx.SetValue(schemas.MCPContextKeyIncludeTools, []string{})
+		}
+		return
+	}
+	if access == nil {
+		if presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx) {
+			ctx.SetValue(schemas.MCPContextKeyIncludeTools, []string{})
+		}
+		return
+	}
+	if p.pruneMCPIncludeToolsFromContext(ctx, access) {
+		return
+	}
+	if tools := access.MCPToolIncludeList(); tools != nil {
+		ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
+	}
 }
 
 // PostMCPHook processes the MCP response and updates usage tracking (business logic execution)
@@ -1474,6 +1546,89 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	return resp, bifrostErr, nil
 }
 
+func (p *GovernancePlugin) defaultAgentPermit(identity schemas.Identity) schemas.Permit {
+	if identity == nil || (identity.User() == nil && identity.VirtualKey() == nil) || p.inMemoryStore == nil {
+		return nil
+	}
+	allowedByDefault := make([]string, 0)
+	for agentName, allowByDefault := range p.inMemoryStore.GetEnabledAgents() {
+		if allowByDefault {
+			allowedByDefault = append(allowedByDefault, agentName)
+		}
+	}
+	if len(allowedByDefault) == 0 {
+		return nil
+	}
+	return grant.NewPermit("agent_default", "agent_default", "default agent access", true, false, nil, nil, grant.WithAgentPermits(allowedByDefault))
+}
+
+// PreA2AHook is the Agent Gateway governance decision point. It authorizes each decoded operation
+// from the request's settled grant before any upstream effect. Anonymous requests pass through;
+// identified requests resolve access through the same path as every other governed request.
+func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
+	if req == nil {
+		return req, nil, nil
+	}
+	if ctx == nil || ctx.Grant() == nil || ctx.Grant().Identity() == nil || !ctx.Grant().Identity().Presented() {
+		return req, nil, nil
+	}
+
+	deny := func(decision Decision, message string) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return req, &schemas.A2APluginShortCircuit{Error: &schemas.BifrostError{
+			Type:       bifrost.Ptr(string(decision)),
+			StatusCode: bifrost.Ptr(403),
+			Error:      &schemas.ErrorField{Message: message},
+		}}, nil
+	}
+
+	enabledAgents := map[string]bool(nil)
+	if p.inMemoryStore != nil {
+		enabledAgents = p.inMemoryStore.GetEnabledAgents()
+	}
+	if _, enabled := enabledAgents[req.AgentName]; !enabled {
+		return deny(DecisionAgentBlocked, fmt.Sprintf("Agent '%s' is disabled or unknown", req.AgentName))
+	}
+
+	access, err := p.ResolveAccess(ctx)
+	if err != nil {
+		return deny(DecisionAccessUnresolved, err.Error())
+	}
+	if defaultPermit := p.defaultAgentPermit(ctx.Grant().Identity()); defaultPermit != nil {
+		bases := []schemas.Permit{defaultPermit}
+		var scoping schemas.Permit
+		var mode grant.CompositionMode
+		if access != nil {
+			bases = append(access.Bases(), defaultPermit)
+			scoping = access.Scoping()
+			mode = grant.CompositionMode(access.Mode())
+		}
+		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+	}
+	if refusal := unusablePermit(access); refusal != nil {
+		return deny(refusal.Decision, refusal.Reason)
+	}
+	if access == nil {
+		return deny(DecisionAccessNotFound, "Access not found")
+	}
+	if !access.IsAgentAllowed(req.AgentName) {
+		return deny(DecisionAgentBlocked, denialReason(fmt.Sprintf("Agent '%s' is not allowed", req.AgentName), access.DeniedPermitsForAgent(req.AgentName)))
+	}
+	return req, nil, nil
+}
+
+// PostA2AHook completes the Agent Gateway governance phase. It mirrors
+// PostMCPHook's shape and is deliberately inert: Agent Gateway traffic has no
+// metered unit (no tokens and no per-agent pricing catalog), so recording usage
+// here would produce billing records that cannot be reconciled. PreA2AHook still
+// sets the rejected-request context key used by the MCP billing path, allowing
+// future A2A usage accounting without changing the call site. The operation and
+// agent remain discriminable from ExtraFields, which the gate stamps on both the
+// success response and the error.
+func (p *GovernancePlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
 // PreMCPConnectionHook resolves the caller's identity onto the BifrostContext
 // before the connect-plugin gate releases control to the credential-store
 // resolver. This is the only point in the MCP connect lifecycle where we can
@@ -1563,8 +1718,9 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isCacheRead: Whether the request is a cache read
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
+//   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -1633,18 +1789,19 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
-			Success:       success,
-			TokensUsed:    int64(tokensUsed),
-			Cost:          cost,
-			RequestID:     requestID,
-			BillingNonce:  billingNonce,
-			IsStreaming:   isStreaming,
-			IsFinalChunk:  isFinalChunk,
-			HasUsageData:  tokensUsed > 0 || cost > 0,
-			AttemptNumber: attemptNumber,
-			BilledReason:  billedReason,
-			Budgets:       budgets,
-			RateLimits:    rateLimits,
+			Success:          success,
+			TokensUsed:       int64(tokensUsed),
+			Cost:             cost,
+			RequestID:        requestID,
+			BillingNonce:     billingNonce,
+			SkipRequestCount: skipRequestCount,
+			IsStreaming:      isStreaming,
+			IsFinalChunk:     isFinalChunk,
+			HasUsageData:     tokensUsed > 0 || cost > 0,
+			AttemptNumber:    attemptNumber,
+			BilledReason:     billedReason,
+			Budgets:          budgets,
+			RateLimits:       rateLimits,
 		}
 
 		// Queue usage update asynchronously using tracker

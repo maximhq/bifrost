@@ -333,6 +333,10 @@ Configure MCP clients in your `config.json`:
 Use `env.VARIABLE_NAME` syntax to reference environment variables for sensitive values like URLs with API keys.
 </Note>
 
+<Note>
+Through the API (`POST /api/mcp/client`, `PUT /api/mcp/client/{id}`), `env.` and `vault.` references in `headers`, `oauth_config.client_id` / `client_secret`, `token_exchange.client_id` / `client_secret`, and `tls_config.ca_cert_pem` require an authenticated admin. On `POST /api/mcp/client` the same applies to `connection_string`; `PUT` cannot change `connection_string`. With dashboard auth disabled or unconfigured these requests answer `403` and name the fields; send literal values, enable dashboard authentication, or define the client in `config.json`, where references are always accepted.
+</Note>
+
 #### Auth-aware clients in `config.json`
 
 All six auth types can be declared in `config.json`. The four that need an admin verification step (`oauth`, `per_user_oauth`, `per_user_headers`, `token_exchange`) boot into a **`pending_verification`** runtime state and surface an admin CTA in the MCP Gateway UI:

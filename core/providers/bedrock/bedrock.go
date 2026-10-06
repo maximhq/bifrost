@@ -82,8 +82,20 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 
 	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
 
+	// Bedrock's runtime client is net/http, so proxy_config has to be applied here
+	// explicitly; ConfigureProxy below only covers the fasthttp Mantle clients. With
+	// no proxy configured, keep proxying from the environment as before.
+	proxy, proxyTLS, err := providerUtils.NetHTTPProxy(config.ProxyConfig)
+	if err != nil {
+		return nil, err
+	}
+	if proxy == nil {
+		proxy = providerUtils.EnvProxyFunc()
+	}
+
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 proxy,
+		TLSClientConfig:       proxyTLS,
 		MaxConnsPerHost:       config.NetworkConfig.MaxConnsPerHost,
 		MaxIdleConns:          schemas.DefaultMaxIdleConnsPerHost,
 		MaxIdleConnsPerHost:   schemas.DefaultMaxIdleConnsPerHost,
@@ -108,13 +120,19 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		caCertPEM = config.NetworkConfig.CACertPEM.GetValue()
 	}
 	if config.NetworkConfig.InsecureSkipVerify || caCertPEM != "" {
+		// Layer on top of the proxy's CA, if any, so both are trusted.
 		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		if proxyTLS != nil {
+			tlsConfig = proxyTLS.Clone()
+		}
 		if config.NetworkConfig.InsecureSkipVerify {
 			tlsConfig.InsecureSkipVerify = true
 		}
 		if caCertPEM != "" {
-			certPool, err := x509.SystemCertPool()
-			if err != nil {
+			var certPool *x509.CertPool
+			if tlsConfig.RootCAs != nil {
+				certPool = tlsConfig.RootCAs.Clone()
+			} else if certPool, err = x509.SystemCertPool(); err != nil {
 				certPool = x509.NewCertPool()
 			}
 			if !certPool.AppendCertsFromPEM([]byte(caCertPEM)) {
@@ -122,7 +140,9 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 			}
 			tlsConfig.RootCAs = certPool
 		}
-		transport.TLSClientConfig = tlsConfig
+		// Keep an inherited proxy's skip_tls_verify scoped to proxied traffic, now
+		// checked against the merged roots.
+		transport.TLSClientConfig = providerUtils.RescopeProxySkipVerify(proxyTLS, tlsConfig, config.NetworkConfig.InsecureSkipVerify)
 	}
 
 	// When HTTP/2 is enforced and a ping interval is configured, send client-initiated
@@ -4387,15 +4407,6 @@ func (provider *BedrockProvider) ContainerFileContent(_ *schemas.BifrostContext,
 // ContainerFileDelete is not supported by the Bedrock provider.
 func (provider *BedrockProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
-}
-
-// Passthrough is not supported by the Bedrock provider.
-func (provider *BedrockProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
-}
-
-func (provider *BedrockProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }
 
 // ---------------------------------------------------------------------------

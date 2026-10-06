@@ -2251,3 +2251,153 @@ func TestToOpenAIChatRequest_DoesNotEmitReasoningType(t *testing.T) {
 		require.NotContains(t, string(body), "between_tools", "%s: reasoning.type leaked: %s", provider, body)
 	}
 }
+
+// TestToOpenAIChatRequest_GPT56CacheBreakpoint is the Chat Completions counterpart
+// of TestToOpenAIResponsesRequest_GPT56CacheBreakpoint. gpt-5.6 and later take an
+// explicit boundary as prompt_cache_breakpoint on a text part; a cache_control
+// marker sent in Chat format (LiteLLM-style clients) used to be stripped with
+// nothing put in its place, so the request fell back to implicit caching.
+func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
+	ephemeral := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	mkReq := func(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("REUSABLE_PREFIX"), CacheControl: ephemeral},
+				}}},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeImage, CacheControl: ephemeral, ImageURLStruct: &schemas.ChatInputImage{URL: "https://example.com/a.png"}},
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Call echo.")},
+				}}},
+				{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("echo"), Arguments: `{"text":"hello"}`},
+				}}}},
+				{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+					Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+						{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("hello"), CacheControl: ephemeral},
+					}}},
+			},
+			Params: &schemas.ChatParameters{},
+		}
+	}
+	marshal := func(t *testing.T, req *schemas.BifrostChatRequest) (map[string]any, string) {
+		t.Helper()
+		ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+		defer cancel()
+		out := ToOpenAIChatRequest(ctx, req)
+		require.NotNil(t, out)
+		b, err := out.MarshalJSON()
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, sonic.Unmarshal(b, &m), string(b))
+		return m, string(b)
+	}
+	part := func(t *testing.T, m map[string]any, msg, idx int, raw string) map[string]any {
+		t.Helper()
+		msgs, _ := m["messages"].([]any)
+		require.Greater(t, len(msgs), msg, raw)
+		mm, _ := msgs[msg].(map[string]any)
+		parts, ok := mm["content"].([]any)
+		require.True(t, ok && idx < len(parts), "message %d content must be a part array; raw=%s", msg, raw)
+		p, _ := parts[idx].(map[string]any)
+		return p
+	}
+
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"openai gpt-5.6", schemas.OpenAI, "gpt-5.6-sol"},
+		{"openai gpt-6", schemas.OpenAI, "gpt-6-sol"},
+		{"azure gpt-6.1", schemas.Azure, "gpt-6.1-luna"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := mkReq(tc.provider, tc.model)
+			m, raw := marshal(t, req)
+			for _, loc := range []struct {
+				msg, idx int
+				what     string
+			}{{0, 0, "system text"}, {3, 0, "tool message text"}} {
+				p := part(t, m, loc.msg, loc.idx, raw)
+				bp, ok := p["prompt_cache_breakpoint"].(map[string]any)
+				require.Truef(t, ok, "%s must carry prompt_cache_breakpoint; raw=%s", loc.what, raw)
+				require.Equalf(t, "explicit", bp["mode"], "%s mode; raw=%s", loc.what, raw)
+				_, present := p["cache_control"]
+				require.Falsef(t, present, "cache_control must not reach OpenAI on %s; raw=%s", loc.what, raw)
+			}
+			img := part(t, m, 1, 0, raw)
+			_, present := img["prompt_cache_breakpoint"]
+			require.Falsef(t, present, "Chat image parts have no verified breakpoint field; none may be synthesized; raw=%s", raw)
+			_, present = img["cache_control"]
+			require.Falsef(t, present, "cache_control must be stripped from the image part; raw=%s", raw)
+			_, present = part(t, m, 1, 1, raw)["prompt_cache_breakpoint"]
+			require.Falsef(t, present, "unmarked text part must not receive a breakpoint; raw=%s", raw)
+
+			opts, ok := m["prompt_cache_options"].(map[string]any)
+			require.Truef(t, ok, "a translated breakpoint must switch the request to explicit mode; raw=%s", raw)
+			require.Equalf(t, "explicit", opts["mode"], "raw=%s", raw)
+
+			// Copy-on-write: the caller's input must still carry its own markers only.
+			require.Nil(t, req.Input[0].Content.ContentBlocks[0].PromptCacheBreakpoint, "caller's input was mutated")
+			require.NotNil(t, req.Input[0].Content.ContentBlocks[0].CacheControl, "caller's marker was cleared")
+		})
+	}
+
+	t.Run("caller's prompt_cache_options wins", func(t *testing.T) {
+		req := mkReq(schemas.OpenAI, "gpt-5.6-sol")
+		req.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Mode: schemas.Ptr("implicit")}
+		m, raw := marshal(t, req)
+		opts, _ := m["prompt_cache_options"].(map[string]any)
+		require.Equalf(t, "implicit", opts["mode"], "raw=%s", raw)
+	})
+
+	t.Run("pre-5.6 model strips and stays implicit", func(t *testing.T) {
+		m, raw := marshal(t, mkReq(schemas.OpenAI, "gpt-4o"))
+		_, present := part(t, m, 0, 0, raw)["prompt_cache_breakpoint"]
+		require.Falsef(t, present, "gpt-4o predates prompt_cache_breakpoint; raw=%s", raw)
+		_, present = part(t, m, 0, 0, raw)["cache_control"]
+		require.Falsef(t, present, "cache_control must still be stripped; raw=%s", raw)
+		_, present = m["prompt_cache_options"]
+		require.Falsef(t, present, "gpt-4o must not gain prompt_cache_options; raw=%s", raw)
+	})
+
+	t.Run("openrouter keeps cache_control verbatim and gains no breakpoint", func(t *testing.T) {
+		m, raw := marshal(t, mkReq(schemas.OpenRouter, "anthropic/claude-sonnet-4.6"))
+		p := part(t, m, 0, 0, raw)
+		_, present := p["prompt_cache_breakpoint"]
+		require.Falsef(t, present, "raw=%s", raw)
+		_, present = p["cache_control"]
+		require.Truef(t, present, "OpenRouter forwards cache_control itself; raw=%s", raw)
+		_, present = m["prompt_cache_options"]
+		require.Falsef(t, present, "raw=%s", raw)
+	})
+
+	t.Run("more than four markers keeps the latest four", func(t *testing.T) {
+		req := mkReq(schemas.OpenAI, "gpt-5.6-sol")
+		var extra []schemas.ChatMessage
+		for i := 0; i < 4; i++ {
+			extra = append(extra, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("turn"), CacheControl: ephemeral},
+			}}})
+		}
+		req.Input = append(req.Input, extra...) // 6 markers in total: system, tool, 4 turns
+		m, raw := marshal(t, req)
+		count := 0
+		msgs, _ := m["messages"].([]any)
+		for _, mm := range msgs {
+			parts, _ := mm.(map[string]any)["content"].([]any)
+			for _, pp := range parts {
+				if _, ok := pp.(map[string]any)["prompt_cache_breakpoint"]; ok {
+					count++
+				}
+			}
+		}
+		require.Equalf(t, 4, count, "raw=%s", raw)
+		_, present := part(t, m, 0, 0, raw)["prompt_cache_breakpoint"]
+		require.Falsef(t, present, "the earliest marker (system) must be the one dropped; raw=%s", raw)
+	})
+}

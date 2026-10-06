@@ -42,6 +42,84 @@ func TestAnthropicMessagesBillingHeaderNormalizedBeforeDispatch(t *testing.T) {
 	}
 }
 
+// TestAnthropicMessagesBillingHeaderAfterEffortOnlySystemMessage is a regression test for
+// 2.2.6: once per-message output_config was kept, an effort-only system message ahead of a
+// system billing header pushed the header out of the first slot and it survived ingress, so
+// guardrails evaluated it and non-Anthropic fallbacks received it.
+func TestAnthropicMessagesBillingHeaderAfterEffortOnlySystemMessage(t *testing.T) {
+	header := "x-anthropic-billing-header: cc_version=2.1.286; cc_entrypoint=cli;"
+	for name, headerContent := range map[string]string{
+		"string": `"` + header + `"`,
+		"blocks": `[{"type":"text","text":"` + header + `"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var incoming anthropic.AnthropicMessageRequest
+			raw := []byte(`{"model":"claude-opus-5-5","max_tokens":64,"messages":[` +
+				`{"role":"system","content":[],"output_config":{"effort":"high"}},` +
+				`{"role":"system","content":` + headerContent + `},` +
+				`{"role":"user","content":"alpha"}]}`)
+			if err := sonic.Unmarshal(raw, &incoming); err != nil {
+				t.Fatal(err)
+			}
+			for _, route := range createAnthropicMessagesRouteConfig("/anthropic", nil) {
+				request, err := route.RequestConverter(ctx, &incoming)
+				if err != nil {
+					t.Fatal(err)
+				}
+				input := request.ResponsesRequest.Input
+				normalized, err := schemas.MarshalSorted(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(normalized), "x-anthropic-billing-header:") {
+					t.Fatalf("billing header survived ingress behind an effort-only message: %s", normalized)
+				}
+				if len(input) != 2 || !input[0].IsEffortOnlySystemItem() {
+					t.Fatalf("effort-only message must stay first with the user turn after it: %s", normalized)
+				}
+
+				restored := request.ResponsesRequest.WithAnthropicBillingHeader().Input
+				if len(restored) != 3 || !restored[0].IsEffortOnlySystemItem() {
+					t.Fatalf("restored input lost its shape: %+v", restored)
+				}
+				content := restored[1].Content
+				got := ""
+				if content.ContentStr != nil {
+					got = *content.ContentStr
+				} else if len(content.ContentBlocks) == 1 && content.ContentBlocks[0].Text != nil {
+					got = *content.ContentBlocks[0].Text
+				}
+				if got != header {
+					t.Fatalf("billing header not restored in place for Anthropic: %q", got)
+				}
+			}
+
+			// Raw forwarding sends the native body, so its text target IDs must skip the
+			// header exactly as ingress did: the user turn is target 0 and the header stays.
+			targets, err := collectAnthropicRawRequestTextTargets(gjson.ParseBytes(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(targets) != 1 || targets[0].Path != "messages.2.content" || targets[0].ID != schemas.TextTargetIDForIndex(0) {
+				t.Fatalf("raw targets out of line with normalized input: %+v", targets)
+			}
+			rewritten, err := rewriteAnthropicRawRequestBodyTransforms(append([]byte(nil), raw...), []schemas.TextRewrite{{TargetID: targets[0].ID, Original: "alpha", Replacement: "[MASKED]"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(rewritten, "messages.2.content").String(); got != "[MASKED]" {
+				t.Fatalf("raw rewrite missed the user turn: %q", got)
+			}
+			for _, path := range []string{"messages.0", "messages.1"} {
+				if got, want := gjson.GetBytes(rewritten, path).Raw, gjson.GetBytes(raw, path).Raw; got != want {
+					t.Fatalf("raw rewrite changed %s: %s", path, got)
+				}
+			}
+		})
+	}
+}
+
 // TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta verifies the codec preserves provider-native event structure.
 func TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta(t *testing.T) {
 	codec := anthropicRawStreamTextCodec{}
@@ -967,6 +1045,141 @@ func TestAnthropicRefuseThreadContinue_EdgeCases(t *testing.T) {
 				if body := string(reqCtx.Response.Body()); !strings.Contains(body, "thread_unsupported_request") {
 					t.Errorf("expected thread_unsupported_request in body, got %s", body)
 				}
+			}
+		})
+	}
+}
+
+// TestAnthropicRawTransformsBillingHeaderAlignment is a guardrail redaction
+// regression for synthetic Claude Code requests. Native target IDs must follow
+// normalized text rows while preserving the original billing metadata in raw JSON.
+func TestAnthropicRawTransformsBillingHeaderAlignment(t *testing.T) {
+	const header = "x-anthropic-billing-header: cc_version=2.1.285; cc_entrypoint=cli;"
+	for _, tc := range []struct{ name, system string }{
+		{"leading header", `[{"type":"text","text":"` + header + `"},{"type":"text","text":"CLI instructions"},{"type":"text","text":"Task instructions"}]`},
+		{"interleaved headers", `[{"type":"text","text":"CLI instructions"},{"type":"text","text":"` + header + `"},{"type":"text","text":"Task instructions"},{"type":"text","text":"` + header + `"}]`},
+		{"only header block", `[{"type":"text","text":"` + header + `"}]`},
+		{"header string", `"` + header + `"`},
+		{"header object", `{"type":"text","text":"` + header + `"}`},
+		{"ordinary system", `[{"type":"text","text":"CLI instructions"},{"type":"text","text":"Task instructions"}]`},
+		{"whitespace header", `[{"type":"text","text":" \n` + header + `\n"},{"type":"text","text":"Task instructions"}]`},
+		{"future metadata", `[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.285; future=value;"}]`},
+		{"quoted header", `[{"type":"text","text":"Discuss ` + header + `"}]`},
+		{"mixed same line", `[{"type":"text","text":"` + header + ` Keep these instructions."}]`},
+		{"empty metadata", `[{"type":"text","text":"x-anthropic-billing-header: ;"}]`},
+		{"malformed metadata", `[{"type":"text","text":"x-anthropic-billing-header: cc_version=;"}]`},
+		{"mixed instructions", `[{"type":"text","text":"` + header + `\nKeep these instructions."}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"model":"claude-opus-5-5","max_tokens":64,"system":` + tc.system + `,"messages":[{"role":"user","content":[{"type":"text","text":"Codebase reminder"},{"type":"text","text":"Git status reminder"},{"type":"text","text":"Attribution reminder"},{"type":"text","text":"` + header + `"},{"type":"text","text":"email alice@example.com"}]}],"metadata":{"user_id":"alice@example.com"},"native_only":{"preserve":true}}`)
+			for _, route := range createAnthropicMessagesRouteConfig("/anthropic", nil) {
+				var incoming anthropic.AnthropicMessageRequest
+				if err := sonic.Unmarshal(raw, &incoming); err != nil {
+					t.Fatal(err)
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				request, err := route.RequestConverter(ctx, &incoming)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var texts []string
+				for _, message := range request.ResponsesRequest.Input {
+					if message.Content == nil {
+						continue
+					}
+					if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+						texts = append(texts, *message.Content.ContentStr)
+					}
+					for _, block := range message.Content.ContentBlocks {
+						if block.Text != nil && *block.Text != "" {
+							texts = append(texts, *block.Text)
+						}
+					}
+				}
+				targets, err := collectAnthropicRawRequestTextTargets(gjson.ParseBytes(raw))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(targets) != len(texts) {
+					t.Fatalf("raw targets=%d, normalized rows=%d", len(targets), len(texts))
+				}
+				var rewrites []schemas.TextRewrite
+				for i, text := range texts {
+					if got := gjson.GetBytes(raw, targets[i].Path).String(); got != text {
+						t.Fatalf("target %d path %s differs from normalized text", i, targets[i].Path)
+					}
+					if text != header {
+						rewrites = append(rewrites, schemas.TextRewrite{TargetID: schemas.TextTargetIDForIndex(i), Original: text, Replacement: "[MASKED]"})
+					}
+				}
+				rewritten, err := rewriteAnthropicRawRequestBodyTransforms(append([]byte(nil), raw...), rewrites)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i, text := range texts {
+					want := "[MASKED]"
+					if text == header {
+						want = header
+					}
+					if got := gjson.GetBytes(rewritten, targets[i].Path).String(); got != want {
+						t.Fatalf("target %d rewrite missing", i)
+					}
+				}
+				if got := gjson.GetBytes(rewritten, "system").Raw; got != tc.system && (tc.name == "header string" || tc.name == "header object" || tc.name == "only header block") {
+					t.Fatalf("standalone billing header changed: %s", got)
+				}
+				if system := gjson.GetBytes(raw, "system"); system.IsArray() {
+					system.ForEach(func(index, block gjson.Result) bool {
+						if block.Get("text").String() == header {
+							path := rawRequestArrayPath("system", int(index.Int()))
+							if got := gjson.GetBytes(rewritten, path).Raw; got != block.Raw {
+								t.Fatalf("billing block changed at %s", path)
+							}
+						}
+						return true
+					})
+				}
+				if got := gjson.GetBytes(rewritten, "messages.0.content.3.text").String(); got != header {
+					t.Fatalf("user header-shaped data changed: %q", got)
+				}
+				if got := gjson.GetBytes(rewritten, "metadata.user_id").String(); got != "alice@example.com" {
+					t.Fatalf("metadata changed: %q", got)
+				}
+				if !gjson.GetBytes(rewritten, "native_only.preserve").Bool() {
+					t.Fatal("native-only data lost")
+				}
+			}
+		})
+	}
+}
+
+// TestAnthropicRawTransformsRetainsBillingLikeToolResults is a guardrail redaction
+// regression: standard tool data remains writable, while native MCP outputs
+// omitted from LLM guardrails consume no text target IDs. Billing metadata stays intact.
+func TestAnthropicRawTransformsRetainsBillingLikeToolResults(t *testing.T) {
+	const header = "x-anthropic-billing-header: cc_version=2.1.285; cc_entrypoint=cli;"
+	for _, blockType := range []string{"tool_result", "mcp_tool_result"} {
+		t.Run(blockType, func(t *testing.T) {
+			raw := []byte(`{"system":"` + header + `","messages":[{"role":"user","content":[{"type":"` + blockType + `","tool_use_id":"call_1","content":"` + header + `"},{"type":"text","text":"email alice@example.com"}]}]}`)
+			targets, err := collectAnthropicRawRequestTextTargets(gjson.ParseBytes(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if blockType == "mcp_tool_result" {
+				if len(targets) != 1 || targets[0].Path != "messages.0.content.1.text" || targets[0].ID != schemas.TextTargetIDForIndex(0) {
+					t.Fatalf("ignored MCP result shifted ordinary text targets: %+v", targets)
+				}
+				return
+			}
+			if len(targets) != 2 || targets[0].Path != "messages.0.content.0.content" || targets[0].ID != schemas.TextTargetIDForIndex(0) {
+				t.Fatalf("tool-result text lost its native target: %+v", targets)
+			}
+			rewritten, err := rewriteAnthropicRawRequestBodyTransforms(append([]byte(nil), raw...), []schemas.TextRewrite{{TargetID: targets[0].ID, Original: header, Replacement: "[MASKED]"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gjson.GetBytes(rewritten, "system").String() != header || gjson.GetBytes(rewritten, targets[0].Path).String() != "[MASKED]" {
+				t.Fatal("system attribution and tool-result data were not kept separate")
 			}
 		})
 	}

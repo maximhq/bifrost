@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -619,7 +621,7 @@ func TestCloseAndMarkNeedsReauth_PerCallSharedOAuth_ReturnsReconnectNotApplicabl
 // carries no dial guard at all.
 func TestBuildTLSHTTPClientNeverFallsBackToUnguardedDefault(t *testing.T) {
 	for _, tlsCfg := range []*schemas.MCPTLSConfig{nil, {InsecureSkipVerify: true}} {
-		httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(tlsCfg)
+		httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{TLSConfig: tlsCfg})
 		require.NoError(t, err)
 		require.NotNil(t, httpClient)
 
@@ -634,7 +636,7 @@ func TestBuildTLSHTTPClientNeverFallsBackToUnguardedDefault(t *testing.T) {
 // endpoint) - the one class of target with no legitimate MCP use case under
 // any deployment topology, authenticated or not.
 func TestBuildTLSHTTPClientBlocksLinkLocal(t *testing.T) {
-	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 	require.NoError(t, err)
 	transport := httpClient.Transport.(*http.Transport)
 
@@ -666,7 +668,7 @@ func TestBuildTLSHTTPClientAllowsLoopback(t *testing.T) {
 		}
 	}()
 
-	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 	require.NoError(t, err)
 	transport := httpClient.Transport.(*http.Transport)
 
@@ -749,7 +751,7 @@ func TestBuildTLSHTTPClientRoutesThroughConfiguredProxy(t *testing.T) {
 	base.Proxy = http.ProxyURL(proxyURL)
 	t.Cleanup(func() { base.Proxy = origProxy })
 
-	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 	require.NoError(t, err)
 	httpClient.Timeout = 5 * time.Second
 	target := targetLn.Addr().String()
@@ -830,7 +832,7 @@ func TestBuildTLSHTTPClientRefusesProxyingBlockedLiteral(t *testing.T) {
 	for _, scheme := range []string{"http", "https"} {
 		for _, tc := range targets {
 			t.Run(scheme+"/"+tc.host, func(t *testing.T) {
-				httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+				httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 				require.NoError(t, err)
 				httpClient.Timeout = 5 * time.Second
 
@@ -880,7 +882,7 @@ func TestBuildTLSHTTPClientProxiedHostnameNeedsNoLocalDNS(t *testing.T) {
 	base.Proxy = http.ProxyURL(proxyURL)
 	t.Cleanup(func() { base.Proxy = origProxy })
 
-	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 	require.NoError(t, err)
 	httpClient.Timeout = 5 * time.Second
 
@@ -916,7 +918,7 @@ func TestBuildTLSHTTPClientBypassedProxyDialsDirect(t *testing.T) {
 	base.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
 	t.Cleanup(func() { base.Proxy = origProxy })
 
-	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 	require.NoError(t, err)
 	httpClient.Timeout = 5 * time.Second
 
@@ -941,14 +943,82 @@ func TestBuildTLSHTTPClientBypassedProxyDialsDirect(t *testing.T) {
 // behaviors: a nil selector stays nil so a transport without one is unchanged,
 // and an error from the wrapped selector is returned as-is.
 func TestMCPProxySelectorPassthrough(t *testing.T) {
-	require.Nil(t, mcpProxySelector(nil))
+	require.Nil(t, mcpProxySelector(nil, false, net.DefaultResolver))
 
 	wantErr := errors.New("selector failed")
-	sel := mcpProxySelector(func(*http.Request) (*url.URL, error) { return nil, wantErr })
+	sel := mcpProxySelector(func(*http.Request) (*url.URL, error) { return nil, wantErr }, false, net.DefaultResolver)
 	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1/mcp", nil)
 	require.NoError(t, err)
 	_, err = sel(req)
 	require.ErrorIs(t, err, wantErr)
+}
+
+// mcpDialContext returns the DialContext buildTLSHTTPClient installed for
+// config, so a test can exercise the dial-time policy without a transport.
+func mcpDialContext(t *testing.T, config *schemas.MCPClientConfig) func(context.Context, string, string) (net.Conn, error) {
+	t.Helper()
+	httpClient, err := (&MCPManager{logger: &MockLogger{}}).buildTLSHTTPClient(config)
+	require.NoError(t, err)
+	switch tr := httpClient.Transport.(type) {
+	case *http.Transport:
+		return tr.DialContext
+	case *network.ProxyAwareTransport:
+		return tr.Direct.DialContext
+	}
+	t.Fatalf("unexpected transport %T", httpClient.Transport)
+	return nil
+}
+
+// TestBuildTLSHTTPClientRequirePublicTargetRefusesPrivateAddresses pins the
+// dial-time half of the unauthenticated-registration restriction: a client
+// flagged RequirePublicTarget must refuse loopback and RFC1918 destinations on
+// every dial, so a name that resolved publicly at registration and privately
+// afterwards is still never connected to. An unflagged client keeps the
+// documented ability to reach a local MCP server.
+func TestBuildTLSHTTPClientRequirePublicTargetRefusesPrivateAddresses(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer local.Close()
+	localAddr := local.Listener.Addr().String()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	strict := mcpDialContext(t, &schemas.MCPClientConfig{Name: "unauthenticated", RequirePublicTarget: true})
+	for _, addr := range []string{localAddr, "10.0.0.1:443"} {
+		conn, err := strict(ctx, "tcp", addr)
+		if conn != nil {
+			require.NoError(t, conn.Close())
+		}
+		require.Error(t, err, "flagged client dialed %s", addr)
+		require.Contains(t, err.Error(), "blocked connection to non-public address", "dial to %s", addr)
+	}
+
+	permissive := mcpDialContext(t, &schemas.MCPClientConfig{Name: "admin"})
+	conn, err := permissive(ctx, "tcp", localAddr)
+	require.NoError(t, err, "an unflagged client must still reach a loopback MCP server")
+	require.NoError(t, conn.Close())
+}
+
+// TestMCPProxySelectorRequirePublicTargetRefusesPrivateLiteral pins the
+// proxied path for a flagged client: the dialer only sees the proxy there, so
+// a private IP-literal destination has to be refused by the selector.
+func TestMCPProxySelectorRequirePublicTargetRefusesPrivateLiteral(t *testing.T) {
+	proxyURL, err := url.Parse("http://proxy.example:3128")
+	require.NoError(t, err)
+	next := func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+
+	req, err := http.NewRequest(http.MethodGet, "http://10.0.0.1/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = mcpProxySelector(next, true, net.DefaultResolver)(req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked connection to non-public address")
+
+	got, err := mcpProxySelector(next, false, net.DefaultResolver)(req)
+	require.NoError(t, err, "an unflagged client may reach a private literal through the proxy")
+	require.Equal(t, proxyURL, got)
 }
 
 // SetClientTools carries the instructions from the same handshake that found the tools,
@@ -1008,4 +1078,165 @@ func TestWriteBackDiscoveredToolsKeepsInstructionsWhenNotRediscovered(t *testing
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	assert.Equal(t, "keep me", m.clientMap[config.ID].ServerInstructions)
+}
+
+// stubResolver answers every lookup with a fixed IP set or error.
+type stubResolver struct {
+	ips []net.IP
+	err error
+}
+
+func (r stubResolver) LookupIP(context.Context, string, string) ([]net.IP, error) {
+	return r.ips, r.err
+}
+
+// TestBuildTLSHTTPClientRequirePublicTargetReachesPrivateProxy: the strict
+// policy is about the MCP destination, not the proxy that carries the
+// connection. A flagged client in a proxy-only deployment must still be able
+// to dial the operator's proxy on a private or loopback address, while a dial
+// to the same kind of address that is NOT the selected proxy stays refused.
+func TestBuildTLSHTTPClientRequirePublicTargetReachesPrivateProxy(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer other.Close()
+
+	// mcp.example resolves to a public address through the stub, which is what lets the
+	// strict proxied-path check admit it; the proxy itself is dialed by IP.
+	httpClient, err := (&MCPManager{logger: &MockLogger{}}).buildTLSHTTPClientWithProxyAndResolver(
+		&schemas.MCPClientConfig{Name: "unauthenticated", RequirePublicTarget: true},
+		func(*http.Request) (*url.URL, error) { return proxyURL, nil },
+		stubResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}},
+	)
+	require.NoError(t, err)
+	tr, ok := httpClient.Transport.(*network.ProxyAwareTransport)
+	require.True(t, ok, "a flagged client routes per request between a direct and a via-proxy transport")
+
+	req, err := http.NewRequest(http.MethodGet, "https://mcp.example/mcp", nil)
+	require.NoError(t, err)
+	got, err := tr.ViaProxy.Proxy(req)
+	require.NoError(t, err)
+	require.Equal(t, proxyURL, got)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := tr.ViaProxy.DialContext(ctx, "tcp", proxy.Listener.Addr().String())
+	require.NoError(t, err, "the selected proxy must be dialable even on a loopback address")
+	require.NoError(t, conn.Close())
+
+	conn, err = tr.Direct.DialContext(ctx, "tcp", other.Listener.Addr().String())
+	if conn != nil {
+		require.NoError(t, conn.Close())
+	}
+	require.Error(t, err, "a loopback address that is not the selected proxy stays refused")
+	require.Contains(t, err.Error(), "blocked connection to non-public address")
+}
+
+// TestMCPProxySelectorAppliesPolicyToHostnames: on the proxied path the
+// selector is the only place that sees the MCP destination, so a hostname is
+// held to the same policy as a literal, against what the local resolver
+// answers. A name only the proxy can resolve is left to the proxy.
+func TestMCPProxySelectorAppliesPolicyToHostnames(t *testing.T) {
+	proxyURL, err := url.Parse("http://proxy.example:3128")
+	require.NoError(t, err)
+	next := func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+	cases := []struct {
+		name     string
+		strict   bool
+		resolver stubResolver
+		wantErr  string
+	}{
+		{"strict refuses a hostname resolving to a private address", true, stubResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}, "blocked connection to non-public address"},
+		{"strict refuses a hostname resolving to loopback", true, stubResolver{ips: []net.IP{net.ParseIP("127.0.0.1")}}, "blocked connection to non-public address"},
+		{"strict proxies a hostname resolving to a public address", true, stubResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}}, ""},
+		{"strict refuses an unresolvable hostname rather than trusting the proxy", true, stubResolver{err: errors.New("no such host")}, "DNS lookup failed"},
+		{"unflagged leaves an unresolvable hostname to the proxy", false, stubResolver{err: errors.New("no such host")}, ""},
+		{"unflagged proxies a hostname resolving to a private address", false, stubResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}, ""},
+		{"unflagged refuses a hostname resolving to metadata", false, stubResolver{ips: []net.IP{net.ParseIP("169.254.169.254")}}, "link-local"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, "http://mcp.corp/mcp", nil)
+			require.NoError(t, err)
+			got, err := mcpProxySelector(next, tc.strict, tc.resolver)(req)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				require.Equal(t, proxyURL, got)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// TestBuildTLSHTTPClientRequirePublicTargetProxyClassificationIsPerRequest: which policy a dial
+// gets must follow the request's own routing decision, not an address seen earlier. After a
+// proxied request has used a loopback proxy, a direct request (no proxy selected for it) whose
+// destination is that very address is still a destination dial and must be refused by the
+// strict policy.
+func TestBuildTLSHTTPClientRequirePublicTargetProxyClassificationIsPerRequest(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Served-By", "proxy")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+
+	// Only requests for mcp.example go through the proxy; everything else is direct.
+	selector := func(req *http.Request) (*url.URL, error) {
+		if req.URL.Hostname() == "mcp.example" {
+			return proxyURL, nil
+		}
+		return nil, nil
+	}
+	httpClient, err := (&MCPManager{logger: &MockLogger{}}).buildTLSHTTPClientWithProxyAndResolver(
+		&schemas.MCPClientConfig{Name: "unauthenticated", RequirePublicTarget: true}, selector,
+		stubResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}})
+	require.NoError(t, err)
+
+	resp, err := httpClient.Get("http://mcp.example/mcp")
+	require.NoError(t, err, "the proxied request must reach the loopback proxy")
+	require.Equal(t, "proxy", resp.Header.Get("X-Served-By"))
+	resp.Body.Close()
+
+	resp, err = httpClient.Get(proxy.URL + "/mcp")
+	if resp != nil {
+		resp.Body.Close()
+	}
+	require.Error(t, err, "a direct request to the proxy's own address is a loopback destination and must be refused")
+	require.Contains(t, err.Error(), "blocked connection to non-public address")
+}
+
+// TestBuildTLSHTTPClientUsesGlobalProxy pins that MCP client transports honour the
+// global proxy when it is enabled for API traffic, while the destination guard still
+// refuses instance metadata without anything reaching the proxy. They used to follow
+// only HTTP_PROXY / HTTPS_PROXY.
+func TestBuildTLSHTTPClientUsesGlobalProxy(t *testing.T) {
+	set := proxytest.NewSet(t)
+	network.SetDefaultHTTPClientFactory(network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(), EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { network.SetDefaultHTTPClientFactory(nil) })
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{Name: "proxied"})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://mcp.bifrost.test/sse", nil)
+	if resp, err := httpClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "mcp.bifrost.test:443", nil)
+
+	// MCP allows private networks (local MCP servers) but never instance metadata.
+	set.Reset()
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "https://169.254.169.254/sse", nil)
+	_, err = httpClient.Do(req)
+	require.Error(t, err, "a metadata address must be refused")
+	proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
 }

@@ -290,6 +290,10 @@ mcpConfig := &schemas.MCPConfig{
 
 When Code Mode clients are connected, Bifrost automatically adds four meta-tools to every request:
 
+<Note>
+When the request carries a virtual key, `listToolFiles`, `readToolFile`, and `getToolDocs` only show the tools that key is allowed to execute (its MCP `tools_to_execute` grant), on every route including `POST /v1/mcp/tool/execute`. A tool the key does not grant does not appear in discovery; grant it on the key to make it visible. Requests without a virtual key see every code mode tool, as before.
+</Note>
+
 ### 1. listToolFiles
 
 Lists all available virtual `.pyi` stub files for connected code mode servers.
@@ -580,14 +584,109 @@ results = youtube.search(query="AI news")
 **Code Processing:**
 1. Code is validated for syntax errors
 2. Tool calls are extracted and validated
-3. Code executes in isolated Starlark context
+3. Code executes in-process with a fresh, resource-budgeted Starlark thread
 4. Result variable is automatically serialized to JSON
 
 **Execution Limits:**
-- Default timeout: 30 seconds per tool execution
-- Memory isolation: Each execution gets its own context
-- No access to host file system or network
-- Logs captured from print() calls
+
+Every execution gets its own budget. The limits below are the defaults; each one is configurable (see [Configuring Execution Limits](#configuring-execution-limits)). There is no limit on how many executions run concurrently.
+
+| Limit | Field | Default |
+|-------|-------|---------|
+| Submitted source code size | `max_source_bytes` | 64 KiB (65536) |
+| Computation steps, including work performed inside builtins | `max_steps` | 1,000,000 |
+| Estimated allocation budget, enforced by the interpreter and gateway value converters before allocating | `max_memory_bytes` | 64 MiB (67108864) |
+| Print and tool log output, including newlines | `max_log_bytes` | 64 KiB (65536) |
+| Nested tool calls | `max_tool_calls` | 64 |
+| Size budget for each tool payload and converted result. Tool result strings count at their raw size; values leaving the interpreter (the `result` and tool arguments) count conservatively for JSON escaping, containers, and indentation | `max_value_bytes` | 1 MiB (1048576) |
+| Nesting depth of values crossing the tool boundary | `max_nesting_depth` | 64 |
+
+- Default timeout: 30 seconds per tool execution (`tool_execution_timeout`)
+- Arguments and results must be JSON-compatible values (tuples are converted to arrays) with scalar dictionary keys. Cycles and integers exceeding 4096 bits are always rejected
+- Starlark has no direct file system or network APIs. Nested tools run in the gateway with the original request's authorization and tool filters
+
+Execution stays inside the gateway: there is no child-process startup or IPC. The runtime uses Canonical's Starlark implementation with computation, allocation, and cancellation checks. These are cooperative limits on accounted work and allocations, not an OS-enforced limit on gateway RSS. Parsing is bounded by source size; MCP transports and tools retain responsibility for their own network buffers and external work.
+
+Exceeding a limit returns a tool error. Later executions start with a fresh scope and budget. Split large workloads into smaller executions. New host builtins must honor the same budgets and cancellation requirements.
+
+### Configuring Execution Limits
+
+Limits are a **global setting** applied to every code mode execution, and they reload without a restart. Set only the fields you want to change: an omitted field, or `0`, uses its default. Negative values are rejected, `max_value_bytes` must be `0` or at least 1024, and `max_nesting_depth` can be at most 1000, because value conversion recurses once per level.
+
+<Note>
+Raising `max_memory_bytes` raises the budget of every concurrent execution. Size it against the gateway's memory and the number of code mode requests you expect to run at once.
+</Note>
+
+<Tabs>
+<Tab title="Web UI">
+
+Open **MCP Settings** in the workspace configuration and edit the **Code Mode Limits** fields. Leave a field empty to use its default, then save.
+
+</Tab>
+<Tab title="API">
+
+`PUT /api/config` takes the whole `client_config`, so read the current one, set `mcp_code_mode_limits`, and send it back:
+
+```bash
+curl -s http://localhost:8080/api/config \
+  | jq '{client_config: (.client_config + {mcp_code_mode_limits: {max_steps: 5000000, max_memory_bytes: 268435456, max_tool_calls: 200}})}' \
+  | curl -X PUT http://localhost:8080/api/config -H "Content-Type: application/json" -d @-
+```
+
+A `client_config` without `mcp_code_mode_limits` keeps the current limits; `"mcp_code_mode_limits": {}` resets every limit to its default.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "tool_manager_config": {
+      "code_mode_limits": {
+        "max_steps": 5000000,
+        "max_memory_bytes": 268435456,
+        "max_tool_calls": 200
+      }
+    }
+  }
+}
+```
+
+`client_config.mcp_code_mode_limits` is also accepted; `mcp.tool_manager_config.code_mode_limits` takes precedence when both are set.
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  mcp:
+    toolManagerConfig:
+      codeModeLimits:
+        maxSteps: 5000000
+        maxMemoryBytes: 268435456
+        maxToolCalls: 200
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+mcpConfig := &schemas.MCPConfig{
+    ToolManagerConfig: &schemas.MCPToolManagerConfig{
+        CodeModeLimits: &schemas.MCPCodeModeLimits{
+            MaxSteps:       5_000_000,
+            MaxMemoryBytes: 256 << 20,
+            MaxToolCalls:   200,
+        },
+    },
+}
+
+// Change the limits at runtime; nil restores the defaults.
+err := client.UpdateCodeModeLimits(&schemas.MCPCodeModeLimits{MaxToolCalls: 500})
+```
+
+</Tab>
+</Tabs>
 
 ### Error Handling
 

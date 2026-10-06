@@ -240,9 +240,28 @@ if (CLASS && !ALL_CLASSES.includes(CLASS)) {
   process.exit(2);
 }
 
+// A folder whose name carries [SERIAL] runs whole, in collection order, inside ONE newman process.
+// It is for cases that change gateway-wide state (a feature flag, a singleton config) around the
+// request under test: setup, the request, cleanup. Nothing has to chain those steps through a
+// variable, so producer expansion does not hold them together, and both sharding axes used to
+// scatter them - the request ran in a fork that never did its setup while another fork's cleanup
+// undid the setup under it. Two such folders in different forks do the same to each other, since
+// the state they change is shared. So all of them go to one cell: class "other", slice 1, and a
+// filter that selects any step selects the folder (see withWholeSerialFolders).
+//
+// This only orders the forks of one run. Two runs against the same gateway still overlap, which is
+// why every run gets its own BASE_URL.
+const SERIAL_TAG = "[serial]";
+const serialFolderKey = (ancestorNames) => {
+  const names = ancestorNames || [];
+  const i = names.findIndex((name) => (name || "").toLowerCase().includes(SERIAL_TAG));
+  return i === -1 ? "" : names.slice(0, i + 1).join(" > ");
+};
+
 // Resolved against the same haystack every other predicate uses, so folder names count. Returns
 // exactly one class per item, which is what makes the shard set a partition rather than an overlap.
 const classifyItem = (item, ancestorNames) => {
+  if (serialFolderKey(ancestorNames)) return CLASS_OTHER;
   const haystack = buildHaystack(item, ancestorNames);
   for (const cls of CLASS_ORDER) {
     const aliases = FEATURE_ALIASES[cls] || [cls];
@@ -291,6 +310,12 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
   if (provider === "vertex") return isVertex;
   if (isVertex && (provider === "gemini" || provider === "anthropic")) return false;
+  // Rows that send a Gemini, OpenAI or Azure model through the Anthropic Messages ingress
+  // (POST /anthropic/v1/messages with model "gemini/...", "openai/..." or "azure/...") contain
+  // "anthropic" only because of the route or folder name, yet the upstream call goes to the
+  // model's own provider - same collision class as vertex above. Keep them out of the anthropic
+  // partition; they still match their own provider's keywords through the model prefix.
+  if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure)\//.test(item.request?.body?.raw || "")) return false;
   // Runware rows name the upstream vendor inside the AIR model id ("runware/anthropic:claude@...",
   // "runware/google:gemini@...", "runware/minimax:..."), so they'd otherwise be claimed by those
   // partitions too - same collision class as openrouter/bedrock_mantle/vertex above. Route them
@@ -494,6 +519,29 @@ const expandWithProducers = (selected, entries) => {
   return keep;
 };
 
+// Slices everything except the [SERIAL] folders, which all ride in slice 1 so that no two of them
+// run concurrently. Their cost is not balanced against the other slices: there are a handful of
+// such rows, and a lighter slice 1 is cheaper than a request racing its own cleanup.
+const sliceKeepingSerialFolders = (matched, serialKeyOf) => {
+  const serial = matched.filter((item) => serialKeyOf.get(item));
+  const sliced = sliceByCost(matched.filter((item) => !serialKeyOf.get(item)), SHARD_COUNT, SHARD_INDEX, timings);
+  return SHARD_INDEX === 1 ? [...serial, ...sliced] : sliced;
+};
+
+// A [SERIAL] folder is all or nothing: one selected step brings every step. A rerun of the failed
+// request or a narrow FEATURE would otherwise replay it without its setup, or change the gateway
+// and never run the cleanup that puts it back.
+const withWholeSerialFolders = (selected, entries, serialKeyOf) => {
+  const wanted = new Set(selected.map((item) => serialKeyOf.get(item)).filter(Boolean));
+  if (!wanted.size) return selected;
+  const have = new Set(selected);
+  const pulled = entries.map(({ item }) => item).filter((item) => wanted.has(serialKeyOf.get(item)) && !have.has(item));
+  if (pulled.length) {
+    console.error(`[filter-collection] pulled in ${pulled.length} request(s) to keep [SERIAL] folder(s) whole`);
+  }
+  return [...selected, ...pulled];
+};
+
 const collection = JSON.parse(readFileSync(SOURCE, "utf8"));
 const entries = walkRequests(collection.item || []);
 const timings = loadTimings(TIMINGS);
@@ -557,7 +605,9 @@ const matched = entries.filter(({ item, ancestors }) => passes(item, ancestors))
 // survive across invocations. Slicing afterwards would cut producers away from the consumers that
 // were just given them. The cost is that a producer shared by consumers in two slices runs in
 // both, which is the same duplication --class sharding already accepts for the same reason.
-const selected = SHARD_COUNT ? sliceByCost(matched, SHARD_COUNT, SHARD_INDEX, timings) : matched;
+const serialKeyOf = new Map(entries.map(({ item, ancestors }) => [item, serialFolderKey(ancestors)]));
+const sliced = SHARD_COUNT ? sliceKeepingSerialFolders(matched, serialKeyOf) : matched;
+const selected = withWholeSerialFolders(sliced, entries, serialKeyOf);
 const keep = expandWithProducers(selected, entries);
 const filtered = { ...collection, item: filterTree(collection.item || [], keep) };
 const totalAfter = JSON.stringify(filtered).match(/"request":/g)?.length || 0;

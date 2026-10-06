@@ -8,6 +8,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -553,6 +554,9 @@ const (
 	anthropicRawContentScopeSystem anthropicRawContentScope = iota
 	anthropicRawContentScopeMessage
 	anthropicRawContentScopeToolResult
+	anthropicRawContentScopeUserMessage
+	anthropicRawContentScopeFirstSystemMessage
+	anthropicRawContentScopeAssistantMessage
 )
 
 // collectAnthropicRawRequestTextPaths enumerates Anthropic fields mirrored into mutable Bifrost request text.
@@ -586,78 +590,112 @@ func collectAnthropicRawRequestTextPaths(root gjson.Result, replacements map[str
 	return paths, collectErr
 }
 
-// collectAnthropicRawRequestTextTargets enumerates writable Anthropic request text in normalized guardrail order.
-// Reasoning and tool argument fields are intentionally omitted: provider transformations only mutate ordinary text,
-// while those fields follow separate read-only and finding-only guardrail lanes.
+// anthropicRawTransformTargets tracks normalized ordinals separately from writable
+// native fields: ingress-generated user placeholders consume an ordinal but have
+// no raw text destination. sawNormalizedItem mirrors billing extraction's first-item scope.
+type anthropicRawTransformTargets struct {
+	targets           []rawJSONTextTarget
+	nextIndex         int
+	sawNormalizedItem bool
+}
+
+// collectAnthropicRawRequestTextTargets maps native text for provider-managed guardrail redaction.
+// It mirrors ingress normalization without changing billing metadata or the request.
+// Generated placeholders reserve ordinals without writable destinations; reasoning
+// and tool arguments retain their separate guardrail handling.
 func collectAnthropicRawRequestTextTargets(root gjson.Result) ([]rawJSONTextTarget, error) {
-	targets := make([]rawJSONTextTarget, 0)
-	if err := collectAnthropicRawTransformContentTargets(&targets, root.Get("system"), "system", anthropicRawContentScopeSystem); err != nil {
+	state := &anthropicRawTransformTargets{}
+	if err := collectAnthropicRawTransformContentTargets(state, root.Get("system"), "system", anthropicRawContentScopeSystem); err != nil {
 		return nil, err
 	}
 	messages := root.Get("messages")
 	if !messages.Exists() || messages.Type == gjson.Null {
-		return targets, nil
+		return state.targets, nil
 	}
 	if !messages.IsArray() {
 		return nil, fmt.Errorf("raw Anthropic request messages must be an array")
 	}
 	var collectErr error
 	messages.ForEach(func(index, message gjson.Result) bool {
+		scope := anthropicRawContentScopeMessage
+		switch message.Get("role").String() {
+		case "assistant":
+			scope = anthropicRawContentScopeAssistantMessage
+		case "user":
+			scope = anthropicRawContentScopeUserMessage
+		case "system":
+			if !state.sawNormalizedItem {
+				scope = anthropicRawContentScopeFirstSystemMessage
+			}
+		}
+		content := message.Get("content")
+		// Ungrouped ingress prepends reasoning items, making them the first item
+		// even when a system text block precedes reasoning in the native array.
+		if scope == anthropicRawContentScopeFirstSystemMessage && content.IsArray() {
+			content.ForEach(func(_, block gjson.Result) bool {
+				if (block.Get("type").String() == "thinking" && block.Get("thinking").Type == gjson.String) ||
+					(block.Get("type").String() == "redacted_thinking" && block.Get("data").Type == gjson.String) {
+					state.sawNormalizedItem = true
+				}
+				return true
+			})
+		}
 		messagePath := rawRequestArrayPath("messages", int(index.Int()))
-		collectErr = collectAnthropicRawTransformContentTargets(
-			&targets,
-			message.Get("content"),
-			rawRequestObjectPath(messagePath, "content"),
-			anthropicRawContentScopeMessage,
-		)
+		collectErr = collectAnthropicRawTransformContentTargets(state, content, rawRequestObjectPath(messagePath, "content"), scope)
 		return collectErr == nil
 	})
-	return targets, collectErr
+	return state.targets, collectErr
 }
 
-// collectAnthropicRawResponseTextTargets enumerates writable text blocks from one native Anthropic response.
+// collectAnthropicRawResponseTextTargets enumerates writable native response text.
 func collectAnthropicRawResponseTextTargets(root gjson.Result) ([]rawJSONTextTarget, error) {
-	targets := make([]rawJSONTextTarget, 0)
+	state := &anthropicRawTransformTargets{}
 	content := root.Get("content")
 	if !content.Exists() || content.Type == gjson.Null {
-		return targets, nil
+		return nil, nil
 	}
 	if !content.IsArray() {
 		return nil, fmt.Errorf("raw Anthropic response content must be an array")
 	}
 	var collectErr error
 	content.ForEach(func(index, block gjson.Result) bool {
-		path := rawRequestArrayPath("content", int(index.Int()))
-		collectErr = collectAnthropicRawTransformContentBlockTarget(&targets, block, path, anthropicRawContentScopeMessage)
+		collectErr = collectAnthropicRawTransformContentBlockTarget(state, block, rawRequestArrayPath("content", int(index.Int())), anthropicRawContentScopeAssistantMessage)
 		return collectErr == nil
 	})
-	return targets, collectErr
+	return state.targets, collectErr
 }
 
-// collectAnthropicRawTransformContentTargets walks a native Anthropic content union in guardrail text order.
-func collectAnthropicRawTransformContentTargets(targets *[]rawJSONTextTarget, content gjson.Result, path string, scope anthropicRawContentScope) error {
+// collectAnthropicRawTransformContentTargets walks the native content union while
+// preserving the distinction between message text, system metadata, and tool data.
+func collectAnthropicRawTransformContentTargets(state *anthropicRawTransformTargets, content gjson.Result, path string, scope anthropicRawContentScope) error {
 	if !content.Exists() || content.Type == gjson.Null {
 		return nil
 	}
 	if content.Type == gjson.String {
-		return appendAnthropicRawTransformTextTarget(targets, content, path)
+		// An empty top-level system string produces no normalized system item.
+		if scope == anthropicRawContentScopeSystem && content.String() == "" {
+			return nil
+		}
+		return appendAnthropicRawTransformTextTarget(state, content, path, scope)
 	}
 	if content.IsObject() {
-		return collectAnthropicRawTransformContentBlockTarget(targets, content, path, scope)
+		return collectAnthropicRawTransformContentBlockTarget(state, content, path, scope)
 	}
 	if !content.IsArray() {
 		return fmt.Errorf("raw Anthropic content path %q must be a string, object, or array", path)
 	}
 	var collectErr error
 	content.ForEach(func(index, block gjson.Result) bool {
-		collectErr = collectAnthropicRawTransformContentBlockTarget(targets, block, rawRequestArrayPath(path, int(index.Int())), scope)
+		collectErr = collectAnthropicRawTransformContentBlockTarget(state, block, rawRequestArrayPath(path, int(index.Int())), scope)
 		return collectErr == nil
 	})
 	return collectErr
 }
 
-// collectAnthropicRawTransformContentBlockTarget selects only writable text fields represented in provider transforms.
-func collectAnthropicRawTransformContentBlockTarget(targets *[]rawJSONTextTarget, block gjson.Result, path string, scope anthropicRawContentScope) error {
+// collectAnthropicRawTransformContentBlockTarget mirrors ingress text targets and first-item state.
+// Non-text items affect whether a later system header was removed at ingress;
+// generated user placeholders reserve ordinals without writable native fields.
+func collectAnthropicRawTransformContentBlockTarget(state *anthropicRawTransformTargets, block gjson.Result, path string, scope anthropicRawContentScope) error {
 	if !block.IsObject() {
 		return fmt.Errorf("raw Anthropic content block at %q must be an object", path)
 	}
@@ -668,43 +706,132 @@ func collectAnthropicRawTransformContentBlockTarget(targets *[]rawJSONTextTarget
 	if blockType.Type != gjson.String {
 		return fmt.Errorf("raw Anthropic content block type at %q must be a string", path)
 	}
-	switch scope {
-	case anthropicRawContentScopeSystem, anthropicRawContentScopeToolResult:
+	if scope == anthropicRawContentScopeSystem || scope == anthropicRawContentScopeToolResult {
 		if blockType.String() == string(anthropic.AnthropicContentBlockTypeText) {
-			return appendAnthropicRawTransformTextTarget(targets, block.Get("text"), rawRequestObjectPath(path, "text"))
+			return appendAnthropicRawTransformTextTarget(state, block.Get("text"), rawRequestObjectPath(path, "text"), scope)
 		}
-	case anthropicRawContentScopeMessage:
-		switch anthropic.AnthropicContentBlockType(blockType.String()) {
-		case anthropic.AnthropicContentBlockTypeText:
-			return appendAnthropicRawTransformTextTarget(targets, block.Get("text"), rawRequestObjectPath(path, "text"))
-		case anthropic.AnthropicContentBlockTypeToolResult, anthropic.AnthropicContentBlockTypeMCPToolResult:
-			return collectAnthropicRawTransformContentTargets(
-				targets,
-				block.Get("content"),
-				rawRequestObjectPath(path, "content"),
-				anthropicRawContentScopeToolResult,
-			)
+		return nil
+	}
+	switch anthropic.AnthropicContentBlockType(blockType.String()) {
+	case anthropic.AnthropicContentBlockTypeText:
+		return appendAnthropicRawTransformTextTarget(state, block.Get("text"), rawRequestObjectPath(path, "text"), scope)
+	case anthropic.AnthropicContentBlockTypeToolResult:
+		if block.Get("tool_use_id").Type != gjson.String {
+			return nil
+		}
+		state.sawNormalizedItem = true
+		return collectAnthropicRawTransformContentTargets(state, block.Get("content"), rawRequestObjectPath(path, "content"), anthropicRawContentScopeToolResult)
+	case anthropic.AnthropicContentBlockTypeMCPToolResult:
+		// LLM guardrails omit native MCP outputs; count their normalized item
+		// for billing's first-item scope, but reserve no ordinary text target.
+		if block.Get("tool_use_id").Type == gjson.String {
+			state.sawNormalizedItem = true
+		}
+	case anthropic.AnthropicContentBlockTypeFallback:
+		state.sawNormalizedItem = true
+		if scope == anthropicRawContentScopeUserMessage {
+			state.nextIndex++
+		}
+	case anthropic.AnthropicContentBlockTypeCompaction:
+		if block.Get("content").Exists() && block.Get("content").Type != gjson.Null {
+			state.sawNormalizedItem = true
+		}
+	case anthropic.AnthropicContentBlockTypeImage, anthropic.AnthropicContentBlockTypeDocument:
+		if block.Get("source").IsObject() {
+			state.sawNormalizedItem = true
+		}
+	case anthropic.AnthropicContentBlockTypeContainerUpload:
+		if block.Get("file_id").Type == gjson.String {
+			state.sawNormalizedItem = true
+		}
+	case anthropic.AnthropicContentBlockTypeToolUse, anthropic.AnthropicContentBlockTypeMCPToolUse:
+		if block.Get("id").Type == gjson.String && block.Get("name").Type == gjson.String {
+			state.sawNormalizedItem = true
+		}
+	case anthropic.AnthropicContentBlockTypeServerToolUse:
+		if anthropicRawServerToolUseEmitsItem(block, scope == anthropicRawContentScopeAssistantMessage) {
+			state.sawNormalizedItem = true
+		}
+	case anthropic.AnthropicContentBlockTypeThinking:
+		if block.Get("thinking").Type == gjson.String {
+			state.sawNormalizedItem = true
+		}
+	case anthropic.AnthropicContentBlockTypeRedactedThinking:
+		if block.Get("data").Type == gjson.String {
+			state.sawNormalizedItem = true
 		}
 	}
 	return nil
 }
 
-// appendAnthropicRawTransformTextTarget appends one verified writable text target in normalized row order.
-func appendAnthropicRawTransformTextTarget(targets *[]rawJSONTextTarget, field gjson.Result, path string) error {
+// anthropicRawServerToolUseEmitsItem mirrors ungrouped ingress's name and role
+// rules so ignored server-tool blocks cannot suppress first-item billing filtering.
+// Recognized names do not require an ID because ingress also permits a missing ID.
+func anthropicRawServerToolUseEmitsItem(block gjson.Result, isOutputMessage bool) bool {
+	name := block.Get("name")
+	if name.Type != gjson.String {
+		return false
+	}
+	switch anthropic.AnthropicToolName(name.String()) {
+	case anthropic.AnthropicToolNameToolSearchBM25, anthropic.AnthropicToolNameToolSearchRegex:
+		return true
+	case anthropic.AnthropicToolNameWebSearch, anthropic.AnthropicToolNameWebFetch,
+		anthropic.AnthropicToolNameAdvisor, anthropic.AnthropicToolNameCodeExecution,
+		anthropic.AnthropicToolNameBashCodeExecution, anthropic.AnthropicToolNameTextEditorCodeExecution:
+		return isOutputMessage
+	default:
+		return false
+	}
+}
+
+// appendAnthropicRawTransformTextTarget appends a writable native field at its normalized ordinal.
+// Placeholder rows reserve IDs without destinations. Standalone billing metadata
+// is excluded only where ExtractAnthropicBillingHeader already removes it from ingress.
+func appendAnthropicRawTransformTextTarget(state *anthropicRawTransformTargets, field gjson.Result, path string, scope anthropicRawContentScope) error {
 	if !field.Exists() || field.Type == gjson.Null {
 		return nil
 	}
 	if field.Type != gjson.String {
 		return fmt.Errorf("raw Anthropic text path %q must be a string", path)
 	}
+	firstSystem := scope == anthropicRawContentScopeSystem || (scope == anthropicRawContentScopeFirstSystemMessage && !state.sawNormalizedItem)
+	state.sawNormalizedItem = true
+	if scope == anthropicRawContentScopeUserMessage && strings.TrimSpace(field.String()) == "" {
+		state.nextIndex++ // normalizeBifrostInputContentBlocks replaces this item with "...".
+		return nil
+	}
 	if field.String() == "" {
 		return nil
 	}
-	*targets = append(*targets, rawJSONTextTarget{
-		ID:   schemas.TextTargetIDForIndex(len(*targets)),
-		Path: path,
-	})
+	if firstSystem && isAnthropicRawBillingHeaderText(field.String()) {
+		return nil
+	}
+	state.targets = append(state.targets, rawJSONTextTarget{ID: schemas.TextTargetIDForIndex(state.nextIndex), Path: path})
+	state.nextIndex++
 	return nil
+}
+
+// isAnthropicRawBillingHeaderText mirrors the standalone metadata check used by
+// schemas.BifrostResponsesRequest.ExtractAnthropicBillingHeader so raw transform
+// IDs exclude only system text omitted from normalized guardrail evaluation.
+func isAnthropicRawBillingHeaderText(text string) bool {
+	metadata, ok := strings.CutPrefix(strings.TrimSpace(text), "x-anthropic-billing-header:")
+	if !ok || strings.ContainsAny(metadata, "\r\n") {
+		return false
+	}
+	found := false
+	for field := range strings.SplitSeq(metadata, ";") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(field, "=")
+		if !ok || key == "" || value == "" || strings.IndexFunc(field, unicode.IsSpace) >= 0 {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // collectAnthropicRawContentPaths handles the string, block-array, and single-block Anthropic content union.

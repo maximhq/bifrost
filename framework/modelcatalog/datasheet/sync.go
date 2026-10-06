@@ -11,6 +11,7 @@ import (
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
@@ -193,7 +194,9 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
 			return nil, fmt.Errorf("pricing URL validation failed: %w", err)
 		}
-		client := &http.Client{Timeout: DefaultPricingTimeout}
+		// ValidateExternalURL screens the configured host once; the guarded
+		// client holds every connection and redirect hop to the same policy.
+		client := network.NewPrivateNetworkHTTPClient(DefaultPricingTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL(), nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)

@@ -3164,6 +3164,204 @@ func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
 	}
 }
 
+// A kept output_config.effort snaps onto the model's ladder: Opus 4.5 takes
+// low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+ add xhigh. Claude Code
+// defaults to xhigh, which a retargeted request carries onto older models.
+func TestStripUnsupportedFields_EffortLevelClamp(t *testing.T) {
+	tests := []struct {
+		model, effort, want string
+	}{
+		{"claude-opus-4-5", "xhigh", "high"},
+		{"claude-opus-4-5", "max", "high"},
+		{"claude-opus-4-5-20251101", "medium", "medium"},
+		{"claude-opus-4-6", "xhigh", "max"},
+		{"claude-sonnet-4-6", "max", "max"},
+		{"claude-opus-4-7", "xhigh", "xhigh"},
+		{"claude-opus-5-5", "max", "max"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model+"/"+tt.effort+"/raw", func(t *testing.T) {
+			body := []byte(`{"model":"` + tt.model + `","output_config":{"effort":"` + tt.effort + `"}}`)
+			out, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, tt.model)
+			if err != nil {
+				t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+			}
+			if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != tt.want {
+				t.Errorf("output_config.effort = %q, want %q; body=%s", got, tt.want, out)
+			}
+		})
+		t.Run(tt.model+"/"+tt.effort+"/typed", func(t *testing.T) {
+			req := &AnthropicMessageRequest{Model: tt.model, OutputConfig: &AnthropicOutputConfig{Effort: new(tt.effort)}}
+			stripUnsupportedAnthropicFields(req, schemas.Anthropic, tt.model)
+			if req.OutputConfig == nil || req.OutputConfig.Effort == nil || *req.OutputConfig.Effort != tt.want {
+				t.Errorf("OutputConfig = %+v, want effort %q", req.OutputConfig, tt.want)
+			}
+		})
+	}
+
+	t.Run("datasheet_ladder_wins", func(t *testing.T) {
+		model := "claude-opus-4-5-ladder-override"
+		setOverride(t, model, schemas.ModelCapabilities{ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh"}})
+		body := []byte(`{"model":"` + model + `","output_config":{"effort":"xhigh"}}`)
+		out, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, model)
+		if err != nil {
+			t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+		}
+		if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != "xhigh" {
+			t.Errorf("output_config.effort = %q, want \"xhigh\" from the row's ladder; body=%s", got, out)
+		}
+	})
+}
+
+// TestStripUnsupportedFieldsFromRawBody_PerMessageOutputConfig pins the raw-passthrough
+// gate for per-message effort (messages[].output_config, beta
+// mid-conversation-output-config-2026-07-01). Claude Code 2.1.285 sends it on a
+// text-bearing role:"system" message alongside the top-level output_config; Vertex
+// rejects the nested field with "messages.1.output_config: Extra inputs are not
+// permitted". Off Anthropic direct (or on a model without per-turn effort) the nested
+// field is stripped, the message text and top-level effort survive, and an effort-only
+// system message (no content) is dropped whole because it carries nothing else.
+func TestStripUnsupportedFieldsFromRawBody_PerMessageOutputConfig(t *testing.T) {
+	claudeCodeBody := func(model string) string {
+		return `{"model":"` + model + `","max_tokens":1024,"output_config":{"effort":"medium"},"messages":[` +
+			`{"role":"user","content":[{"type":"text","text":"hi"}]},` +
+			`{"role":"system","content":[{"type":"text","text":"reminder"}],"output_config":{"effort":"medium"}},` +
+			`{"role":"user","content":[{"type":"text","text":"go on"}]}]}`
+	}
+	effortOnlyBody := func(model string) string {
+		return `{"model":"` + model + `","max_tokens":1024,"output_config":{"effort":"high"},"messages":[` +
+			`{"role":"user","content":[{"type":"text","text":"hi"}]},` +
+			`{"role":"system","content":[],"output_config":{"effort":"low"}},` +
+			`{"role":"assistant","content":[{"type":"text","text":"ok"}]},` +
+			`{"role":"system","content":"","output_config":{"effort":"low"}},` +
+			`{"role":"user","content":[{"type":"text","text":"go on"}]}]}`
+	}
+
+	tests := []struct {
+		name         string
+		provider     schemas.ModelProvider
+		model        string
+		body         string
+		wantKept     bool   // messages[].output_config forwarded verbatim
+		wantMessages string // expected messages array when stripped
+	}{
+		{name: "vertex opus 5.5 claude code shape", provider: schemas.Vertex, model: "claude-opus-5-5", body: claudeCodeBody("claude-opus-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "vertex fable 5.1 claude code shape", provider: schemas.Vertex, model: "claude-fable-5-1", body: claudeCodeBody("claude-fable-5-1"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "vertex sonnet 5.5 claude code shape", provider: schemas.Vertex, model: "claude-sonnet-5-5", body: claudeCodeBody("claude-sonnet-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "bedrock opus 5.5 claude code shape", provider: schemas.Bedrock, model: "claude-opus-5-5", body: claudeCodeBody("claude-opus-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "vertex effort-only system messages dropped whole", provider: schemas.Vertex, model: "claude-opus-5-5", body: effortOnlyBody("claude-opus-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":[{"type":"text","text":"ok"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "anthropic opus 4.8 lacks per-turn effort", provider: schemas.Anthropic, model: "claude-opus-4-8", body: claudeCodeBody("claude-opus-4-8"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
+		{name: "anthropic opus 5.5 keeps per-message effort", provider: schemas.Anthropic, model: "claude-opus-5-5", body: claudeCodeBody("claude-opus-5-5"), wantKept: true},
+		{name: "anthropic opus 5.5 keeps effort-only system message", provider: schemas.Anthropic, model: "claude-opus-5-5", body: effortOnlyBody("claude-opus-5-5"), wantKept: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := StripUnsupportedFieldsFromRawBody([]byte(tt.body), tt.provider, tt.model)
+			if err != nil {
+				t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+			}
+			wantTop := providerUtils.GetJSONField([]byte(tt.body), "output_config.effort").String()
+			if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != wantTop {
+				t.Errorf("top-level output_config.effort = %q, want %q; body=%s", got, wantTop, out)
+			}
+			gotMessages := providerUtils.GetJSONField(out, "messages").Raw
+			if tt.wantKept {
+				if want := providerUtils.GetJSONField([]byte(tt.body), "messages").Raw; gotMessages != want {
+					t.Errorf("messages changed on a supported pair:\n got %s\nwant %s", gotMessages, want)
+				}
+				return
+			}
+			if gotMessages != tt.wantMessages {
+				t.Errorf("messages:\n got %s\nwant %s", gotMessages, tt.wantMessages)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedFieldsFromRawBody_NoPerMessageWorkWithoutCandidates pins the hot
+// path: a long Claude Code conversation on a surface that strips per-message effort and
+// server-side fallback blocks (Vertex), where no message carries either. Both message
+// walks are skipped by byte prefilters, so the strip's allocation must not grow with the
+// number of messages. Before the prefilters each walk materialised every message
+// (gjson Array) on every request.
+func TestStripUnsupportedFieldsFromRawBody_NoPerMessageWorkWithoutCandidates(t *testing.T) {
+	build := func(turns int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-5-5","max_tokens":64,"output_config":{"effort":"medium"},"messages":[`)
+		for i := range turns {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("x", 200) + `"}]}`)
+		}
+		b.WriteString(`]}`)
+		return b.Bytes()
+	}
+	strip := func(body []byte) func() {
+		return func() {
+			if _, err := StripUnsupportedFieldsFromRawBody(body, schemas.Vertex, "claude-opus-5-5"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		}
+	}
+	small := memtest.AllocBytesPerOp(strip(build(50)))
+	large := memtest.AllocBytesPerOp(strip(build(400)))
+	t.Logf("strip allocation: %d B at 50 messages, %d B at 400", small, large)
+	if large > small+small/2 {
+		t.Fatalf("strip allocation grew with message count on a body with nothing to strip: %d B at 50 messages, %d B at 400", small, large)
+	}
+}
+
+// TestMayCarryPerMessageOutputConfig pins the byte prefilter as conservative: it may only
+// say "no" when no message can carry output_config. False positives are allowed (they fall
+// through to the gjson walk); a false negative would forward the field to Vertex.
+func TestMayCarryPerMessageOutputConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"no output_config anywhere", `{"messages":[{"role":"user","content":"hi"}]}`, false},
+		{"top-level only", `{"output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"}]}`, false},
+		{"top-level only, whitespace", `{ "output_config" : {"effort":"high"}, "messages":[]}`, false},
+		{"mentioned inside a string value", `{"output_config":{"effort":"high"},"messages":[{"role":"user","content":"set \"output_config\" please"}]}`, false},
+		{"per-message, no top-level", `{"messages":[{"role":"system","content":[],"output_config":{"effort":"low"}}]}`, true},
+		{"per-message plus top-level", `{"output_config":{"effort":"high"},"messages":[{"role":"system","content":[],"output_config":{"effort":"low"}}]}`, true},
+		{"value exactly output_config (false positive)", `{"output_config":{},"messages":[{"role":"user","content":"output_config"}]}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mayCarryPerMessageOutputConfig([]byte(tc.body)); got != tc.want {
+				t.Fatalf("mayCarryPerMessageOutputConfig = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedFieldsFromRawBody_ScopeTokenWithoutCacheControlScope: a "scope" key
+// elsewhere (here a tool input property) passes the byte prefilter but no block carries
+// cache_control.scope, so the detection pass must leave messages byte-identical.
+func TestStripUnsupportedFieldsFromRawBody_ScopeTokenWithoutCacheControlScope(t *testing.T) {
+	body := `{"model":"claude-opus-5-5","max_tokens":64,"messages":[` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"auth","input":{"scope":"repo"}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok","cache_control":{"type":"ephemeral"}}]}]}`
+	out, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Vertex, "claude-opus-5-5")
+	if err != nil {
+		t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+	}
+	want := providerUtils.GetJSONField([]byte(body), "messages").Raw
+	if got := providerUtils.GetJSONField(out, "messages").Raw; got != want {
+		t.Fatalf("messages changed:\n got %s\nwant %s", got, want)
+	}
+}
+
 func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -4000,6 +4198,32 @@ func TestRemapRawToolVersionsForProvider_AllocationScaling(t *testing.T) {
 		return b.Bytes()
 	}, func(body []byte) {
 		if _, err := RemapRawToolVersionsForProvider(body, schemas.Anthropic, "claude-opus-4-8"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+// TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling covers the
+// passthrough eager_input_streaming default, which marks every custom tool in
+// the request. Claude Code sends 50+ of them on Vertex and Bedrock.
+func TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(tools int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-4-8","tools":[`)
+		for i := range tools {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// A custom tool with no eager_input_streaming, so every tool in the
+			// array triggers a write.
+			fmt.Fprintf(&b, `{"name":"tool_%d","input_schema":{"type":"object"},"description":"`, i)
+			b.WriteString(strings.Repeat("d", 400))
+			b.WriteString(`"}`)
+		}
+		b.WriteString(`],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		if _, err := ApplyDefaultEagerInputStreamingToRawBody(body, schemas.Vertex, "claude-opus-4-8"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
