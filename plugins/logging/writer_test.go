@@ -19,13 +19,16 @@ import (
 // tell a whole-batch retry from a per-row fan-out.
 type failingBatchStore struct {
 	logstore.LogStore
-	mu        sync.Mutex
-	callSizes []int
+	mu             sync.Mutex
+	callSizes      []int
+	agentCallSizes []int
 	// ctxErrs records ctx.Err() as seen by each call, so a test can prove the
 	// writer hands its recovery context (not the plugin's parent) to the store.
-	ctxErrs []error
+	ctxErrs      []error
+	agentCtxErrs []error
 	// fail decides whether a call of the given size fails and with what.
-	fail func(size int) error
+	fail      func(size int) error
+	agentFail func(size int) error
 }
 
 func (s *failingBatchStore) BatchCreateIfNotExists(ctx context.Context, entries []*logstore.Log) error {
@@ -39,10 +42,36 @@ func (s *failingBatchStore) BatchCreateIfNotExists(ctx context.Context, entries 
 	return s.LogStore.BatchCreateIfNotExists(ctx, entries)
 }
 
+func (s *failingBatchStore) BatchCreateAgentLogsIfNotExists(ctx context.Context, entries []*logstore.AgentLog) ([]string, error) {
+	s.mu.Lock()
+	s.agentCallSizes = append(s.agentCallSizes, len(entries))
+	s.agentCtxErrs = append(s.agentCtxErrs, ctx.Err())
+	s.mu.Unlock()
+	if s.agentFail != nil {
+		if err := s.agentFail(len(entries)); err != nil {
+			return nil, err
+		}
+	}
+	return s.LogStore.BatchCreateAgentLogsIfNotExists(ctx, entries)
+}
+
 func (s *failingBatchStore) sizes() []int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]int(nil), s.callSizes...)
+}
+
+func makeTestAgentLog(id string) *logstore.AgentLog {
+	now := time.Now().UTC()
+	return &logstore.AgentLog{
+		ID:         id,
+		Timestamp:  now,
+		CreatedAt:  now,
+		RecordKind: "request",
+		Status:     "success",
+		AgentName:  "fixture",
+		RequestID:  id,
+	}
 }
 
 // TestProcessBatchConnectionErrorDoesNotFanOutPerRow pins the writer's error
@@ -268,6 +297,49 @@ func TestProcessBatchCancelledContextHandsBatchBack(t *testing.T) {
 	}
 }
 
+func TestProcessBatchCancelledAgentContextHandsBatchBack(t *testing.T) {
+	store := &failingBatchStore{
+		LogStore:  newTestStore(t),
+		agentFail: func(int) error { return context.Canceled },
+	}
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	const N = 10
+	batch := make([]*writeQueueEntry, 0, N)
+	for i := 0; i < N; i++ {
+		batch = append(batch, &writeQueueEntry{agentLog: makeTestAgentLog(fmt.Sprintf("agent-cancel-%d", i))})
+	}
+	left := plugin.processBatch(ctx, batch)
+
+	store.mu.Lock()
+	callSizes := append([]int(nil), store.agentCallSizes...)
+	ctxErrs := append([]error(nil), store.agentCtxErrs...)
+	store.mu.Unlock()
+	if len(callSizes) != 1 {
+		t.Fatalf("expected a single Agent write attempt once the batch context is done, got %v", callSizes)
+	}
+	if len(ctxErrs) != 1 || ctxErrs[0] == nil {
+		t.Fatalf("Agent store must receive the cancelled processBatch context")
+	}
+	if len(left) != N {
+		t.Fatalf("expected all %d Agent entries handed back for the drain, got %d", N, len(left))
+	}
+	for i, entry := range left {
+		if entry != batch[i] {
+			t.Fatalf("handed-back Agent entry %d does not match the original queue entry", i)
+		}
+	}
+	if dropped := plugin.droppedRequests.Load(); dropped != 0 {
+		t.Fatalf("interrupted Agent entries must not count as dropped, got %d", dropped)
+	}
+}
+
 // blockingOnceStore blocks its first batch write until the caller's context
 // ends, then returns that context's error. Every later call writes normally.
 // It stands in for a database that has stopped answering right as Cleanup
@@ -284,6 +356,61 @@ func (s *blockingOnceStore) BatchCreateIfNotExists(ctx context.Context, entries 
 		return fmt.Errorf("write logs: %w", ctx.Err())
 	}
 	return s.LogStore.BatchCreateIfNotExists(ctx, entries)
+}
+
+type blockingOnceAgentStore struct {
+	logstore.LogStore
+	started chan struct{}
+	blocked atomic.Bool
+}
+
+func (s *blockingOnceAgentStore) BatchCreateAgentLogsIfNotExists(ctx context.Context, entries []*logstore.AgentLog) ([]string, error) {
+	if s.blocked.CompareAndSwap(false, true) {
+		close(s.started)
+		<-ctx.Done()
+		return nil, fmt.Errorf("write Agent logs: %w", ctx.Err())
+	}
+	return s.LogStore.BatchCreateAgentLogsIfNotExists(ctx, entries)
+}
+
+func TestCleanupInterruptsBlockedAgentFlushAndDrainsIt(t *testing.T) {
+	inner := newTestStore(t)
+	store := &blockingOnceAgentStore{LogStore: inner, started: make(chan struct{})}
+	const N = 5
+	plugin, err := Init(context.Background(), &Config{Writer: &logstore.WriterConfig{
+		MaxBatchSize:  N,
+		BatchInterval: "10ms",
+	}}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	for i := 0; i < N; i++ {
+		plugin.enqueueAgentLogEntry(makeTestAgentLog(fmt.Sprintf("agent-blocked-%d", i)))
+	}
+	select {
+	case <-store.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("batch writer never reached the Agent store")
+	}
+
+	start := time.Now()
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("Cleanup took %s; a blocked Agent store write must be interrupted, not waited on", took)
+	}
+
+	for i := 0; i < N; i++ {
+		id := fmt.Sprintf("agent-blocked-%d", i)
+		if _, err := inner.FindAgentLog(context.Background(), id); err != nil {
+			t.Fatalf("expected the drain to persist Agent log %s: %v", id, err)
+		}
+	}
+	if dropped := plugin.droppedRequests.Load(); dropped != 0 {
+		t.Fatalf("expected 0 dropped Agent requests, got %d", dropped)
+	}
 }
 
 // TestCleanupInterruptsBlockedFlushAndDrainsIt is the end-to-end pin for the

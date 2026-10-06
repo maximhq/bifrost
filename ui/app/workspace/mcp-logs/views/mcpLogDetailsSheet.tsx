@@ -391,6 +391,13 @@ export function MCPLogDetailSheet({
 								<code className="text-foreground truncate font-mono text-[13px]">{requestId || "—"}</code>
 								{requestId ? <CopyInlineButton text={requestId} testId="mcplogdetails-copy-request-id-button" /> : null}
 							</div>
+							{displayLog.session_id && (
+								<div className="mt-1 flex items-center gap-2">
+									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Session</div>
+									<code className="text-foreground truncate font-mono text-[13px]">{displayLog.session_id}</code>
+									<CopyInlineButton text={displayLog.session_id} testId="mcplogdetails-copy-session-id-button" />
+								</div>
+							)}
 							{displayLog.llm_request_id && (
 								<div className="mt-1 flex items-center gap-2">
 									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
@@ -508,6 +515,13 @@ export function MCPLogDetailSheet({
 							<BlockHeader title="Request Details" />
 							<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 								<LogEntryDetailsView className="col-span-3 w-full" label="Request ID" value={requestId} />
+								{displayLog.session_id && (
+									<LogEntryDetailsView
+										className="col-span-3 w-full"
+										label="Session ID"
+										value={<code className="truncate font-mono text-xs">{displayLog.session_id}</code>}
+									/>
+								)}
 								<LogEntryDetailsView
 									className="w-full"
 									label="App"
