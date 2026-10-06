@@ -8,6 +8,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/valyala/fasthttp"
 )
 
@@ -205,6 +206,27 @@ func presentedGrantBearingCredential(ctx *schemas.BifrostContext) bool {
 		return identity.Presented() || identity.User() != nil
 	}
 	return false
+}
+
+// ungrantedUserAdmitted reports whether a signed-in user nothing grants access to is to be served
+// anyway, as a key-less request is, rather than refused as access not found. Only a caller that
+// asked for it and only for a user: Warp asks, because reaching its chat route already proves the
+// user's role allows it, and on a deployment without access profiles no user ever holds a permit. A
+// virtual key the request presents is never admitted this way - a key that resolves to nothing is a
+// dead key whoever presents it - and neither is a request that names no user at all.
+func ungrantedUserAdmitted(ctx *schemas.BifrostContext) bool {
+	if !bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeyAdmitUngrantedUser) {
+		return false
+	}
+	g := ctx.Grant()
+	if g == nil {
+		return false
+	}
+	identity := g.Identity()
+	if identity == nil || identity.User() == nil {
+		return false
+	}
+	return identity.Credential().Kind != string(grant.CredentialVirtualKey)
 }
 
 // pruneMCPIncludeToolsFromContext narrows a caller-provided include-tools list (stamped on ctx

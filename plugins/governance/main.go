@@ -775,7 +775,7 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	if refusal := unusablePermit(access); refusal != nil {
 		return p.decide(ctx, refusal)
 	}
-	if access == nil && presentedGrantBearingCredential(ctx) {
+	if access == nil && presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx) {
 		return p.decide(ctx, &EvaluationResult{
 			Decision: DecisionAccessNotFound,
 			Reason:   "access not found. The provided credential does not exist or has been revoked.",
@@ -1266,9 +1266,9 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// A request that presented something sees only the models it may use, and a credential that
 	// resolved to nothing lists nothing. A request that presented nothing is unrestricted and its
-	// listing is left alone.
+	// listing is left alone, as is an ungranted user the caller asked to have admitted.
 	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil &&
-		(presentedGrantBearingCredential(ctx) || access != nil) {
+		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
 		result.ListModelsResponse.Data = p.filterModelsForAccess(access, result.ListModelsResponse.Data)
 	}
 
@@ -1422,7 +1422,9 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 // untouched, as it is everywhere else. A credential that resolves to nothing,
 // or a context access cannot be resolved for at all (no grant installed), gets
 // an empty list: evaluation will refuse their tool calls, so discovery shows
-// them nothing either.
+// them nothing either. An ungranted user the caller asked to have admitted is
+// the exception on both sides, served and shown everything, as a key-less
+// request is.
 func (p *GovernancePlugin) stampMCPToolAccessForCodemode(ctx *schemas.BifrostContext) {
 	access, err := p.ResolveAccess(ctx)
 	if err != nil {
@@ -1432,7 +1434,7 @@ func (p *GovernancePlugin) stampMCPToolAccessForCodemode(ctx *schemas.BifrostCon
 		return
 	}
 	if access == nil {
-		if presentedGrantBearingCredential(ctx) {
+		if presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx) {
 			ctx.SetValue(schemas.MCPContextKeyIncludeTools, []string{})
 		}
 		return
