@@ -3915,7 +3915,18 @@ func VirtualKeySearchConditions(db *gorm.DB, search string) *gorm.DB {
 	return db.Where("LOWER(governance_virtual_keys.name) LIKE ?", term).
 		Or("governance_virtual_keys.team_id IN (?)", teamIDs).
 		Or("governance_virtual_keys.customer_id IN (?)", customerIDs).
-		Or("LOWER(governance_virtual_keys.metadata) LIKE ?", term)
+		Or("LOWER(governance_virtual_keys.metadata) LIKE ?", virtualKeyMetadataSearchTerm(search))
+}
+
+// virtualKeyMetadataSearchTerm is the LIKE pattern for searching the stored metadata JSON. The
+// column holds encoding/json output, which escapes &, <, > (and " and \) inside values, so the
+// raw term would miss a value such as "AT&T". The term is encoded the same way before matching.
+func virtualKeyMetadataSearchTerm(search string) string {
+	encoded, err := json.Marshal(search)
+	if err != nil {
+		return VirtualKeySearchTerm(search)
+	}
+	return VirtualKeySearchTerm(strings.TrimSuffix(strings.TrimPrefix(string(encoded), `"`), `"`))
 }
 
 // applyVirtualKeyMetadataFilters narrows q to keys whose metadata carries every
@@ -4270,8 +4281,16 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 				virtualKey.RateLimitID = nil
 			}
 		}
+		columns := []string{"name", "description", "value", "is_active", "expires_at", "delete_after_expire", "team_id", "customer_id", "business_unit_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "disable_content_logging", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at"}
+		// Nil metadata means the caller did not set it (a config.json entry without a metadata
+		// field, or an update of other fields), so the stored metadata is kept. An empty map is an
+		// explicit clear and is written (as NULL, see BeforeSave). Decided here, before BeforeSave
+		// collapses the empty map to nil.
+		if virtualKey.Metadata != nil {
+			columns = append(columns, "metadata")
+		}
 		if err := txDB.WithContext(ctx).
-			Select("name", "description", "value", "is_active", "expires_at", "delete_after_expire", "team_id", "customer_id", "business_unit_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "disable_content_logging", "metadata", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
+			Select(columns).
 			Updates(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
 		}
