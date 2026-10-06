@@ -25,6 +25,7 @@ import {
 import { useGetModelsQuery } from "@/lib/store/apis/providersApi";
 import type { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
+import { decisionProviderIconKey } from "@/lib/utils/decisionModelProviders";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, Check, ChevronRight, Info, LoaderCircle, Pencil, RotateCcw, Scale, TriangleAlert, Waypoints } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -323,6 +324,7 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 							inputId="decision-provider"
 							data-testid="complexity-router-decision-provider-select"
 							filter={isDecisionProvider}
+							resolveIconKey={decisionProviderIconKey}
 							value={field.value || ""}
 							onChange={(value: string) => {
 								if (value === field.value) return;
@@ -401,28 +403,39 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 								/>
 							);
 						}
+						if (listedModels.length > 0) {
+							// A listing is one page of a possibly longer catalog, so search and typed
+							// names stay available instead of a fixed list that hides later models.
+							return (
+								<ModelSelector
+									inputId="decision-model"
+									data-testid="complexity-router-decision-model-select"
+									provider={providerName || undefined}
+									keys={providerKeyIds}
+									value={field.value ?? ""}
+									onChange={(next) => field.onChange(next)}
+									allowCustomModel
+									placeholder="Search or type a model…"
+									disabled={!canUpdate}
+								/>
+							);
+						}
 						return (
 							<Select value={field.value || undefined} onValueChange={field.onChange} disabled={!canUpdate}>
 								<SelectTrigger className="w-full" id="decision-model" data-testid="complexity-router-decision-model-select">
 									<SelectValue placeholder="Select a model" />
 								</SelectTrigger>
 								<SelectContent>
-									{listedModels.length > 0
-										? listedModels.map((name) => (
+									{selfHostedModelGroups(providerName).map((group) => (
+										<SelectGroup key={group.label}>
+											<SelectLabel>{group.label}</SelectLabel>
+											{group.models.map((name) => (
 												<SelectItem key={name} value={name}>
 													{name}
 												</SelectItem>
-											))
-										: selfHostedModelGroups(providerName).map((group) => (
-												<SelectGroup key={group.label}>
-													<SelectLabel>{group.label}</SelectLabel>
-													{group.models.map((name) => (
-														<SelectItem key={name} value={name}>
-															{name}
-														</SelectItem>
-													))}
-												</SelectGroup>
 											))}
+										</SelectGroup>
+									))}
 								</SelectContent>
 							</Select>
 						);
