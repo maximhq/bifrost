@@ -1899,10 +1899,17 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		// only budget/rate-limit ids), so a user_id filter cannot be applied here. Reject
 		// the combination rather than silently dropping the filter: the database path
 		// fails closed on user_id, and returning every cached key instead would be the
-		// exact inverse of that contract. The other filters keep their long-standing
-		// ignored-under-from_memory behaviour.
+		// exact inverse of that contract. Metadata filters are applied below; the
+		// other filters keep their long-standing ignored-under-from_memory behaviour.
 		if len(ctx.QueryArgs().Peek("user_id")) > 0 {
 			SendError(ctx, 400, "user_id filter is not supported with from_memory=true; omit from_memory to filter virtual keys by user")
+			return
+		}
+		// Metadata filters are applied to the cached keys too, with the same validation as the
+		// database path, so from_memory never returns keys a filter would have excluded.
+		metadataFilters, err := parseVirtualKeyMetadataFilters(ctx)
+		if err != nil {
+			SendError(ctx, 400, err.Error())
 			return
 		}
 		data := h.governanceManager.GetGovernanceData(ctx)
@@ -1913,7 +1920,9 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		// Convert map to slice to match the non-memory response format (array)
 		virtualKeys := make([]*configstoreTables.TableVirtualKey, 0, len(data.VirtualKeys))
 		for _, vk := range data.VirtualKeys {
-			virtualKeys = append(virtualKeys, vk)
+			if virtualKeyMatchesMetadataFilters(vk, metadataFilters) {
+				virtualKeys = append(virtualKeys, vk)
+			}
 		}
 		sort.Slice(virtualKeys, func(i, j int) bool {
 			return virtualKeys[i].CreatedAt.Before(virtualKeys[j].CreatedAt)
@@ -2068,15 +2077,18 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 // filter, which would return every key.
 func parseVirtualKeyMetadataFilters(ctx *fasthttp.RequestCtx) (map[string]string, error) {
 	var filters map[string]string
+	// invalidFound is tracked separately from the key's text: an empty key ("metadata_=x") is
+	// invalid too, and its text is "".
 	var invalid string
+	invalidFound := false
 	ctx.QueryArgs().VisitAll(func(key, value []byte) { //nolint:staticcheck
 		metadataKey, ok := strings.CutPrefix(string(key), "metadata_")
 		if !ok {
 			return
 		}
 		if !configstoreTables.IsValidVirtualKeyMetadataKey(metadataKey) {
-			if invalid == "" {
-				invalid = metadataKey
+			if !invalidFound {
+				invalid, invalidFound = metadataKey, true
 			}
 			return
 		}
@@ -2085,10 +2097,21 @@ func parseVirtualKeyMetadataFilters(ctx *fasthttp.RequestCtx) (map[string]string
 		}
 		filters[metadataKey] = string(value)
 	})
-	if invalid != "" {
+	if invalidFound {
 		return nil, fmt.Errorf("invalid metadata filter key %q: keys must be 1-%d characters of letters, digits, '.', '_' or '-'", invalid, configstoreTables.MaxVirtualKeyMetadataKeyLength)
 	}
 	return filters, nil
+}
+
+// virtualKeyMatchesMetadataFilters reports whether vk's metadata carries every key/value pair in
+// filters (exact value match), the in-memory counterpart of the store's metadata filter.
+func virtualKeyMatchesMetadataFilters(vk *configstoreTables.TableVirtualKey, filters map[string]string) bool {
+	for key, value := range filters {
+		if got, ok := vk.Metadata[key]; !ok || got != value {
+			return false
+		}
+	}
+	return true
 }
 
 // createVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key

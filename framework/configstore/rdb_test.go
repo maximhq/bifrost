@@ -5217,6 +5217,7 @@ func TestGetVirtualKeysPaginated_MetadataFiltersAndSearch(t *testing.T) {
 				{ID: "vk-md-b", Name: "bravo", Value: *schemas.NewSecretVar("vk-md-b-val"), Metadata: map[string]string{"cost_center": "cc-42", "env": "dev"}},
 				{ID: "vk-md-c", Name: "charlie", Value: *schemas.NewSecretVar("vk-md-c-val"), Metadata: map[string]string{"cost_center": "cc-7", "owner.email": "Ops@Example.com", "quote": `say "hi"`}},
 				{ID: "vk-md-none", Name: "delta", Value: *schemas.NewSecretVar("vk-md-none-val")},
+				{ID: "vk-md-amp", Name: "echo", Value: *schemas.NewSecretVar("vk-md-amp-val"), Metadata: map[string]string{"vendor": "AT&T <us>"}},
 			}
 			for _, vk := range seed {
 				require.NoError(t, store.CreateVirtualKey(ctx, vk))
@@ -5237,6 +5238,8 @@ func TestGetVirtualKeysPaginated_MetadataFiltersAndSearch(t *testing.T) {
 				{name: "filter narrows search", params: VirtualKeyQueryParams{Search: "a", MetadataFilters: map[string]string{"env": "dev"}}, wantIDs: []string{"vk-md-b"}},
 				{name: "search matches metadata value", params: VirtualKeyQueryParams{Search: "cc-7"}, wantIDs: []string{"vk-md-c"}},
 				{name: "search on metadata is case-insensitive", params: VirtualKeyQueryParams{Search: "ops@example"}, wantIDs: []string{"vk-md-c"}},
+				// The stored JSON escapes &, < and >, so the search term must be matched in that encoding.
+				{name: "search matches metadata values with & and <", params: VirtualKeyQueryParams{Search: "at&t <us"}, wantIDs: []string{"vk-md-amp"}},
 			}
 			for _, tt := range tests {
 				t.Run(tt.name, func(t *testing.T) {

@@ -3915,7 +3915,18 @@ func VirtualKeySearchConditions(db *gorm.DB, search string) *gorm.DB {
 	return db.Where("LOWER(governance_virtual_keys.name) LIKE ?", term).
 		Or("governance_virtual_keys.team_id IN (?)", teamIDs).
 		Or("governance_virtual_keys.customer_id IN (?)", customerIDs).
-		Or("LOWER(governance_virtual_keys.metadata) LIKE ?", term)
+		Or("LOWER(governance_virtual_keys.metadata) LIKE ?", virtualKeyMetadataSearchTerm(search))
+}
+
+// virtualKeyMetadataSearchTerm is the LIKE pattern for searching the stored metadata JSON. The
+// column holds encoding/json output, which escapes &, <, > (and " and \) inside values, so the
+// raw term would miss a value such as "AT&T". The term is encoded the same way before matching.
+func virtualKeyMetadataSearchTerm(search string) string {
+	encoded, err := json.Marshal(search)
+	if err != nil {
+		return VirtualKeySearchTerm(search)
+	}
+	return VirtualKeySearchTerm(strings.TrimSuffix(strings.TrimPrefix(string(encoded), `"`), `"`))
 }
 
 // applyVirtualKeyMetadataFilters narrows q to keys whose metadata carries every

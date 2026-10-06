@@ -5419,4 +5419,25 @@ func TestGetVirtualKeysMetadataFilter(t *testing.T) {
 
 	status, _ = list(t, "metadata_bad%20key=x")
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
+
+	// An empty key is invalid too: it must be refused, not dropped (which would list every key).
+	status, _ = list(t, "metadata_=x")
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
+
+	// from_memory serves the cached keys, and must apply the same filter and validation.
+	keys, err := store.GetVirtualKeys(context.Background())
+	require.NoError(t, err)
+	cached := make(map[string]*configstoreTables.TableVirtualKey, len(keys))
+	for i := range keys {
+		cached[keys[i].Value.GetValue()] = &keys[i]
+	}
+	handler.governanceManager = &mockGovernanceManagerForVK{data: &governance.GovernanceData{VirtualKeys: cached}}
+	status, names = list(t, "from_memory=true&metadata_cost_center=cc-42&metadata_env=dev")
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, []string{"vk-b"}, names, "from_memory must apply metadata filters")
+	status, names = list(t, "from_memory=true")
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, []string{"vk-a", "vk-b", "vk-c"}, names)
+	status, _ = list(t, "from_memory=true&metadata_=x")
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
 }

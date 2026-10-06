@@ -9356,6 +9356,11 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 		t.Errorf("Expected name 'original-name', got '%s'", dbVK1.Name)
 	}
 	originalHash := dbVK1.ConfigHash
+	// Metadata added through the API, which the file does not declare: the sync below must keep it.
+	dbVK1.Metadata = map[string]string{"cost_center": "cc-42"}
+	if err := config1.ConfigStore.UpdateVirtualKey(ctx, dbVK1); err != nil {
+		t.Fatalf("setting API metadata failed: %v", err)
+	}
 	config1.Close(ctx)
 
 	// Modify config.json - change VK name and description
@@ -9387,6 +9392,21 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 	// Verify hash changed
 	if dbVK2.ConfigHash == originalHash {
 		t.Error("Expected hash to change when VK is modified")
+	}
+
+	// The file entry has no metadata field, so the API-set metadata survives the sync, in the
+	// store and in the in-memory governance config.
+	if got := dbVK2.Metadata["cost_center"]; got != "cc-42" {
+		t.Errorf("Expected API-set metadata to survive the sync in the store, got %v", dbVK2.Metadata)
+	}
+	var memVK *tables.TableVirtualKey
+	for i := range config2.GovernanceConfig.VirtualKeys {
+		if config2.GovernanceConfig.VirtualKeys[i].ID == "vk-1" {
+			memVK = &config2.GovernanceConfig.VirtualKeys[i]
+		}
+	}
+	if memVK == nil || memVK.Metadata["cost_center"] != "cc-42" {
+		t.Errorf("Expected API-set metadata to survive the sync in memory, got %+v", memVK)
 	}
 }
 
