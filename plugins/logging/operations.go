@@ -1883,7 +1883,7 @@ func (p *LoggerPlugin) attachCostBreakdown(ctx *schemas.BifrostContext, entry *l
 // when that provider is configured to ignore it, so Bifrost's own breakdown is stored.
 // Call it only where provider usage is copied onto the entry, never after pricing.
 func (p *LoggerPlugin) dropIgnoredProviderCost(entry *logstore.Log) {
-	if entry == nil || entry.TokenUsageParsed == nil || entry.TokenUsageParsed.Cost == nil {
+	if p.pricingManager == nil || entry == nil || entry.TokenUsageParsed == nil || entry.TokenUsageParsed.Cost == nil {
 		return
 	}
 	if p.pricingManager.IsProviderCostIgnored(schemas.ModelProvider(entry.Provider)) {
