@@ -190,10 +190,10 @@ Values are request type names as they appear in the log `object` field, for exam
 }
 ```
 
-If content logging is disabled and `retain_content_in_object_storage` is on, content for an excluded request type is not kept anywhere, because it is neither uploaded nor stored in the DB.
+Hidden logs are the exception. If content logging is disabled and `retain_content_in_object_storage` is on, logs of an excluded request type are still offloaded as hidden content, so that content stays out of the DB.
 
 <Note>
-This is not the same as `client_config.hidden_request_types`. That setting only hides request types from the logs view and dashboard. It does not change what is written to the DB or uploaded to object storage.
+This is not the same as `client.hidden_request_types`. That setting hides request types from the logs view, dashboard, and log read APIs. It does not change what is written to the DB or uploaded to object storage.
 </Note>
 
 ### Guardrail redaction
