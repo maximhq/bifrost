@@ -5,7 +5,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -102,19 +100,7 @@ type MCPServerHandler struct {
 // is wired. Whether the key may be used is not decided here: governance refuses a
 // key that is inactive or expired, from the grant it resolves for it.
 func (h *MCPServerHandler) getVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, error) {
-	if h.vkCache != nil {
-		if vk, ok := h.vkCache.GetVirtualKeyByID(ctx, vkID); ok && vk != nil {
-			return vk, nil
-		}
-	}
-	if h.config.ConfigStore == nil {
-		return nil, fmt.Errorf("virtual key not found")
-	}
-	vk, err := h.config.ConfigStore.GetVirtualKey(ctx, vkID)
-	if err != nil || vk == nil {
-		return nil, fmt.Errorf("virtual key not found")
-	}
-	return vk, nil
+	return virtualKeyByID(ctx, h.vkCache, h.config.ConfigStore, vkID)
 }
 
 // NewMCPServerHandler creates a new MCP server handler instance
@@ -790,39 +776,16 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 //  2. Authorization  — "Bearer <vk>", where <vk> must start with the VK prefix
 //  3. x-api-key      — must start with the VK prefix
 //  4. x-goog-api-key — must start with the VK prefix
+//  5. api-key        — must start with the VK prefix
 //
-// The prefix gate (governance.VirtualKeyPrefix) on the latter three lets real
+// The prefix gate (governance.VirtualKeyPrefix) on the latter four lets real
 // provider credentials pass through untouched, so only Bifrost virtual keys are
-// picked up here. This header set mirrors the inference path, keeping MCP and
-// inference at parity. Returns "" when no header carries a virtual key.
+// picked up here. This is a projection of the shared resolver
+// (lib.ResolveVirtualKeyFromHeaders), which is what keeps MCP, inference and the
+// Agent Gateway at parity. Returns "" when no header carries a virtual key.
 func getVKFromRequest(ctx *fasthttp.RequestCtx) string {
-	if value := strings.TrimSpace(string(ctx.Request.Header.Peek(string(schemas.BifrostContextKeyVirtualKey)))); value != "" {
-		return value
-	}
-
-	authHeader := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization")))
-	if authHeader != "" {
-		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-			token := strings.TrimSpace(authHeader[7:])
-			if token != "" && strings.HasPrefix(strings.ToLower(token), governance.VirtualKeyPrefix) {
-				return token
-			}
-		}
-	}
-
-	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key"))); apiKey != "" {
-		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
-			return apiKey
-		}
-	}
-
-	if googAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key"))); googAPIKey != "" {
-		if strings.HasPrefix(strings.ToLower(googAPIKey), governance.VirtualKeyPrefix) {
-			return googAPIKey
-		}
-	}
-
-	return ""
+	vk, _ := lib.ResolveVirtualKeyFromHeaders(ctx)
+	return vk
 }
 
 func convertToolFunctionParametersToMCPInputSchema(params *schemas.ToolFunctionParameters) mcp.ToolInputSchema {

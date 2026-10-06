@@ -831,3 +831,104 @@ test.describe('Config Settings', () => {
     })
   })
 })
+
+test.describe('OSS setup lock', () => {
+  // A fresh browser with no injected header: the state an operator is in when they
+  // first open a locked dashboard.
+  test.use({ skipAutoLogin: true, extraHTTPHeaders: {} })
+
+  const lockedStatus = (setupTokenConfigured: boolean) => ({
+    is_auth_enabled: false,
+    has_valid_token: false,
+    auth_type: 'none',
+    inference_auth_enforced: true,
+    setup_required: true,
+    setup_token_configured: setupTokenConfigured,
+  })
+
+  test('setup screen trades the setup token for a session and never keeps it', async ({ page }) => {
+    // Mirrors the gateway: POST /api/session/setup checks the header once and opens a
+    // server-side setup session (the real one is an HttpOnly cookie). Every other call
+    // is 401 until that session exists.
+    let sessionActive = false
+    const tokenOnLaterCalls: string[] = []
+    await page.route('**/api/**', async route => {
+      const request = route.request()
+      const path = new URL(request.url()).pathname
+      const token = request.headers()['x-bifrost-setup-token']
+      if (path === '/api/session/is-auth-enabled') {
+        await route.fulfill({ json: lockedStatus(true) })
+        return
+      }
+      if (path === '/api/version') {
+        await route.fulfill({ json: '1.0.0' })
+        return
+      }
+      if (path === '/api/session/setup') {
+        if (token !== 'right-token') {
+          await route.fulfill({ status: 403, json: { error: { message: 'invalid setup token' } } })
+          return
+        }
+        sessionActive = true
+        await route.fulfill({ json: { expires_at: new Date(Date.now() + 3600_000).toISOString() } })
+        return
+      }
+      if (token) tokenOnLaterCalls.push(path)
+      if (!sessionActive) {
+        await route.fulfill({ status: 401, json: { error: { message: 'dashboard auth is not configured; send the setup token in the X-Bifrost-Setup-Token header' } } })
+        return
+      }
+      if (path === '/api/config') {
+        await route.fulfill({ json: {
+          client_config: { ...DefaultCoreConfig, allowed_origins: ['http://localhost:3000'] },
+          auth_config: null,
+          framework_config: {}, is_db_connected: true, metadata: { onboarding_dismissed: true },
+        } })
+        return
+      }
+      await route.fulfill({ json: {} })
+    })
+
+    await page.goto('/login')
+    await expect(page.getByTestId('setup-token-view')).toBeVisible()
+
+    await page.getByTestId('setup-token-input').fill('wrong-token')
+    await page.getByTestId('setup-token-submit').click()
+    await expect(page.getByTestId('setup-token-error')).toHaveText('Invalid setup token')
+
+    await page.getByTestId('setup-token-input').fill('right-token')
+    await page.getByTestId('setup-token-submit').click()
+    await page.waitForURL(url => url.pathname === '/workspace/config/security')
+    await expect(page.getByTestId('setup-required-banner')).toBeVisible()
+
+    // The admin form neither shows nor asks for the token again.
+    await page.locator('#auth-enabled').click()
+    await expect(page.getByTestId('security-setup-token-authorized')).toBeVisible()
+    await expect(page.locator('#setup-token')).toHaveCount(0)
+
+    // Nothing on the client holds the token: no later request carries it, and no storage has it.
+    expect(tokenOnLaterCalls, 'dashboard calls after setup must ride the session, not the token').toEqual([])
+    const stored = await page.evaluate(() => [
+      ...Object.keys(window.sessionStorage).map(k => window.sessionStorage.getItem(k)),
+      ...Object.keys(window.localStorage).map(k => window.localStorage.getItem(k)),
+      document.cookie,
+    ].join(' '))
+    expect(stored).not.toContain('right-token')
+  })
+
+  test('setup screen explains how to configure a token when none is set', async ({ page }) => {
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/session/is-auth-enabled') {
+        await route.fulfill({ json: lockedStatus(false) })
+        return
+      }
+      await route.fulfill({ status: 403, json: { error: { message: 'dashboard auth is not configured and no setup token is set' } } })
+    })
+
+    await page.goto('/login')
+    await expect(page.getByTestId('setup-token-instructions')).toBeVisible()
+    await expect(page.getByTestId('setup-token-instructions')).toContainText('BIFROST_SETUP_TOKEN')
+    await expect(page.getByTestId('setup-token-input')).toHaveCount(0)
+  })
+})
