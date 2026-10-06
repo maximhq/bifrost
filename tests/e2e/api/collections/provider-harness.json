@@ -204523,6 +204523,261 @@
           }
         }
       ]
+    },
+    {
+      "name": "169. A duplicate routing rule priority is a 409 conflict (routing-priority-conflict)",
+      "description": "Two routing rules in one scope cannot share a priority. The store rejected the second one, but as a plain error the API answered 500 \"Failed to create routing rule\" (or \"Failed to update routing rule in database\"), which reads as a server failure a client may retry, and for a rule scoped to a team, customer or virtual key the message printed the address of the scope ID's pointer instead of the ID. The conflict is now ErrAlreadyExists, answered 409 with the priority and scope ID spelled out.\n\n(1) A global rule at a priority already taken is a 409 naming the priority, and moving another rule onto it with PUT is a 409 too. (2) A virtual-key-scoped duplicate is a 409 whose message names the virtual key's ID. Every rule matches only a header no request sends and is deleted by its row. Run with FEATURE=\"routing-priority-conflict\".",
+      "item": [
+        {
+          "name": "[EXPECT-409] openai routing rule: a duplicate priority in the global scope is a conflict - routing-priority-conflict",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// A rule that matches only a header no request sends, so it never routes anything.",
+                  "function ruleBody(run, suffix, priority, scope, scopeID) {",
+                  "  var body = { name: 'Harness priority conflict ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-priority-run\" in headers && headers[\"x-harness-priority-run\"] == \"' + run + '\"', targets: [{ provider: 'openai', model: 'gpt-4o-mini', weight: 1 }], scope: scope };",
+                  "  if (scopeID) { body.scope_id = scopeID; }",
+                  "  return body;",
+                  "}",
+                  "function deleteEach(paths, done) {",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return done(); } var p = paths[i++]; if (!p) { return next(); } call('DELETE', p, null, function (res) { expectOk('cleanup: deleted ' + p.split('/').slice(-2, -1)[0].replace(/s$/, ''), res); next(); }); })();",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var priority = 600000 + (Date.now() % 90000);",
+                  "pm.collectionVariables.set('prioRun', run);",
+                  "pm.collectionVariables.set('prioPriority', String(priority));",
+                  "pm.collectionVariables.unset('prioFirstId');",
+                  "call('POST', '/api/governance/routing-rules', ruleBody(run, 'first', priority, 'global'), function (res, j) {",
+                  "  if (!expectOk('setup: created the first rule at the priority', res)) { return; }",
+                  "  pm.collectionVariables.set('prioFirstId', ((j || {}).rule || {}).id || '');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// A rule that matches only a header no request sends, so it never routes anything.",
+                  "function ruleBody(run, suffix, priority, scope, scopeID) {",
+                  "  var body = { name: 'Harness priority conflict ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-priority-run\" in headers && headers[\"x-harness-priority-run\"] == \"' + run + '\"', targets: [{ provider: 'openai', model: 'gpt-4o-mini', weight: 1 }], scope: scope };",
+                  "  if (scopeID) { body.scope_id = scopeID; }",
+                  "  return body;",
+                  "}",
+                  "function deleteEach(paths, done) {",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return done(); } var p = paths[i++]; if (!p) { return next(); } call('DELETE', p, null, function (res) { expectOk('cleanup: deleted ' + p.split('/').slice(-2, -1)[0].replace(/s$/, ''), res); next(); }); })();",
+                  "}",
+                  "var run = pm.collectionVariables.get('prioRun');",
+                  "var priority = Number(pm.collectionVariables.get('prioPriority'));",
+                  "var firstId = pm.collectionVariables.get('prioFirstId');",
+                  "var mainJson = {}; try { mainJson = pm.response.json() || {}; } catch (e) { mainJson = {}; }",
+                  "var msg = (mainJson.error || {}).message || '';",
+                  "pm.test('a second rule at the same priority in the scope is a 409 conflict', function () {",
+                  "  pm.expect(pm.response.code, 'a taken priority is a conflict, not a server error: ' + pm.response.text()).to.eql(409);",
+                  "});",
+                  "pm.test('the conflict names the taken priority and the scope', function () {",
+                  "  pm.expect(msg, pm.response.text()).to.include('priority ' + priority + ' already exists');",
+                  "  pm.expect(msg, pm.response.text()).to.include(\"scope 'global'\");",
+                  "});",
+                  "var leaked = (mainJson.rule || {}).id;",
+                  "call('POST', '/api/governance/routing-rules', ruleBody(run, 'other', priority + 1, 'global'), function (res, j) {",
+                  "  var otherId = expectOk('setup: created another rule one priority lower', res) ? (((j || {}).rule || {}).id || '') : '';",
+                  "  var done = function () { deleteEach([firstId && '/api/governance/routing-rules/' + firstId, otherId && '/api/governance/routing-rules/' + otherId, leaked && '/api/governance/routing-rules/' + leaked], function () {}); };",
+                  "  if (!otherId) { return done(); }",
+                  "  call('PUT', '/api/governance/routing-rules/' + otherId, { priority: priority }, function (r2, j2) {",
+                  "    pm.test('moving another rule onto the taken priority is a 409 conflict', function () {",
+                  "      pm.expect(r2 && r2.code, r2 ? r2.text() : 'no response').to.eql(409);",
+                  "      pm.expect(((j2 || {}).error || {}).message || '', r2 ? r2.text() : '').to.include('priority ' + priority + ' already exists');",
+                  "    });",
+                  "    done();",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/routing-rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Harness priority conflict duplicate {{prioRun}}\",\n  \"description\": \"Provider harness duplicate; rejected at create.\",\n  \"priority\": {{prioPriority}},\n  \"cel_expression\": \"\\\"x-harness-priority-run\\\" in headers && headers[\\\"x-harness-priority-run\\\"] == \\\"{{prioRun}}\\\"\",\n  \"targets\": [\n    {\n      \"provider\": \"openai\",\n      \"model\": \"gpt-4o-mini\",\n      \"weight\": 1\n    }\n  ],\n  \"scope\": \"global\"\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-409] openai routing rule: a duplicate priority under a virtual key names the virtual key - routing-priority-conflict",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// A rule that matches only a header no request sends, so it never routes anything.",
+                  "function ruleBody(run, suffix, priority, scope, scopeID) {",
+                  "  var body = { name: 'Harness priority conflict ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-priority-run\" in headers && headers[\"x-harness-priority-run\"] == \"' + run + '\"', targets: [{ provider: 'openai', model: 'gpt-4o-mini', weight: 1 }], scope: scope };",
+                  "  if (scopeID) { body.scope_id = scopeID; }",
+                  "  return body;",
+                  "}",
+                  "function deleteEach(paths, done) {",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return done(); } var p = paths[i++]; if (!p) { return next(); } call('DELETE', p, null, function (res) { expectOk('cleanup: deleted ' + p.split('/').slice(-2, -1)[0].replace(/s$/, ''), res); next(); }); })();",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var priority = 600000 + (Date.now() % 90000);",
+                  "pm.collectionVariables.set('prioVkRun', run);",
+                  "pm.collectionVariables.set('prioVkPriority', String(priority));",
+                  "pm.collectionVariables.unset('prioVkId');",
+                  "pm.collectionVariables.unset('prioVkFirstId');",
+                  "call('POST', '/api/governance/virtual-keys', { name: 'harness-priority-conflict-' + run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], weight: 1 }] }, function (res, j) {",
+                  "  if (!expectOk('setup: created the virtual key the rules are scoped to', res)) { return; }",
+                  "  var vkId = (((j || {}).virtual_key) || {}).id || '';",
+                  "  pm.collectionVariables.set('prioVkId', vkId);",
+                  "  call('POST', '/api/governance/routing-rules', ruleBody(run, 'first', priority, 'virtual_key', vkId), function (r2, j2) {",
+                  "    if (!expectOk('setup: created the first virtual-key-scoped rule at the priority', r2)) { return; }",
+                  "    pm.collectionVariables.set('prioVkFirstId', ((j2 || {}).rule || {}).id || '');",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// A rule that matches only a header no request sends, so it never routes anything.",
+                  "function ruleBody(run, suffix, priority, scope, scopeID) {",
+                  "  var body = { name: 'Harness priority conflict ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-priority-run\" in headers && headers[\"x-harness-priority-run\"] == \"' + run + '\"', targets: [{ provider: 'openai', model: 'gpt-4o-mini', weight: 1 }], scope: scope };",
+                  "  if (scopeID) { body.scope_id = scopeID; }",
+                  "  return body;",
+                  "}",
+                  "function deleteEach(paths, done) {",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return done(); } var p = paths[i++]; if (!p) { return next(); } call('DELETE', p, null, function (res) { expectOk('cleanup: deleted ' + p.split('/').slice(-2, -1)[0].replace(/s$/, ''), res); next(); }); })();",
+                  "}",
+                  "var priority = Number(pm.collectionVariables.get('prioVkPriority'));",
+                  "var vkId = pm.collectionVariables.get('prioVkId');",
+                  "var firstId = pm.collectionVariables.get('prioVkFirstId');",
+                  "var mainJson = {}; try { mainJson = pm.response.json() || {}; } catch (e) { mainJson = {}; }",
+                  "var msg = (mainJson.error || {}).message || '';",
+                  "pm.test('a second virtual-key-scoped rule at the same priority is a 409 conflict', function () {",
+                  "  pm.expect(pm.response.code, 'a taken priority is a conflict, not a server error: ' + pm.response.text()).to.eql(409);",
+                  "});",
+                  "pm.test('the conflict names the virtual key it is scoped to, not a pointer', function () {",
+                  "  pm.expect(msg, pm.response.text()).to.include(\"scope ID '\" + vkId + \"'\");",
+                  "  pm.expect(msg, pm.response.text()).to.not.match(/0x[0-9a-f]+/);",
+                  "});",
+                  "var leaked = (mainJson.rule || {}).id;",
+                  "deleteEach([leaked && '/api/governance/routing-rules/' + leaked, firstId && '/api/governance/routing-rules/' + firstId, vkId && '/api/governance/virtual-keys/' + vkId], function () {});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/routing-rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Harness priority conflict duplicate {{prioVkRun}}\",\n  \"description\": \"Provider harness duplicate; rejected at create.\",\n  \"priority\": {{prioVkPriority}},\n  \"cel_expression\": \"\\\"x-harness-priority-run\\\" in headers && headers[\\\"x-harness-priority-run\\\"] == \\\"{{prioVkRun}}\\\"\",\n  \"targets\": [\n    {\n      \"provider\": \"openai\",\n      \"model\": \"gpt-4o-mini\",\n      \"weight\": 1\n    }\n  ],\n  \"scope\": \"virtual_key\",\n  \"scope_id\": \"{{prioVkId}}\"\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }
