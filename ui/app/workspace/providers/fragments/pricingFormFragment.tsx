@@ -80,7 +80,7 @@ export function PricingFormFragment({ provider }: PricingFormFragmentProps) {
 											data-testid="provider-pricing-ignore-provider-cost-switch"
 											size="md"
 											checked={field.value}
-											disabled={!hasUpdateProviderAccess}
+											disabled={!hasUpdateProviderAccess || isUpdatingProvider}
 											onCheckedChange={(checked) => {
 												field.onChange(checked);
 												form.trigger("ignore_provider_cost");
