@@ -1023,6 +1023,87 @@ func TestToolFunctionParameters_ExplicitObjectSchemaPreserved(t *testing.T) {
 	assert.JSONEq(t, `{"type":"object","properties":{}}`, string(normalized))
 }
 
+// TestToolFunctionParameters_TypelessRootStaysTypeless pins that a schema root
+// without "type" (a root oneOf/anyOf/allOf, or a bare properties object) is
+// re-emitted without "type":"" and without an injected "properties":{}, both on
+// the order-preserving path and after Normalized(); typed roots and the zero
+// value keep the always-emit-properties behaviour.
+func TestToolFunctionParameters_TypelessRootStaysTypeless(t *testing.T) {
+	tests := []struct {
+		name           string
+		in             string
+		wantMarshal    string
+		wantNormalized string
+	}{
+		{
+			name:           "root anyOf",
+			in:             `{"anyOf":[{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},{"type":"object","properties":{"zip":{"type":"string"}},"required":["zip"]}]}`,
+			wantMarshal:    `{"anyOf":[{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},{"type":"object","properties":{"zip":{"type":"string"}},"required":["zip"]}]}`,
+			wantNormalized: `{"anyOf":[{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},{"type":"object","properties":{"zip":{"type":"string"}},"required":["zip"]}]}`,
+		},
+		{
+			name:           "root oneOf after description",
+			in:             `{"oneOf":[{"type":"object","properties":{"a":{"type":"string"}}}],"description":"d"}`,
+			wantMarshal:    `{"oneOf":[{"type":"object","properties":{"a":{"type":"string"}}}],"description":"d"}`,
+			wantNormalized: `{"description":"d","oneOf":[{"type":"object","properties":{"a":{"type":"string"}}}]}`,
+		},
+		{
+			name:           "root allOf",
+			in:             `{"allOf":[{"type":"object","properties":{"a":{"type":"string"}}}]}`,
+			wantMarshal:    `{"allOf":[{"type":"object","properties":{"a":{"type":"string"}}}]}`,
+			wantNormalized: `{"allOf":[{"type":"object","properties":{"a":{"type":"string"}}}]}`,
+		},
+		{
+			name:           "bare properties",
+			in:             `{"required":["q"],"properties":{"q":{"type":"string"}}}`,
+			wantMarshal:    `{"required":["q"],"properties":{"q":{"type":"string"}}}`,
+			wantNormalized: `{"properties":{"q":{"type":"string"}},"required":["q"]}`,
+		},
+		{
+			name:           "explicit empty type is dropped",
+			in:             `{"type":"","anyOf":[{"type":"null"}]}`,
+			wantMarshal:    `{"anyOf":[{"type":"null"}]}`,
+			wantNormalized: `{"anyOf":[{"type":"null"}]}`,
+		},
+		{
+			name:           "typed object without properties still emits them",
+			in:             `{"type":"object"}`,
+			wantMarshal:    `{"type":"object","properties":{}}`,
+			wantNormalized: `{"type":"object","properties":{}}`,
+		},
+		{
+			name:           "typed array still emits properties",
+			in:             `{"type":"array","items":{"type":"string"}}`,
+			wantMarshal:    `{"type":"array","items":{"type":"string"},"properties":{}}`,
+			wantNormalized: `{"type":"array","properties":{},"items":{"type":"string"}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var params ToolFunctionParameters
+			require.NoError(t, Unmarshal([]byte(tt.in), &params))
+
+			marshaled, err := Marshal(params)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantMarshal, string(marshaled))
+
+			normalized, err := Marshal(params.Normalized())
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantNormalized, string(normalized))
+
+			sorted, err := MarshalSorted(params.Normalized())
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantNormalized, string(sorted))
+		})
+	}
+
+	t.Run("zero value", func(t *testing.T) {
+		marshaled, err := Marshal(ToolFunctionParameters{})
+		require.NoError(t, err)
+		assert.Equal(t, `{"properties":{}}`, string(marshaled))
+	})
+}
+
 // TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic verifies deterministic
 // serialization for file search filters.
 func TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic(t *testing.T) {

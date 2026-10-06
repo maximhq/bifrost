@@ -2401,3 +2401,63 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 		require.Falsef(t, present, "the earliest marker (system) must be the one dropped; raw=%s", raw)
 	})
 }
+
+// TestOpenAIChatRequest_TypelessToolSchemaRootRoundTrips pins that a tool schema
+// root without "type" survives the gateway round trip byte for byte: OpenAI wire
+// decode → ToBifrostChatRequest → ToOpenAIChatRequest → marshal. It used to gain
+// "type":"" (which OpenAI may reject) and, for a root composition, an injected
+// "properties":{}. Inputs are in Normalized() key order, the order the converter
+// emits for prompt-cache determinism.
+func TestOpenAIChatRequest_TypelessToolSchemaRootRoundTrips(t *testing.T) {
+	tests := []struct {
+		name       string
+		parameters string
+	}{
+		{
+			name:       "root anyOf",
+			parameters: `{"description":"Where to look","anyOf":[{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},{"type":"object","properties":{"lat":{"type":"number"},"lon":{"type":"number"}},"required":["lat","lon"]}]}`,
+		},
+		{
+			name:       "root oneOf",
+			parameters: `{"oneOf":[{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]},{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}]}`,
+		},
+		{
+			name:       "bare properties",
+			parameters: `{"properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"],"additionalProperties":false}`,
+		},
+		{
+			name:       "typed object (control)",
+			parameters: `{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":` + tt.parameters + `}}]}`
+
+			var in OpenAIChatRequest
+			require.NoError(t, sonic.Unmarshal([]byte(body), &in))
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			bifrostReq := in.ToBifrostChatRequest(ctx)
+			bifrostReq.Provider = schemas.OpenAI
+			out := ToOpenAIChatRequest(ctx, bifrostReq)
+			require.NotNil(t, out)
+
+			// MarshalProviderRequest is what CheckContextAndGetRequestBody puts on the wire.
+			wire, err := providerUtils.MarshalProviderRequest(out)
+			require.NoError(t, err)
+
+			var decoded struct {
+				Tools []struct {
+					Function struct {
+						Parameters json.RawMessage `json:"parameters"`
+					} `json:"function"`
+				} `json:"tools"`
+			}
+			require.NoError(t, json.Unmarshal(wire, &decoded))
+			require.Len(t, decoded.Tools, 1)
+			require.Equal(t, tt.parameters, string(decoded.Tools[0].Function.Parameters))
+		})
+	}
+}

@@ -626,9 +626,9 @@ type ChatToolFunction struct {
 // struct field declaration order is used. This is critical because LLMs are
 // sensitive to JSON key ordering in tool schemas.
 type ToolFunctionParameters struct {
-	Type                 string                      `json:"type"`                           // Type of the parameters
+	Type                 string                      `json:"type,omitempty"`                 // Type of the parameters; omitted when the schema has none (root oneOf/anyOf/allOf, bare properties)
 	Description          *string                     `json:"description,omitempty"`          // Description of the parameters
-	Properties           *OrderedMap                 `json:"properties"`                     // Parameter properties - always include even if empty (required by JSON Schema and some providers like OpenAI)
+	Properties           *OrderedMap                 `json:"properties"`                     // Parameter properties - always include even if empty (required by JSON Schema and some providers like OpenAI); see MarshalJSON for a typeless schema
 	Required             []string                    `json:"required,omitempty"`             // Required parameter names
 	AdditionalProperties *AdditionalPropertiesStruct `json:"additionalProperties,omitempty"` // Whether to allow additional properties
 	Enum                 []string                    `json:"enum,omitempty"`                 // Enum values for the parameters
@@ -671,23 +671,47 @@ type ToolFunctionParameters struct {
 }
 
 // MarshalJSON serializes ToolFunctionParameters while preserving the original
-// top-level key order when available. A client-supplied raw `{}` stays `{}`;
-// otherwise object schemas always emit `properties` as an object, never null.
+// top-level key order when available. A client-supplied raw `{}` stays `{}`.
+// An absent `type` stays absent: a root oneOf/anyOf/allOf or a bare
+// `properties` object is emitted without `"type":""`, which providers reject.
+// A schema with a `type` (or none of the schema fields at all) always emits
+// `properties` as an object, never null; a typeless schema with other fields
+// emits `properties` only when it has them, so it round-trips unchanged.
 func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
-	if t.explicitEmptyObject && !t.hasDefinedSchemaFields() {
+	hasFields := t.hasDefinedSchemaFields()
+	if t.explicitEmptyObject && !hasFields {
 		return []byte("{}"), nil
 	}
-	if t.Properties == nil {
+	if t.Properties == nil && (t.Type != "" || !hasFields) {
 		// Initialize with an empty map (not nil values) so it marshals to {} instead of null
 		// Required by OpenAI and JSON Schema spec
 		t.Properties = &OrderedMap{values: make(map[string]interface{})}
 	}
-	type Alias ToolFunctionParameters
-	data, err := MarshalSorted(Alias(t))
+	if t.Properties == nil {
+		// Typeless schema without properties: omit the key rather than emit null.
+		data, err := MarshalSorted(typelessToolFunctionParameters{toolFunctionParametersAlias: toolFunctionParametersAlias(t)})
+		if err != nil {
+			return nil, err
+		}
+		return t.keyOrder.Apply(data)
+	}
+	data, err := MarshalSorted(toolFunctionParametersAlias(t))
 	if err != nil {
 		return nil, err
 	}
 	return t.keyOrder.Apply(data)
+}
+
+// toolFunctionParametersAlias has ToolFunctionParameters' fields without its
+// methods, so marshaling it does not recurse into MarshalJSON.
+type toolFunctionParametersAlias ToolFunctionParameters
+
+// typelessToolFunctionParameters marshals a typeless schema that has no
+// properties: the shadowing Properties field (always nil here) drops the key
+// instead of emitting "properties":null.
+type typelessToolFunctionParameters struct {
+	toolFunctionParametersAlias
+	Properties *OrderedMap `json:"properties,omitempty"`
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ToolFunctionParameters.
