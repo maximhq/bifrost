@@ -35,6 +35,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+const maxProviderResponseBytes = 100 << 20 // 100 MiB
+
 // BedrockProvider implements the Provider interface for AWS Bedrock.
 type BedrockProvider struct {
 	logger                schemas.Logger                // Logger for provider operations
@@ -428,7 +430,7 @@ func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byt
 
 	// Read response body
 	ft, fh := providerUtils.StartPhaseSpan(req.Context(), "response-finalize")
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 	if ft != nil {
 		if err != nil {
 			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
@@ -529,7 +531,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeadersFromHTTP(resp)
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 	if err != nil {
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: true,
@@ -634,7 +636,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 
 	// Check for HTTP errors — use parseBedrockHTTPError to preserve upstream error details
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 		resp.Body.Close()
 		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
 	}
@@ -740,7 +742,7 @@ func signAWSRequest(
 	// Calculate SHA256 hash of the request body
 	var bodyHash string
 	if req.Body != nil {
-		bodyBytes, err := io.ReadAll(req.Body)
+		bodyBytes, err := io.ReadAll(io.LimitReader(req.Body, maxProviderResponseBytes))
 		if err != nil {
 			return providerUtils.NewBifrostOperationError("error reading request body", err)
 		}
@@ -901,7 +903,7 @@ func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, k
 		provider.logger.Warn("mantle list-models request failed: %v", err)
 		return nil
 	}
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 	resp.Body.Close()
 	if err != nil {
 		provider.logger.Warn("failed to read mantle list-models response: %v", err)
@@ -1020,7 +1022,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	// Read response body and close
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 	resp.Body.Close()
 	if err != nil {
 		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
@@ -2945,7 +2947,7 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 		provider.logger.Error("s3 upload failed: %d", resp.StatusCode)
 		return nil, providerUtils.NewProviderAPIError(fmt.Sprintf("S3 upload failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
 	}
@@ -3075,7 +3077,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 	resp.Body.Close()
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("error reading response", err)
@@ -3294,7 +3296,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 		// S3 DELETE returns 204 No Content on success
 		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 			resp.Body.Close()
 			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 DELETE failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
 			continue
@@ -3377,13 +3379,13 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 			resp.Body.Close()
 			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 GET failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 		resp.Body.Close()
 		if err != nil {
 			lastErr = providerUtils.NewBifrostOperationError("error reading S3 object content", err)
@@ -3585,7 +3587,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error reading response", err), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -3714,7 +3716,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 	resp.Body.Close()
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("error reading response", err)
@@ -3828,7 +3830,7 @@ func (provider *BedrockProvider) fetchBatchManifest(ctx *schemas.BifrostContext,
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 	if err != nil {
 		provider.logger.Debug("failed to read manifest body: %v", err)
 		return nil
@@ -3909,7 +3911,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 		resp.Body.Close()
 		if err != nil {
 			lastErr = providerUtils.NewBifrostOperationError("error reading response", err)
@@ -4057,7 +4059,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes))
 		resp.Body.Close()
 		if err != nil {
 			lastErr = providerUtils.NewBifrostOperationError("error reading response", err)
