@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -22,7 +23,7 @@ import (
 
 // computeToolsHash returns a stable content hash of a tool map + name
 // mapping, used to gate the tools-change funnel (SetClientTools,
-// connectToMCPClient, writeBackTools) to genuine changes only — a
+// connectToMCPClient, writeBackTools) to genuine changes only ï¿½ a
 // rediscovery that returns byte-identical tools (the common case on most
 // periodic ticks and reconnects) must not re-trigger a registered
 // callback's work (DB persist, external MCP server resync). json.Marshal
@@ -55,15 +56,15 @@ type RetryConfig struct {
 	// IsRetryable classifies an attempt's error as worth retrying or not.
 	// Nil defaults to isTransientError (connect-shaped: unrecognized errors
 	// default to retryable). ToolCallRetryConfig overrides this with
-	// isTransientToolCallError (the opposite default — see its doc comment).
+	// isTransientToolCallError (the opposite default ï¿½ see its doc comment).
 	IsRetryable func(error) bool
 }
 
-// ConnectRetryConfig backs every connection-establishment step — the shared
+// ConnectRetryConfig backs every connection-establishment step ï¿½ the shared
 // persistent dial (connectToMCPClient) and the ephemeral per-call connect
 // (AcquireClientConn's per-user/per-call branch) alike. Nothing user-facing
 // is blocked synchronously on this in the shared case, and in the per-call
-// case it's a one-time cost paid before the tool call runs — generous
+// case it's a one-time cost paid before the tool call runs ï¿½ generous
 // retries are the right tradeoff here.
 var ConnectRetryConfig = RetryConfig{
 	MaxRetries:     5,
@@ -72,13 +73,13 @@ var ConnectRetryConfig = RetryConfig{
 }
 
 // PerCallConnectRetryConfig backs the ephemeral per-call connect+init steps
-// (AcquireClientConn's per-user/per-call branch) — distinct from both of the
+// (AcquireClientConn's per-user/per-call branch) ï¿½ distinct from both of the
 // other two configs, not a reuse of either. It runs synchronously in front
 // of a live tool call with no separate budget wrapper (unlike
 // ConnectRetryConfig's shared dial, mostly background/setup), so it can't
 // afford ConnectRetryConfig's full ~31s-worst-case schedule. But establishing
-// a connection has no side effects on the upstream — safe to retry harder
-// than the tool call that follows it, which might not be idempotent — so
+// a connection has no side effects on the upstream ï¿½ safe to retry harder
+// than the tool call that follows it, which might not be idempotent ï¿½ so
 // it's more generous than ToolCallRetryConfig, not just a copy of it.
 var PerCallConnectRetryConfig = RetryConfig{
 	MaxRetries:     3,
@@ -88,7 +89,7 @@ var PerCallConnectRetryConfig = RetryConfig{
 
 // ProbeRetryConfig backs the periodic connection checker's own
 // heartbeat/list_tools calls (ClientConnectionChecker). Nothing is waiting
-// synchronously on this — it's a background tick — but it now carries more
+// synchronously on this ï¿½ it's a background tick ï¿½ but it now carries more
 // weight than it used to: with no outer consecutive-failure counter behind
 // it, a single check's own retry-with-backoff is what absorbs an ordinary
 // transient blip before the client is marked Unstable at all. Generous
@@ -101,13 +102,13 @@ var ProbeRetryConfig = RetryConfig{
 }
 
 // ToolCallRetryConfig backs the live tool-call invocation itself
-// (executeToolInternal's CallTool). Deliberately the lightest of the three —
+// (executeToolInternal's CallTool). Deliberately the lightest of the three ï¿½
 // a caller is waiting synchronously on this, and unlike a bare connect, the
 // call itself may not be safe to retry blindly (non-idempotent tools), so it
 // trades retry depth for latency: a couple of quick attempts to ride out a
 // genuine blip, nothing more. Uses isTransientToolCallError, not the default
 // isTransientError, so an unrecognized (likely application-level) failure
-// is never retried — see that function's doc comment.
+// is never retried ï¿½ see that function's doc comment.
 var ToolCallRetryConfig = RetryConfig{
 	MaxRetries:     2,
 	InitialBackoff: 200 * time.Millisecond,
@@ -300,10 +301,10 @@ func isTransientError(err error) bool {
 	}
 
 	// Default: treat as transient to be safe (connection-related errors)
-	// This ensures we retry unknown errors that are likely transient — the
+	// This ensures we retry unknown errors that are likely transient ï¿½ the
 	// right default for connection-establishment callers, where an
 	// unrecognized failure is still usually infra-related. NOT the right
-	// default for a tool call already past a live connection — see
+	// default for a tool call already past a live connection ï¿½ see
 	// isTransientToolCallError below, which shares the same substring list
 	// but flips this default.
 	return true
@@ -383,7 +384,7 @@ var timeoutErrorSubstrings = []string{"timeout", "deadline exceeded", "waiting f
 // transientErrorSubstrings is the shared substring list both isTransientError
 // (connection-establishment, default-retry-unknown) and
 // isTransientToolCallError (tool calls, default-don't-retry-unknown) match
-// against — one source of truth for what "looks like a transport blip" means,
+// against ï¿½ one source of truth for what "looks like a transport blip" means,
 // even though the two callers apply opposite defaults to anything outside it.
 var transientErrorSubstrings = []string{
 	// Network errors
@@ -406,11 +407,11 @@ var transientErrorSubstrings = []string{
 // isTransientToolCallError is ToolCallRetryConfig's classifier: a live tool
 // call already has a working connection (AcquireClientConn succeeded to get
 // here), so an error at this point is either a genuine transport blip
-// (matches transientErrorSubstrings — worth one quick retry) or something
+// (matches transientErrorSubstrings ï¿½ worth one quick retry) or something
 // application-level (a tool's own business-logic failure, bad arguments, a
 // panic in the tool implementation) that retrying can't fix and might
 // actively harm if the tool isn't idempotent. Unlike isTransientError, this
-// does NOT default to true for unrecognized text — only a positive match
+// does NOT default to true for unrecognized text ï¿½ only a positive match
 // against known transport-failure shapes triggers a retry; everything else
 // (including net.Error timeouts, which isTransientError treats as transient
 // but which already have "timeout"/"deadline exceeded" in the substring list
@@ -438,23 +439,23 @@ func isTransientToolCallError(err error) bool {
 // isAuthFailureErrorText reports whether a raw upstream tool-call error looks
 // like an auth rejection (401/403/unauthorized/forbidden). mcp-go flattens
 // HTTP status codes into a plain error string by the time a CallTool error
-// reaches toolmanager.go — no typed status field survives — so, like
+// reaches toolmanager.go ï¿½ no typed status field survives ï¿½ so, like
 // isTransientError above, substring matching on the same class of text is
 // the only option.
 //
 // This is deliberately not a reuse of isTransientError: that function matches
 // this exact substring class too, but as a PERMANENT signal (don't retry) for
-// its connection-establishment callers — the opposite polarity needed here,
+// its connection-establishment callers ï¿½ the opposite polarity needed here,
 // where the same text is the POSITIVE trigger for a forced-refresh-and-retry.
 // A tool call that reaches this point already has a live, previously-healthy
 // connection (AcquireClientConn already succeeded once), so a 401/403 here
 // means the upstream server is actively rejecting a credential Bifrost's own
-// bookkeeping still considers valid — worth reacting to, not giving up on.
+// bookkeeping still considers valid ï¿½ worth reacting to, not giving up on.
 //
 // This is also distinct from schemas.ErrOAuth2TokenExpired-based
 // classification (see connectToMCPClient), which fires only after Bifrost's
 // own refresh logic already ran and classified a credential as permanently
-// dead. A raw CallTool error never goes through that classification at all —
+// dead. A raw CallTool error never goes through that classification at all ï¿½
 // it's the upstream server's rejection text verbatim, not Bifrost's.
 func isAuthFailureErrorText(errStr string) bool {
 	lower := strings.ToLower(errStr)
@@ -713,7 +714,7 @@ type listToolsResult struct {
 // without holding locks. Uses exponential backoff retry logic (5 retries, 1-30 seconds)
 // for tool retrieval. Returns the full result so the plugin gate can surface RawToolCount
 // and SkippedTools. All callers should go through MCPManager.runListToolsWithHooks rather
-// than calling this directly — the gate wraps this with PreMCPHook/PostMCPHook.
+// than calling this directly ï¿½ the gate wraps this with PreMCPHook/PostMCPHook.
 func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (*listToolsResult, error) {
 	// Get available tools from external server with retry logic
 	listRequest := mcp.ListToolsRequest{
@@ -1443,19 +1444,33 @@ func FixArraySchemas(properties map[string]interface{}, logger schemas.Logger) {
 	}
 }
 
-const maxMCPToolDescriptionLength = 4096
+// DefaultMaxMCPToolDescriptionLength is the default byte limit for MCP tool
+// descriptions. Override via MCPToolDescriptionMaxBytes in the gateway config.
+const DefaultMaxMCPToolDescriptionLength = 4096
 
-// sanitizeMCPToolDescription limits the length of MCP tool descriptions
-// and strips control characters to reduce prompt injection surface.
-func sanitizeMCPToolDescription(desc string) string {
+func sanitizeMCPToolDescription(desc string, maxBytes ...int) string {
+	limit := DefaultMaxMCPToolDescriptionLength
+	if len(maxBytes) > 0 && maxBytes[0] > 0 {
+		limit = maxBytes[0]
+	}
 	cleaned := strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' || r >= 32 {
 			return r
 		}
 		return -1
 	}, desc)
-	if len(cleaned) > maxMCPToolDescriptionLength {
-		cleaned = cleaned[:maxMCPToolDescriptionLength] + "... [truncated]"
+	if len(cleaned) > limit {
+		cleaned = truncateUTF8(cleaned, limit)
 	}
 	return cleaned
+}
+
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
 }
