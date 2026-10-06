@@ -53,6 +53,7 @@ import {
 	useSetVirtualKeyBudgetOverrideMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
+import { AgentGrantsEditor } from "@/components/agents/agentGrantsEditor";
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
 import { createDeleteAfterExpire, diffVmcpAssignments, updateDeleteAfterExpire, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
@@ -166,6 +167,7 @@ const formSchema = z
 		// When true, all providers are allowed; providerConfigs remain optional per-provider overrides.
 		allowAllProviders: z.boolean(),
 		mcpConfigs: z.array(mcpConfigSchema).optional(),
+		agentGrants: z.array(z.string()).optional(),
 		entityType: z.enum(["team", "customer", "business_unit", "user", "none"]),
 		teamId: z.string().optional(),
 		customerId: z.string().optional(),
@@ -372,6 +374,7 @@ function withoutKeyGovernance<T extends CreateVirtualKeyRequest | UpdateVirtualK
 	const {
 		provider_configs: _providerConfigs,
 		mcp_configs: _mcpConfigs,
+		agent_grants: _agentGrants,
 		budgets: _budgets,
 		rate_limit: _rateLimit,
 		calendar_aligned: _calendarAligned,
@@ -585,6 +588,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					})),
 				})) || [],
 			allowAllProviders: virtualKey?.allow_all_providers ?? false,
+			agentGrants: virtualKey?.agent_grants?.map((grant) => grant.agent_name) || [],
 			mcpConfigs:
 				virtualKey?.mcp_configs?.map((config) => ({
 					id: config.id,
@@ -1138,6 +1142,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					storedOverride: virtualKey.delete_after_expire,
 				});
 				const deleteAfterExpirePayload = deleteAfterExpire !== undefined ? { delete_after_expire: deleteAfterExpire } : {};
+				const agentGrantsPayload = form.formState.dirtyFields.agentGrants
+					? { agent_grants: (data.agentGrants ?? []).map((agent_name) => ({ agent_name })) }
+					: {};
 
 				const updateData: UpdateVirtualKeyRequest = {
 					name: data.name,
@@ -1154,6 +1161,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					// null clears the key back to inheriting the client setting; the server keeps omitted and
 					// null apart, so this is always sent.
 					disable_content_logging: contentLoggingValue(data.contentLogging),
+					...agentGrantsPayload,
 					// Sent only when edited, since it replaces the stored metadata as a whole ({} clears it);
 					// an untouched form copy may be older than what is stored now.
 					...virtualKeyMetadataUpdate(form.formState.defaultValues?.metadata, data.metadata),
@@ -1241,6 +1249,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					description: data.description || undefined,
 					provider_configs: normalizedProviderConfigs,
 					mcp_configs: data.mcpConfigs,
+					agent_grants: (data.agentGrants ?? []).map((agent_name) => ({ agent_name })),
 					team_id: ownerIdFor("team", data.teamId),
 					customer_id: ownerIdFor("customer", data.customerId),
 					business_unit_id: ownerIdFor("business_unit", data.businessUnitId),
@@ -1606,6 +1615,12 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 											    (its assignment baseline) once it loads, and vmcpDetailReady keeps Save from acting on a
 											    diff before that baseline is in. */}
 											<VirtualMcpAssignmentsEditor value={assignedVmcpIds} onChange={setAssignedVmcpIds} />
+
+											{/* Agent access grants for the registered agents this key may call. */}
+											<AgentGrantsEditor
+												value={form.watch("agentGrants") ?? []}
+												onChange={(next) => form.setValue("agentGrants", next, { shouldDirty: true })}
+											/>
 											<DottedSeparator className="mt-6 mb-5" />
 											{/* Budget Configuration */}
 											<div className="space-y-4">

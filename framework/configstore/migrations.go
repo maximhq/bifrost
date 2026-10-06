@@ -553,6 +553,9 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_ultrafast_above_272k_pricing_columns"}, run: migrationAddUltrafastAbove272kPricingColumns},
 	{IDs: []string{"add_priority_above_272k_cache_creation_pricing_column"}, run: migrationAddPriorityAbove272kCacheCreationPricingColumn},
 	{IDs: []string{"add_mcp_code_mode_limits_client_column"}, run: migrationAddMCPCodeModeLimitsClientColumn},
+	{IDs: []string{"add_compat_force_reasoning_only_models_to_responses_column"}, run: migrationAddCompatForceReasoningOnlyModelsToResponsesColumn},
+	{IDs: []string{"backfill_compat_force_reasoning_only_models_to_responses"}, run: migrationBackfillCompatForceReasoningOnlyModelsToResponses},
+	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
 	{IDs: []string{"add_virtual_key_metadata_column"}, run: migrationAddVirtualKeyMetadataColumn},
 }
 
@@ -995,6 +998,31 @@ func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger sch
 		Rollback: func(tx *gorm.DB) error {
 			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableNotification{})
 		},
+	})
+}
+
+func rollbackAgentGatewayTables(*gorm.DB) error {
+	return fmt.Errorf("add_agent_gateway_tables is non-rollbackable: dropping Agent Gateway tables or configuration would permanently delete registrations, credentials, push configuration, or queued deliveries")
+}
+
+func migrationAddAgentGatewayTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_agent_gateway_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.AutoMigrate(
+				&tables.TableAgentRegistration{},
+				&tables.TableVirtualKeyAgentGrant{},
+				&tables.TableAgentPushConfig{},
+				&tables.TableAgentPushDelivery{},
+			); err != nil {
+				return err
+			}
+			// External base URL override for Agent Gateway card and push callback URLs.
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "A2AExternalClientURL")
+		},
+		Rollback: rollbackAgentGatewayTables,
 	})
 }
 
@@ -15197,6 +15225,61 @@ func migrationAddMCPCodeModeLimitsClientColumn(ctx context.Context, db *gorm.DB,
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running mcp code mode limits client column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCompatForceReasoningOnlyModelsToResponsesColumn adds compat_force_reasoning_only_models_to_responses
+// to config_client.
+func migrationAddCompatForceReasoningOnlyModelsToResponsesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_compat_force_reasoning_only_models_to_responses_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "CompatForceReasoningOnlyModelsToResponses"); err != nil {
+				return fmt.Errorf("failed to add compat_force_reasoning_only_models_to_responses column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "compat_force_reasoning_only_models_to_responses"); err != nil {
+				return fmt.Errorf("failed to drop compat_force_reasoning_only_models_to_responses column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationBackfillCompatForceReasoningOnlyModelsToResponses sets compat_force_reasoning_only_models_to_responses
+// TRUE on existing config_client rows so the toggle is on for existing deployments.
+func migrationBackfillCompatForceReasoningOnlyModelsToResponses(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "backfill_compat_force_reasoning_only_models_to_responses"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("UPDATE config_client SET compat_force_reasoning_only_models_to_responses = TRUE").Error; err != nil {
+				return fmt.Errorf("failed to backfill compat_force_reasoning_only_models_to_responses: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Forward-only: the backfilled values are not reverted; rolling back the column migration drops them.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }

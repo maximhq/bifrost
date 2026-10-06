@@ -2,7 +2,9 @@ package schemas
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -55,6 +57,65 @@ func TestAnthropicBillingHeaderExtraction(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestAnthropicBillingHeaderAfterEffortOnlyItems covers a header that follows leading
+// effort-only system items (per-message output_config). Those items carry no prompt text,
+// so the header is still the leading system content: it is stripped and restored in place.
+func TestAnthropicBillingHeaderAfterEffortOnlyItems(t *testing.T) {
+	header := "x-anthropic-billing-header: cc_version=2.1.286; cc_entrypoint=cli;"
+	effortOnly := func(effort string) ResponsesMessage {
+		return ResponsesMessage{
+			Role:         Ptr(ResponsesInputMessageRoleSystem),
+			Content:      &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{}},
+			OutputConfig: &ResponsesMessageOutputConfig{Effort: Ptr(effort)},
+		}
+	}
+	for _, shape := range []string{"string", "blocks"} {
+		for _, leading := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/leading=%d", shape, leading), func(t *testing.T) {
+				content := &ResponsesMessageContent{ContentStr: Ptr(header)}
+				if shape == "blocks" {
+					content = &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr(header)}}}
+				}
+				var input []ResponsesMessage
+				for range leading {
+					input = append(input, effortOnly("high"))
+				}
+				input = append(input,
+					ResponsesMessage{Role: Ptr(ResponsesInputMessageRoleSystem), Content: content},
+					ResponsesMessage{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("alpha")}},
+				)
+				original := slices.Clone(input)
+				r := &BifrostResponsesRequest{Input: input}
+				before, err := MarshalSorted(r)
+				require.NoError(t, err)
+
+				r.ExtractAnthropicBillingHeader()
+				require.Len(t, r.Input, leading+1)
+				for i := range leading {
+					assert.True(t, r.Input[i].IsEffortOnlySystemItem(), "item %d", i)
+				}
+				assert.Equal(t, "alpha", *r.Input[leading].Content.ContentStr)
+				normalized, err := MarshalSorted(r)
+				require.NoError(t, err)
+				assert.NotContains(t, string(normalized), "x-anthropic-billing-header:")
+				// Removal must not shift items in the caller's backing array.
+				assert.Equal(t, original, input)
+
+				restored := r.WithAnthropicBillingHeader()
+				after, err := MarshalSorted(restored)
+				require.NoError(t, err)
+				assert.Equal(t, string(before), string(after))
+			})
+		}
+	}
+	t.Run("effort-only items alone", func(t *testing.T) {
+		r := &BifrostResponsesRequest{Input: []ResponsesMessage{effortOnly("low")}}
+		r.ExtractAnthropicBillingHeader()
+		assert.Nil(t, r.anthropicBillingHeader)
+		require.Len(t, r.Input, 1)
+	})
 }
 
 func TestAnthropicBillingHeaderRestoresPositionsAndCacheMarkers(t *testing.T) {
@@ -1745,4 +1806,45 @@ func TestResponsesMessageUnmarshalReasoningWrapperSummary(t *testing.T) {
 		require.NoError(t, Unmarshal([]byte(`{"type":"message","role":"user","content":"hi","reasoning":{"summary":["x"]}}`), &msg))
 		assert.Nil(t, msg.ResponsesReasoning)
 	})
+}
+
+// An output_text history block that omits logprobs must not gain "logprobs": null on
+// re-marshal (strict upstreams 400 on it), while an explicit empty array stays an array.
+func TestResponsesOutputTextLogProbsNotNulled(t *testing.T) {
+	for _, tc := range []struct {
+		name, in string
+		want     string // raw logprobs JSON expected on the wire, "" = absent
+	}{
+		{"annotations_without_logprobs", `{"type":"output_text","text":"Previous answer.","annotations":[]}`, ""},
+		{"empty_logprobs_preserved", `{"type":"output_text","text":"Previous answer.","annotations":[],"logprobs":[]}`, "[]"},
+		{"populated_logprobs_preserved", `{"type":"output_text","text":"a","annotations":[],"logprobs":[{"bytes":[97],"logprob":-0.1,"token":"a","top_logprobs":[]}]}`, `[{"bytes":[97],"logprob":-0.1,"token":"a","top_logprobs":[]}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var block ResponsesMessageContentBlock
+			require.NoError(t, Unmarshal([]byte(tc.in), &block))
+			out, err := MarshalSorted(block)
+			require.NoError(t, err)
+			var got map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(out, &got))
+			raw, present := got["logprobs"]
+			if tc.want == "" {
+				assert.False(t, present, "logprobs must stay absent, got %s", out)
+				return
+			}
+			require.True(t, present, "logprobs must be present, got %s", out)
+			assert.JSONEq(t, tc.want, string(raw))
+		})
+	}
+
+	// Egress still emits the empty array that OpenAI-compliant output_text carries.
+	out, err := MarshalSorted(ResponsesMessageContentBlock{
+		Type: ResponsesOutputMessageContentTypeText,
+		Text: Ptr("hi"),
+		ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+			Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+			LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+		},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"logprobs":[]`)
 }

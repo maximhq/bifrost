@@ -104,6 +104,7 @@ export interface VirtualKey {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfig[];
 	mcp_configs?: VirtualKeyMCPConfig[];
+	agent_grants?: VirtualKeyAgentGrant[];
 	// Virtual MCPs this key is assigned to. Populated by the single-VK GET, not the list.
 	virtual_mcp_ids?: number[];
 	team_id?: string;
@@ -166,6 +167,13 @@ export interface VirtualKeyProviderConfig {
 	rate_limit?: RateLimit;
 	model_budgets?: VirtualKeyModelBudget[]; // Per-model budgets/rate-limits under this provider
 	keys?: DBKey[]; // Associated database keys for this provider (only used when allow_all_keys is false)
+}
+
+/** A virtual key's grant to call one registered A2A agent. Agents are keyed by name. */
+export interface VirtualKeyAgentGrant {
+	virtual_key_id: string;
+	agent_name: string;
+	created_at: string;
 }
 
 export interface VirtualKeyMCPConfig {
@@ -239,6 +247,7 @@ export interface CreateVirtualKeyRequest {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfigRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
+	agent_grants?: { agent_name: string }[];
 	team_id?: string;
 	customer_id?: string;
 	// Third owner, mutually exclusive with team_id and customer_id (enterprise).
@@ -259,6 +268,7 @@ export interface UpdateVirtualKeyRequest {
 	description?: string;
 	provider_configs?: VirtualKeyProviderConfigUpdateRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
+	agent_grants?: { agent_name: string }[];
 	team_id?: string | null;
 	customer_id?: string | null;
 	// Third owner, mutually exclusive with team_id and customer_id (enterprise); null clears it.

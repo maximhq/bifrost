@@ -155,6 +155,36 @@ func (r *BifrostResponse) PopulateOverheadLatency(ctx context.Context, total tim
 	}
 }
 
+// PopulateUpstreamLatency is the A2A analogue of BifrostResponse.PopulateUpstreamLatency:
+// it copies the accumulated upstream total onto the A2A response's ExtraFields.
+// Left nil when no accumulator is present, so absent stays distinguishable from zero.
+func (r *BifrostA2AResponse) PopulateUpstreamLatency(ctx context.Context) {
+	if r == nil {
+		return
+	}
+	upstream, ok := GetUpstreamLatency(ctx)
+	if !ok {
+		return
+	}
+	ms := int64(upstream / time.Millisecond)
+	r.ExtraFields.UpstreamLatency = &ms
+}
+
+// PopulateOverheadLatency is the A2A analogue of BifrostResponse.PopulateOverheadLatency:
+// it copies Bifrost's own cost onto the A2A response's ExtraFields, derived from total
+// via CalculateOverhead. Left nil when no accumulator is present.
+func (r *BifrostA2AResponse) PopulateOverheadLatency(ctx context.Context, total time.Duration) {
+	if r == nil {
+		return
+	}
+	overhead, ok := CalculateOverhead(ctx, total)
+	if !ok {
+		return
+	}
+	ms := int64(overhead / time.Millisecond)
+	r.ExtraFields.OverheadLatency = &ms
+}
+
 // CalculateOverhead derives Bifrost's own cost from a total wall-clock duration.
 //
 // Clamps at zero. The two measurements come from different clocks started at

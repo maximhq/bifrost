@@ -378,6 +378,32 @@ cachingFolder.item.push(...cachingItems);
 // See lib/chained-vars.mjs.
 const guardedCount = injectChainedVarGuards(collection);
 
+// OSS setup lock: while dashboard auth is not active, the gateway refuses every /api call
+// that lacks the operator's setup token. Management rows (routing rules, is-auth-enabled,
+// ...) run against the python profile, which sets setup_token and has no admin account, so
+// every row carries the header. The value defaults to that profile's token; override it
+// with `--env-var setupToken=...`. Inference routes ignore the header, and so does /api once
+// dashboard auth is enabled. Lockout rows remove it in their own prerequest, which runs
+// after this collection-level one.
+const SETUP_TOKEN_VAR = "setupToken";
+collection.variable = Array.isArray(collection.variable) ? collection.variable : [];
+if (!collection.variable.some((v) => v.key === SETUP_TOKEN_VAR)) {
+  collection.variable.push({ key: SETUP_TOKEN_VAR, value: process.env.BIFROST_SETUP_TOKEN || "bifrost-e2e-setup-token" });
+}
+collection.event = Array.isArray(collection.event) ? collection.event : [];
+collection.event.unshift({
+  listen: "prerequest",
+  script: {
+    type: "text/javascript",
+    exec: [
+      `var __setupToken = pm.variables.get('${SETUP_TOKEN_VAR}');`,
+      "if (__setupToken) {",
+      "  pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: __setupToken });",
+      "}",
+    ],
+  },
+});
+
 writeFileSync(out, `${JSON.stringify(collection, null, 2)}\n`);
 const generatedCount = generatedFolders.reduce((sum, folder) => sum + folder.item.length, 0) + cachingItems.length;
 console.error(`[augment-provider-harness] wrote ${out} with ${generatedCount} generated requests, ${guardedCount} chained-var guards`);
