@@ -204843,6 +204843,16 @@
           "name": "[EXPECT-204] openai model-tags set tags on gpt-4o-mini - #7945",
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Write nothing unless the record row captured the tags to restore afterwards.",
+                  "if (!pm.collectionVariables.get('modelTagsRestoreBody')) { console.warn('no restore body recorded; skipping the tag write'); pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",

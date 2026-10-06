@@ -47,6 +47,12 @@ models:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '502':
+        description: A tags-filtered listing of a provider exceeded the 20-page read limit
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
     security:
     - BearerAuth: []
     - VirtualKeyAuth: []
