@@ -4506,14 +4506,16 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 							// synthesized one means nothing upstream — see
 							// forwardsEffortWithoutThinkingBudget.
 							setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, effort)
-							if forwardsEffortWithoutThinkingBudget(bifrostReq.Provider) {
-								if bifrostReq.Provider == schemas.DeepSeek {
-									// DeepSeek ignores budget_tokens, so no budget is synthesized — but
-									// effort must keep thinking explicitly on rather than relying on the
-									// server default.
+							if bifrostReq.Provider == schemas.DeepSeek {
+								// DeepSeek takes effort only via output_config.effort and documents
+								// budget_tokens as ignored, so never synthesize a budget: thinking is
+								// on by default (effort-only requests carry no thinking field), and an
+								// explicitly supplied thinking type is normalized to enabled without
+								// one.
+								if bifrostReq.Params.Reasoning.Type != nil {
 									anthropicReq.Thinking = &AnthropicThinking{Type: "enabled"}
 								}
-							} else {
+							} else if !forwardsEffortWithoutThinkingBudget(bifrostReq.Provider) {
 								budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 								if err != nil {
 									return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)

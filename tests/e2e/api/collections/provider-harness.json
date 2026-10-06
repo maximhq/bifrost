@@ -203988,7 +203988,7 @@
     },
     {
       "name": "59. DeepSeek Anthropic-mount reasoning effort passthrough",
-      "description": "DeepSeek's Anthropic-compatible mount (key alias deepseek-v4-flash-anthropic, use_anthropic_endpoints: true) takes reasoning effort ONLY via output_config.effort; thinking.budget_tokens is documented-ignored (https://api-docs.deepseek.com/guides/anthropic_api: thinking 'Supported (budget_tokens is ignored)', output_config 'Only effort is supported'; https://api-docs.deepseek.com/guides/thinking_mode: low/high/max honored, medium/xhigh mapped to high server-side, thinking on by default). Bifrost's Anthropic converter used to treat DeepSeek as a budget_tokens-only model: every effort request left the gateway as thinking:{type:enabled,budget_tokens:<effort ratio of max_tokens>} with no effort field - silently ignored upstream, so every call ran at DeepSeek's default effort while dashboards reported the requested one (same class of bug as LiteLLM#35645). These cases pin the OUTBOUND payload via x-bf-send-back-raw-request (deterministic - asserting on thinking length is underpowered even at n=3): output_config.effort must reach the wire and no budget_tokens may be synthesized from the effort. DeepSeek ignores budget_tokens, so none may be synthesized; thinking stays explicitly enabled (type: enabled, no budget_tokens). Cases 1-2 pin the max and low tiers verbatim on the unified route; case 3 pins the Anthropic drop-in dialect (output_config.effort in the request body) still succeeds end-to-end.",
+      "description": "DeepSeek's Anthropic-compatible mount (key alias deepseek-v4-flash-anthropic, use_anthropic_endpoints: true) takes reasoning effort ONLY via output_config.effort; thinking.budget_tokens is documented-ignored (https://api-docs.deepseek.com/guides/anthropic_api: thinking 'Supported (budget_tokens is ignored)', output_config 'Only effort is supported'; https://api-docs.deepseek.com/guides/thinking_mode: low/high/max honored, medium/xhigh mapped to high server-side, thinking on by default). Bifrost's Anthropic converter used to treat DeepSeek as a budget_tokens-only model: every effort request left the gateway as thinking:{type:enabled,budget_tokens:<effort ratio of max_tokens>} with no effort field - silently ignored upstream, so every call ran at DeepSeek's default effort while dashboards reported the requested one (same class of bug as LiteLLM#35645). These cases pin the OUTBOUND payload via x-bf-send-back-raw-request (deterministic - asserting on thinking length is underpowered even at n=3): output_config.effort must reach the wire and no budget_tokens may be synthesized from the effort. Effort-only is the canonical shape: DeepSeek defaults thinking on, so the thinking field stays absent. An explicitly supplied thinking type is normalized to enabled without a budget (Claude-only types never reach the mount). Cases 1-2 pin the max and low tiers verbatim on the unified route; case 3 pins the Anthropic drop-in dialect (output_config.effort in the request body) still succeeds end-to-end.",
       "item": [
         {
           "name": "deepseek/deepseek-v4-flash-anthropic reasoning_effort max reaches wire as output_config.effort (no synthesized budget_tokens)",
@@ -204046,9 +204046,8 @@
                   "pm.test('deepseek anthropic effort max: output_config.effort \"max\" reaches the wire', function () {",
                   "  pm.expect(oc.effort, 'output_config: ' + ocs + ' - full raw_request: ' + JSON.stringify(rr)).to.eql('max');",
                   "});",
-                  "pm.test('deepseek anthropic mount: thinking stays enabled without a synthesized budget_tokens (DeepSeek documents budget_tokens as ignored)', function () {",
-                  "  pm.expect(think \u0026\u0026 think.type, 'thinking: ' + thinks + ' - full raw_request: ' + JSON.stringify(rr)).to.eql('enabled');",
-                  "  pm.expect(think.budget_tokens === undefined, 'budget_tokens must not be synthesized: ' + thinks).to.be.true;",
+                  "pm.test('deepseek anthropic mount: no synthesized thinking.budget_tokens (DeepSeek documents budget_tokens as ignored)', function () {",
+                  "  pm.expect(think === undefined || think === null, 'thinking: ' + thinks + ' - full raw_request: ' + JSON.stringify(rr)).to.be.true;",
                   "});"
                 ]
               }
@@ -204111,9 +204110,8 @@
                   "pm.test('deepseek anthropic effort low: output_config.effort \"low\" reaches the wire', function () {",
                   "  pm.expect(oc.effort, 'output_config: ' + ocs + ' - full raw_request: ' + JSON.stringify(rr)).to.eql('low');",
                   "});",
-                  "pm.test('deepseek anthropic mount: thinking stays enabled without a synthesized budget_tokens (DeepSeek documents budget_tokens as ignored)', function () {",
-                  "  pm.expect(think \u0026\u0026 think.type, 'thinking: ' + thinks + ' - full raw_request: ' + JSON.stringify(rr)).to.eql('enabled');",
-                  "  pm.expect(think.budget_tokens === undefined, 'budget_tokens must not be synthesized: ' + thinks).to.be.true;",
+                  "pm.test('deepseek anthropic mount: no synthesized thinking.budget_tokens (DeepSeek documents budget_tokens as ignored)', function () {",
+                  "  pm.expect(think === undefined || think === null, 'thinking: ' + thinks + ' - full raw_request: ' + JSON.stringify(rr)).to.be.true;",
                   "});"
                 ]
               }
@@ -204223,9 +204221,8 @@
                   "pm.test('deepseek non-v4 model name: output_config.effort reaches the wire (mount aliases it to deepseek-v4-flash upstream)', function () {",
                   "  pm.expect(oc.effort, 'output_config: ' + JSON.stringify(oc) + ' - full raw_request: ' + JSON.stringify(rr)).to.eql('max');",
                   "});",
-                  "pm.test('deepseek non-v4 model name: thinking stays enabled without a synthesized budget_tokens', function () {",
-                  "  pm.expect(rr.thinking \u0026\u0026 rr.thinking.type, 'thinking: ' + JSON.stringify(rr.thinking) + ' - full raw_request: ' + JSON.stringify(rr)).to.eql('enabled');",
-                  "  pm.expect((rr.thinking || {}).budget_tokens === undefined, 'budget_tokens must not be synthesized: ' + JSON.stringify(rr.thinking)).to.be.true;",
+                  "pm.test('deepseek non-v4 model name: no synthesized thinking.budget_tokens', function () {",
+                  "  pm.expect(rr.thinking === undefined || rr.thinking === null, 'thinking: ' + JSON.stringify(rr.thinking) + ' - full raw_request: ' + JSON.stringify(rr)).to.be.true;",
                   "});"
                 ]
               }

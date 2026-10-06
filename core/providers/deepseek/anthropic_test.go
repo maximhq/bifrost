@@ -224,8 +224,8 @@ func captureAnthropicMountBody(t *testing.T, request *schemas.BifrostChatRequest
 // ignored (https://api-docs.deepseek.com/guides/anthropic_api), so an effort
 // request must carry output_config.effort verbatim — and must not dress the
 // intent up as a synthesized thinking.budget_tokens, the field this incident
-// showed silently carrying no meaning upstream. Thinking stays enabled without a budget: DeepSeek
-// ignores budget_tokens, and effort must never silently turn reasoning off.
+// showed silently carrying no meaning upstream. Thinking stays absent: DeepSeek
+// enables thinking by default, so effort alone is the canonical request shape.
 func TestChatCompletion_AnthropicEndpointForwardsEffort(t *testing.T) {
 	t.Parallel()
 
@@ -271,15 +271,9 @@ func TestChatCompletion_AnthropicEndpointForwardsEffort(t *testing.T) {
 			if got := outputConfig["effort"]; got != tc.wantWire {
 				t.Fatalf("output_config.effort = %v, want %q", got, tc.wantWire)
 			}
-			thinking, ok := captured["thinking"].(map[string]any)
-			if !ok {
-				t.Fatalf("outbound body missing thinking for an effort-only request: %#v", captured)
-			}
-			if got := thinking["type"]; got != "enabled" {
-				t.Fatalf("thinking.type = %v, want enabled (effort must keep thinking on)", got)
-			}
-			if _, ok := thinking["budget_tokens"]; ok {
-				t.Fatalf("no synthesized budget_tokens may reach the wire, got %#v", thinking)
+			if thinking, ok := captured["thinking"]; ok {
+				t.Fatalf("thinking must be absent when the caller only asked for effort "+
+					"(DeepSeek defaults thinking on and ignores budget_tokens), got %#v", thinking)
 			}
 		})
 	}
@@ -612,5 +606,37 @@ func TestChatCompletion_AliasOverrideUsesAnthropicEndpoint(t *testing.T) {
 	}
 	if gotAuthorization != "" {
 		t.Fatalf("Authorization = %q, want empty (bearer auth belongs to the OpenAI-compatible wire)", gotAuthorization)
+	}
+}
+
+// TestChatCompletion_AnthropicEndpointExplicitThinkingTypeKeepsThinkingOnWithoutBudget
+// pins the explicit-type arm: DeepSeek documents budget_tokens as ignored, so an
+// explicitly supplied thinking type is normalized to enabled without a synthesized
+// budget, while the Claude-only type itself never reaches the mount.
+func TestChatCompletion_AnthropicEndpointExplicitThinkingTypeKeepsThinkingOnWithoutBudget(t *testing.T) {
+	t.Parallel()
+
+	captured := captureAnthropicMountBody(t, &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: new("What is 17 * 23?")},
+		}},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(128000),
+			Reasoning:           &schemas.ChatReasoning{Type: new("between_tools"), Effort: new("medium")},
+		},
+	})
+
+	thinking, ok := captured["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("explicit thinking type must keep thinking on: %#v", captured)
+	}
+	if got := thinking["type"]; got != "enabled" {
+		t.Fatalf("thinking.type = %v, want enabled (between_tools is Claude-only)", got)
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("no budget_tokens may be synthesized for DeepSeek, got %#v", thinking)
 	}
 }

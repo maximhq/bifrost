@@ -124,14 +124,7 @@ func TestChatCompletion_AliasRoutesToAnthropicMountWithEffort(t *testing.T) {
 	if got := outputConfig["effort"]; got != "max" {
 		t.Fatalf("output_config.effort = %v, want max", got)
 	}
-	thinking, ok := captured["thinking"].(map[string]any)
-	if !ok {
-		t.Fatalf("outbound body missing thinking for an effort-only request: %#v", captured)
-	}
-	if got := thinking["type"]; got != "enabled" {
-		t.Fatalf("thinking.type = %v, want enabled (effort must keep thinking on)", got)
-	}
-	if _, ok := thinking["budget_tokens"]; ok {
-		t.Fatalf("no synthesized budget_tokens may reach the wire, got %#v", thinking)
+	if thinking, ok := captured["thinking"]; ok {
+		t.Fatalf("no thinking field may be synthesized for an effort-only request, got %#v", thinking)
 	}
 }
