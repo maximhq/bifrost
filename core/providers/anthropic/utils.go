@@ -3625,20 +3625,57 @@ func anthropicStopReasonForToolUse(reason AnthropicStopReason, hasToolUse bool) 
 	return reason
 }
 
-// bifrostResponsesOutputHasToolUse reports whether a Responses output carries an
-// item the Anthropic egress renders as a client tool_use block.
-func bifrostResponsesOutputHasToolUse(output []schemas.ResponsesMessage) bool {
+// unstreamedToolUseEvents renders the client tool calls in a completed Responses
+// output as tool_use blocks (start, input_json deltas, stop). The terminal path uses
+// it when no tool_use block was streamed, so a turn whose calls arrive only on
+// response.completed still hands the client a block to dispatch before the
+// message_delta that reports tool_use.
+func unstreamedToolUseEvents(state *anthropicToResponsesStreamState, output []schemas.ResponsesMessage) []*AnthropicStreamEvent {
+	var events []*AnthropicStreamEvent
 	for i := range output {
 		item := &output[i]
-		if item.Type == nil || isReasoningItem(item) {
+		if item.Type == nil || item.ResponsesToolMessage == nil || isReasoningItem(item) {
 			continue
 		}
+		var block *AnthropicContentBlock
+		input := ""
 		switch *item.Type {
-		case schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesMessageTypeComputerCall:
-			return true
+		case schemas.ResponsesMessageTypeFunctionCall:
+			block = &AnthropicContentBlock{
+				Type:        AnthropicContentBlockTypeToolUse,
+				ID:          providerUtils.SanitizeAnthropicToolUseIDPtr(item.ResponsesToolMessage.CallID),
+				Name:        item.ResponsesToolMessage.Name,
+				ToolsetName: item.ResponsesToolMessage.ToolsetName,
+			}
+			if item.ResponsesToolMessage.Arguments != nil {
+				input = *item.ResponsesToolMessage.Arguments
+			}
+		case schemas.ResponsesMessageTypeComputerCall:
+			block = convertBifrostComputerCallToAnthropicToolUse(item)
+			if block != nil {
+				input = string(block.Input)
+			}
 		}
+		if block == nil {
+			continue
+		}
+		// Like a streamed block, open with empty input and deliver it as deltas.
+		block.Input = json.RawMessage("{}")
+		idx := state.allocBlockIndex("")
+		events = append(events, &AnthropicStreamEvent{
+			Type:         AnthropicStreamEventTypeContentBlockStart,
+			Index:        idx,
+			ContentBlock: block,
+		})
+		if input != "" {
+			events = append(events, generateSyntheticInputJSONDeltas(input, idx)...)
+		}
+		events = append(events, &AnthropicStreamEvent{
+			Type:  AnthropicStreamEventTypeContentBlockStop,
+			Index: idx,
+		})
 	}
-	return false
+	return events
 }
 
 // ConvertToAnthropicImageBlock converts a Bifrost image block to Anthropic format

@@ -3917,10 +3917,17 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 				StopSequence: nil,
 			},
 		}
-		hasToolUse := getOrCreateAnthropicToResponsesStreamState(ctx).sawToolUse
+		streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+		hasToolUse := streamState.sawToolUse
+		var toolUseEvents []*AnthropicStreamEvent
 		// Convert usage from Bifrost to Anthropic
 		if bifrostResp.Response != nil {
-			hasToolUse = hasToolUse || bifrostResponsesOutputHasToolUse(bifrostResp.Response.Output)
+			// Tool calls that reach us only on response.completed were never streamed as
+			// blocks; deliver them now, or a tool_use stop would have nothing to dispatch.
+			if !hasToolUse {
+				toolUseEvents = unstreamedToolUseEvents(streamState, bifrostResp.Response.Output)
+				hasToolUse = len(toolUseEvents) > 0
+			}
 			anthropicContentDeltaEvent.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
 			if bifrostResp.Response.StopReason != nil {
 				reason, stopSequence := anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason), bifrostResp.Response.StopSequence)
@@ -3955,7 +3962,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		if delta := anthropicContentDeltaEvent.Delta; delta != nil && delta.StopReason != nil {
 			delta.StopReason = schemas.Ptr(anthropicStopReasonForToolUse(*delta.StopReason, hasToolUse))
 		}
-		return []*AnthropicStreamEvent{anthropicContentDeltaEvent, streamResp}
+		return append(toolUseEvents, anthropicContentDeltaEvent, streamResp)
 
 	case schemas.ResponsesStreamResponseTypeMCPCallArgumentsDelta:
 		// MCP call arguments delta - convert to content_block_delta with input_json

@@ -1503,7 +1503,10 @@ func TestToAnthropicResponsesResponse_ToolCallTurnReportsToolUse(t *testing.T) {
 
 // TestToAnthropicResponsesStreamResponse_ToolCallTurnReportsToolUse checks the
 // streaming message_delta reports tool_use when a tool_use block was streamed or the
-// completed output carries a tool call, without overriding truncation.
+// completed output carries a tool call, without overriding truncation. A call that
+// reaches the client only on response.completed is delivered as a tool_use block
+// before the message_delta, so a tool_use stop always has a block to dispatch, and a
+// call that was already streamed is never repeated.
 func TestToAnthropicResponsesStreamResponse_ToolCallTurnReportsToolUse(t *testing.T) {
 	t.Parallel()
 
@@ -1515,6 +1518,7 @@ func TestToAnthropicResponsesStreamResponse_ToolCallTurnReportsToolUse(t *testin
 		incomplete *schemas.ResponsesResponseIncompleteDetails
 		output     []schemas.ResponsesMessage // Output carried on response.completed
 		want       AnthropicStopReason
+		wantBlocks int // tool_use content blocks the client receives
 	}{
 		{
 			name:       "gemini-shaped: streamed function call, completed with stop",
@@ -1522,18 +1526,29 @@ func TestToAnthropicResponsesStreamResponse_ToolCallTurnReportsToolUse(t *testin
 			streamTool: true,
 			stopReason: schemas.Ptr("stop"),
 			want:       AnthropicStopReasonToolUse,
+			wantBlocks: 1,
 		},
 		{
 			name:       "openai-shaped: streamed function call, completed without stop reason",
 			provider:   schemas.OpenAI,
 			streamTool: true,
 			want:       AnthropicStopReasonToolUse,
+			wantBlocks: 1,
 		},
 		{
-			name:     "openai-shaped: function call only in completed output",
-			provider: schemas.OpenAI,
-			output:   []schemas.ResponsesMessage{stopReasonTestFunctionCall()},
-			want:     AnthropicStopReasonToolUse,
+			name:       "openai-shaped: function call only in completed output",
+			provider:   schemas.OpenAI,
+			output:     []schemas.ResponsesMessage{stopReasonTestFunctionCall()},
+			want:       AnthropicStopReasonToolUse,
+			wantBlocks: 1,
+		},
+		{
+			name:       "streamed function call also on completed output is not repeated",
+			provider:   schemas.OpenAI,
+			streamTool: true,
+			output:     []schemas.ResponsesMessage{stopReasonTestFunctionCall()},
+			want:       AnthropicStopReasonToolUse,
+			wantBlocks: 1,
 		},
 		{
 			name:       "text-only turn stays end_turn",
@@ -1548,6 +1563,7 @@ func TestToAnthropicResponsesStreamResponse_ToolCallTurnReportsToolUse(t *testin
 			streamTool: true,
 			stopReason: schemas.Ptr("length"),
 			want:       AnthropicStopReasonMaxTokens,
+			wantBlocks: 1,
 		},
 		{
 			name:       "incomplete max_output_tokens with streamed function call stays max_tokens",
@@ -1555,6 +1571,7 @@ func TestToAnthropicResponsesStreamResponse_ToolCallTurnReportsToolUse(t *testin
 			streamTool: true,
 			incomplete: maxOutputTokensDetails(),
 			want:       AnthropicStopReasonMaxTokens,
+			wantBlocks: 1,
 		},
 	}
 
@@ -1601,9 +1618,34 @@ func TestToAnthropicResponsesStreamResponse_ToolCallTurnReportsToolUse(t *testin
 			})
 
 			var messageDelta *AnthropicStreamEvent
+			toolBlocks := map[int]bool{}
+			toolInput := map[int]string{}
 			for _, event := range driveAnthropicEgress(t, frames) {
-				if event != nil && event.Type == AnthropicStreamEventTypeMessageDelta {
+				if event == nil {
+					continue
+				}
+				switch event.Type {
+				case AnthropicStreamEventTypeMessageDelta:
 					messageDelta = event
+				case AnthropicStreamEventTypeContentBlockStart:
+					if event.ContentBlock != nil && event.ContentBlock.Type == AnthropicContentBlockTypeToolUse && event.Index != nil {
+						if messageDelta != nil {
+							t.Errorf("tool_use block %d started after message_delta", *event.Index)
+						}
+						toolBlocks[*event.Index] = true
+					}
+				case AnthropicStreamEventTypeContentBlockDelta:
+					if event.Index != nil && toolBlocks[*event.Index] && event.Delta != nil && event.Delta.PartialJSON != nil {
+						toolInput[*event.Index] += *event.Delta.PartialJSON
+					}
+				}
+			}
+			if len(toolBlocks) != tt.wantBlocks {
+				t.Errorf("tool_use blocks = %d, want %d", len(toolBlocks), tt.wantBlocks)
+			}
+			for idx := range toolBlocks {
+				if toolInput[idx] != `{"city":"Paris"}` {
+					t.Errorf("tool_use block %d input = %q, want the call's arguments", idx, toolInput[idx])
 				}
 			}
 			if messageDelta == nil || messageDelta.Delta == nil || messageDelta.Delta.StopReason == nil {

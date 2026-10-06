@@ -316,6 +316,10 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // model's own provider - same collision class as vertex above. Keep them out of the anthropic
   // partition; they still match their own provider's keywords through the model prefix.
   if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure)\//.test(item.request?.body?.raw || "")) return false;
+  // An Azure model on that same ingress ("azure/gpt-4o-mini") also contains the OpenAI keyword
+  // "gpt-", so it would run (and be billed) in the openai partition as well. Its upstream call
+  // goes to Azure only; keep it to the azure partition.
+  if (provider === "openai" && /\/anthropic\/v1\/messages/.test(JSON.stringify(item.request?.url || "")) && /"model"\s*:\s*"azure\//.test(item.request?.body?.raw || "")) return false;
   // Runware rows name the upstream vendor inside the AIR model id ("runware/anthropic:claude@...",
   // "runware/google:gemini@...", "runware/minimax:..."), so they'd otherwise be claimed by those
   // partitions too - same collision class as openrouter/bedrock_mantle/vertex above. Route them
