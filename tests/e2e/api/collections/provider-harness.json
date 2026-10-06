@@ -202203,6 +202203,354 @@
           }
         }
       ]
+    },
+    {
+      "name": "175. Converse additionalModelRequestFields store reaches the outbound request (#7720) (converse-store)",
+      "description": "The AWS SDK's ConverseInput has no store field, so a caller who needs zero data retention on an OpenAI model served over the Responses API (openai, azure, bedrock_mantle, the Bedrock OpenAI surface, openrouter) and routed through the /bedrock drop-in puts store:false in additionalModelRequestFields. BedrockConverseRequest.ToBifrostResponsesRequest (core/providers/bedrock/responses.go) only copied that map into ExtraParams[\"additionalModelRequestFieldPaths\"], which only the Bedrock egress reads, so the outbound Responses body had no store and the provider applied its store:true default without any error. Each case sends store:false in additionalModelRequestFields and reads the logged raw_request (the harness profile stores raw requests) to assert the outbound body carries store:false. Red before the fix: raw_request has no store key. The Go-level pin is TestConverseAdditionalModelRequestFieldsStoreReachesParams.",
+      "item": [
+        {
+          "name": "/bedrock converse -> azure/gpt-4o-mini additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse store azure: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse store azure: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse store azure: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse store azure: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  },\n  \"additionalModelRequestFields\": {\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-4o-mini/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-4o-mini",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/bedrock converse -> openai/gpt-4o-mini additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse store openai: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse store openai: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse store openai: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse store openai: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  },\n  \"additionalModelRequestFields\": {\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/openai%2Fgpt-4o-mini/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "openai%2Fgpt-4o-mini",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/bedrock converse-stream -> azure/gpt-4o-mini additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse-stream store azure: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse-stream store azure: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse-stream store azure: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse-stream store azure: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  },\n  \"additionalModelRequestFields\": {\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-4o-mini/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-4o-mini",
+                "converse-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/bedrock converse -> bedrock_mantle/openai.gpt-5.6-luna additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse store bedrock_mantle: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse store bedrock_mantle: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse store bedrock_mantle: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse store bedrock_mantle: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"What is 17*23? Answer briefly.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 512\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\"\n    },\n    \"output_config\": {\n      \"effort\": \"low\"\n    },\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/bedrock_mantle%2Fopenai.gpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "bedrock_mantle%2Fopenai.gpt-5.6-luna",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/bedrock converse -> bedrock_openai_ep/us.openai.gpt-5.6-terra additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse store bedrock_openai_ep: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse store bedrock_openai_ep: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse store bedrock_openai_ep: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse store bedrock_openai_ep: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"What is 17*23? Answer briefly.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 512\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\"\n    },\n    \"output_config\": {\n      \"effort\": \"low\"\n    },\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/bedrock_openai_ep%2Fus.openai.gpt-5.6-terra/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "bedrock_openai_ep%2Fus.openai.gpt-5.6-terra",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/bedrock converse -> openrouter/openai/gpt-5 additionalModelRequestFields store false reaches outbound body - #7720",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse store openrouter: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('converse store openrouter: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      pm.test('converse store openrouter: outbound body carries store false', function () { pm.expect(rr.store, 'store missing from outbound raw_request (provider default store:true applies): ' + JSON.stringify(rr).slice(0, 600)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse store openrouter: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"What is 17*23? Answer briefly.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 512\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\"\n    },\n    \"output_config\": {\n      \"effort\": \"low\"\n    },\n    \"store\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/openrouter%2Fopenai%2Fgpt-5/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "openrouter%2Fopenai%2Fgpt-5",
+                "converse"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

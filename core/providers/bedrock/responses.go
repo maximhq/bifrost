@@ -2427,6 +2427,14 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 				}
 			}
 		}
+
+		// ConverseInput has no store field, so additionalModelRequestFields is the only place
+		// a /bedrock drop-in caller can ask an OpenAI-compatible target not to store (#7720).
+		if store, ok := request.AdditionalModelRequestFields.Get("store"); ok {
+			if storeBool, ok := store.(bool); ok {
+				bifrostReq.Params.Store = &storeBool
+			}
+		}
 	}
 
 	if include, ok := extraParamStringSlice(request.ExtraParams["include"]); ok {
