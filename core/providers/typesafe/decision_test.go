@@ -1557,3 +1557,124 @@ func TestDecisionWithoutLayaFieldsUnchanged(t *testing.T) {
 		t.Errorf("usage keys = %v", got)
 	}
 }
+
+// clefEnvelopeBody is a Cloudflare Workers AI REST response for @cf/cloudflare/clef,
+// captured from the live API: the systemone body sits inside "result".
+const clefEnvelopeBody = `{"result":{"model":"clef","answers":{` +
+	`"frustrated":{"type":"noul","noul":0.9894},` +
+	`"category":{"type":"choice","choice":"billing","probabilities":{"billing":0.9668,"bug":0.0136,"other":0.0196},"confidence":0.9029},` +
+	`"urgency":{"type":"score","score":1.9729,"legend":{"0":"can wait","1":"soon","2":"today"},"probabilities":{"0":0.0052,"1":0.0167,"2":0.9781},"confidence":0.9356}},` +
+	`"usage":{"input_tokens":313,"output_tokens":0}},"success":true,"errors":[],"messages":[]}`
+
+// TestDecisionCloudflareEnvelope pins that a Cloudflare-enveloped systemone body
+// is unwrapped: every kind maps, usage maps, and the native relay is the inner body.
+func TestDecisionCloudflareEnvelope(t *testing.T) {
+	questions := map[string]schemas.DecisionQuestion{
+		"frustrated": {Kind: schemas.DecisionKindNoul, Instructions: "Is the customer frustrated?"},
+		"category":   {Kind: schemas.DecisionKindChoice, Instructions: "Ticket category", Criteria: map[string]any{"billing": "charges", "bug": "defects", "other": "else"}},
+		"urgency":    {Kind: schemas.DecisionKindScore, Instructions: "How urgent?", Criteria: []any{"can wait", "soon", "today"}},
+	}
+	resp, _ := decideFixture(t, clefEnvelopeBody, questions)
+
+	if resp.Model != "clef" {
+		t.Errorf("model = %q, want clef", resp.Model)
+	}
+	if v := resp.Answers["frustrated"].Value; v != 0.9894 {
+		t.Errorf("noul value = %v", v)
+	}
+	if a := resp.Answers["category"]; a.Value != "billing" || a.Confidence == nil || *a.Confidence != 0.9029 || a.Probabilities["bug"] != 0.0136 {
+		t.Errorf("choice answer = %+v", a)
+	}
+	if a := resp.Answers["urgency"]; a.Value != 1.9729 || a.Legend["2"] != "today" || a.Probabilities["2"] != 0.9781 {
+		t.Errorf("score answer = %+v", a)
+	}
+	if resp.Usage == nil || resp.Usage.PromptTokens != 313 {
+		t.Errorf("usage = %+v", resp.Usage)
+	}
+	if got := string(resp.NativeResponse); !strings.HasPrefix(got, `{"model":"clef","answers":`) {
+		t.Errorf("native relay is not the inner systemone body: %s", got)
+	}
+}
+
+// TestDecisionTopLevelAnswersNotUnwrapped pins that a body with answers at the
+// top level is parsed as is, even if it also carries a "result" key.
+func TestDecisionTopLevelAnswersNotUnwrapped(t *testing.T) {
+	resp, _ := decideFixture(t, `{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.25}},"result":{"answers":{"q":{"type":"noul","noul":0.99}}}}`,
+		map[string]schemas.DecisionQuestion{"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."}})
+	if v := resp.Answers["q"].Value; v != 0.25 {
+		t.Errorf("value = %v, want the top-level 0.25", v)
+	}
+}
+
+// TestDecisionCloudflareEnvelopeError pins that Cloudflare envelope errors keep
+// their status, surface errors[].message, and leave the native relay to rebuild
+// a Typesafe-shaped error. Bodies are captured from the live API.
+func TestDecisionCloudflareEnvelopeError(t *testing.T) {
+	cases := map[string]struct {
+		status      int
+		body        string
+		wantMessage string
+	}{
+		"validation": {http.StatusUnprocessableEntity, `{"errors":[{"message":"AiError: AiError: {\"error\":{\"type\":\"invalid_request\",\"message\":\"Unsupported model 'clef-flash'. Use 'clef'.\"}} (beac2b74)","code":5012}],"success":false,"result":{},"messages":[]}`,
+			`AiError: AiError: {"error":{"type":"invalid_request","message":"Unsupported model 'clef-flash'. Use 'clef'."}} (beac2b74)`},
+		"auth": {http.StatusUnauthorized, `{"result":null,"success":false,"errors":[{"code":10000,"message":"Authentication error"}],"messages":[]}`, "Authentication error"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+				"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."},
+			}))
+			if bifrostErr == nil {
+				t.Fatal("expected an error")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.status {
+				t.Errorf("status = %v, want %d", bifrostErr.StatusCode, tc.status)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != tc.wantMessage {
+				t.Errorf("message = %+v, want %q", bifrostErr.Error, tc.wantMessage)
+			}
+			native, ok := ToTypesafeNativeErrorBody(bifrostErr).(*TypesafeNativeError)
+			if !ok || native.Detail.Message != tc.wantMessage {
+				t.Errorf("native error body = %#v, want a Typesafe error carrying the message", ToTypesafeNativeErrorBody(bifrostErr))
+			}
+		})
+	}
+}
+
+// TestDecisionCloudflareEnvelopeSuccessFalseOn200 pins that a 200 envelope with
+// success:false surfaces errors[].message, even when result is empty or carries
+// answers, while success:true and non-enveloped bodies are unaffected.
+func TestDecisionCloudflareEnvelopeSuccessFalseOn200(t *testing.T) {
+	cases := map[string]string{
+		"empty result":   `{"result":{},"success":false,"errors":[{"code":1001,"message":"quota exceeded"}],"messages":[]}`,
+		"null result":    `{"result":null,"success":false,"errors":[{"code":1001,"message":"quota exceeded"}],"messages":[]}`,
+		"partial result": `{"result":{"model":"clef","answers":{"q":{"type":"noul","noul":0.5}}},"success":false,"errors":[{"code":1001,"message":"quota exceeded"}],"messages":[]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+				"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."},
+			}))
+			if bifrostErr == nil {
+				t.Fatal("expected an error")
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != "quota exceeded" {
+				t.Errorf("message = %+v, want quota exceeded", bifrostErr.Error)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadGateway {
+				t.Errorf("status = %v, want 502", bifrostErr.StatusCode)
+			}
+		})
+	}
+}

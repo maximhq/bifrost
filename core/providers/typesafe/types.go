@@ -128,4 +128,12 @@ type TypesafeError struct {
 	Error   *struct {
 		Message string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
+	Errors []TypesafeEnvelopeError `json:"errors,omitempty"` // Cloudflare Workers AI REST envelope
+}
+
+// TypesafeEnvelopeError is one entry of the errors array in a Cloudflare
+// Workers AI REST envelope, which serves Jev-compatible models such as Clef.
+type TypesafeEnvelopeError struct {
+	Code    int    `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }
