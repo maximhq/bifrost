@@ -119,3 +119,28 @@ func TestReplaceIgnoreProviderCost(t *testing.T) {
 	assert.False(t, s.IsProviderCostIgnored(schemas.OpenAI))
 	assert.True(t, s.IsProviderCostIgnored(schemas.Anthropic))
 }
+
+// A completed video that carries both a provider cost and a duration must still
+// price from the catalog when the provider's cost is ignored.
+func TestCalculateCost_IgnoreProviderCostPricesVideoFromDuration(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	seconds := "8"
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: &seconds,
+			Size:    "1920x1080",
+			Usage:   &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.42}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "sora-2-pro"),
+			},
+		},
+	}
+	assert.InDelta(t, 0.42, store.CalculateCost(resp, nil), 1e-12)
+
+	store.SetIgnoreProviderCost(schemas.OpenAI, true)
+	cost := store.CalculateCost(resp, nil)
+	assert.Positive(t, cost)
+	assert.NotEqual(t, 0.42, cost)
+}
