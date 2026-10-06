@@ -40,10 +40,10 @@ func Init(key string, _logger schemas.Logger) {
 	}
 
 	// Derive a secure 32-byte key using Argon2id KDF
-	// We use a fixed salt since this is a system-wide encryption key (not per-user passwords)
+	// Derive a per-passphrase salt to prevent identical keys across instances with the same passphrase.
 	// Argon2id parameters: time=1, memory=64MB, threads=4, keyLen=32
-	// This provides strong security while maintaining reasonable performance for initialization
-	salt := []byte("bifrost-encryption-v1-salt-2024")
+	saltHash := sha256.Sum256([]byte("bifrost-salt-v2:" + key))
+	salt := saltHash[:16]
 	encryptionKey = argon2.IDKey([]byte(key), salt, 1, 64*1024, 4, 32)
 }
 
