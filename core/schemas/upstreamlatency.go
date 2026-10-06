@@ -37,6 +37,95 @@ func (bc *BifrostContext) ResetUpstreamLatency() {
 		return
 	}
 	bc.setReservedValue(BifrostContextKeyUpstreamLatency, &atomic.Int64{})
+	bc.setReservedValue(BifrostContextKeyUpstreamWindow, &UpstreamWindow{base: time.Now()})
+}
+
+// UpstreamWindow records when a request first handed work to a provider
+// transport and when it last finished waiting on a provider socket, across every
+// attempt. The total alone cannot split Bifrost's own time into the part spent
+// before the first provider call and the part spent after the last one; these two
+// instants can.
+//
+// The first instant is taken immediately before the request is handed to the HTTP
+// client, so it precedes connection acquisition: a pooled connection, or DNS
+// resolution and dial for a new one, are both counted as upstream.
+//
+// Instants are stored as offsets from a base taken at reset, so they keep the
+// monotonic clock and concurrent writers never touch the context's value map.
+//
+// The window also keeps its own total of the provider socket waits it observed.
+// Unlike the upstream total, it excludes non-provider waits such as MCP tool
+// calls, so it is the provider's share of the request on its own.
+type UpstreamWindow struct {
+	base time.Time
+	// Offsets are stored plus one so that zero means "not yet observed".
+	firstStart atomic.Int64
+	lastEnd    atomic.Int64
+	waited     atomic.Int64
+}
+
+func (w *UpstreamWindow) offset(t time.Time) int64 {
+	d := t.Sub(w.base)
+	if d < 0 {
+		d = 0
+	}
+	return int64(d) + 1
+}
+
+func (w *UpstreamWindow) observe(start, end time.Time) {
+	w.waited.Add(int64(end.Sub(start)))
+	w.firstStart.CompareAndSwap(0, w.offset(start))
+	endOffset := w.offset(end)
+	for {
+		current := w.lastEnd.Load()
+		if current >= endOffset || w.lastEnd.CompareAndSwap(current, endOffset) {
+			return
+		}
+	}
+}
+
+// Bounds returns the first transport handoff and the last socket wait end.
+// ok is false until at least one provider wait has been observed.
+func (w *UpstreamWindow) Bounds() (firstStart, lastEnd time.Time, ok bool) {
+	if w == nil {
+		return time.Time{}, time.Time{}, false
+	}
+	first, last := w.firstStart.Load(), w.lastEnd.Load()
+	if first == 0 || last == 0 {
+		return time.Time{}, time.Time{}, false
+	}
+	return w.base.Add(time.Duration(first - 1)), w.base.Add(time.Duration(last - 1)), true
+}
+
+// Waited returns the total time spent blocked on provider sockets observed by
+// this window. Zero with Bounds ok=false means no provider wait happened.
+func (w *UpstreamWindow) Waited() time.Duration {
+	if w == nil {
+		return 0
+	}
+	return time.Duration(w.waited.Load())
+}
+
+// GetUpstreamWindow returns the request's window, or nil when no window was
+// installed (callers must treat nil as unknown, never as "no provider call").
+func GetUpstreamWindow(ctx context.Context) *UpstreamWindow {
+	if isNilContext(ctx) {
+		return nil
+	}
+	window, _ := ctx.Value(BifrostContextKeyUpstreamWindow).(*UpstreamWindow)
+	return window
+}
+
+// ObserveUpstreamWait records one provider socket wait that began at start and
+// ends now: it adds the duration to the upstream total and extends the window.
+func ObserveUpstreamWait(ctx context.Context, start time.Time) time.Duration {
+	end := time.Now()
+	d := end.Sub(start)
+	AddUpstreamLatency(ctx, d)
+	if window := GetUpstreamWindow(ctx); window != nil && d >= 0 {
+		window.observe(start, end)
+	}
+	return d
 }
 
 // AddUpstreamLatency adds d to the request's upstream total.

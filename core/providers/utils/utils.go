@@ -468,10 +468,8 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 	select {
 	case <-ctx.Done():
 		// Context was cancelled (e.g., deadline exceeded or manual cancellation).
-		// Calculate latency even for cancelled requests.
-		latency := time.Since(startTime)
 		// Socket wait is upstream even when it ends in cancellation.
-		schemas.AddUpstreamLatency(ctx, latency)
+		latency := schemas.ObserveUpstreamWait(ctx, startTime)
 		// Return a wait function that blocks until the background goroutine finishes.
 		// The caller MUST invoke this (via defer) before releasing req/resp to avoid
 		// a data race with the still-running goroutine.
@@ -503,10 +501,8 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 		}, func() { <-errChan }
 	case err := <-errChan:
 		// The do() call completed.
-		// Calculate latency for both successful and failed requests.
-		latency := time.Since(startTime)
 		// Single accumulation point for every unary provider call.
-		schemas.AddUpstreamLatency(ctx, latency)
+		latency := schemas.ObserveUpstreamWait(ctx, startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return latency, &schemas.BifrostError{
@@ -603,7 +599,7 @@ func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasth
 	client = clientForProviderOverride(ctx, client)
 	startTime := time.Now()
 	err := client.Do(req, resp)
-	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
+	schemas.ObserveUpstreamWait(ctx, startTime)
 	return err
 }
 
@@ -619,7 +615,7 @@ type upstreamTimingBody struct {
 func (b *upstreamTimingBody) Read(p []byte) (int, error) {
 	start := time.Now()
 	n, err := b.inner.Read(p)
-	schemas.AddUpstreamLatency(b.ctx, time.Since(start))
+	schemas.ObserveUpstreamWait(b.ctx, start)
 	return n, err
 }
 
@@ -640,7 +636,7 @@ func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
 func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
 	startTime := time.Now()
 	resp, err := client.Do(req)
-	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
+	schemas.ObserveUpstreamWait(req.Context(), startTime)
 	if err == nil && resp != nil && resp.Body != nil {
 		resp.Body = &upstreamTimingBody{inner: resp.Body, ctx: req.Context()}
 	}
@@ -3101,7 +3097,7 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 	readStart := time.Now()
 	n, err = r.reader.Read(p)
 	if r.ctx != nil {
-		schemas.AddUpstreamLatency(r.ctx, time.Since(readStart))
+		schemas.ObserveUpstreamWait(r.ctx, readStart)
 	}
 	if n > 0 {
 		r.timer.Reset(r.timeout)

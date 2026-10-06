@@ -254,3 +254,24 @@ func TestIdleTimeoutReaderWithoutAccumulator(t *testing.T) {
 		t.Fatal("accumulator appeared without a reset")
 	}
 }
+
+// The window's first instant is the handoff to the HTTP client, before the wait.
+func TestMakeRequestWithDoFuncRecordsWindow(t *testing.T) {
+	ctx := accumCtx()
+	before := time.Now()
+	_, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
+		time.Sleep(20 * time.Millisecond)
+		return nil
+	})
+	wait()
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	first, last, ok := schemas.GetUpstreamWindow(ctx).Bounds()
+	if !ok {
+		t.Fatal("no window bounds after a provider call")
+	}
+	if first.Before(before) || last.Sub(first) < 15*time.Millisecond {
+		t.Fatalf("window %v..%v does not bracket the wait", first, last)
+	}
+}
