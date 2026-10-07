@@ -3806,8 +3806,7 @@ func TestReleaseChannelMessage_ClearsPooledReferences(t *testing.T) {
 	}
 	msg := b.getChannelMessage(req)
 	msg.Context = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	msg.requestScoped = true
-	msg.requestScopedKey = schemas.Key{ID: "scoped", Value: *schemas.NewSecretVar("sk-scoped")}
+	msg.requestScopedKey = &schemas.Key{ID: "scoped", Value: *schemas.NewSecretVar("sk-scoped")}
 
 	// Simulate an undelivered response and error sitting in the channels.
 	respCh := msg.Response
@@ -3820,7 +3819,7 @@ func TestReleaseChannelMessage_ClearsPooledReferences(t *testing.T) {
 	if msg.ChatRequest != nil || msg.RequestType != "" {
 		t.Error("releaseChannelMessage should zero the embedded BifrostRequest")
 	}
-	if msg.requestScoped || msg.requestScopedKey.ID != "" || msg.requestScopedKey.Value.GetValue() != "" {
+	if msg.requestScopedKey != nil {
 		t.Error("releaseChannelMessage should clear the request-scoped key")
 	}
 	if msg.Context != nil {

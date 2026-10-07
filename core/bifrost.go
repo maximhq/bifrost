@@ -72,11 +72,10 @@ type ChannelMessage struct {
 	// handleStreamRequest decides it per attempt (never on the last one), so it
 	// travels on the message rather than on the context the attempts share.
 	firstTokenTimeout time.Duration
-	// requestScoped marks an attempt that runs with request-scoped configuration (see
-	// processRequestScoped). requestScopedKey is its credential, copied from the request's
-	// ProviderOverride, and takes the place of key selection.
-	requestScoped    bool
-	requestScopedKey schemas.Key
+	// requestScopedKey is set only on an attempt that runs with request-scoped configuration
+	// (see processRequestScoped): it is the attempt's credential, a copy of the request's
+	// ProviderOverride key made for the attempt, and takes the place of key selection.
+	requestScopedKey *schemas.Key
 	// handoff arbitrates who owns the terminal value of a NON-streaming request.
 	// Response/Err are cap-1 channels drained on acquire, so the worker's send is
 	// always ready; once the caller's context ends, ctx.Done() is ready too and a
@@ -5208,11 +5207,14 @@ func (bifrost *Bifrost) processRequestScoped(providerKey schemas.ModelProvider, 
 	}
 	defer func() { <-instance.slots }()
 
-	msg.requestScoped = true
-	msg.requestScopedKey = override.Key
-	if msg.requestScopedKey.ID == "" {
-		msg.requestScopedKey.ID = requestScopedKeyID
+	// The attempt gets its own copy of the key: the request's overrides may be updated by
+	// the PreLLMHook of a later attempt while this one is still being delivered.
+	key := new(schemas.Key)
+	*key = override.Key
+	if key.ID == "" {
+		key.ID = requestScopedKeyID
 	}
+	msg.requestScopedKey = key
 	bifrost.processChannelMessage(provider, instance.config, msg, nil)
 }
 
@@ -7829,13 +7831,13 @@ func (bifrost *Bifrost) processChannelMessage(provider schemas.Provider, config 
 	// batch/file/container operations that manage their own key lists.
 	var keyProvider func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error)
 
-	if req.requestScoped {
+	if req.requestScopedKey != nil {
 		// The request-scoped key is the attempt's only key: it is used as given, never looked
 		// up in or chosen from the provider's configured keys.
 		if req.RequestType == schemas.ListModelsRequest || isMultiKeyRequestType(req.RequestType) {
-			keys = []schemas.Key{req.requestScopedKey}
+			keys = []schemas.Key{*req.requestScopedKey}
 		} else {
-			keyProvider = fixedKeyProvider(req.requestScopedKey)
+			keyProvider = fixedKeyProvider(*req.requestScopedKey)
 		}
 	} else if providerRequiresKey(config.CustomProviderConfig) {
 		// ListModels needs all enabled/supported keys so providers can aggregate
@@ -10194,8 +10196,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	msg.Err = nil
 	msg.queueSpan = nil
 	msg.firstTokenTimeout = 0
-	msg.requestScoped = false
-	msg.requestScopedKey = schemas.Key{}
+	msg.requestScopedKey = nil
 	bifrost.channelMessagePool.Put(msg)
 }
 
