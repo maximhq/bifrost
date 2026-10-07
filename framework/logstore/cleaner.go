@@ -29,8 +29,9 @@ const (
 	cleanupRunCeiling = 6 * time.Hour
 
 	// cleanupLogsShareNum/cleanupLogsShareDen is the share of a pass's remaining
-	// time the logs table may use when MCP tool logs are cleaned too; the rest is
-	// reserved so a logs backlog cannot starve mcp_tool_logs retention.
+	// time the logs table may use when other tables are cleaned too; the rest is
+	// reserved so a logs backlog cannot starve retention on mcp_tool_logs or on
+	// Warp's topic tables.
 	cleanupLogsShareNum = 5
 	cleanupLogsShareDen = 6
 
@@ -49,6 +50,15 @@ type LogRetentionManager interface {
 // retention when the manager it was given implements this too.
 type MCPToolLogRetentionManager interface {
 	DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+}
+
+// WarpTopicRetentionManager is implemented by stores that keep Warp's topic
+// rows. Optional for the same reason MCPToolLogRetentionManager is. Both tables
+// hold rows about individual logs, and expire on the log's own created time so
+// neither outlives the log it describes.
+type WarpTopicRetentionManager interface {
+	DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+	DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 }
 
 // CleanerConfig holds configuration for the log cleaner
@@ -153,9 +163,9 @@ func (c *LogsCleaner) runCleanupPass(stopCh <-chan struct{}) {
 	c.cleanupOldLogs(ctx)
 }
 
-// cleanupOldLogs deletes logs, and MCP tool logs when the manager supports it,
-// older than the retention period. Each table is drained in batches until no
-// expired rows remain or ctx ends.
+// cleanupOldLogs deletes logs, and MCP tool logs and Warp topic rows when the
+// manager supports them, older than the retention period. Each table is drained
+// in batches until no expired rows remain or ctx ends.
 func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	c.mu.Lock()
 	retentionDays := c.config.RetentionDays
@@ -169,22 +179,49 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	c.logger.Info("starting log cleanup: deleting logs older than %s (retention: %d days)", cutoff.Format(time.RFC3339), retentionDays)
 
 	mcp, hasMCP := c.manager.(MCPToolLogRetentionManager)
+	topics, hasTopics := c.manager.(WarpTopicRetentionManager)
 	// A logs backlog can outlast the whole pass, and a logs delete can fail on
-	// every run. Neither may starve mcp_tool_logs of retention, so logs get their
-	// own sub-deadline that leaves a reserved share of the pass for MCP, and MCP
-	// runs whatever the logs outcome, unless the pass itself has ended (stopped
-	// or past its deadline).
+	// every run. Neither may starve the tables after it of retention, so logs get
+	// their own sub-deadline that leaves a reserved share of the pass for the
+	// rest, and the rest run whatever the logs outcome, unless the pass itself
+	// has ended (stopped or past its deadline).
 	logsCtx, cancelLogs := ctx, context.CancelFunc(func() {})
-	if deadline, ok := ctx.Deadline(); ok && hasMCP {
+	if deadline, ok := ctx.Deadline(); ok && (hasMCP || hasTopics) {
 		logsBudget := time.Until(deadline) * cleanupLogsShareNum / cleanupLogsShareDen
 		logsCtx, cancelLogs = context.WithTimeout(ctx, logsBudget)
 	}
 	c.drainExpired(logsCtx, "logs", cutoff, c.manager.DeleteLogsBatch)
 	cancelLogs()
-	if !hasMCP || ctx.Err() != nil {
-		return
+
+	// The tables after logs share what logs left. Each may use an equal part of
+	// the time remaining when it starts, so an endless backlog on one cannot
+	// starve the ones after it; time a table does not use passes to the rest,
+	// and the last may use all that remains. Warp's topic rows go last: they are
+	// narrow and indexed on the cutoff column.
+	type expiringTable struct {
+		label       string
+		deleteBatch func(context.Context, time.Time, int) (int64, error)
 	}
-	c.drainExpired(ctx, "MCP tool logs", cutoff, mcp.DeleteMCPToolLogsBatch)
+	var rest []expiringTable
+	if hasMCP {
+		rest = append(rest, expiringTable{"MCP tool logs", mcp.DeleteMCPToolLogsBatch})
+	}
+	if hasTopics {
+		rest = append(rest,
+			expiringTable{"Warp topic assignments", topics.DeleteWarpTopicAssignmentsBatch},
+			expiringTable{"Warp unmatched requests", topics.DeleteWarpTopicUnmatchedBatch})
+	}
+	for index, table := range rest {
+		if ctx.Err() != nil {
+			return
+		}
+		tableCtx, cancelTable := ctx, context.CancelFunc(func() {})
+		if deadline, ok := ctx.Deadline(); ok && index < len(rest)-1 {
+			tableCtx, cancelTable = context.WithTimeout(ctx, time.Until(deadline)/time.Duration(len(rest)-index))
+		}
+		c.drainExpired(tableCtx, table.label, cutoff, table.deleteBatch)
+		cancelTable()
+	}
 }
 
 // drainExpired calls deleteBatch until it reports a short batch, logging
