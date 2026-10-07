@@ -18422,6 +18422,7 @@ var excludedGoFields = map[string]map[string]bool{
 		"rate_limit":                true, // GORM relation
 		"team":                      true, // GORM relation
 		"customer":                  true, // GORM relation
+		"business_unit":             true, // Read-only projection (gorm:"-") resolved on read; configured via business_unit_id
 	},
 	"tables.TableVirtualKeyProviderConfig": {
 		"rate_limit":     true, // GORM relation

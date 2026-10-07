@@ -4010,6 +4010,13 @@ func complexityAnalyzerConfigFromFile(configData *ConfigData) (*configstore.Comp
 		logger.Error("invalid complexity analyzer config in config file: %v", err)
 		return nil, configstore.ComplexityAnalyzerConfigHashes{}, false
 	}
+	// Normalizing defaults an omitted classifier to semantic. A file that names no
+	// classifier has no opinion on it, the same rule as the other optional
+	// sections, so drop that default before hashing and merging; otherwise every
+	// load would overwrite the classifier chosen at runtime.
+	if raw := configData.Governance.ComplexityAnalyzerConfig; raw != nil && strings.TrimSpace(raw.Classifier) == "" {
+		fileConfig.Classifier = ""
+	}
 	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	if err != nil {
 		logger.Warn("failed to generate complexity analyzer config hashes: %v", err)
