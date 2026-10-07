@@ -3,6 +3,7 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -4277,6 +4278,60 @@ func TestMapDecisionRequestIsServedNativelyForDecisionsModels(t *testing.T) {
 			t.Errorf("upstream saw %v, want only the emulation's /v1/responses", got)
 		}
 	})
+}
+
+func TestCustomOpenAIDecisionProviderKeepsUsageAndProviderAttribution(t *testing.T) {
+	var seenPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"gpt-6-luna","answers":[{"type":"predicate","name":"is_frustrated","probability":0.97}],"usage":{"input_tokens":9,"output_tokens":5,"total_tokens":14}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	const customProvider schemas.ModelProvider = "openai-decisions"
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(customProvider, 1, 1, server.URL)
+	account.configs[customProvider].NetworkConfig.MaxRetries = 0
+	account.SetCustomProviderConfig(customProvider, &schemas.CustomProviderConfig{
+		CustomProviderKey: string(customProvider),
+		BaseProviderType:  schemas.OpenAI,
+		AllowedRequests:   &schemas.AllowedRequests{Decision: true},
+	})
+	account.SetKeysForProvider(customProvider, []schemas.Key{{
+		ID:     "openai-decisions-main",
+		Value:  *schemas.NewSecretVar("test-key"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 100,
+	}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("failed to initialize Bifrost: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	request := &schemas.BifrostDecisionRequest{
+		Provider:  customProvider,
+		Model:     "gpt-6-luna",
+		State:     "I was charged twice for my order.",
+		Questions: map[string]schemas.DecisionQuestion{"is_frustrated": {Kind: schemas.DecisionKindNoul}},
+	}
+	response, bifrostErr := client.DecisionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request)
+	if bifrostErr != nil {
+		t.Fatalf("custom provider must serve the decision natively: %v", bifrostErr)
+	}
+	if seenPath != "/v1/decisions" {
+		t.Fatalf("upstream path = %q, want /v1/decisions", seenPath)
+	}
+	if response.ExtraFields.Provider != customProvider {
+		t.Errorf("response provider = %q, want %q", response.ExtraFields.Provider, customProvider)
+	}
+	if response.Usage == nil || response.Usage.PromptTokens != 9 || response.Usage.CompletionTokens != 5 {
+		t.Errorf("usage = %+v, want prompt=9 completion=5", response.Usage)
+	}
 }
 
 // TestFallbackWithUnknownPinnedKeyIsSkipped covers a pin that names no key in the provider's pool: the attempt is skipped, not load-balanced.

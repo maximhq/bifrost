@@ -317,6 +317,35 @@ func TestDecisionHonorsAllowedRequests(t *testing.T) {
 	assert.Zero(t, upstreamCalls)
 }
 
+// TestDecisionsOnlyCustomProviderRejectsChatAndResponses pins that a custom
+// OpenAI-backed provider cannot turn a Decisions-only route into chat or
+// Responses emulation.
+func TestDecisionsOnlyCustomProviderRejectsChatAndResponses(t *testing.T) {
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "openai-decisions",
+			BaseProviderType:  schemas.OpenAI,
+			AllowedRequests:   &schemas.AllowedRequests{Decision: true},
+		},
+	}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+
+	_, chatErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{Model: "gpt-4o"})
+	require.NotNil(t, chatErr)
+	require.NotNil(t, chatErr.Error)
+	require.NotNil(t, chatErr.Error.Code)
+	assert.Equal(t, "unsupported_operation", *chatErr.Error.Code)
+	assert.Equal(t, schemas.ModelProvider("openai-decisions"), chatErr.ExtraFields.Provider)
+
+	_, responsesErr := provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{Model: "gpt-4o"})
+	require.NotNil(t, responsesErr)
+	require.NotNil(t, responsesErr.Error)
+	require.NotNil(t, responsesErr.Error.Code)
+	assert.Equal(t, "unsupported_operation", *responsesErr.Error.Code)
+	assert.Equal(t, schemas.ModelProvider("openai-decisions"), responsesErr.ExtraFields.Provider)
+}
+
 // TestOpenAIDecisionRequestUnmarshalCapturesExtensionsAndFallbacks pins that
 // decoding the route body keeps the modelled fields typed, keeps fallbacks for
 // gateway routing, and captures an unknown future field verbatim instead of
