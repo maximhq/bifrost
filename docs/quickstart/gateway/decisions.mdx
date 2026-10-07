@@ -10,6 +10,7 @@ Use decisions to get structured judgments - probabilities, choices, and rubric s
 
 - TypeSafe: `typesafe/jev-1.13.0`, `typesafe/jev-latest`, `typesafe/jev-preview`
 - OpenRouter: `openrouter/typesafe/jev-1.13`, `openrouter/~typesafe/jev-latest`
+- OpenAI: `openai/gpt-6-luna`, served by OpenAI's Decisions API (see [OpenAI Decisions API](#openai-decisions-api))
 
 ## Basic Request
 
@@ -164,6 +165,8 @@ curl --location 'http://localhost:8080/openai/v1/decisions' \
 The response is OpenAI's own body: an `answers` array with `probability` for `predicate`, `choice` with `probabilities` and `confidence` for `choice`, and `score` with labelled `probabilities` and `confidence` for `score`. A question the model declines to answer comes back as `{"type": "refusal", "name": ...}`.
 
 This shape is served only by OpenAI decisions models such as `openai/gpt-6-luna`. A request routed to any other provider or model, including through a fallback, is rejected with `400` rather than converted, because the map shape above cannot carry question order, labelled levels, boolean choices, or images.
+
+The map shape on `POST /v1/decisions` also works with `openai/gpt-6-luna`: Bifrost converts it to this shape, calls the Decisions API, and returns the map-shaped answers, so existing `/v1/decisions` callers and the [Complexity Router](/features/complexity-router) can use it without changes. See the [OpenAI provider page](/providers/supported-providers/openai) for how each question kind is converted.
 
 <Note>
 OpenAI's Decisions API is in public beta, and `gpt-6-luna` is currently the only model it serves.

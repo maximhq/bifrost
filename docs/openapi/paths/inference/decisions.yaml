@@ -5,7 +5,8 @@ decisions:
     description: |
       Evaluates state against a map of named questions and returns one typed
       answer per question, with per-answer confidence, probabilities, and
-      legend metadata. Served by decision providers such as Typesafe's jev models.
+      legend metadata. Served by decision providers such as Typesafe's jev models,
+      or OpenAI's gpt-6-luna through its Decisions API.
     tags:
     - Decisions
     requestBody:

@@ -162333,6 +162333,63 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "/v1/decisions - map form served natively by the Decisions API - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('every map question gets its map-form answer', function () {",
+                  "    pm.expect(body.answers, 'missing answers: ' + pm.response.text()).to.be.an('object');",
+                  "    pm.expect(body.answers.is_frustrated.kind).to.eql('noul');",
+                  "    pm.expect(body.answers.is_frustrated.value).to.be.within(0, 1);",
+                  "    pm.expect(body.answers.category.kind).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.value);",
+                  "    pm.expect(body.answers.urgency.kind).to.eql('score');",
+                  "    pm.expect(body.answers.urgency.value).to.be.a('number');",
+                  "    pm.expect(body.answers.urgency.legend['2']).to.eql('needs a reply today');",
+                  "});",
+                  "pm.test('served by the Decisions API, not emulated through chat', function () {",
+                  "    // Emulation generates a function call, so it always reports output tokens;",
+                  "    // the Decisions API bills input tokens only.",
+                  "    pm.expect(body.usage.prompt_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "    pm.expect(body.usage.completion_tokens || 0, 'usage: ' + JSON.stringify(body.usage)).to.eql(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\",\n      \"criteria\": {\n        \"true\": \"clearly upset\",\n        \"false\": \"calm or neutral\"\n      }\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            }
+          },
+          "response": []
         }
       ]
     },

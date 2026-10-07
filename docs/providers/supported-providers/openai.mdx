@@ -663,7 +663,7 @@ Other top-level fields are forwarded to OpenAI unchanged.
 
 - No streaming support. Answers come back in request order, including `refusal` answers; answer types Bifrost does not model are returned unchanged.
 - The ordered shape is served only by OpenAI decisions models. A request routed to any other provider or model, including through a fallback, is rejected with `400` rather than converted.
-- `POST /v1/decisions` keeps the TypeSafe-shaped map of named questions. For an OpenAI chat model that request is emulated through the Responses API.
+- `POST /v1/decisions` keeps the TypeSafe-shaped map of named questions. For an OpenAI decisions model such as `gpt-6-luna`, that request is converted and served by the Decisions API: questions are sent in name order, a `noul` becomes a `predicate` (its `true`/`false` criteria appended to the instructions), choice options become `choices`, score levels become `levels` labelled `"0"`, `"1"`, …, and structured values are sent as JSON text. Answers come back in the map shape; a refused question fails the request. For an OpenAI chat model the map request is emulated through the Responses API.
 
 **Endpoint**: `POST /openai/v1/decisions`
 

@@ -5,7 +5,7 @@ import {
 	DEFAULT_DECISION_MODEL,
 	DecisionGuidanceDefaults,
 	DecisionTier,
-	OPENROUTER_DECISION_MODELS,
+	fixedDecisionModels,
 	SELF_HOSTED_DECISION_MODELS,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
 	MAX_DECISION_CRITERIA_ITEMS,
@@ -131,11 +131,18 @@ const decisionSchema = z
 			.min(1, "Enter a decision-model timeout")
 			.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0"),
 	})
-	// OpenRouter's decisions endpoint serves only its Jev models; any other model it lists is a chat model.
-	.refine((decision) => decision.provider !== "openrouter" || (OPENROUTER_DECISION_MODELS as readonly string[]).includes(decision.model), {
-		message: "Select one of OpenRouter's Jev models",
-		path: ["model"],
-	});
+	// A provider with a fixed decision-model list (OpenRouter's Jev models, OpenAI's
+	// Decisions API models) accepts only those; any other model it lists is a chat model.
+	.refine(
+		(decision) => {
+			const fixed = fixedDecisionModels(decision.provider);
+			return !fixed || fixed.includes(decision.model);
+		},
+		{
+			message: "Select one of this provider's decision models",
+			path: ["model"],
+		},
+	);
 
 const llmSchema = z.object({
 	provider: z.string(),
@@ -534,12 +541,15 @@ export function isRouterConfigured(config: AnalyzerConfig | undefined): boolean 
 export type DecisionProviderState = "missing" | "failing" | "no-enabled-key" | "configured";
 
 // isDecisionProvider reports a provider that answers /v1/decisions natively:
-// Typesafe, OpenRouter, or a custom provider built on the Typesafe base (Laya,
-// Nimble, Clef). Other providers would only emulate decisions through chat,
+// Typesafe, a provider with a fixed decision-model list (OpenRouter for Jev, OpenAI
+// for its Decisions API models), or a custom provider built on the Typesafe base
+// (Laya, Nimble, Clef). Other providers would only emulate decisions through chat,
 // which is what the LLM classifier is for.
 export function isDecisionProvider(provider: ModelProvider): boolean {
 	return (
-		provider.name === "typesafe" || provider.name === "openrouter" || provider.custom_provider_config?.base_provider_type === "typesafe"
+		provider.name === "typesafe" ||
+		fixedDecisionModels(provider.name) !== undefined ||
+		provider.custom_provider_config?.base_provider_type === "typesafe"
 	);
 }
 
@@ -552,13 +562,15 @@ export function selfHostedModelGroups(providerName: string): SelfHostedModelGrou
 }
 
 // defaultDecisionModel is the model a newly selected provider starts on: Jev's
-// latest alias (named per provider), the Clef model a Cloudflare URL serves, or
+// latest alias, the first of a fixed decision-model list (OpenRouter's Jev latest,
+// OpenAI's gpt-6-luna), the Clef model a Cloudflare URL serves, or
 // the first checkpoint of the model a self-hosted provider is named after (Laya
 // starts on english). A provider whose name says nothing starts empty, since only
 // the operator knows which model it runs.
 export function defaultDecisionModel(provider: ModelProvider | undefined): string {
 	if (provider?.name === "typesafe") return DEFAULT_DECISION_MODEL;
-	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODELS[0];
+	const fixed = fixedDecisionModels(provider?.name);
+	if (fixed) return fixed[0];
 	return clefModelFromProvider(provider) ?? namedSelfHostedGroup(provider?.name ?? "")?.models[0] ?? "";
 }
 

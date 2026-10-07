@@ -393,8 +393,9 @@ func TestClassifyDecisionComplexityUsesConfiguredModel(t *testing.T) {
 }
 
 // TestClassifyDecisionComplexityNimbleCriteriaAsText pins that a Nimble model,
-// whose server accepts only string descriptions, receives each tier's guidance as
-// one text description, while other models keep the structured object.
+// whose server accepts only string descriptions, and an OpenAI decisions model,
+// whose choice descriptions are text, receive each tier's guidance as one text
+// description, while other models keep the structured object.
 func TestClassifyDecisionComplexityNimbleCriteriaAsText(t *testing.T) {
 	capture := func(decision *complexity.DecisionConfig) map[string]interface{} {
 		var captured *schemas.BifrostDecisionRequest
@@ -410,8 +411,8 @@ func TestClassifyDecisionComplexityNimbleCriteriaAsText(t *testing.T) {
 	}
 
 	defaults := configstore.DefaultComplexityDecisionGuidance().Criteria[complexity.TierComplex]
-	for _, model := range []string{"nimble-latest", "bespokelabs/Bespoke-Nimble-9B"} {
-		criteria := capture(&complexity.DecisionConfig{Provider: "nimble", Model: model})
+	for provider, model := range map[schemas.ModelProvider]string{"nimble": "nimble-latest", "bespoke": "bespokelabs/Bespoke-Nimble-9B", schemas.OpenAI: "gpt-6-luna"} {
+		criteria := capture(&complexity.DecisionConfig{Provider: provider, Model: model})
 		text, ok := criteria[complexity.TierComplex].(string)
 		require.True(t, ok, "%s must receive string criteria, got %T", model, criteria[complexity.TierComplex])
 		assert.True(t, strings.HasPrefix(text, defaults.Definition+"\nSignals:\n- "+defaults.Signals[0]), "text: %q", text)

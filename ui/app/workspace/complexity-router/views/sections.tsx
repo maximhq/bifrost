@@ -18,7 +18,7 @@ import {
 	MAX_DECISION_DEFINITION_CHARACTERS,
 	MAX_DECISION_PREVIOUS_MESSAGE_COUNT,
 	MAX_LLM_PROMPT_CHARACTERS,
-	OPENROUTER_DECISION_MODELS,
+	fixedDecisionModels,
 	SELF_HOSTED_DECISION_MODELS,
 	TIER_PHRASE_LIST_DEFINITIONS,
 } from "@/lib/types/complexityRouter";
@@ -285,17 +285,18 @@ interface DecisionFieldsProps {
 // DecisionFields holds the decision model's settings: which model answers, and
 // how much conversation it sees and for how long. They apply wherever the
 // decision model runs, as the primary classifier or as the semantic fallback, so
-// both places render this. The model control follows the provider: Typesafe and
-// OpenRouter list Jev releases, a Cloudflare provider's URL fixes its Clef model,
-// and a self-hosted provider offers the models it lists, or the known Laya and
-// Nimble checkpoints when it lists none.
+// both places render this. The model control follows the provider: Typesafe lists
+// Jev releases, OpenRouter and OpenAI offer their fixed decision-model lists, a
+// Cloudflare provider's URL fixes its Clef model, and a self-hosted provider offers
+// the models it lists, or the known Laya and Nimble checkpoints when it lists none.
 export function DecisionFields({ control, register, setValue, errors, canUpdate, providers, providerKeyIds }: DecisionFieldsProps) {
 	const providerName = useWatch({ control, name: "decision.provider" });
 	const model = useWatch({ control, name: "decision.model" });
 	const provider = providers.find((candidate) => candidate.name === providerName);
-	const servesJev = providerName === "typesafe" || providerName === "openrouter";
+	const fixedModels = fixedDecisionModels(providerName);
+	const servesJev = providerName === "typesafe";
 	const servesClef = clefModelFromProvider(provider) !== undefined;
-	const selfHosted = provider !== undefined && !servesJev && !servesClef;
+	const selfHosted = provider !== undefined && !servesJev && !servesClef && !fixedModels;
 
 	const { data: listed } = useGetModelsQuery(
 		{ provider: providerName, keys: providerKeyIds.length > 0 ? providerKeyIds : undefined, limit: 50 },
@@ -312,7 +313,7 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 			<div className="space-y-2">
 				<FieldLabel
 					htmlFor="decision-provider"
-					tooltip="Typesafe or OpenRouter for Jev, or a custom provider with base format Typesafe serving Laya, Nimble, or Clef."
+					tooltip="Typesafe or OpenRouter for Jev, OpenAI for its Decisions API models (gpt-6-luna), or a custom provider with base format Typesafe serving Laya, Nimble, or Clef."
 				>
 					Provider
 				</FieldLabel>
@@ -356,16 +357,16 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 					control={control}
 					name="decision.model"
 					render={({ field }) => {
-						if (providerName === "openrouter") {
-							// OpenRouter lists chat models under Typesafe's namespace too, and its
-							// decisions endpoint rejects them, so only its Jev models are offered.
+						if (fixedModels) {
+							// OpenRouter lists chat models under Typesafe's namespace too, and OpenAI
+							// lists its chat models; only their decision models are offered.
 							return (
 								<Select value={field.value || undefined} onValueChange={field.onChange} disabled={!canUpdate}>
 									<SelectTrigger className="w-full" id="decision-model" data-testid="complexity-router-decision-model-select">
 										<SelectValue placeholder="Select a model" />
 									</SelectTrigger>
 									<SelectContent>
-										{OPENROUTER_DECISION_MODELS.map((name) => (
+										{fixedModels.map((name) => (
 											<SelectItem key={name} value={name}>
 												{name}
 											</SelectItem>
@@ -931,7 +932,7 @@ const CLASSIFIER_OPTIONS: {
 		value: "decision",
 		title: "Decision model",
 		description:
-			"A decision model judges the complexity of each request and picks the tier whose definition, signals, and examples fit it best. Use Typesafe Jev, or run Laya, Nimble, or Clef. No phrases to write or maintain.",
+			"A decision model judges the complexity of each request and picks the tier whose definition, signals, and examples fit it best. Use Typesafe Jev or OpenAI Decisions, or run Laya, Nimble, or Clef. No phrases to write or maintain.",
 	},
 	{
 		value: "semantic",

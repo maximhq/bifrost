@@ -243,6 +243,26 @@ export const SELF_HOSTED_DECISION_MODELS = [
 // the Jev Router), which that endpoint does not accept, so only these are offered.
 export const OPENROUTER_DECISION_MODELS = ["~typesafe/jev-latest", "typesafe/jev-1.13"] as const;
 
+// The models OpenAI serves on its Decisions API. Keep in step with
+// openAIDecisionModelPrefixes in core/schemas/utils.go, which routes them to that
+// endpoint instead of emulating them through chat.
+export const OPENAI_DECISION_MODELS = ["gpt-6-luna"] as const;
+
+// FIXED_DECISION_MODELS lists, per provider, the only models offered as decision
+// models, first one as the default. These providers' catalogs are mostly chat models,
+// which their decisions endpoints reject or would only answer through emulation.
+export const FIXED_DECISION_MODELS: Readonly<Partial<Record<string, readonly string[]>>> = {
+	openrouter: OPENROUTER_DECISION_MODELS,
+	openai: OPENAI_DECISION_MODELS,
+};
+
+// fixedDecisionModels returns a provider's fixed decision-model list, or
+// undefined for one without. Only own keys count, so a provider named after an
+// inherited property such as "constructor" never resolves to a function.
+export function fixedDecisionModels(providerName: string | undefined): readonly string[] | undefined {
+	return providerName !== undefined && Object.hasOwn(FIXED_DECISION_MODELS, providerName) ? FIXED_DECISION_MODELS[providerName] : undefined;
+}
+
 // DEFAULT_DECISION_CONFIG supplies the model, history window, and timeout for decision-model requests.
 export const DEFAULT_DECISION_CONFIG: Required<Pick<DecisionConfig, "provider" | "model" | "previous_message_count" | "timeout">> = {
 	provider: DEFAULT_DECISION_PROVIDER,

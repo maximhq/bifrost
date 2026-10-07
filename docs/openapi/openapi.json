@@ -1965,7 +1965,7 @@
       "post": {
         "operationId": "createDecision",
         "summary": "Evaluate a decision",
-        "description": "Evaluates state against a map of named questions and returns one typed\nanswer per question, with per-answer confidence, probabilities, and\nlegend metadata. Served by decision providers such as Typesafe's jev models.\n",
+        "description": "Evaluates state against a map of named questions and returns one typed\nanswer per question, with per-answer confidence, probabilities, and\nlegend metadata. Served by decision providers such as Typesafe's jev models,\nor OpenAI's gpt-6-luna through its Decisions API.\n",
         "tags": [
           "Decisions"
         ],

@@ -4244,13 +4244,14 @@ func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 }
 
 // Decision performs a decision request against OpenAI's dedicated decisions
-// endpoint (POST /v1/decisions). Only an ordered-form request for a model
-// OpenAI serves there, such as gpt-6-luna, is sent natively. Every other request
-// is reported as unsupported: core then emulates a map-form request through the
-// model, and the dispatch guard has already rejected an ordered-form request
-// that does not target a decisions model.
+// endpoint (POST /v1/decisions) for a model OpenAI serves there, such as
+// gpt-6-luna, in either form: an ordered-form request is sent as is and a
+// map-form request is converted (see HandleOpenAIDecisionRequest). A request
+// for any other model is reported as unsupported: core then emulates a
+// map-form request through the model, and the dispatch guard has already
+// rejected an ordered-form request that does not target a decisions model.
 func (provider *OpenAIProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	if !request.UsesOrderedForm() || !schemas.IsOpenAIDecisionModelFamily(ctx, request.Model) {
+	if !schemas.IsOpenAIDecisionModelFamily(ctx, request.Model) {
 		return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 	}
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.DecisionRequest); err != nil {

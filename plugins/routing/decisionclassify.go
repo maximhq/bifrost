@@ -157,11 +157,12 @@ func (p *RoutingPlugin) classifyDecisionComplexity(ctx *schemas.BifrostContext, 
 // decisionCriteria builds the per-tier choice criteria from the shipped defaults
 // with the administrator's definitions, signals, and examples layered on. It is rebuilt per
 // request so no map is shared with the provider's request conversion. Each tier is an
-// object, which System One allows; Nimble's server accepts only string descriptions,
-// so for a Nimble model each tier is rendered as one text description instead.
+// object, which System One allows. Nimble's server accepts only string descriptions,
+// and OpenAI's Decisions API takes a choice description as text, so for those models
+// each tier is rendered as one readable text description instead of JSON.
 func decisionCriteria(config *complexity.DecisionConfig, model string) map[string]interface{} {
 	resolved := config.ResolvedCriteria()
-	asText := isNimbleModel(model)
+	asText := isNimbleModel(model) || schemas.IsOpenAIDecisionModel(model)
 	criteria := make(map[string]interface{}, len(resolved))
 	for tier, tierCriteria := range resolved {
 		if asText {

@@ -541,13 +541,15 @@ describe("decision model providers", () => {
 		} as Partial<ModelProvider>);
 	const typesafe = provider({ name: "typesafe" } as Partial<ModelProvider>);
 	const openrouter = provider({ name: "openrouter" } as Partial<ModelProvider>);
+	const openai = provider({ name: "openai" } as Partial<ModelProvider>);
 	const laya = custom("Laya");
 	const clef = custom("cloudflare clev", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef");
 	const clefFlash = custom("clef-flash", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef-flash/");
 
 	test("offers only providers that answer decisions natively", () => {
-		for (const candidate of [typesafe, openrouter, laya, clef]) expect(isDecisionProvider(candidate)).toBe(true);
-		expect(isDecisionProvider(provider({ name: "openai" } as Partial<ModelProvider>))).toBe(false);
+		for (const candidate of [typesafe, openrouter, openai, laya, clef]) expect(isDecisionProvider(candidate)).toBe(true);
+		expect(isDecisionProvider(provider({ name: "anthropic" } as Partial<ModelProvider>))).toBe(false);
+		// Only the built-in OpenAI provider serves the Decisions API models.
 		expect(
 			isDecisionProvider(
 				provider({ name: "my-openai", custom_provider_config: { base_provider_type: "openai" } } as Partial<ModelProvider>),
@@ -572,13 +574,14 @@ describe("decision model providers", () => {
 	test("starts each provider on its known model", () => {
 		expect(defaultDecisionModel(typesafe)).toBe("jev-latest");
 		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
+		expect(defaultDecisionModel(openai)).toBe("gpt-6-luna");
 		expect(defaultDecisionModel(clefFlash)).toBe("clef-flash");
 		expect(defaultDecisionModel(laya)).toBe("english");
 		expect(defaultDecisionModel(custom("nimble-gpu"))).toBe("nimble-latest");
 		expect(defaultDecisionModel(custom("ollama-clef"))).toBe("clef-flash");
 	});
 
-	test("accepts only OpenRouter's Jev models for the openrouter provider", () => {
+	test("accepts only the fixed decision models for OpenRouter and OpenAI", () => {
 		const base = { ...DEFAULT_FORM_VALUES, classifier: "decision" as const, keywords };
 		const parse = (model: string) =>
 			analyzerConfigSchema.safeParse({ ...base, decision: { ...base.decision, provider: "openrouter", model } });
@@ -588,7 +591,14 @@ describe("decision model providers", () => {
 		const rejected = parse("typesafe/jev-router");
 		expect(rejected.success).toBe(false);
 		if (!rejected.success) expect(rejected.error.issues.map((issue) => issue.path.join("."))).toContain("decision.model");
-		// The rule is scoped to OpenRouter: other providers keep free-form models.
+		// OpenAI accepts only its Decisions API models; its chat models would be emulated.
+		const parseOpenAI = (model: string) =>
+			analyzerConfigSchema.safeParse({ ...base, decision: { ...base.decision, provider: "openai", model } });
+		expect(parseOpenAI("gpt-6-luna").success).toBe(true);
+		const chatModel = parseOpenAI("gpt-4o");
+		expect(chatModel.success).toBe(false);
+		if (!chatModel.success) expect(chatModel.error.issues.map((issue) => issue.path.join("."))).toContain("decision.model");
+		// The rule is scoped to fixed-list providers: other providers keep free-form models.
 		expect(
 			analyzerConfigSchema.safeParse({ ...base, decision: { ...base.decision, provider: "typesafe", model: "jev-1.13.0" } }).success,
 		).toBe(true);

@@ -7,7 +7,7 @@ icon: "sliders"
 
 ## Overview
 
-The Complexity Router assigns incoming requests a **Simple**, **Medium**, or **Complex** tier. Choose either a **decision model** (Typesafe Jev by default, or another decision model such as Laya, Nimble, or Clef), which judges how much reasoning a request needs against tier definitions you can tune, or **Semantic**, which matches requests against reference phrases you write for each tier. The result is exposed as a flat string variable (`complexity_tier`) in Bifrost's CEL routing engine, so you can write routing rules like:
+The Complexity Router assigns incoming requests a **Simple**, **Medium**, or **Complex** tier. Choose either a **decision model** (Typesafe Jev by default, or another decision model such as OpenAI Decisions (gpt-6-luna), Laya, Nimble, or Clef), which judges how much reasoning a request needs against tier definitions you can tune, or **Semantic**, which matches requests against reference phrases you write for each tier. The result is exposed as a flat string variable (`complexity_tier`) in Bifrost's CEL routing engine, so you can write routing rules like:
 
 ```cel
 complexity_tier == "COMPLEX"
@@ -30,7 +30,7 @@ The older lexical keyword scorer is retired. See [Lexical keyword classifier (re
 |---|---|---|
 | **How it decides** | A decision model reads the request and picks the tier whose [definition, signals, and examples](#tier-guidance) fit it best | The request is embedded and takes the tier of its nearest [reference phrase](#reference-phrases) |
 | **What you maintain** | Nothing to start. Optionally, a definition plus up to 12 signals and 12 examples per tier | Reference phrases for each tier (150 shipped, up to 750) |
-| **Requires** | A provider serving the decision model: [Typesafe](/providers/supported-providers/typesafe) by default, or a [custom TypeSafe-based provider](/providers/supported-providers/typesafe#custom-typesafe-providers) for Laya, Nimble, or Clef | An embedding provider and model with an enabled key; optionally a vector store |
+| **Requires** | A provider serving the decision model: [Typesafe](/providers/supported-providers/typesafe) by default, [OpenAI](/providers/supported-providers/openai) for gpt-6-luna, or a [custom TypeSafe-based provider](/providers/supported-providers/typesafe#custom-typesafe-providers) for Laya, Nimble, or Clef | An embedding provider and model with an enabled key; optionally a vector store |
 | **Per-request cost** | One decision call (Typesafe Jev typically 600–800 ms) | One embedding call plus a vector lookup, usually much faster than a decision call |
 | **Warmup** | None | Reference phrases are embedded in the background after each change |
 | **Handles unseen request shapes** | Yes: it judges the work, not similarity to a known phrase | Only as well as your phrases cover them; can [fall back](#fallback-classifiers) to the decision model or an LLM |
