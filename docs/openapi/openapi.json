@@ -42456,7 +42456,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List all providers",
-        "description": "Returns a list of all configured providers with their configurations and status.\n",
+        "description": "Returns a list of all configured providers with their configurations and status.\nOptional metadata and tag filters are AND-ed together.\n\n**Metadata filters:** add one `metadata_<key>=<value>` query parameter per metadata\nkey to match, where `<key>` is the metadata key itself (for example\n`?metadata_owner=team-a&metadata_region=eu-west-1`). Only providers whose metadata\nhas every given key set to exactly the given value are returned. A key that is not\n1-256 characters of letters, digits, '.', '_' and '-' is rejected with a 400.\nThese parameters have dynamic names, so they are described here rather than declared\nas individual parameters.\n",
         "tags": [
           "Providers"
         ],
@@ -42468,6 +42468,16 @@
             "BasicAuth": []
           }
         ],
+        "parameters": [
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "Comma-separated tags (for example tags=prod,eu); only providers carrying every listed tag are returned. An invalid tag is rejected with a 400.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -42475,6 +42485,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListProvidersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (invalid metadata or tags filter)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -115411,6 +115431,27 @@
               }
             }
           },
+          "metadata": {
+            "type": "object",
+            "description": "Custom key/value metadata on the provider (for example owner, region, cost_center). Omitted when the provider has none.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "tags": {
+            "type": "array",
+            "description": "Free-form labels (for example prod, eu, approved-for-pii), stored trimmed, de-duplicated and sorted. Omitted when there are none.",
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+            }
+          },
           "prompt_cache": {
             "type": "object",
             "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Requests that already carry their own cache markers are never modified.",
@@ -115654,6 +115695,27 @@
               }
             }
           },
+          "metadata": {
+            "type": "object",
+            "description": "Custom key/value metadata (for example owner, region, cost_center). Keys are 1-256 characters of letters, digits, '.', '_' and '-'; values are strings of at most 512 characters; at most 50 entries.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "tags": {
+            "type": "array",
+            "description": "Free-form labels (for example prod, eu, approved-for-pii). Each tag is 1-64 characters of letters, digits, '.', '_' and '-' once surrounding whitespace is trimmed; at most 50 entries, duplicates included. Stored trimmed, de-duplicated and sorted.",
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "pattern": "^\\s*[a-zA-Z0-9._-]{1,64}\\s*$"
+            }
+          },
           "prompt_cache": {
             "type": "object",
             "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Requests that already carry their own cache markers are never modified.",
@@ -115853,6 +115915,27 @@
                   "type": "string"
                 }
               }
+            }
+          },
+          "metadata": {
+            "type": ["object", "null"],
+            "description": "Replaces the provider's metadata as a whole. Omit to leave it unchanged; send {} or null to clear it. Same rules as on create.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "tags": {
+            "type": ["array", "null"],
+            "description": "Replaces the provider's tags as a whole. Omit to leave them unchanged; send [] or null to clear them. Same rules as on create: surrounding whitespace is trimmed, at most 50 entries (duplicates included).",
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "pattern": "^\\s*[a-zA-Z0-9._-]{1,64}\\s*$"
             }
           },
           "prompt_cache": {

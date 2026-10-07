@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,8 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -2653,5 +2656,140 @@ func TestProviderBaseURLShape(t *testing.T) {
 		if err := validateProviderBaseURLShape(raw); err != nil {
 			t.Errorf("rejected %q: %v", raw, err)
 		}
+	}
+}
+
+// TestProviderLabels_CreateUpdateAndListFilters pins provider metadata and tags on the API:
+// create stores them normalized, update leaves omitted labels alone and replaces carried ones,
+// invalid labels (including more than 50 tags as sent, duplicates counted) are a 400 that writes
+// nothing, and the list endpoint filters by
+// metadata_<key>=<value> and tags=a,b (every tag must match).
+func TestProviderLabels_CreateUpdateAndListFilters(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	keyless := func() *schemas.CustomProviderConfig {
+		return &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
+	}
+	store := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{},
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			"mock-a": {CustomProviderConfig: keyless(), Metadata: map[string]string{"owner": "team-a", "region": "eu"}, Tags: []string{"eu", "prod"}},
+			"mock-b": {CustomProviderConfig: keyless(), Metadata: map[string]string{"owner": "team-b"}, Tags: []string{"prod"}},
+		},
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: lib.NewBaseAccount(store), Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	store.SetBifrostClient(client)
+	h := &ProviderHandler{inMemoryStore: store, client: client, modelsManager: &mockModelsManager{}}
+
+	call := func(method, uri, provider, body string) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(method)
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.SetBody([]byte(body))
+		if provider != "" {
+			ctx.SetUserValue("provider", provider)
+		}
+		switch method {
+		case fasthttp.MethodPost:
+			h.addProvider(ctx)
+		case fasthttp.MethodPut:
+			h.updateProvider(ctx)
+		default:
+			h.listProviders(ctx)
+		}
+		return ctx
+	}
+
+	ctx := call(fasthttp.MethodPost, "/api/providers", "", `{"provider":"mock-c","custom_provider_config":{"base_provider_type":"openai","is_key_less":true},"metadata":{"owner":"team-a"},"tags":[" staging ","eu","eu"]}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var created ProviderResponse
+	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &created))
+	assert.Equal(t, map[string]string{"owner": "team-a"}, created.Metadata)
+	assert.Equal(t, []string{"eu", "staging"}, created.Tags, "tags must come back normalized")
+
+	ctx = call(fasthttp.MethodPost, "/api/providers", "", `{"provider":"mock-d","custom_provider_config":{"base_provider_type":"openai","is_key_less":true},"tags":["bad tag"]}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.NotContains(t, store.Providers, schemas.ModelProvider("mock-d"))
+
+	update := `{"network_config":{},"concurrency_and_buffer_size":{"concurrency":1,"buffer_size":4},"custom_provider_config":{"base_provider_type":"openai","is_key_less":true}`
+	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, []string{"eu", "staging"}, store.Providers["mock-c"].Tags, "omitted tags must be left alone")
+	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`,"tags":["prod","eu"]}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, []string{"eu", "prod"}, store.Providers["mock-c"].Tags)
+	assert.Equal(t, map[string]string{"owner": "team-a"}, store.Providers["mock-c"].Metadata, "omitted metadata must be left alone")
+	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`,"metadata":{"bad key":"x"}}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.Equal(t, map[string]string{"owner": "team-a"}, store.Providers["mock-c"].Metadata, "a refused update must write nothing")
+	// 50 distinct tags plus one duplicate: the cap counts the list as sent, as the config-file
+	// schema's maxItems does, so this is a 400 even though only 50 tags would be stored.
+	overCap := make([]string, 0, 51)
+	for i := range 50 {
+		overCap = append(overCap, fmt.Sprintf(`"t%d"`, i))
+	}
+	overCap = append(overCap, `"t0"`)
+	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`,"tags":[`+strings.Join(overCap, ",")+`]}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "at most 50 entries, got 51")
+	assert.Equal(t, []string{"eu", "prod"}, store.Providers["mock-c"].Tags, "a refused update must write nothing")
+
+	// null clears, and must reach the store as an explicit empty value: the store keeps labels
+	// for nil (an update that does not carry them).
+	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`,"tags":null,"metadata":null}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.NotNil(t, store.Providers["mock-c"].Tags, "null tags must be an explicit clear")
+	assert.Empty(t, store.Providers["mock-c"].Tags)
+	assert.NotNil(t, store.Providers["mock-c"].Metadata, "null metadata must be an explicit clear")
+	assert.Empty(t, store.Providers["mock-c"].Metadata)
+	ctx = call(fasthttp.MethodPut, "/api/providers/mock-c", "mock-c", update+`,"tags":["eu","prod"],"metadata":{"owner":"team-a"}}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	list := func(query string) ([]string, int) {
+		ctx := call(fasthttp.MethodGet, "/api/providers"+query, "", "")
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			return nil, ctx.Response.StatusCode()
+		}
+		var resp ListProvidersResponse
+		require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &resp))
+		names := make([]string, 0, len(resp.Providers))
+		for _, p := range resp.Providers {
+			names = append(names, string(p.Name))
+		}
+		assert.Equal(t, len(names), resp.Total)
+		return names, fasthttp.StatusOK
+	}
+	cases := []struct {
+		query      string
+		want       []string
+		wantStatus int
+	}{
+		{query: "", want: []string{"mock-a", "mock-b", "mock-c"}},
+		{query: "?tags=prod", want: []string{"mock-a", "mock-b", "mock-c"}},
+		{query: "?tags=prod,eu", want: []string{"mock-a", "mock-c"}},
+		{query: "?tags=prod&tags=eu", want: []string{"mock-a", "mock-c"}},
+		{query: "?tags=prod,unknown", want: []string{}},
+		{query: "?metadata_owner=team-a", want: []string{"mock-a", "mock-c"}},
+		{query: "?metadata_owner=team-a&metadata_region=eu", want: []string{"mock-a"}},
+		{query: "?metadata_owner=team-a&tags=prod", want: []string{"mock-a", "mock-c"}},
+		{query: "?tags=a%20b", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?tags=", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?tags=,", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?tags=prod,", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?metadata_bad%20key=x", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?metadata_=x", wantStatus: fasthttp.StatusBadRequest},
+		{query: "?metadata_owner=team-a&metadata_=x", wantStatus: fasthttp.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		names, status := list(tc.query)
+		if tc.wantStatus != 0 {
+			assert.Equal(t, tc.wantStatus, status, tc.query)
+			continue
+		}
+		require.Equal(t, fasthttp.StatusOK, status, tc.query)
+		assert.Equal(t, tc.want, names, tc.query)
 	}
 }

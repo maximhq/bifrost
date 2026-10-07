@@ -389,6 +389,10 @@ ProviderResponse:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    metadata:
+      $ref: '#/ProviderMetadata'
+    tags:
+      $ref: '#/Tags'
     provider_status:
       $ref: '#/ProviderStatus'
     status:
@@ -400,6 +404,41 @@ ProviderResponse:
     config_hash:
       type: string
       description: Hash of config.json version, used for change detection
+
+ProviderMetadata:
+  type: object
+  description: >-
+    Custom key/value metadata on the provider (for example owner, region, cost_center). Keys are
+    1-256 characters of letters, digits, '.', '_' and '-'; values are strings of at most 512
+    characters; at most 50 entries. Omitted when the provider has none.
+  maxProperties: 50
+  propertyNames:
+    pattern: '^[a-zA-Z0-9._-]{1,256}$'
+  additionalProperties:
+    type: string
+    maxLength: 512
+
+Tags:
+  type: array
+  description: >-
+    Free-form labels (for example prod, eu, approved-for-pii). Each tag is 1-64 characters of
+    letters, digits, '.', '_' and '-'; at most 50. Stored trimmed, de-duplicated and sorted.
+    Omitted when there are none.
+  maxItems: 50
+  items:
+    type: string
+    pattern: '^[a-zA-Z0-9._-]{1,64}$'
+
+TagsInput:
+  type: array
+  description: >-
+    Free-form labels (for example prod, eu, approved-for-pii). Each tag is 1-64 characters of
+    letters, digits, '.', '_' and '-' once surrounding whitespace is trimmed; at most 50 entries,
+    duplicates included. Stored trimmed, de-duplicated and sorted.
+  maxItems: 50
+  items:
+    type: string
+    pattern: '^\s*[a-zA-Z0-9._-]{1,64}\s*$'
 
 ListProvidersResponse:
   type: object
@@ -436,6 +475,10 @@ AddProviderRequest:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    metadata:
+      $ref: '#/ProviderMetadata'
+    tags:
+      $ref: '#/TagsInput'
 
 CacheControlInjectionPoint:
   type: object
@@ -490,6 +533,27 @@ UpdateProviderRequest:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    metadata:
+      type: [object, 'null']
+      description: >-
+        Replaces the provider's metadata as a whole. Omit to leave it unchanged; send {} or null to
+        clear it. Same rules as on create.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+      additionalProperties:
+        type: string
+        maxLength: 512
+    tags:
+      type: [array, 'null']
+      description: >-
+        Replaces the provider's tags as a whole. Omit to leave them unchanged; send [] or null to
+        clear them. Same rules as on create: surrounding whitespace is trimmed, at most 50
+        entries (duplicates included).
+      maxItems: 50
+      items:
+        type: string
+        pattern: '^\s*[a-zA-Z0-9._-]{1,64}\s*$'
 
 ListProviderKeysResponse:
   type: object

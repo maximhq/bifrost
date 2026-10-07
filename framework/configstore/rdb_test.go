@@ -1543,6 +1543,55 @@ func TestUpdateVirtualKey_PersistsBusinessUnitOwner(t *testing.T) {
 	assert.Nil(t, result.BusinessUnitID, "clearing the business unit must write NULL")
 }
 
+// TestVirtualKeyMetadata_PersistsThroughCreateAndUpdate pins the metadata round trip: create
+// stores it, update replaces it (the update path names its columns, so a missing "metadata" would
+// silently drop the change), an empty map clears it to NULL, and invalid metadata is refused.
+func TestVirtualKeyMetadata_PersistsThroughCreateAndUpdate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-metadata",
+		Name:     "Metadata",
+		Value:    *schemas.NewSecretVar("vk-metadata-value"),
+		Metadata: map[string]string{"cost_center": "cc-42", "owner": "team-a@example.com"},
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	result, err := store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"cost_center": "cc-42", "owner": "team-a@example.com"}, result.Metadata)
+
+	vk.Metadata = map[string]string{"cost_center": "cc-7"}
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, result.Metadata, "an update must replace the metadata")
+
+	// An update that does not set metadata (nil), such as a config.json sync of an entry without a
+	// metadata field, keeps what is stored; only an explicit empty map clears it.
+	vk.Metadata = nil
+	vk.Description = "edited elsewhere"
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, result.Metadata, "a nil metadata must keep the stored value")
+	assert.Equal(t, "edited elsewhere", result.Description)
+
+	vk.Metadata = map[string]string{}
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	var raw *string
+	require.NoError(t, store.DB().Table("governance_virtual_keys").Select("metadata").Where("id = ?", vk.ID).Scan(&raw).Error)
+	assert.Nil(t, raw, "clearing the metadata must write NULL, not an empty object")
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Empty(t, result.Metadata)
+
+	vk.Metadata = map[string]string{"bad key": "x"}
+	require.ErrorContains(t, store.UpdateVirtualKey(ctx, vk), "invalid metadata key")
+	bad := &tables.TableVirtualKey{ID: "vk-metadata-bad", Name: "Bad", Value: *schemas.NewSecretVar("vk-metadata-bad-value"), Metadata: map[string]string{"bifrost_alb_provider": "x"}}
+	require.ErrorContains(t, store.CreateVirtualKey(ctx, bad), "reserved")
+}
+
 func TestUpdateVirtualKey_PreservesRotationStateOnPlainUpdate(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -5147,4 +5196,142 @@ func TestUpsertModelPricesBatch_PriorityAbove272kCacheCreation_SurvivesResync(t 
 	require.Len(t, got, 1)
 	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove272kTokensPriority)
 	assert.InDelta(t, 0.00006, *got[0].CacheCreationInputTokenCostAbove272kTokensPriority, 1e-12)
+}
+
+// TestProviderMetadataAndTags_PersistThroughAddUpdateAndSync pins the provider label round trip
+// on every write path (AddProvider, UpdateProvider, the config-file upsert in
+// UpdateProvidersConfig): labels are stored, tags come back normalized, clearing writes NULL, and
+// invalid labels are refused.
+func TestProviderMetadataAndTags_PersistThroughAddUpdateAndSync(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, ProviderConfig{
+		Metadata: map[string]string{"owner": "team-a", "region": "eu-west-1"},
+		Tags:     []string{"prod", " eu ", "prod"},
+	}))
+	got, err := store.GetProviderConfig(ctx, schemas.OpenAI)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"owner": "team-a", "region": "eu-west-1"}, got.Metadata)
+	assert.Equal(t, []string{"eu", "prod"}, got.Tags, "tags must be trimmed, de-duplicated and sorted")
+
+	got.Metadata = map[string]string{"owner": "team-b"}
+	got.Tags = []string{"staging"}
+	require.NoError(t, store.UpdateProvider(ctx, schemas.OpenAI, *got))
+	all, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"owner": "team-b"}, all[schemas.OpenAI].Metadata, "an update must replace the metadata")
+	assert.Equal(t, []string{"staging"}, all[schemas.OpenAI].Tags)
+
+	// An update that does not carry labels (nil), such as an edit of other provider settings,
+	// keeps the stored labels; only explicit empty values clear them.
+	unrelated := *got
+	unrelated.Metadata = nil
+	unrelated.Tags = nil
+	unrelated.SendBackRawResponse = true
+	require.NoError(t, store.UpdateProvider(ctx, schemas.OpenAI, unrelated))
+	all, err = store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"owner": "team-b"}, all[schemas.OpenAI].Metadata, "nil metadata must keep the stored value")
+	assert.Equal(t, []string{"staging"}, all[schemas.OpenAI].Tags, "nil tags must keep the stored value")
+	assert.True(t, all[schemas.OpenAI].SendBackRawResponse)
+
+	got.Metadata = map[string]string{}
+	got.Tags = []string{}
+	require.NoError(t, store.UpdateProvider(ctx, schemas.OpenAI, *got))
+	var raw struct {
+		Metadata *string
+		Tags     *string
+	}
+	require.NoError(t, store.DB().Table("config_providers").Select("metadata, tags").Where("name = ?", "openai").Scan(&raw).Error)
+	assert.Nil(t, raw.Metadata, "clearing the metadata must write NULL")
+	assert.Nil(t, raw.Tags, "clearing the tags must write NULL")
+
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		schemas.OpenAI: {Metadata: map[string]string{"owner": "file"}, Tags: []string{"from-file"}},
+	}))
+	got, err = store.GetProviderConfig(ctx, schemas.OpenAI)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"owner": "file"}, got.Metadata, "the config-file upsert must write metadata")
+	assert.Equal(t, []string{"from-file"}, got.Tags)
+
+	// The bulk upsert keeps stored labels the same way for a provider config that carries none.
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{schemas.OpenAI: {}}))
+	got, err = store.GetProviderConfig(ctx, schemas.OpenAI)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"owner": "file"}, got.Metadata, "the bulk upsert must keep labels it is not given")
+	assert.Equal(t, []string{"from-file"}, got.Tags)
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		schemas.OpenAI: {Metadata: map[string]string{}, Tags: []string{}},
+	}))
+	got, err = store.GetProviderConfig(ctx, schemas.OpenAI)
+	require.NoError(t, err)
+	assert.Empty(t, got.Metadata, "explicit empty labels must clear them in the bulk upsert")
+	assert.Empty(t, got.Tags)
+
+	got.Tags = []string{"bad tag"}
+	require.ErrorContains(t, store.UpdateProvider(ctx, schemas.OpenAI, *got), "invalid tag")
+	require.ErrorContains(t, store.AddProvider(ctx, schemas.Anthropic, ProviderConfig{Metadata: map[string]string{"bad key": "x"}}), "invalid metadata key")
+}
+
+// TestModelTags_SetGetAndClear pins the sparse config_models override: a row is created on the
+// first tag, replaced on the next write, kept with NULL tags when the tags are cleared, refused
+// for an unknown provider or an oversized model name, and any model name (in the catalog or not)
+// can be tagged.
+func TestModelTags_SetGetAndClear(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableModel{}))
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, ProviderConfig{}))
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, ProviderConfig{}))
+
+	tags, err := store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, tags)
+
+	require.NoError(t, store.SetModelTags(ctx, "openai", "gpt-5.1", []string{"prod", " approved-for-pii ", "prod"}))
+	require.NoError(t, store.SetModelTags(ctx, "openai", "my-finetune-not-in-catalog", []string{"internal"}))
+	require.NoError(t, store.SetModelTags(ctx, "anthropic", "claude-sonnet-4-5", []string{"prod"}))
+	tags, err = store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]map[string][]string{
+		"openai":    {"gpt-5.1": {"approved-for-pii", "prod"}, "my-finetune-not-in-catalog": {"internal"}},
+		"anthropic": {"claude-sonnet-4-5": {"prod"}},
+	}, tags)
+
+	require.NoError(t, store.SetModelTags(ctx, "openai", "gpt-5.1", []string{"staging"}))
+	tags, err = store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"staging"}, tags["openai"]["gpt-5.1"], "a second write must replace the tags")
+
+	require.NoError(t, store.SetModelTags(ctx, "openai", "gpt-5.1", nil))
+	var count int64
+	require.NoError(t, store.DB().Model(&tables.TableModel{}).Where("name = ? AND tags IS NULL", "gpt-5.1").Count(&count).Error)
+	assert.Equal(t, int64(1), count, "clearing the tags must write NULL and keep the row")
+	tags, err = store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, tags["openai"], "gpt-5.1", "a cleared model must not be listed as tagged")
+	require.NoError(t, store.SetModelTags(ctx, "openai", "never-tagged", nil), "clearing an untagged model is a no-op")
+
+	assert.ErrorIs(t, store.SetModelTags(ctx, "unknown", "gpt-5.1", []string{"prod"}), ErrNotFound)
+	assert.ErrorContains(t, store.SetModelTags(ctx, "openai", "gpt-5.1", []string{"a,b"}), "invalid tag")
+	assert.ErrorContains(t, store.SetModelTags(ctx, "openai", " ", []string{"prod"}), "model name is required")
+	assert.ErrorContains(t, store.SetModelTags(ctx, "openai", strings.Repeat("m", tables.MaxModelNameLength+1), []string{"prod"}), "at most 255 bytes")
+	require.NoError(t, store.SetModelTags(ctx, "openai", strings.Repeat("m", tables.MaxModelNameLength), []string{"prod"}))
+
+	// A config_models row that existed before tagging (seeded or from an older install) survives
+	// tagging and clearing.
+	var openaiProvider tables.TableProvider
+	require.NoError(t, store.DB().Where("name = ?", "openai").First(&openaiProvider).Error)
+	require.NoError(t, store.DB().Create(&tables.TableModel{ID: "legacy-row", ProviderID: openaiProvider.ID, Name: "legacy-model"}).Error)
+	require.NoError(t, store.SetModelTags(ctx, "openai", "legacy-model", []string{"prod"}))
+	require.NoError(t, store.SetModelTags(ctx, "openai", "legacy-model", nil))
+	require.NoError(t, store.DB().Model(&tables.TableModel{}).Where("id = ?", "legacy-row").Count(&count).Error)
+	assert.Equal(t, int64(1), count, "clearing tags must not delete a pre-existing config_models row")
+
+	// A deleted provider's model tags are no longer returned (FK cascade; the join also drops orphans).
+	require.NoError(t, store.DeleteProvider(ctx, schemas.Anthropic))
+	tags, err = store.GetModelTags(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, tags, "anthropic")
 }
