@@ -691,6 +691,11 @@ type anthropicNativeRequestSurface struct {
 	Temperature *float64
 	TopP        *float64
 	TopK        *int
+	// MaxTokens is the caller's own max_tokens, kept only so the restore can
+	// tell whether a later pass LOWERED it (clampToModelOutputCeiling) -- the
+	// one case where the caller's budget_tokens has to be refitted rather than
+	// forwarded verbatim. Zero when the caller sent none.
+	MaxTokens int
 	// NeutralReasoning is the reasoning projection the ingress conversion
 	// produced from Thinking -- what the rest of the pipeline was handed.
 	//
@@ -771,6 +776,7 @@ func setAnthropicNativeRequestSurface(ctx *schemas.BifrostContext, req *Anthropi
 		}
 		surface.Thinking = &recorded
 	}
+	surface.MaxTokens = req.MaxTokens
 	if req.Temperature != nil {
 		surface.Temperature = schemas.Ptr(*req.Temperature)
 	}
@@ -885,6 +891,31 @@ func anthropicNativeRequestSurfaceFrom(ctx *schemas.BifrostContext) (anthropicNa
 // which promotes thinking out of ExtraParams -- keeps its behaviour untouched.
 // The builder is the single call site of the converter, so nothing loses the
 // restore by it living here.
+// compatDroppedParams reports which parameters the built-in compat plugin
+// removed because the model catalog did not allowlist them.
+//
+// That distinction is what keeps the restore honest. An absent neutral value can
+// mean two different things: the conversion could not carry it (the loss this
+// witness exists to recover), or a layer removed it ON PURPOSE because the model
+// does not accept it. Restoring the second kind would hand the provider back
+// exactly the parameter the plugin removed to make the request servable. The
+// plugin publishes what it dropped on the context, so the two are separable
+// rather than guessed at.
+func compatDroppedParams(ctx *schemas.BifrostContext) map[string]bool {
+	if ctx == nil {
+		return nil
+	}
+	dropped, ok := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+	if !ok || len(dropped) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(dropped))
+	for _, name := range dropped {
+		set[name] = true
+	}
+	return set
+}
+
 func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *AnthropicMessageRequest, params *schemas.ResponsesParameters, provider schemas.ModelProvider, capModel string) {
 	if req == nil {
 		return
@@ -904,7 +935,10 @@ func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *Anth
 		neutral = &schemas.ResponsesParameters{}
 	}
 
+	dropped := compatDroppedParams(ctx)
+
 	if surface.Thinking != nil && preserveNativeThinking(caps, surface.Thinking.Type) &&
+		!dropped["reasoning"] &&
 		neutralReasoningUnchanged(surface.NeutralReasoning, neutral.Reasoning) {
 		restored := *surface.Thinking
 		req.Thinking = &restored
@@ -920,6 +954,32 @@ func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *Anth
 			req.OutputConfig.Effort = nil
 			if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
 				req.OutputConfig = nil
+			}
+		}
+		// The caller's budget_tokens is restored against a max_tokens that may
+		// have been lowered since they sent it -- clampToModelOutputCeiling runs
+		// in the strip pass this restore deliberately follows -- so a budget that
+		// was valid on the way in can exceed the ceiling on the way out. The raw
+		// path refits it (fitRawThinkingBudget); the typed path has to do the same
+		// or it sends a request the provider rejects. Only "enabled" carries a
+		// budget; the adaptive family does not.
+		if restored.Type == "enabled" && restored.BudgetTokens != nil &&
+			surface.MaxTokens > 0 && req.MaxTokens < surface.MaxTokens {
+			// Only a max_tokens that was LOWERED after the caller sent it is
+			// refitted. A budget that never fitted the caller's OWN max_tokens
+			// is their request as written, and forwarding it verbatim -- letting
+			// the provider answer for it -- is exactly what this restore is for;
+			// silently rewriting it would be the substitution being fixed.
+			var effort *string
+			if req.OutputConfig != nil {
+				effort = req.OutputConfig.Effort
+			}
+			if fitted, ok := fitThinkingBudget(restored.BudgetTokens, effort, req.MaxTokens); ok {
+				req.Thinking.BudgetTokens = schemas.Ptr(fitted)
+			} else {
+				// The lowered max_tokens leaves no room for any budget, which is
+				// how the strip pass and the raw path both resolve this.
+				req.Thinking = nil
 			}
 		}
 	}
@@ -941,11 +1001,21 @@ func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *Anth
 		// All three are restored together, including temperature AND top_p: the
 		// raw/passthrough path forwards both, and the two paths answering the
 		// same body differently is the defect being fixed, not a rule to keep.
+		// A parameter the compat plugin dropped is excluded from the fallback:
+		// its absence is that plugin's decision, not a conversion loss. The
+		// neutral value is still honoured when one survives, since a present
+		// value is current by definition.
 		if req.Temperature == nil {
-			req.Temperature = firstNonNil(neutral.Temperature, surface.Temperature)
+			req.Temperature = neutral.Temperature
+			if req.Temperature == nil && !dropped["temperature"] {
+				req.Temperature = surface.Temperature
+			}
 		}
 		if req.TopP == nil {
-			req.TopP = firstNonNil(neutral.TopP, surface.TopP)
+			req.TopP = neutral.TopP
+			if req.TopP == nil && !dropped["top_p"] {
+				req.TopP = surface.TopP
+			}
 		}
 		if req.TopK == nil {
 			req.TopK = firstNonNil(neutralTopK(neutral.ExtraParams), surface.TopK)
