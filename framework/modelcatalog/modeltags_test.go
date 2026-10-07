@@ -198,3 +198,20 @@ func TestRetryModelTags_StaleOverlayIsReloaded(t *testing.T) {
 	assert.Equal(t, []string{"new"}, mc.GetModelTags(schemas.OpenAI, "gpt-5.1"), "the periodic retry must publish the committed tags")
 	assert.False(t, mc.ModelTagsStale())
 }
+
+// TestReloadFromDB_ModelTagFailureIsNotFatal checks that a cluster reload whose pricing and
+// parameter reloads succeed is not reported as failed when only the tag reload fails: the
+// overlay is marked stale instead, and the periodic retry publishes the tags later.
+func TestReloadFromDB_ModelTagFailureIsNotFatal(t *testing.T) {
+	store := &fakeModelTagsStore{err: errors.New("config store unavailable")}
+	mc := NewTestCatalogWithConfigStore(store)
+
+	require.NoError(t, mc.ReloadFromDB(context.Background()), "a tag reload failure must not fail the pricing reload")
+	assert.True(t, mc.ModelTagsStale(), "the failed tag reload must leave the overlay marked stale for the retry")
+
+	store.err = nil
+	store.tags = map[string]map[string][]string{"openai": {"gpt-5.1": {"prod"}}}
+	mc.retryModelTagsIfNeeded(context.Background())
+	assert.Equal(t, []string{"prod"}, mc.GetModelTags(schemas.OpenAI, "gpt-5.1"))
+}
+
