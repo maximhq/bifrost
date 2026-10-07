@@ -556,6 +556,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_compat_force_reasoning_only_models_to_responses_column"}, run: migrationAddCompatForceReasoningOnlyModelsToResponsesColumn},
 	{IDs: []string{"backfill_compat_force_reasoning_only_models_to_responses"}, run: migrationBackfillCompatForceReasoningOnlyModelsToResponses},
 	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
+	{IDs: []string{"add_ignore_provider_cost_column"}, run: migrationAddIgnoreProviderCostColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -15281,4 +15282,33 @@ func migrationBackfillCompatForceReasoningOnlyModelsToResponses(ctx context.Cont
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
+}
+
+// migrationAddIgnoreProviderCostColumn adds the ignore_provider_cost column to config_providers.
+func migrationAddIgnoreProviderCostColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_ignore_provider_cost_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "ignore_provider_cost"); err != nil {
+				return fmt.Errorf("failed to add ignore_provider_cost column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackIgnoreProviderCostColumn(tx, logger)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("failed to run migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rollbackIgnoreProviderCostColumn refuses to undo add_ignore_provider_cost_column.
+func rollbackIgnoreProviderCostColumn(*gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_ignore_provider_cost_column is non-rollbackable: dropping ignore_provider_cost would discard every operator's per-provider setting and silently send those providers back to trusting their reported usage.cost; the column is additive and older binaries safely ignore it")
 }

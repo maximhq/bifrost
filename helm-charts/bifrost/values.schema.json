@@ -2361,6 +2361,10 @@
                   "store_raw_request_response": {
                     "type": "boolean"
                   },
+                  "ignore_provider_cost": {
+                    "type": "boolean",
+                    "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+                  },
                   "prompt_cache": {
                     "type": "object",
                     "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default; requests that already carry their own cache markers are never modified.",
@@ -6522,6 +6526,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for plugins only; stripped before returning to client"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "prompt_cache": {
           "type": "object",
