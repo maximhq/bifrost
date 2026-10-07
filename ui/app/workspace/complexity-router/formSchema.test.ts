@@ -3,17 +3,24 @@ import {
 	analyzerConfigSchema,
 	countCanonicalSemanticPhrases,
 	DEFAULT_FORM_VALUES,
-	getTypesafeState,
+	getDecisionProviderState,
+	clefModelFromProvider,
+	defaultDecisionModel,
+	isDecisionProvider,
+	selfHostedModelGroups,
 	isRouterConfigured,
-	jevGuidanceFormValues,
-	jevTimeoutFieldValue,
+	decisionGuidanceFormValues,
+	decisionTimeoutFieldValue,
 	shouldSeedLLMPrompt,
 	toAnalyzerPayload,
 	toFormValues,
 } from "./formSchema";
-import type { AnalyzerConfig, JevGuidanceDefaults } from "@/lib/types/complexityRouter";
+import { DEFAULT_DECISION_CONFIG, type AnalyzerConfig, type DecisionGuidanceDefaults } from "@/lib/types/complexityRouter";
 import type { ModelProvider } from "@/lib/types/config";
 import type { DBKey } from "@/lib/types/governance";
+
+// The default decision model, as the form holds it and the gateway receives it.
+const DEFAULT_MODEL = { provider: DEFAULT_DECISION_CONFIG.provider, model: DEFAULT_DECISION_CONFIG.model };
 
 describe("fallback prompt initialization", () => {
 	test("initializes an untouched empty prompt", () => {
@@ -52,7 +59,7 @@ function formValues(simpleCount: number, semantic: boolean) {
 }
 
 // Synthetic shipped guidance; the real defaults come from the status endpoint.
-const JEV_DEFAULTS: JevGuidanceDefaults = {
+const DECISION_DEFAULTS: DecisionGuidanceDefaults = {
 	criteria: {
 		SIMPLE: {
 			definition: "simple definition",
@@ -72,14 +79,15 @@ const JEV_DEFAULTS: JevGuidanceDefaults = {
 	},
 };
 
-const EMPTY_JEV_GUIDANCE = jevGuidanceFormValues();
+const EMPTY_DECISION_GUIDANCE = decisionGuidanceFormValues();
 
-describe("Jev complexity configuration", () => {
+describe("Decision complexity configuration", () => {
 	test("defaults to one prior user message and a 1500ms timeout", () => {
-		expect(DEFAULT_FORM_VALUES.jev).toEqual({
+		expect(DEFAULT_FORM_VALUES.decision).toEqual({
+			...DEFAULT_MODEL,
 			previous_message_count: 1,
 			timeout: "1500ms",
-			...EMPTY_JEV_GUIDANCE,
+			...EMPTY_DECISION_GUIDANCE,
 		});
 	});
 
@@ -90,25 +98,26 @@ describe("Jev complexity configuration", () => {
 				medium_keywords: ["medium"],
 				complex_keywords: ["complex"],
 			},
-			classifier: "jev",
+			classifier: "decision",
 		};
-		expect(toFormValues(saved).classifier).toBe("jev");
+		expect(toFormValues(saved).classifier).toBe("decision");
 		expect(toFormValues({ ...saved, classifier: "" as never }).classifier).toBe("semantic");
 	});
 
-	test("builds a valid Jev payload with the configured timeout", () => {
+	test("builds a valid Decision payload with the configured timeout", () => {
 		const values = {
 			...DEFAULT_FORM_VALUES,
-			classifier: "jev" as const,
+			classifier: "decision" as const,
 			keywords: {
 				simple_keywords: ["simple"],
 				medium_keywords: ["medium"],
 				complex_keywords: ["complex"],
 			},
-			jev: {
+			decision: {
+				...DEFAULT_MODEL,
 				previous_message_count: 1,
 				timeout: "400ms",
-				...EMPTY_JEV_GUIDANCE,
+				...EMPTY_DECISION_GUIDANCE,
 			},
 		};
 		const parsed = analyzerConfigSchema.safeParse(values);
@@ -116,12 +125,12 @@ describe("Jev complexity configuration", () => {
 		if (!parsed.success) return;
 
 		const payload = toAnalyzerPayload(parsed.data);
-		expect(payload.classifier).toBe("jev");
-		expect(payload.jev).toEqual({ previous_message_count: 1, timeout: "400ms" });
+		expect(payload.classifier).toBe("decision");
+		expect(payload.decision).toEqual({ ...DEFAULT_MODEL, previous_message_count: 1, timeout: "400ms" });
 		expect(payload.semantic).toBeUndefined();
 	});
 
-	test("hidden Jev fields do not block a semantic save without a Jev fallback", () => {
+	test("hidden Decision fields do not block a semantic save without a Decision fallback", () => {
 		const values = {
 			...DEFAULT_FORM_VALUES,
 			keywords: {
@@ -129,22 +138,24 @@ describe("Jev complexity configuration", () => {
 				medium_keywords: ["medium"],
 				complex_keywords: ["complex"],
 			},
-			jev: {
+			decision: {
+				provider: "",
+				model: "",
 				previous_message_count: Number.NaN,
 				timeout: "",
-				...EMPTY_JEV_GUIDANCE,
+				...EMPTY_DECISION_GUIDANCE,
 			},
 		};
 		const parsed = analyzerConfigSchema.safeParse(values);
 		expect(parsed.success).toBe(true);
 		if (!parsed.success) return;
 
-		const saved: AnalyzerConfig = { ...parsed.data, jev: { previous_message_count: 2, timeout: "900ms" } };
-		expect(toAnalyzerPayload(parsed.data, saved).jev).toEqual(saved.jev);
-		expect(toAnalyzerPayload(parsed.data).jev).toBeUndefined();
+		const saved: AnalyzerConfig = { ...parsed.data, decision: { previous_message_count: 2, timeout: "900ms" } };
+		expect(toAnalyzerPayload(parsed.data, saved).decision).toEqual(saved.decision);
+		expect(toAnalyzerPayload(parsed.data).decision).toBeUndefined();
 	});
 
-	test("rejects invalid Jev fields when Jev is the semantic fallback", () => {
+	test("rejects invalid Decision fields when Decision is the semantic fallback", () => {
 		const values = {
 			...DEFAULT_FORM_VALUES,
 			keywords: {
@@ -152,43 +163,69 @@ describe("Jev complexity configuration", () => {
 				medium_keywords: ["medium"],
 				complex_keywords: ["complex"],
 			},
-			semantic: { ...DEFAULT_FORM_VALUES.semantic, fallback: "jev" as const },
-			jev: { previous_message_count: 9, timeout: "", ...EMPTY_JEV_GUIDANCE },
+			semantic: { ...DEFAULT_FORM_VALUES.semantic, fallback: "decision" as const },
+			decision: { ...DEFAULT_MODEL, previous_message_count: 9, timeout: "", ...EMPTY_DECISION_GUIDANCE },
 		};
 		const parsed = analyzerConfigSchema.safeParse(values);
 		expect(parsed.success).toBe(false);
 		if (parsed.success) return;
 		expect(parsed.error.issues.map((issue) => issue.path.join("."))).toEqual(
-			expect.arrayContaining(["jev.previous_message_count", "jev.timeout"]),
+			expect.arrayContaining(["decision.previous_message_count", "decision.timeout"]),
 		);
 	});
 });
 
-describe("Jev complexity form state", () => {
+describe("Decision complexity form state", () => {
 	const keywords = { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] };
 
-	test("fills a partial saved Jev block with defaults", () => {
+	test("fills a partial saved Decision block with defaults", () => {
 		// Older gateways may omit the count; the cast models that wire shape.
-		const partial = { timeout: "900ms" } as AnalyzerConfig["jev"];
-		expect(toFormValues({ keywords, classifier: "jev", jev: partial }).jev).toEqual({
+		const partial = { timeout: "900ms" } as AnalyzerConfig["decision"];
+		expect(toFormValues({ keywords, classifier: "decision", decision: partial }).decision).toEqual({
+			...DEFAULT_MODEL,
 			previous_message_count: 1,
 			timeout: "900ms",
-			...EMPTY_JEV_GUIDANCE,
+			...EMPTY_DECISION_GUIDANCE,
 		});
 		expect(
 			toFormValues({
 				keywords,
-				classifier: "jev",
-				jev: { previous_message_count: 0 },
-			}).jev,
+				classifier: "decision",
+				decision: { previous_message_count: 0 },
+			}).decision,
 		).toEqual({
+			...DEFAULT_MODEL,
 			previous_message_count: 0,
 			timeout: "1500ms",
-			...EMPTY_JEV_GUIDANCE,
+			...EMPTY_DECISION_GUIDANCE,
 		});
 	});
 
-	test("sends the Jev block when Jev is the semantic fallback", () => {
+	test("keeps a saved decision model and round-trips it to the payload", () => {
+		const form = toFormValues({
+			keywords,
+			classifier: "decision",
+			decision: { provider: "nimble", model: "nimble-latest", previous_message_count: 1, timeout: "1500ms" },
+		});
+		expect(form.decision.provider).toBe("nimble");
+		expect(form.decision.model).toBe("nimble-latest");
+		const parsed = analyzerConfigSchema.safeParse(form);
+		expect(parsed.success).toBe(true);
+		if (!parsed.success) return;
+		expect(toAnalyzerPayload(parsed.data).decision).toMatchObject({ provider: "nimble", model: "nimble-latest" });
+	});
+
+	test("rejects a blank decision provider or model while the decision model is in use", () => {
+		const base = { ...DEFAULT_FORM_VALUES, classifier: "decision" as const, keywords };
+		for (const blank of [{ provider: "" }, { model: "  " }]) {
+			const parsed = analyzerConfigSchema.safeParse({ ...base, decision: { ...base.decision, ...blank } });
+			expect(parsed.success).toBe(false);
+			if (parsed.success) continue;
+			expect(parsed.error.issues.map((issue) => issue.path.join("."))).toContain(`decision.${Object.keys(blank)[0]}`);
+		}
+	});
+
+	test("sends the Decision block when Decision is the semantic fallback", () => {
 		const values = {
 			...DEFAULT_FORM_VALUES,
 			keywords,
@@ -196,12 +233,13 @@ describe("Jev complexity form state", () => {
 				...DEFAULT_FORM_VALUES.semantic,
 				provider: "openai",
 				embedding_model: "text-embedding-3-small",
-				fallback: "jev" as const,
+				fallback: "decision" as const,
 			},
-			jev: {
+			decision: {
+				...DEFAULT_MODEL,
 				previous_message_count: 3,
 				timeout: "700ms",
-				...EMPTY_JEV_GUIDANCE,
+				...EMPTY_DECISION_GUIDANCE,
 			},
 		};
 		const parsed = analyzerConfigSchema.safeParse(values);
@@ -209,11 +247,11 @@ describe("Jev complexity form state", () => {
 		if (!parsed.success) return;
 		const payload = toAnalyzerPayload(parsed.data);
 		expect(payload.classifier).toBe("semantic");
-		expect(payload.jev).toEqual({ previous_message_count: 3, timeout: "700ms" });
+		expect(payload.decision).toEqual({ ...DEFAULT_MODEL, previous_message_count: 3, timeout: "700ms" });
 	});
 
-	test("allows session routing with Jev as the classifier and no semantic setup", () => {
-		const values = { ...DEFAULT_FORM_VALUES, classifier: "jev" as const, keywords, session: { enabled: true } };
+	test("allows session routing with Decision as the classifier and no semantic setup", () => {
+		const values = { ...DEFAULT_FORM_VALUES, classifier: "decision" as const, keywords, session: { enabled: true } };
 		expect(analyzerConfigSchema.safeParse(values).success).toBe(true);
 		expect(
 			analyzerConfigSchema.safeParse({
@@ -223,13 +261,13 @@ describe("Jev complexity form state", () => {
 		).toBe(false);
 	});
 
-	test("rejects out-of-range Jev history and non-positive timeouts when Jev is primary", () => {
+	test("rejects out-of-range Decision history and non-positive timeouts when Decision is primary", () => {
 		const base = {
 			...DEFAULT_FORM_VALUES,
-			classifier: "jev" as const,
+			classifier: "decision" as const,
 			keywords,
 		};
-		for (const jev of [
+		for (const decision of [
 			{ previous_message_count: 6, timeout: "1500ms" },
 			{ previous_message_count: -1, timeout: "1500ms" },
 			{ previous_message_count: 1.5, timeout: "1500ms" },
@@ -240,24 +278,24 @@ describe("Jev complexity form state", () => {
 			expect(
 				analyzerConfigSchema.safeParse({
 					...base,
-					jev: { ...jev, ...EMPTY_JEV_GUIDANCE },
+					decision: { ...DEFAULT_MODEL, ...decision, ...EMPTY_DECISION_GUIDANCE },
 				}).success,
 			).toBe(false);
 		}
 	});
 });
 
-describe("Jev classification guidance", () => {
+describe("Decision classification guidance", () => {
 	const keywords = { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] };
-	const jevValues = (guidance: ReturnType<typeof jevGuidanceFormValues>) => ({
+	const decisionValues = (guidance: ReturnType<typeof decisionGuidanceFormValues>) => ({
 		...DEFAULT_FORM_VALUES,
-		classifier: "jev" as const,
+		classifier: "decision" as const,
 		keywords,
-		jev: { previous_message_count: 1, timeout: "1500ms", ...guidance },
+		decision: { ...DEFAULT_MODEL, previous_message_count: 1, timeout: "1500ms", ...guidance },
 	});
 
 	test("seeds unset guidance from the shipped defaults", () => {
-		expect(jevGuidanceFormValues(undefined, JEV_DEFAULTS)).toEqual({
+		expect(decisionGuidanceFormValues(undefined, DECISION_DEFAULTS)).toEqual({
 			criteria: {
 				SIMPLE: {
 					definition: "simple definition",
@@ -279,7 +317,7 @@ describe("Jev classification guidance", () => {
 	});
 
 	test("keeps saved overrides field by field and defaults the rest", () => {
-		const seeded = jevGuidanceFormValues(
+		const seeded = decisionGuidanceFormValues(
 			{
 				previous_message_count: 1,
 				criteria: {
@@ -287,7 +325,7 @@ describe("Jev classification guidance", () => {
 					SIMPLE: { definition: "custom definition" },
 				},
 			},
-			JEV_DEFAULTS,
+			DECISION_DEFAULTS,
 		);
 		expect(seeded.criteria.MEDIUM).toEqual({
 			definition: "medium definition",
@@ -302,11 +340,11 @@ describe("Jev classification guidance", () => {
 	});
 
 	test("sends seeded guidance for the gateway to reduce against its defaults", () => {
-		const parsed = analyzerConfigSchema.safeParse(jevValues(jevGuidanceFormValues(undefined, JEV_DEFAULTS)));
+		const parsed = analyzerConfigSchema.safeParse(decisionValues(decisionGuidanceFormValues(undefined, DECISION_DEFAULTS)));
 		expect(parsed.success).toBe(true);
 		if (!parsed.success) return;
 		const payload = toAnalyzerPayload(parsed.data);
-		expect(payload.jev?.criteria?.COMPLEX).toEqual({
+		expect(payload.decision?.criteria?.COMPLEX).toEqual({
 			definition: "complex definition",
 			signals: ["c-signal"],
 			examples: ["c-example"],
@@ -314,19 +352,20 @@ describe("Jev classification guidance", () => {
 	});
 
 	test("omits unseeded guidance so the gateway sends its defaults", () => {
-		const parsed = analyzerConfigSchema.safeParse(jevValues(EMPTY_JEV_GUIDANCE));
+		const parsed = analyzerConfigSchema.safeParse(decisionValues(EMPTY_DECISION_GUIDANCE));
 		expect(parsed.success).toBe(true);
 		if (!parsed.success) return;
-		expect(toAnalyzerPayload(parsed.data).jev).toEqual({
+		expect(toAnalyzerPayload(parsed.data).decision).toEqual({
+			...DEFAULT_MODEL,
 			previous_message_count: 1,
 			timeout: "1500ms",
 		});
 	});
 
 	test("rejects an emptied definition or list once guidance is seeded", () => {
-		const seeded = jevGuidanceFormValues(undefined, JEV_DEFAULTS);
+		const seeded = decisionGuidanceFormValues(undefined, DECISION_DEFAULTS);
 		const emptiedList = analyzerConfigSchema.safeParse(
-			jevValues({
+			decisionValues({
 				...seeded,
 				criteria: {
 					...seeded.criteria,
@@ -336,9 +375,9 @@ describe("Jev classification guidance", () => {
 		);
 		expect(emptiedList.success).toBe(false);
 		if (emptiedList.success) return;
-		expect(emptiedList.error.issues.map((issue) => issue.path.join("."))).toContain("jev.criteria.SIMPLE.signals");
+		expect(emptiedList.error.issues.map((issue) => issue.path.join("."))).toContain("decision.criteria.SIMPLE.signals");
 		const emptiedDefinition = analyzerConfigSchema.safeParse(
-			jevValues({
+			decisionValues({
 				...seeded,
 				criteria: {
 					...seeded.criteria,
@@ -348,15 +387,15 @@ describe("Jev classification guidance", () => {
 		);
 		expect(emptiedDefinition.success).toBe(false);
 		if (emptiedDefinition.success) return;
-		expect(emptiedDefinition.error.issues.map((issue) => issue.path.join("."))).toContain("jev.criteria.SIMPLE.definition");
+		expect(emptiedDefinition.error.issues.map((issue) => issue.path.join("."))).toContain("decision.criteria.SIMPLE.definition");
 	});
 
 	test("rejects guidance past the gateway's size bounds", () => {
-		const seeded = jevGuidanceFormValues(undefined, JEV_DEFAULTS);
+		const seeded = decisionGuidanceFormValues(undefined, DECISION_DEFAULTS);
 		const tooMany = Array.from({ length: 13 }, (_, i) => `signal ${i}`);
 		expect(
 			analyzerConfigSchema.safeParse(
-				jevValues({
+				decisionValues({
 					...seeded,
 					criteria: {
 						...seeded.criteria,
@@ -367,7 +406,7 @@ describe("Jev classification guidance", () => {
 		).toBe(false);
 		expect(
 			analyzerConfigSchema.safeParse(
-				jevValues({
+				decisionValues({
 					...seeded,
 					criteria: {
 						...seeded.criteria,
@@ -378,7 +417,7 @@ describe("Jev classification guidance", () => {
 		).toBe(false);
 		expect(
 			analyzerConfigSchema.safeParse(
-				jevValues({
+				decisionValues({
 					...seeded,
 					criteria: {
 						...seeded.criteria,
@@ -389,16 +428,16 @@ describe("Jev classification guidance", () => {
 		).toBe(false);
 	});
 
-	test("shows the saved Jev timeout as editable milliseconds", () => {
-		expect(jevTimeoutFieldValue("400ms")).toBe("400");
-		expect(jevTimeoutFieldValue("1.5s")).toBe(1500);
-		expect(jevTimeoutFieldValue(undefined)).toBe(1500);
-		expect(jevTimeoutFieldValue("")).toBe("");
+	test("shows the saved Decision timeout as editable milliseconds", () => {
+		expect(decisionTimeoutFieldValue("400ms")).toBe("400");
+		expect(decisionTimeoutFieldValue("1.5s")).toBe(1500);
+		expect(decisionTimeoutFieldValue(undefined)).toBe(1500);
+		expect(decisionTimeoutFieldValue("")).toBe("");
 	});
 });
 
 describe("router configuration state", () => {
-	test("treats Jev as configured without a semantic block", () => {
+	test("treats Decision as configured without a semantic block", () => {
 		expect(
 			isRouterConfigured({
 				keywords: {
@@ -406,7 +445,7 @@ describe("router configuration state", () => {
 					medium_keywords: [],
 					complex_keywords: [],
 				},
-				classifier: "jev",
+				classifier: "decision",
 			}),
 		).toBe(true);
 	});
@@ -425,25 +464,139 @@ describe("router configuration state", () => {
 	});
 });
 
-describe("Typesafe provider state for Jev", () => {
-	const provider = (overrides: Partial<ModelProvider> = {}) => ({ name: "typesafe", provider_status: "active", ...overrides }) as ModelProvider;
+describe("decision model provider state", () => {
+	const provider = (overrides: Partial<ModelProvider> = {}) =>
+		({ name: "typesafe", provider_status: "active", ...overrides }) as ModelProvider;
 	const key = (overrides: Partial<DBKey> = {}) => ({ provider: "typesafe", ...overrides }) as DBKey;
 
 	test("reports a missing provider", () => {
-		expect(getTypesafeState([], [key()])).toBe("missing");
-		expect(getTypesafeState(undefined, undefined)).toBe("missing");
+		expect(getDecisionProviderState([], [key()], "typesafe")).toBe("missing");
+		expect(getDecisionProviderState(undefined, undefined, "typesafe")).toBe("missing");
+		expect(getDecisionProviderState([provider()], [key()], "nimble")).toBe("missing");
 	});
 
 	test("reports a provider that failed to initialise or list models", () => {
-		expect(getTypesafeState([provider({ provider_status: "error" } as Partial<ModelProvider>)], [key()])).toBe("failing");
-		expect(getTypesafeState([provider({ status: "list_models_failed" } as Partial<ModelProvider>)], [key()])).toBe("failing");
+		expect(getDecisionProviderState([provider({ provider_status: "error" } as Partial<ModelProvider>)], [key()], "typesafe")).toBe(
+			"failing",
+		);
+		expect(getDecisionProviderState([provider({ status: "list_models_failed" } as Partial<ModelProvider>)], [key()], "typesafe")).toBe(
+			"failing",
+		);
 	});
 
-	test("requires an enabled Typesafe key, treating an omitted flag as enabled", () => {
-		expect(getTypesafeState([provider()], [key({ enabled: false } as Partial<DBKey>)])).toBe("no-enabled-key");
-		expect(getTypesafeState([provider()], [key({ provider: "openai" } as Partial<DBKey>)])).toBe("no-enabled-key");
-		expect(getTypesafeState([provider()], [key()])).toBe("configured");
-		expect(getTypesafeState([provider()], [key({ enabled: false } as Partial<DBKey>), key({ enabled: true } as Partial<DBKey>)])).toBe("configured");
+	test("requires an enabled key on the selected provider, treating an omitted flag as enabled", () => {
+		expect(getDecisionProviderState([provider()], [key({ enabled: false } as Partial<DBKey>)], "typesafe")).toBe("no-enabled-key");
+		expect(getDecisionProviderState([provider()], [key({ provider: "openai" } as Partial<DBKey>)], "typesafe")).toBe("no-enabled-key");
+		expect(getDecisionProviderState([provider()], [key()], "typesafe")).toBe("configured");
+		expect(
+			getDecisionProviderState(
+				[provider()],
+				[key({ enabled: false } as Partial<DBKey>), key({ enabled: true } as Partial<DBKey>)],
+				"typesafe",
+			),
+		).toBe("configured");
+	});
+
+	test("checks the selected custom provider and accepts a keyless one without keys", () => {
+		const nimble = provider({ name: "nimble", custom_provider_config: { base_provider_type: "typesafe" } } as Partial<ModelProvider>);
+		const laya = provider({
+			name: "Laya",
+			custom_provider_config: { base_provider_type: "typesafe", is_key_less: true },
+		} as Partial<ModelProvider>);
+		expect(getDecisionProviderState([provider(), nimble], [key()], "nimble")).toBe("no-enabled-key");
+		expect(getDecisionProviderState([provider(), nimble], [key({ provider: "nimble" } as Partial<DBKey>)], "nimble")).toBe("configured");
+		expect(getDecisionProviderState([laya], [], "Laya")).toBe("configured");
+	});
+
+	test("ignores a stale listing failure on a provider with model listing turned off", () => {
+		const laya = provider({
+			name: "Laya",
+			status: "list_models_failed",
+			custom_provider_config: {
+				base_provider_type: "typesafe",
+				is_key_less: true,
+				allowed_requests: { list_models: false, decisions: true },
+			},
+		} as Partial<ModelProvider>);
+		expect(getDecisionProviderState([laya], [], "Laya")).toBe("configured");
+		const listing = provider({
+			name: "nimble",
+			status: "list_models_failed",
+			custom_provider_config: { base_provider_type: "typesafe", is_key_less: true },
+		} as Partial<ModelProvider>);
+		expect(getDecisionProviderState([listing], [], "nimble")).toBe("failing");
+	});
+});
+
+describe("decision model providers", () => {
+	const keywords = { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] };
+	const provider = (overrides: Partial<ModelProvider>) => ({ provider_status: "active", ...overrides }) as ModelProvider;
+	const custom = (name: string, decisionsURL?: string) =>
+		provider({
+			name,
+			custom_provider_config: {
+				base_provider_type: "typesafe",
+				...(decisionsURL && { request_path_overrides: { decisions: decisionsURL } }),
+			},
+		} as Partial<ModelProvider>);
+	const typesafe = provider({ name: "typesafe" } as Partial<ModelProvider>);
+	const openrouter = provider({ name: "openrouter" } as Partial<ModelProvider>);
+	const laya = custom("Laya");
+	const clef = custom("cloudflare clev", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef");
+	const clefFlash = custom("clef-flash", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef-flash/");
+
+	test("offers only providers that answer decisions natively", () => {
+		for (const candidate of [typesafe, openrouter, laya, clef]) expect(isDecisionProvider(candidate)).toBe(true);
+		expect(isDecisionProvider(provider({ name: "openai" } as Partial<ModelProvider>))).toBe(false);
+		expect(
+			isDecisionProvider(
+				provider({ name: "my-openai", custom_provider_config: { base_provider_type: "openai" } } as Partial<ModelProvider>),
+			),
+		).toBe(false);
+	});
+
+	test("reads the Clef model from the provider's Cloudflare URL", () => {
+		expect(clefModelFromProvider(clef)).toBe("clef");
+		expect(clefModelFromProvider(clefFlash)).toBe("clef-flash");
+		expect(clefModelFromProvider(laya)).toBeUndefined();
+		expect(clefModelFromProvider(undefined)).toBeUndefined();
+	});
+
+	test("offers only the checkpoints of the model a provider is named after", () => {
+		expect(selfHostedModelGroups("Laya").map((group) => group.label)).toEqual(["Laya"]);
+		expect(selfHostedModelGroups("nimble-gpu").map((group) => group.label)).toEqual(["Nimble"]);
+		expect(selfHostedModelGroups("ollama-clef").map((group) => group.label)).toEqual(["Clef"]);
+		expect(selfHostedModelGroups("decisions-eu").map((group) => group.label)).toEqual(["Laya", "Nimble", "Clef"]);
+	});
+
+	test("starts each provider on its known model", () => {
+		expect(defaultDecisionModel(typesafe)).toBe("jev-latest");
+		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
+		expect(defaultDecisionModel(clefFlash)).toBe("clef-flash");
+		expect(defaultDecisionModel(laya)).toBe("english");
+		expect(defaultDecisionModel(custom("nimble-gpu"))).toBe("nimble-latest");
+		expect(defaultDecisionModel(custom("ollama-clef"))).toBe("clef-flash");
+	});
+
+	test("accepts only OpenRouter's Jev models for the openrouter provider", () => {
+		const base = { ...DEFAULT_FORM_VALUES, classifier: "decision" as const, keywords };
+		const parse = (model: string) =>
+			analyzerConfigSchema.safeParse({ ...base, decision: { ...base.decision, provider: "openrouter", model } });
+		expect(parse("~typesafe/jev-latest").success).toBe(true);
+		expect(parse("typesafe/jev-1.13").success).toBe(true);
+		// A chat model OpenRouter lists under Typesafe's namespace is not a decision model.
+		const rejected = parse("typesafe/jev-router");
+		expect(rejected.success).toBe(false);
+		if (!rejected.success) expect(rejected.error.issues.map((issue) => issue.path.join("."))).toContain("decision.model");
+		// The rule is scoped to OpenRouter: other providers keep free-form models.
+		expect(
+			analyzerConfigSchema.safeParse({ ...base, decision: { ...base.decision, provider: "typesafe", model: "jev-1.13.0" } }).success,
+		).toBe(true);
+	});
+
+	test("starts a self-hosted provider whose name says nothing on none", () => {
+		expect(defaultDecisionModel(custom("decisions-eu"))).toBe("");
+		expect(defaultDecisionModel(undefined)).toBe("");
 	});
 });
 
