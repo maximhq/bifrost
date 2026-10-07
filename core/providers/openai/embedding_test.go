@@ -36,3 +36,28 @@ func TestToOpenAIEmbeddingRequestErrorsDoNotNameOpenAI(t *testing.T) {
 		})
 	}
 }
+
+// task_type/title/auto_truncate are not OpenAI wire fields; strict OpenAI-compatible
+// providers (Mistral) reject them with 422, so only encoding_format and dimensions go out.
+func TestToOpenAIEmbeddingRequestSendsOnlyOpenAIParams(t *testing.T) {
+	text := "hello"
+	dims := 8
+	format := "float"
+	req, err := openai.ToOpenAIEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+		Provider: schemas.Mistral,
+		Model:    "mistral-embed",
+		Input:    []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+		Params: &schemas.EmbeddingParameters{
+			EncodingFormat: &format,
+			Dimensions:     &dims,
+			TaskType:       schemas.Ptr("RETRIEVAL_QUERY"),
+			Title:          schemas.Ptr("t"),
+			AutoTruncate:   schemas.Ptr(true),
+		},
+	}, schemas.Mistral)
+	require.NoError(t, err)
+
+	body, err := schemas.MarshalSorted(req)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"model":"mistral-embed","input":"hello","encoding_format":"float","dimensions":8}`, string(body))
+}
