@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -417,9 +418,14 @@ func TestPromptUsageWitnessIsBoundToItsOwnerAndChunk(t *testing.T) {
 	t.Run("inherited by an internal sub-request's context", func(t *testing.T) {
 		child := schemas.NewBifrostContext(parent, schemas.NoDeadline)
 		child.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
-		// The child reads the parent's ledger through the context chain...
-		if _, ok := child.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(*anthropicStreamDeltaPromptUsageLedger); !ok {
+		// The child reads the parent's ledger ID through the context chain, and
+		// that ID resolves in the store -- so the handle really is inherited...
+		id, ok := child.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(string)
+		if !ok || id == "" {
 			t.Fatal("precondition: a derived context reads the parent's value through")
+		}
+		if loadAnthropicStreamDeltaPromptUsageLedger(id) == nil {
+			t.Fatal("precondition: the inherited ID resolves to the parent's ledger")
 		}
 		// ...and the ownership comparison is what refuses it, not its absence.
 		if ownedAnthropicStreamDeltaPromptUsageLedger(child) != nil {
@@ -1193,4 +1199,59 @@ func TestLiveStreamHandlerOpensAFreshLedgerPerStream(t *testing.T) {
 			t.Errorf("a finished stream's reading for chunk %d reshaped a later frame", seq)
 		}
 	}
+}
+
+// TestPromptUsageLedgerIsReleasedWithTheRequest pins the lifetime half of
+// AGENTS.md's rule. The readings scale with the stream, so they live in a
+// top-level store and the context carries only the ID -- which means they now
+// have to be released explicitly, and the release point is load-bearing in both
+// directions. Too early and the terminal frame, which is marshalled from the
+// chunk channel after the reader goroutine has returned, renders with the
+// evidence already gone; never, and the store grows for the process's lifetime.
+func TestPromptUsageLedgerIsReleasedWithTheRequest(t *testing.T) {
+	t.Run("a finished request leaves nothing behind", func(t *testing.T) {
+		parent, cancel := context.WithCancel(context.Background())
+		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+		ledger := openAnthropicStreamDeltaPromptUsageLedger(ctx)
+		if ledger == nil {
+			t.Fatal("expected a ledger")
+		}
+		id, _ := ctx.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(string)
+		if id == "" {
+			t.Fatal("expected the context to carry the ledger ID")
+		}
+		ledger.record(0, anthropicPromptCounterInputTokens)
+		if loadAnthropicStreamDeltaPromptUsageLedger(id) == nil {
+			t.Fatal("the ledger must be resolvable while the request runs")
+		}
+
+		cancel()
+		deadline := time.Now().Add(2 * time.Second)
+		for loadAnthropicStreamDeltaPromptUsageLedger(id) != nil {
+			if time.Now().After(deadline) {
+				t.Fatal("the ledger outlived its request: the store would grow without bound")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
+
+	t.Run("a fresh stream drops the previous attempt's readings", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		first := openAnthropicStreamDeltaPromptUsageLedger(ctx)
+		firstID, _ := ctx.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(string)
+		first.record(4, anthropicPromptCounterInputTokens)
+
+		second := openAnthropicStreamDeltaPromptUsageLedger(ctx)
+		secondID, _ := ctx.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(string)
+		if secondID == firstID {
+			t.Fatal("a new stream must get its own ledger ID")
+		}
+		if loadAnthropicStreamDeltaPromptUsageLedger(firstID) != nil {
+			t.Fatal("the replaced attempt's readings must be dropped from the store")
+		}
+		// And the retry's chunk 4 is unrecorded, not inherited.
+		if _, ok := second.lookup(4); ok {
+			t.Fatal("a retry's chunk 4 must not read the previous attempt's reading")
+		}
+	})
 }

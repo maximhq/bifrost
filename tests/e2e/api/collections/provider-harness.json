@@ -221538,6 +221538,164 @@
           }
         }
       ]
+    },
+    {
+      "name": "216. Anthropic streaming message_delta frame integrity and prompt usage (#7896)",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-4-5 /anthropic/v1/messages streaming: message_delta keeps its delta object - #7896",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('every message_delta carries its required delta object - #7896', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var body = pm.response.text() || '';",
+                  "  var lines = body.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0 && l.indexOf('\"message_delta\"') !== -1; });",
+                  "  pm.expect(lines.length, 'no message_delta data line found in stream: ' + body.slice(0, 400)).to.be.above(0);",
+                  "  lines.forEach(function (l, i) {",
+                  "    var frame = JSON.parse(l.replace(/^data:\\s*/, ''));",
+                  "    pm.expect(frame.delta, 'message_delta #' + i + ' has no delta object; the Anthropic API documents it as REQUIRED and strict clients (the official SDKs, Claude Code) abandon the turn without it: ' + l.slice(0, 300)).to.be.an('object');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"anthropic/claude-sonnet-4-5\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"Say OK.\"}], \"stream\": true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-5 /anthropic/v1/messages streaming: message_delta invents no prompt counters - #7896",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a message_delta reports no prompt counter the upstream did not send - #7896', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var body = pm.response.text() || '';",
+                  "  var lines = body.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; });",
+                  "  var start = lines.filter(function (l) { return l.indexOf('\"message_start\"') !== -1; })[0];",
+                  "  pm.expect(start, 'no message_start data line found in stream: ' + body.slice(0, 400)).to.be.a('string');",
+                  "  var startFrame = JSON.parse(start.replace(/^data:\\s*/, ''));",
+                  "  var promptTokens = startFrame.message && startFrame.message.usage ? startFrame.message.usage.input_tokens : undefined;",
+                  "  pm.expect(promptTokens, 'message_start.message.usage.input_tokens must be a number').to.be.a('number');",
+                  "  var deltas = lines.filter(function (l) { return l.indexOf('\"message_delta\"') !== -1; });",
+                  "  pm.expect(deltas.length, 'no message_delta data line found in stream: ' + body.slice(0, 400)).to.be.above(0);",
+                  "  // An accumulating client OVERWRITES the fields each usage object carries, so a",
+                  "  // message_delta reporting input_tokens:0 erases the prompt count it already has.",
+                  "  // Anthropic sends no prompt counters on that frame, so neither may Bifrost.",
+                  "  deltas.forEach(function (l, i) {",
+                  "    var frame = JSON.parse(l.replace(/^data:\\s*/, ''));",
+                  "    if (!frame.usage) { return; }",
+                  "    if (Object.prototype.hasOwnProperty.call(frame.usage, 'input_tokens')) {",
+                  "      pm.expect(frame.usage.input_tokens, 'message_delta #' + i + ' reports input_tokens:' + frame.usage.input_tokens + ', which overwrites the ' + promptTokens + ' from message_start in every accumulating client: ' + l.slice(0, 300)).to.equal(promptTokens);",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"anthropic/claude-sonnet-4-5\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"Say OK.\"}], \"stream\": true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /anthropic/v1/messages streaming: converted message_delta keeps its delta object - #7896",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('every message_delta carries its required delta object - #7896', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var body = pm.response.text() || '';",
+                  "  var lines = body.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0 && l.indexOf('\"message_delta\"') !== -1; });",
+                  "  pm.expect(lines.length, 'no message_delta data line found in stream: ' + body.slice(0, 400)).to.be.above(0);",
+                  "  lines.forEach(function (l, i) {",
+                  "    var frame = JSON.parse(l.replace(/^data:\\s*/, ''));",
+                  "    pm.expect(frame.delta, 'message_delta #' + i + ' has no delta object; the Anthropic API documents it as REQUIRED and strict clients (the official SDKs, Claude Code) abandon the turn without it: ' + l.slice(0, 300)).to.be.an('object');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"Say OK.\"}], \"stream\": true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
