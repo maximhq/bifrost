@@ -22,6 +22,7 @@
 - **Per-Message Effort Override** - A per-turn effort override sent as an effort-only system message (`{"role":"system","content":[],"output_config":{"effort":"low"}}`) now reaches Anthropic instead of being dropped, with the `mid-conversation-output-config-2026-07-01` beta added. Models without per-turn effort, and OpenAI-shaped providers, drop it instead of returning an error (#7714)
 - **Claude Code Per-Message Effort on Vertex and Other Cloud Surfaces** - Claude Code requests to Opus 5.5, Fable 5.1 and Sonnet 5.5 on Vertex no longer fail with `messages.1.output_config: Extra inputs are not permitted`. The per-message `output_config` is now removed for every provider and model without per-message effort (Vertex, Bedrock, Bedrock Mantle, Azure, DeepSeek, Fireworks, vLLM, SGL). The system message text and the top-level effort are kept
 
+- **Claude Code Gateway Sign-In** - Claude Code can sign in to Bifrost with `/login` (Cloud gateway) at `<issuer_url>/claude-code`: device-code sign-in through the OAuth consent page (virtual key, user or anonymous), silent token refresh, Messages inference resolved to the approved virtual key, managed settings and an OTLP sink. Configured on the new Settings → Claude Code page, independent of the MCP auth mode (#7963) [@jimseiwert](https://github.com/jimseiwert)
 
 ## 🐞 Fixed
 
@@ -33,4 +34,4 @@
 
 ## 🗄️ Database Migrations
 
-- No new database migrations in this release.
+- `add_oauth2_authorize_requests_device_code_columns` - Adds the nullable `device_code_hash` and `user_code_hash` columns to `oauth2_authorize_requests`, each with a unique index built concurrently on PostgreSQL, so writes are never blocked. Existing rows keep NULL. Rollback drops both indexes and columns, which only hold sign-in state that expires within minutes.

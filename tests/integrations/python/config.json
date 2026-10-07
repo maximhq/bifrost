@@ -1298,7 +1298,15 @@
     "max_request_body_size_mb": 100,
     "mcp_server_auth_mode": "both",
     "oauth2_server_config": {
-      "issuer_url": "http://localhost:8080"
+      "issuer_url": "http://localhost:8080",
+      "claude_code_gateway": {
+        "enabled": true,
+        "managed_settings": {
+          "env": {
+            "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
+          }
+        }
+      }
     }
   },
   "vector_store": {

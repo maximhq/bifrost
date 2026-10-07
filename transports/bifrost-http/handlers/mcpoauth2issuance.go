@@ -463,7 +463,15 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "refresh_token and client_id are required")
 		return
 	}
+	h.refreshGrant(ctx, refreshToken, clientID, resource)
+}
 
+// refreshGrant runs the refresh-token grant for a token bound to clientID:
+// replay detection, identity liveness checks, the resource binding, and an
+// atomic rotation. It writes the token response or OAuth error to ctx. Shared by
+// /oauth2/token and the Claude Code gateway token endpoint, which passes its
+// built-in client ID because Claude Code sends none.
+func (h *OAuth2IssuanceHandler) refreshGrant(ctx *fasthttp.RequestCtx, refreshToken, clientID, resource string) {
 	tokenHash := hashSHA256Hex(refreshToken)
 	rt, err := h.store.ConfigStore.GetOAuth2RefreshTokenByHash(ctx, tokenHash)
 	if errors.Is(err, configstore.ErrNotFound) {

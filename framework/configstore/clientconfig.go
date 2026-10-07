@@ -512,6 +512,20 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		}
 		hash.Write([]byte("oauth2AuthCodeTTL:" + strconv.Itoa(oc.AuthCodeTTL)))
 		hash.Write([]byte("oauth2AccessTokenTTL:" + strconv.Itoa(oc.AccessTokenTTL)))
+		// Only hashed when set, so configs without the Claude Code gateway keep
+		// their existing hash.
+		if cc := oc.ClaudeCodeGateway; cc != nil {
+			hash.Write([]byte("claudeCodeGatewayEnabled:" + strconv.FormatBool(cc.Enabled)))
+			if cc.ManagedSettings != nil {
+				// encoding/json sorts map keys at every level, so the bytes are stable.
+				settings, err := json.Marshal(cc.ManagedSettings)
+				if err != nil {
+					return "", fmt.Errorf("failed to marshal claude_code_gateway.managed_settings: %w", err)
+				}
+				hash.Write([]byte("claudeCodeGatewayManagedSettings:"))
+				hash.Write(settings)
+			}
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

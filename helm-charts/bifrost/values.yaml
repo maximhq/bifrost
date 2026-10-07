@@ -325,12 +325,15 @@ bifrost:
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
     # mcpServerAuthMode: "headers"
-    # OAuth2 authorization server settings for /mcp (only used when mcpServerAuthMode is "both" or "oauth")
+    # OAuth2 authorization server settings for /mcp (when mcpServerAuthMode is "both" or "oauth") and the Claude Code gateway (when claudeCodeGateway.enabled)
     # oauth2ServerConfig:
-    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth" (helm fails without it). Supports env.VAR_NAME
+    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth", or when claudeCodeGateway.enabled (whatever mcpServerAuthMode is); helm fails without it. Supports env.VAR_NAME
     #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
+    #   claudeCodeGateway:        # Claude Code /login (Cloud gateway) at <issuerUrl>/claude-code; needs issuerUrl, any mcpServerAuthMode
+    #     enabled: false
+    #     managedSettings: {}     # Optional Claude Code managed-settings.json pushed to signed-in clients
 
   # Server configuration
   server:

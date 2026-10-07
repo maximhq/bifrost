@@ -634,6 +634,12 @@ func (m *MockConfigStore) GetOAuth2AuthorizeRequestByID(ctx context.Context, id 
 func (m *MockConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
 	return nil, configstore.ErrNotFound
 }
+func (m *MockConfigStore) GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx context.Context, deviceCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	return nil, configstore.ErrNotFound
+}
+func (m *MockConfigStore) GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx context.Context, userCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	return nil, configstore.ErrNotFound
+}
 func (m *MockConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
 	return nil
 }
@@ -2651,6 +2657,41 @@ func TestValidateClientConfig_IssuerURLRequiredForDiscovery(t *testing.T) {
 			if tc.wantErr {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), "issuer_url")
+				require.NotContains(t, err.Error(), "BIFROST_TEST_UNSET_ISSUER_URL", "the error must not echo the reference")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateClientConfig_IssuerURLRequiredForClaudeCodeGateway pins that the
+// Claude Code gateway needs a pinned issuer_url in every MCP auth mode, since it
+// does not depend on MCP OAuth being enabled.
+func TestValidateClientConfig_IssuerURLRequiredForClaudeCodeGateway(t *testing.T) {
+	gateway := func(enabled bool, issuerURL string) *configstore.ClientConfig {
+		oc := &tables.OAuth2ServerConfig{ClaudeCodeGateway: &tables.ClaudeCodeGatewayConfig{Enabled: enabled}}
+		if issuerURL != "" {
+			oc.IssuerURL = schemas.NewSecretVar(issuerURL)
+		}
+		return &configstore.ClientConfig{MCPServerAuthMode: tables.MCPServerAuthModeHeaders, OAuth2ServerConfig: oc}
+	}
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr bool
+	}{
+		{"enabled, no issuer_url", gateway(true, ""), true},
+		{"enabled, issuer_url env reference unset", gateway(true, "env.BIFROST_TEST_UNSET_ISSUER_URL"), true},
+		{"enabled, issuer_url set", gateway(true, "https://issuer.example.com"), false},
+		{"disabled, no issuer_url", gateway(false, ""), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "claude_code_gateway")
 				require.NotContains(t, err.Error(), "BIFROST_TEST_UNSET_ISSUER_URL", "the error must not echo the reference")
 			} else {
 				require.NoError(t, err)

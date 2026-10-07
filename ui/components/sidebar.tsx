@@ -17,6 +17,7 @@ import {
 	Flag,
 	FolderGit,
 	SquareKanban,
+	SquareTerminal,
 	Gavel,
 	GitCompareArrows,
 	Globe,
@@ -1156,6 +1157,13 @@ export default function AppSidebar() {
 						url: "/workspace/config/security",
 						icon: ShieldCheck,
 						description: "Security settings",
+						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "Claude Code",
+						url: "/workspace/config/claude-code",
+						icon: SquareTerminal,
+						description: "Claude Code gateway sign-in",
 						hasAccess: hasSettingsAccess,
 					},
 					{

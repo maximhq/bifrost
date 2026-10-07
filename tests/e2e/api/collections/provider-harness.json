@@ -59,8 +59,8 @@
           "// Only register the content-shape test when the request actually succeeded.",
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
-          "// Management API (/api/...) and OAuth (/oauth2/...) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
-          "var __skipShape = __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1;",
+          "// Management API (/api/...), OAuth (/oauth2/...) and Claude Code gateway sign-in, settings and telemetry (/claude-code/... outside /v1/messages) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
+          "var __skipShape = __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/claude-code/') !== -1 && __u.indexOf('/claude-code/v1/messages') === -1) || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1;",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -206615,6 +206615,701 @@
                   "var wireTypes = (rr.tools || []).map(function (t) { return t && t.type; });",
                   "pm.test('openai shell control: shell still reaches OpenAI', function () {",
                   "  pm.expect(wireTypes, 'wire tools: ' + JSON.stringify(wireTypes)).to.eql(['shell', 'function']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "199. Claude Code gateway sign-in and bearer inference (#7963) (claude-code-gateway)",
+      "description": "Pins the Claude Code gateway protocol served under {{baseUrl}}/claude-code (#7963): what Claude Code's /login (Cloud gateway) calls, end to end over the wire. Flow: RFC 8414 discovery advertises the device grant; a bearer-less /v1/messages is refused with 401 + x-should-retry: false; device_authorization is called the way Claude Code calls it (only surface=claude_code, no client_id); the first poll is authorization_pending; the browser legs are replayed through /claude-code/device/verify and the existing OAuth consent API with the harness virtual key sk-bf-test-key; the next poll returns an access token and refresh token; the bearer then runs a real Messages call (claude-haiku-4-5, max_tokens 16) and count_tokens, which only succeed if the gateway resolved the token to the virtual key for governance. Also pins managed settings (200 with the sha256 checksum, then 304 on If-None-Match), the OTLP sink (200), the refresh grant without client_id, and sign-out: the folder revokes its own grant at the end, restoring state, and asserts the revoked refresh token is refused. Requires the harness profile in tests/integrations/python/config.json (oauth2_server_config.claude_code_gateway.enabled with an issuer_url). Run the folder in order with FEATURE=claude-code-gateway and PARALLEL=0; the token step waits one poll interval (5s) so it is not answered slow_down. Before this change every /claude-code route is unrouted, so each case fails.",
+      "item": [
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway discovery advertises the device grant - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/claude-code/.well-known/oauth-authorization-server"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('discovery advertises the device and refresh grants under /claude-code', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.device_authorization_endpoint, pm.response.text()).to.match(/\\/claude-code\\/oauth\\/device_authorization$/);",
+                  "  pm.expect(body.token_endpoint, pm.response.text()).to.match(/\\/claude-code\\/oauth\\/token$/);",
+                  "  pm.expect(body.revocation_endpoint, pm.response.text()).to.match(/\\/claude-code\\/oauth\\/revoke$/);",
+                  "  pm.expect(body.grant_types_supported, pm.response.text()).to.include.members(['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']);",
+                  "  pm.expect(body, pm.response.text()).to.not.have.property('authorization_endpoint');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] anthropic claude-code-gateway claude-haiku messages without a gateway session - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/v1/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Reply with the single word: ok\" }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a request without a gateway bearer is refused with the Anthropic error envelope', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "  pm.expect(pm.response.headers.get('x-should-retry'), 'x-should-retry makes Claude Code prompt for /login at once').to.equal('false');",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.type, pm.response.text()).to.equal('error');",
+                  "  pm.expect(body.error.type, pm.response.text()).to.equal('authentication_error');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway device authorization without client_id - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-code/harness"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/device_authorization",
+            "body": {
+              "mode": "raw",
+              "raw": "surface=claude_code"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('device authorization issues a device code and a base-20 user code', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.device_code, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.user_code, pm.response.text()).to.match(/^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/);",
+                  "  pm.expect(body.verification_uri, pm.response.text()).to.match(/\\/oauth\\/device$/);",
+                  "  pm.expect(body.verification_uri_complete, pm.response.text()).to.include('user_code=' + encodeURIComponent(body.user_code));",
+                  "  pm.expect(body.interval, pm.response.text()).to.equal(5);",
+                  "  pm.collectionVariables.set('cc_gateway_device_code', body.device_code);",
+                  "  pm.collectionVariables.set('cc_gateway_user_code', body.user_code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] anthropic claude-code-gateway token poll before approval is pending - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:ietf:params:oauth:grant-type:device_code"
+                },
+                {
+                  "key": "device_code",
+                  "value": "{{cc_gateway_device_code}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unapproved device code polls as authorization_pending', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.json().error, pm.response.text()).to.equal('authorization_pending');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway verification page accepts the typed user code - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/device/verify",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_code\": \"{{cc_gateway_user_code_lower}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Users type codes in any case and spacing; the gateway normalizes them.",
+                  "pm.collectionVariables.set('cc_gateway_user_code_lower', String(pm.collectionVariables.get('cc_gateway_user_code') || '').toLowerCase());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the user code leads to the consent page for this sign-in', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var consentURL = pm.response.json().consent_url;",
+                  "  pm.expect(consentURL, pm.response.text()).to.match(/\\/oauth\\/consent\\?flow=[^#&]+/);",
+                  "  var flow = decodeURIComponent(consentURL.match(/[?&]flow=([^#&]+)/)[1]);",
+                  "  var token = consentURL.indexOf('#t=') === -1 ? '' : decodeURIComponent(consentURL.split('#t=')[1]);",
+                  "  pm.collectionVariables.set('cc_gateway_flow', flow);",
+                  "  pm.collectionVariables.set('cc_gateway_consent_token', token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway consent with the harness virtual key - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{cc_gateway_consent_token}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{cc_gateway_flow}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"vk\",\n  \"value\": \"sk-bf-test-key\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('consent approves the device sign-in without minting an authorization code', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var redirect = pm.response.json().redirect_url;",
+                  "  pm.expect(redirect, pm.response.text()).to.match(/\\/oauth\\/device\\?approved=1$/);",
+                  "  pm.expect(redirect, pm.response.text()).to.not.include('code=');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway approved device code returns tokens - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:ietf:params:oauth:grant-type:device_code"
+                },
+                {
+                  "key": "device_code",
+                  "value": "{{cc_gateway_device_code}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Wait out the advertised 5s poll interval so this poll is not answered slow_down.",
+                  "setTimeout(function () {}, 5500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the approved device code is exchanged once for a bearer and a refresh token', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.token_type, pm.response.text()).to.equal('Bearer');",
+                  "  pm.expect(body.access_token, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.refresh_token, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.expires_in, pm.response.text()).to.be.above(0);",
+                  "  pm.collectionVariables.set('cc_gateway_access_token', body.access_token);",
+                  "  pm.collectionVariables.set('cc_gateway_refresh_token', body.refresh_token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway claude-haiku messages with the gateway session - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cc_gateway_access_token}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/v1/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Reply with the single word: ok\" }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the gateway bearer runs inference as the virtual key it was approved for', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.type, pm.response.text()).to.equal('message');",
+                  "  pm.expect(body.content, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway claude-haiku count_tokens with the gateway session - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cc_gateway_access_token}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/v1/messages/count_tokens",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Count these tokens.\" }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('count_tokens is served behind the gateway bearer', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().input_tokens, pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway managed settings served with checksum - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cc_gateway_access_token}}"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/managed/settings"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('managed settings carry the Claude Code checksum and a matching ETag', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.checksum, pm.response.text()).to.match(/^sha256:[0-9a-f]{64}$/);",
+                  "  pm.expect(body.uuid, pm.response.text()).to.equal(body.checksum);",
+                  "  pm.expect(body.settings.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY, pm.response.text()).to.equal('1');",
+                  "  pm.expect(pm.response.headers.get('ETag'), pm.response.text()).to.equal('\"' + body.checksum + '\"');",
+                  "  pm.collectionVariables.set('cc_gateway_settings_etag', pm.response.headers.get('ETag'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-304] anthropic claude-code-gateway unchanged managed settings answer 304 - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cc_gateway_access_token}}"
+              },
+              {
+                "key": "If-None-Match",
+                "value": "{{cc_gateway_settings_etag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/managed/settings"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unchanged policy is answered 304 so the hourly poll stays cheap', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(304);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway OTLP metrics export accepted - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cc_gateway_access_token}}"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/v1/metrics",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceMetrics\": []\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('telemetry exports are accepted so the client exporter does not error', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway refresh grant without client_id - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "refresh_token"
+                },
+                {
+                  "key": "refresh_token",
+                  "value": "{{cc_gateway_refresh_token}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the refresh grant rotates the refresh token without a client_id', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.access_token, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.refresh_token, pm.response.text()).to.not.equal(pm.collectionVariables.get('cc_gateway_refresh_token'));",
+                  "  pm.collectionVariables.set('cc_gateway_refresh_token', body.refresh_token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway sign-out revokes the grant - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/revoke",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "token",
+                  "value": "{{cc_gateway_refresh_token}}"
+                },
+                {
+                  "key": "token_type_hint",
+                  "value": "refresh_token"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('revocation succeeds and removes the grant this folder created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] anthropic claude-code-gateway revoked refresh token is refused - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "refresh_token"
+                },
+                {
+                  "key": "refresh_token",
+                  "value": "{{cc_gateway_refresh_token}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('after sign-out the refresh token no longer works', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.json().error, pm.response.text()).to.equal('invalid_grant');",
                   "});"
                 ]
               }
