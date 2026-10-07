@@ -270,7 +270,7 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 			_ = inner.Close(ctx)
 			return nil, fmt.Errorf("failed to ping object store: %w", err)
 		}
-		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields), nil
+		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields, config.ObjectStorageExcludeRequestTypes), nil
 	}
 	return inner, nil
 }

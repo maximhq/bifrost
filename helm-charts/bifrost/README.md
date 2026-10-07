@@ -745,6 +745,7 @@ Bifrost supports two storage backends (SQLite and PostgreSQL) that can be config
 | `storage.logsStore.type`                       | Logs store backend: `sqlite`, `postgres`, or `""`                       | `""` (uses `storage.mode`) |
 | `storage.logsStore.postgres.enabled`           | Point the logs store at a separate external PostgreSQL than the config store (only applies when the logs store is postgres). When `false`, a postgres logs store shares the top-level `postgresql` connection. | `false` |
 | `storage.logsStore.objectStorageExcludeFields` | Payload DB fields to keep in DB instead of offloading to object storage | `[]`                       |
+| `storage.logsStore.objectStorageExcludeRequestTypes` | Request types whose logs stay in the DB and are not offloaded (e.g. `list_models`). Hidden logs are still offloaded | `[]` |
 
 #### Mixed Backend Example
 

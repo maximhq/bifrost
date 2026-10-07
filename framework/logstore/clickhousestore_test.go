@@ -1116,7 +1116,7 @@ func TestClickHouseMCPToolLogs(t *testing.T) {
 func TestClickHouseHybridHasObjectSurvivesDuplicateCreate(t *testing.T) {
 	ch := trySetupClickHouseStore(t)
 	objStore := objectstore.NewInMemoryObjectStore()
-	hybrid := newHybridLogStore(ch, objStore, "test", hybridTestLogger{}, nil)
+	hybrid := newHybridLogStore(ch, objStore, "test", hybridTestLogger{}, nil, nil)
 	ctx := context.Background()
 	ts := time.Now().UTC().Truncate(time.Millisecond)
 

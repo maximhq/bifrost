@@ -1795,6 +1795,10 @@ storage:
     # Keep selected payload fields in DB instead of offloading to object storage.
     # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).
     objectStorageExcludeFields: []
+    # Request types whose logs are never offloaded to object storage (e.g., list_models).
+    # These logs are kept in full in the logs database instead. Hidden logs (content
+    # logging disabled with retainContentInObjectStorage on) are still offloaded.
+    objectStorageExcludeRequestTypes: []
 
     # Object storage for offloading large log payloads (optional)
     # When enabled, request/response payloads are stored in S3/GCS
