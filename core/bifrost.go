@@ -5094,14 +5094,16 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 		ctx = bifrost.ctx
 	}
 	baseProvider := bifrost.baseProviderType(providerKey)
-	supportedKeys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider, additionalModels...)
+	supportedKeys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider, additionalModels...)
 	if err != nil {
 		return schemas.Key{}, err
 	}
 	if len(supportedKeys) == 0 {
 		return schemas.Key{}, nil
 	}
-	if len(supportedKeys) == 1 {
+	// A fixed pool, a pin or a session's key with the rest of the pool behind it, is served by
+	// its first key: the rest only matters to a request that can retry on another key.
+	if len(supportedKeys) == 1 || !canRotate {
 		return supportedKeys[0], nil
 	}
 	return bifrost.keySelector(ctx, supportedKeys, providerKey, model)
@@ -6648,6 +6650,59 @@ var errAllKeysDead = errors.New("all configured keys returned permanent per-key 
 // condition (the filter/circuit breaker self-heals), so it surfaces as a 503 rather than a 502.
 var errAllKeysFiltered = errors.New("all eligible keys are temporarily suppressed by the key pool filter")
 
+// pickFromRotatingPool picks a key for one attempt of a request whose key can rotate: a weighted
+// choice among the pool's keys that are neither dead nor already tried this round, through the key
+// pool filter. When that leaves nothing, a new round starts over every live key the filter admits,
+// since a key rate-limited earlier may have quota again, and usedKeyIDs is cleared for it. It
+// returns errAllKeysFiltered when live keys remain but the filter suppressed all of them, and
+// errAllKeysDead when none is live.
+func (bifrost *Bifrost) pickFromRotatingPool(ctx *schemas.BifrostContext, pool []schemas.Key, provider schemas.ModelProvider, model string, usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+	available := make([]schemas.Key, 0, len(pool))
+	for _, k := range pool {
+		if deadKeyIDs[k.ID] || usedKeyIDs[k.ID] {
+			continue
+		}
+		available = append(available, k)
+	}
+	if bifrost.keyPoolFilter != nil {
+		if filtered, err := bifrost.keyPoolFilter(ctx, provider, model, available); err != nil {
+			bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provider, err)
+		} else {
+			available = filtered
+		}
+	}
+	if len(available) == 0 {
+		// No non-dead keys remain in this cycle. If every key has been
+		// marked permanently dead, give up — retrying won't help.
+		// Otherwise reset usedKeyIDs and start a fresh weighted round
+		// across the still-live (non-dead) keys; a previously
+		// rate-limited key may have free quota by now.
+		for _, k := range pool {
+			if !deadKeyIDs[k.ID] {
+				available = append(available, k)
+			}
+		}
+		liveCount := len(available) // non-dead keys before the filter runs
+		if bifrost.keyPoolFilter != nil {
+			if filtered, err := bifrost.keyPoolFilter(ctx, provider, model, available); err != nil {
+				bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provider, err)
+			} else {
+				available = filtered
+			}
+		}
+		if len(available) == 0 {
+			if liveCount > 0 {
+				return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysFiltered, provider)
+			}
+			return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysDead, provider)
+		}
+		for id := range usedKeyIDs {
+			delete(usedKeyIDs, id)
+		}
+	}
+	return bifrost.keySelector(ctx, available, provider, model)
+}
+
 // executeRequestWithRetries is a generic function that handles common request processing logic.
 // It consolidates retry logic, backoff calculation, error handling, and key rotation.
 // It is not a bifrost method because interface methods in go cannot be generic.
@@ -7735,15 +7790,23 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					} else if !canRotate {
 						// Fixed key (explicit ID/name, session stickiness): always
 						// return the same key — *unless* it has been marked permanently
-						// dead this request, in which case surface errAllKeysDead so the
-						// caller emits 502 upstream_credentials_exhausted instead of
-						// burning the remaining retries on the same bad credential.
+						// dead this request. A pin has nothing behind it, so surface
+						// errAllKeysDead and the caller emits 502
+						// upstream_credentials_exhausted instead of burning the remaining
+						// retries on the same bad credential. A session's pool carries the
+						// rest of the eligible keys behind its key, so the request moves to
+						// the same pick a rotating pool makes among them (pickFromRotatingPool),
+						// as one without a session would. The session then binds to the key
+						// that served.
 						fixedKey := supportedKeys[0]
-						keyProvider = func(_, deadKeyIDs map[string]bool) (schemas.Key, error) {
-							if deadKeyIDs[fixedKey.ID] {
-								return schemas.Key{}, errAllKeysDead
+						rest := supportedKeys[1:]
+						provKey := provider.GetProviderKey()
+						mdl := model
+						keyProvider = func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+							if !deadKeyIDs[fixedKey.ID] {
+								return fixedKey, nil
 							}
-							return fixedKey, nil
+							return bifrost.pickFromRotatingPool(req.Context, rest, provKey, mdl, usedKeyIDs, deadKeyIDs)
 						}
 					} else {
 						// Rotating pool: weighted selection with per-cycle exclusion.
@@ -7752,50 +7815,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						provKey := provider.GetProviderKey()
 						mdl := model
 						keyProvider = func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
-							available := make([]schemas.Key, 0, len(pool))
-							for _, k := range pool {
-								if deadKeyIDs[k.ID] || usedKeyIDs[k.ID] {
-									continue
-								}
-								available = append(available, k)
-							}
-							if bifrost.keyPoolFilter != nil {
-								if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
-									bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
-								} else {
-									available = filtered
-								}
-							}
-							if len(available) == 0 {
-								// No non-dead keys remain in this cycle. If every key has been
-								// marked permanently dead, give up — retrying won't help.
-								// Otherwise reset usedKeyIDs and start a fresh weighted round
-								// across the still-live (non-dead) keys; a previously
-								// rate-limited key may have free quota by now.
-								for _, k := range pool {
-									if !deadKeyIDs[k.ID] {
-										available = append(available, k)
-									}
-								}
-								liveCount := len(available) // non-dead keys before the filter runs
-								if bifrost.keyPoolFilter != nil {
-									if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
-										bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
-									} else {
-										available = filtered
-									}
-								}
-								if len(available) == 0 {
-									if liveCount > 0 {
-										return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysFiltered, provKey)
-									}
-									return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysDead, provKey)
-								}
-								for id := range usedKeyIDs {
-									delete(usedKeyIDs, id)
-								}
-							}
-							return bifrost.keySelector(req.Context, available, provKey, mdl)
+							return bifrost.pickFromRotatingPool(req.Context, pool, provKey, mdl, usedKeyIDs, deadKeyIDs)
 						}
 					}
 				}
@@ -10182,7 +10202,9 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // canRotate=false is returned for cases where the caller must always use the same key:
 //   - SkipKeySelection (Claude Code OAuth passthrough to Anthropic; empty slice returned)
 //   - Explicit BifrostContextKeyAPIKeyID / APIKeyName (user pinned a specific key)
-//   - Session affinity (the registered policy named a key for the request's session)
+//   - Session affinity (the registered policy named a key for the request's session). The
+//     pool is that key followed by the rest of the eligible keys, which the request moves to
+//     only once the session's key is dead.
 //   - Single-key pool (only one eligible key — rotation is a no-op, KV write skipped)
 //
 // canRotate=true is returned when there are two or more eligible keys and no pinning
@@ -10314,14 +10336,23 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	}
 
 	// Session affinity: a request that takes part and already has a key here stays on it. The
-	// policy decides what that means; core honors the key it names, for every attempt, as long
-	// as that key is one of the eligible ones. A policy naming anything else is ignored, so a
-	// disabled or model-incompatible key can never reach a request through it.
+	// policy decides what that means; core honors the key it names, for every attempt until the
+	// provider rejects it outright, as long as that key is one of the eligible ones. A policy
+	// naming anything else is ignored, so a disabled or model-incompatible key can never reach a
+	// request through it.
 	if schemas.IsSessionAffinityActive(ctx) {
 		if key, ok := bifrost.sessionAffinity.ResolveKey(ctx, providerKey, model, supportedKeys); ok {
 			for _, eligible := range supportedKeys {
 				if eligible.ID == key.ID {
-					return []schemas.Key{eligible}, false, nil
+					// The rest of the pool rides behind the session's key, for a request whose
+					// key turns out to be dead.
+					pool := []schemas.Key{eligible}
+					for _, other := range supportedKeys {
+						if other.ID != eligible.ID {
+							pool = append(pool, other)
+						}
+					}
+					return pool, false, nil
 				}
 			}
 			bifrost.logger.Warn("session affinity named key %s for provider %s, which is not in the eligible pool; selecting a key normally", key.ID, providerKey)
