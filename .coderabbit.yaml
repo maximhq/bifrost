@@ -63,6 +63,32 @@ reviews:
 
         - The key passed to WithValue/Value MUST be that typed identifier, e.g.
           - ctx = context.WithValue(ctx, userIDKey, userID)
+
+        Rule: Read request attribution from ctx.Grant(), not from deprecated context keys.
+
+        Who a request is attributed to and what limits it answers to are carried on the request's Grant
+        (core/schemas/grant.go). The matching context keys in core/schemas/bifrost.go are deprecated copies.
+        Flag any NEW read or write of these keys and suggest the Grant equivalent:
+        - BifrostContextKeyGovernanceVirtualKeyID / Name        -> ctx.Grant().Identity().VirtualKey()
+        - BifrostContextKeyGovernanceTeamID / Name              -> ctx.Grant().Identity().Teams()[0]
+        - BifrostContextKeyGovernanceCustomerID / Name          -> ctx.Grant().Identity().Customers()[0]
+        - BifrostContextKeyGovernanceBusinessUnitID / Name      -> ctx.Grant().Identity().BusinessUnits()[0]
+        - BifrostContextKeyGovernanceTeamIDs / TeamNames        -> ctx.Grant().Identity().Teams()
+        - BifrostContextKeyGovernanceCustomerIDs / Names        -> ctx.Grant().Identity().Customers()
+        - BifrostContextKeyGovernanceBusinessUnitIDs / Names    -> ctx.Grant().Identity().BusinessUnits()
+        - BifrostContextKeyGovernanceProjectID / Name           -> ctx.Grant().Identity().Project()
+        - BifrostContextKeyUserID / UserName / UserEmail        -> ctx.Grant().Identity().User()
+        - BifrostContextKeyGovernanceBudgetIDs / RateLimitIDs   -> ctx.Grant().Limits().Budgets() / RateLimits()
+
+        Any new context key holding data the Grant already carries counts too. New attribution data belongs on
+        the Grant, not on a new context key.
+        Code moving to the Grant must nil-check before dereferencing: ctx.Grant() is nil when nothing governs the
+        request, Identity()/Limits() are nil until settled, and VirtualKey()/User()/Project() return nil pointers
+        when unknown. Check slices for length before indexing [0].
+        Budget/rate-limit ID keys are filtered by skip-usage tracking, so a migration off them must apply the same
+        filter (grant.LimitsFrom) or it will record limits that were never charged.
+        Do not flag existing call sites a PR leaves untouched, and do not flag the governance plugin keeping these
+        keys populated for readers that have not moved to the Grant yet.
     - path: "core/**"
       instructions: |
         Review Go core changes for concurrency safety, provider isolation, pooled object reset discipline, and plugin hook ordering.
