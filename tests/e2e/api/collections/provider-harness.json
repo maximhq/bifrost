@@ -203879,6 +203879,625 @@
           ]
         }
       ]
+    },
+    {
+      "name": "177. Custom Anthropic DB parameters survive URL sync (#8073) (model-parameters-sync) [SERIAL]",
+      "description": "Deterministic local-only regression: seed a provider-qualified max_output_tokens=32000 row in a fresh SQLite profile, while the URL feed carries only the same bare model with provider=anthropic and max_output_tokens=16000. Force-sync uses the same path as background startup; before the fix the custom row remains in SQLite but disappears from the candidate index, and the upstream receives 4096. The fixture echoes the actual max_tokens in its response, so the default-limit inference rows fail before the fix and pass after it. Explicit 123 is a control. A second sync then serves an entirely malformed feed targeting the warmed custom row, with other valid rows remaining in SQLite; Responses, Chat and streaming must still use 32000. The fixture feed is restored afterwards. Preview-gated because these cases require an isolated gateway and a same-host fixture, never the shared live-provider profile. Node 22.12+ is required; --experimental-sqlite enables node:sqlite on the repository-pinned Node 22.12. No real keys, backing services or LLM calls are needed.\n\nFrom repo root, first check ports 8797 and 3023 with lsof -nP -iTCP:8797 -iTCP:3023 -sTCP:LISTEN; both must be free. In terminal 1: node --experimental-sqlite tests/e2e/api/runners/run-model-parameters-sync-fixture.mjs --app-dir tmp/model-parameters-sync --port 8797 (directory must not exist). In terminal 2: make dev PORT=3023 APP_DIR=\"$PWD/tmp/model-parameters-sync\". After /health answers, run: make run-provider-harness-test PROVIDER=anthropic FEATURE=\"model-parameters-sync\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 ENV_FILE=tmp/model-parameters-sync/fixture.env.json BASE_URL=http://localhost:3023. The provider identity precondition prevents force-sync on another profile. Stop both foreground servers afterwards; the disposable profile is retained for inspection. Use a new directory for each run.",
+      "item": [
+        {
+          "name": "[PREVIEW] anthropic custom-params-model local fixture identity - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": "{{modelParamsFixtureURL}}/api/fixture-health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.collectionVariables.unset('modelParamsFixtureReady');",
+                  "pm.test('correct local fixture is running', function () { pm.expect(pm.response.json()).to.deep.equal({fixture: 'model-parameters-sync-8073'}); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model verify isolated gateway provider - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/custom-anthropic-sync"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('gateway uses the owned local custom Anthropic provider', function () {",
+                  "  var row = pm.response.json();",
+                  "  pm.expect(row.name, pm.response.text()).to.equal('custom-anthropic-sync');",
+                  "  pm.expect(row.network_config.base_url, pm.response.text()).to.equal(pm.variables.get('modelParamsFixtureURL'));",
+                  "  pm.expect(row.custom_provider_config.base_provider_type, pm.response.text()).to.equal('anthropic');",
+                  "  pm.collectionVariables.set('modelParamsFixtureReady', '1');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model force URL sync - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": "{{baseUrl}}/api/pricing/force-sync",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('modelParamsFixtureReady');",
+                  "pm.test('isolated fixture gateway was verified', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('sync completed successfully', function () { pm.expect(pm.response.json().status, pm.response.text()).to.equal('success'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model responses retains DB default after sync - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"custom-anthropic-sync/custom-params-model\",\n  \"input\": \"hello\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('modelParamsFixtureReady');",
+                  "pm.test('isolated fixture gateway was verified', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var text = j.output.filter(function (x) { return x.type === 'message'; }).map(function (x) { return x.content.map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "pm.test('actual upstream max_tokens survives the sync', function () { pm.expect(text, pm.response.text()).to.equal('fixture max_tokens=32000'); });",
+                  "pm.test('response completed', function () { pm.expect(j.status, pm.response.text()).to.equal('completed'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model chat retains DB default after sync - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"custom-anthropic-sync/custom-params-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('modelParamsFixtureReady');",
+                  "pm.test('isolated fixture gateway was verified', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var text = j.choices[0].message.content;",
+                  "pm.test('actual upstream max_tokens survives the sync', function () { pm.expect(text, pm.response.text()).to.equal('fixture max_tokens=32000'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model responses stream retains DB default after sync - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"custom-anthropic-sync/custom-params-model\",\n  \"input\": \"hello\",\n  \"stream\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('modelParamsFixtureReady');",
+                  "pm.test('isolated fixture gateway was verified', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('response is SSE', function () { pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.include('text/event-stream'); });",
+                  "var events = [];",
+                  "pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data:') === 0) { var value = line.slice(5).trim(); if (value && value !== '[DONE]') events.push(JSON.parse(value)); } });",
+                  "pm.test('stream exposes the actual upstream max_tokens and completes', function () {",
+                  "  var text = events.filter(function (e) { return e.type === 'response.output_text.delta'; }).map(function (e) { return e.delta; }).join('');",
+                  "  pm.expect(text, pm.response.text()).to.equal('fixture max_tokens=32000');",
+                  "  pm.expect(events.filter(function (e) { return e.error; }), pm.response.text()).to.have.lengthOf(0);",
+                  "  var completed = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "  pm.expect(completed, pm.response.text()).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, pm.response.text()).to.equal('completed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model explicit responses limit stays authoritative - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"custom-anthropic-sync/custom-params-model\",\n  \"input\": \"hello\",\n  \"max_output_tokens\": 123\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('modelParamsFixtureReady');",
+                  "pm.test('isolated fixture gateway was verified', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var text = j.output.filter(function (x) { return x.type === 'message'; }).map(function (x) { return x.content.map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "pm.test('actual upstream max_tokens survives the sync', function () { pm.expect(text, pm.response.text()).to.equal('fixture max_tokens=123'); });",
+                  "pm.test('response completed', function () { pm.expect(j.status, pm.response.text()).to.equal('completed'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model switch fixture to invalid feed - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{modelParamsFixtureURL}}/api/params-feed",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"invalid\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('modelParamsFixtureReady');",
+                  "pm.test('isolated fixture gateway was verified', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('fixture feed mode changed', function () { pm.expect(pm.response.json(), pm.response.text()).to.deep.equal({mode: 'invalid'}); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model force unusable URL sync - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": "{{baseUrl}}/api/pricing/force-sync",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('modelParamsFixtureReady');",
+                  "pm.test('isolated fixture gateway was verified', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('sync completed successfully', function () { pm.expect(pm.response.json().status, pm.response.text()).to.equal('success'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model responses retains DB default after unusable sync - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"custom-anthropic-sync/custom-params-model\",\n  \"input\": \"hello\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('modelParamsFixtureReady');",
+                  "pm.test('isolated fixture gateway was verified', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var text = j.output.filter(function (x) { return x.type === 'message'; }).map(function (x) { return x.content.map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "pm.test('actual upstream max_tokens survives the sync', function () { pm.expect(text, pm.response.text()).to.equal('fixture max_tokens=32000'); });",
+                  "pm.test('response completed', function () { pm.expect(j.status, pm.response.text()).to.equal('completed'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model chat retains DB default after unusable sync - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"custom-anthropic-sync/custom-params-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('modelParamsFixtureReady');",
+                  "pm.test('isolated fixture gateway was verified', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var text = j.choices[0].message.content;",
+                  "pm.test('actual upstream max_tokens survives the sync', function () { pm.expect(text, pm.response.text()).to.equal('fixture max_tokens=32000'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model responses stream retains DB default after unusable sync - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"custom-anthropic-sync/custom-params-model\",\n  \"input\": \"hello\",\n  \"stream\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('modelParamsFixtureReady');",
+                  "pm.test('isolated fixture gateway was verified', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('response is SSE', function () { pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.include('text/event-stream'); });",
+                  "var events = [];",
+                  "pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data:') === 0) { var value = line.slice(5).trim(); if (value && value !== '[DONE]') events.push(JSON.parse(value)); } });",
+                  "pm.test('stream exposes the actual upstream max_tokens and completes', function () {",
+                  "  var text = events.filter(function (e) { return e.type === 'response.output_text.delta'; }).map(function (e) { return e.delta; }).join('');",
+                  "  pm.expect(text, pm.response.text()).to.equal('fixture max_tokens=32000');",
+                  "  pm.expect(events.filter(function (e) { return e.error; }), pm.response.text()).to.have.lengthOf(0);",
+                  "  var completed = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "  pm.expect(completed, pm.response.text()).to.have.lengthOf(1);",
+                  "  pm.expect(completed[0].response.status, pm.response.text()).to.equal('completed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] anthropic custom-params-model switch fixture to valid feed - model-parameters-sync - #8073",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{modelParamsFixtureURL}}/api/params-feed",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"valid\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('modelParamsFixtureReady');",
+                  "pm.test('isolated fixture gateway was verified', function () { pm.expect(ready).to.equal('1'); });",
+                  "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('fixture feed mode changed', function () { pm.expect(pm.response.json(), pm.response.text()).to.deep.equal({mode: 'valid'}); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

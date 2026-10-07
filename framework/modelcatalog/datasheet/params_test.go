@@ -3,13 +3,18 @@ package datasheet
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"gorm.io/gorm"
 )
 
 func TestModelParameterCandidates(t *testing.T) {
@@ -221,5 +226,190 @@ func TestLoadModelCapabilities_CarriesServerSideModel(t *testing.T) {
 	}
 	if caps == nil || caps.ServerSideModel == nil || *caps.ServerSideModel != "deepseek-flash" {
 		t.Fatalf("ServerSideModel = %+v, want deepseek-flash", caps)
+	}
+}
+
+// A URL sync updates feed-owned rows, but DB-only qualified rows must remain
+// discoverable after the derived indexes and capability cache are rebuilt.
+func TestSyncModelParamsFromURL_PreservesDBOnlyRows(t *testing.T) {
+	ctx := t.Context()
+	cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close(context.Background()) })
+	const model = "custom-params-model"
+	const customData = `{"provider":"custom-anthropic","max_output_tokens":32000,"supported_endpoints":["/v1/responses"],"supports_function_calling":true}`
+	if err := cs.UpsertModelParametersBatch(ctx, []configstoreTables.TableModelParameters{
+		{Model: "custom-anthropic/" + model, Data: customData},
+		{Model: "other-anthropic/" + model, Data: `{"provider":"other-anthropic","max_output_tokens":64000}`},
+		{Model: model, Data: `{"provider":"anthropic","max_output_tokens":8000}`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	feedPath := filepath.Join(t.TempDir(), "params.json")
+	if err := os.WriteFile(feedPath, []byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":16000}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cs, nil, Config{ModelParametersURL: "file://" + feedPath})
+	applied := 0
+	s.SetOnModelParametersApplied(func() { applied++ })
+	if _, err := s.LoadModelParamsFromDB(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"before sync", "after sync", "after repeated sync"} {
+		if phase != "before sync" {
+			if err := s.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, tc := range []struct {
+			provider schemas.ModelProvider
+			want     int
+		}{
+			{"custom-anthropic", 32000},
+			{"other-anthropic", 64000},
+			{schemas.Anthropic, 16000},
+		} {
+			want := tc.want
+			if phase == "before sync" && tc.provider == schemas.Anthropic {
+				want = 8000
+			}
+			caps, err := s.LoadModelCapabilities(ctx, tc.provider, model)
+			if err != nil || caps == nil || caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != want {
+				t.Errorf("%s: capabilities for %s = %+v, err = %v, want max_output_tokens %d", phase, tc.provider, caps, err, want)
+			}
+		}
+		if !slices.Contains(s.GetSupportedParameters("custom-anthropic/"+model), "tools") {
+			t.Errorf("%s: DB-only supported parameters disappeared", phase)
+		}
+		if !s.IsRequestTypeSupported("custom-anthropic/"+model, schemas.ResponsesRequest) {
+			t.Errorf("%s: DB-only supported response types disappeared", phase)
+		}
+		if caps, err := s.LoadModelCapabilities(ctx, "unrelated-provider", model); err != nil || caps != nil {
+			t.Errorf("%s: unrelated provider resolved another provider's capabilities: %+v, %v", phase, caps, err)
+		}
+	}
+	row, err := cs.GetModelParametersByModel(ctx, "custom-anthropic/"+model)
+	if err != nil || row == nil || row.Data != customData {
+		t.Fatalf("DB-only row changed: %+v, %v", row, err)
+	}
+	if applied != 3 {
+		t.Fatalf("applied hook fired %d times, want 3", applied)
+	}
+}
+
+type modelParamsReloadErrorStore struct {
+	configstore.ConfigStore
+	err      error
+	upserted bool
+}
+
+// DB-only valid rows must not make an unusable URL feed look safe to apply.
+func TestSyncModelParamsFromURL_UnusableFeedKeepsDBAndIndexes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		feed string
+	}{
+		{"empty feed", `{}`},
+		{"null feed", `null`},
+		{"empty record", `{"feed-model":{}}`},
+		{"provider only", `{"feed-model":{"provider":"anthropic"}}`},
+		{"null record", `{"feed-model":null}`},
+		{"malformed capability", `{"feed-model":{"provider":"anthropic","max_output_tokens":"invalid"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+				Enabled: true,
+				Type:    configstore.ConfigStoreTypeSQLite,
+				Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+			}, bifrost.NewNoOpLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close(context.Background()) })
+			const feedData = `{"provider":"anthropic","max_output_tokens":16000,"supported_endpoints":["/v1/responses"],"supports_function_calling":true}`
+			if err := cs.UpsertModelParametersBatch(ctx, []configstoreTables.TableModelParameters{
+				{Model: "feed-model", Data: feedData},
+				{Model: "custom-anthropic/custom-model", Data: `{"provider":"custom-anthropic","max_output_tokens":32000}`},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			feedPath := filepath.Join(t.TempDir(), "params.json")
+			if err := os.WriteFile(feedPath, []byte(tc.feed), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s := New(cs, nil, Config{ModelParametersURL: "file://" + feedPath})
+			if _, err := s.LoadModelParamsFromDB(ctx); err != nil {
+				t.Fatal(err)
+			}
+			fired := false
+			s.SetOnModelParametersApplied(func() { fired = true })
+			if err := s.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if fired {
+				t.Error("unusable feed flushed the capability cache")
+			}
+			if !slices.Contains(s.GetSupportedParameters("feed-model"), "tools") || !s.IsRequestTypeSupported("feed-model", schemas.ResponsesRequest) {
+				t.Error("unusable feed replaced the existing indexes")
+			}
+			row, err := cs.GetModelParametersByModel(ctx, "feed-model")
+			if err != nil || row == nil || row.Data != feedData {
+				t.Errorf("unusable feed overwrote the DB row: %+v, %v", row, err)
+			}
+		})
+	}
+}
+
+func (s *modelParamsReloadErrorStore) UpsertModelParametersBatch(context.Context, []configstoreTables.TableModelParameters, ...*gorm.DB) error {
+	s.upserted = true
+	return nil
+}
+
+func (s *modelParamsReloadErrorStore) GetModelParameters(context.Context) ([]configstoreTables.TableModelParameters, error) {
+	return nil, s.err
+}
+
+func TestSyncModelParamsFromURL_DBReloadErrorKeepsIndexes(t *testing.T) {
+	feedPath := filepath.Join(t.TempDir(), "params.json")
+	if err := os.WriteFile(feedPath, []byte(`{"new-model":{"provider":"anthropic","max_output_tokens":16000}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dbErr := errors.New("database unavailable")
+	cs := &modelParamsReloadErrorStore{err: dbErr}
+	s := New(cs, nil, Config{ModelParametersURL: "file://" + feedPath})
+	s.applyModelParameters(map[string]json.RawMessage{
+		"custom-anthropic/old-model": json.RawMessage(`{"provider":"custom-anthropic","max_output_tokens":32000,"supports_function_calling":true}`),
+	})
+	fired := false
+	s.SetOnModelParametersApplied(func() { fired = true })
+	if err := s.SyncModelParamsFromURL(t.Context()); !errors.Is(err, dbErr) {
+		t.Errorf("sync error = %v, want database reload error", err)
+	}
+	if !cs.upserted {
+		t.Fatal("feed was not persisted before the reload")
+	}
+	if fired || !slices.Contains(s.GetSupportedParameters("custom-anthropic/old-model"), "tools") {
+		t.Fatal("failed DB reload must preserve the existing indexes and capability cache")
+	}
+}
+
+func TestSyncModelParamsFromURL_WithoutConfigStore(t *testing.T) {
+	feedPath := filepath.Join(t.TempDir(), "params.json")
+	if err := os.WriteFile(feedPath, []byte(`{"feed-model":{"provider":"anthropic","supported_endpoints":["/v1/responses"],"supports_function_calling":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(nil, nil, Config{ModelParametersURL: "file://" + feedPath})
+	if err := s.SyncModelParamsFromURL(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(s.GetSupportedParameters("feed-model"), "tools") || !s.IsRequestTypeSupported("feed-model", schemas.ResponsesRequest) {
+		t.Fatal("URL-only sync did not apply the feed")
 	}
 }

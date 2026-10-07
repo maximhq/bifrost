@@ -55,7 +55,8 @@ func (s *Store) LoadModelParamsFromDB(ctx context.Context) (int, error) {
 
 // SyncModelParamsFromURL fetches model parameters from the configured URL,
 // persists to DB (when configStore != nil), and refreshes the in-memory
-// indexes. On URL failure it falls back to DB records when any exist.
+// indexes from all stored rows. On URL failure it falls back to DB records
+// when any exist.
 func (s *Store) SyncModelParamsFromURL(ctx context.Context) error {
 	if s.logger != nil {
 		s.logger.Debug("starting model parameters synchronization")
@@ -83,6 +84,23 @@ func (s *Store) SyncModelParamsFromURL(ctx context.Context) error {
 		return fmt.Errorf("failed to load model parameters from URL and no existing data in database: %w", err)
 	}
 
+	// Validate the feed itself before writing: unrelated DB-only rows must not
+	// let an unusable feed overwrite good records and invalidate their cache.
+	usable := false
+	for _, data := range paramsData {
+		var caps schemas.ModelCapabilities
+		if json.Unmarshal(data, &caps) == nil && !IsEmptyModelCapabilities(&caps) {
+			usable = true
+			break
+		}
+	}
+	if !usable {
+		if s.logger != nil {
+			s.logger.Warn("model-parameters-sync: no usable records in URL feed, keeping existing model parameters and capabilities")
+		}
+		return nil
+	}
+
 	if s.configStore != nil {
 		records := make([]configstoreTables.TableModelParameters, 0, len(paramsData))
 		for model, data := range paramsData {
@@ -94,9 +112,15 @@ func (s *Store) SyncModelParamsFromURL(ctx context.Context) error {
 		if err := s.configStore.UpsertModelParametersBatch(ctx, records); err != nil {
 			return fmt.Errorf("failed to sync model parameters to database: %w", err)
 		}
+		// The feed updates only its own keys. Rebuild from the full DB so
+		// provider-qualified rows absent from the feed remain discoverable.
+		if _, err := s.LoadModelParamsFromDB(ctx); err != nil {
+			return fmt.Errorf("failed to reload model parameters after sync: %w", err)
+		}
+	} else {
+		s.applyModelParameters(paramsData)
 	}
 
-	s.applyModelParameters(paramsData)
 	if s.logger != nil {
 		s.logger.Info("successfully synced %d model parameters records", len(paramsData))
 	}

@@ -1,13 +1,26 @@
 package modelcatalog
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/lrucache"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
 // capabilityTestCatalog builds a catalog whose capability lookups are served by
@@ -212,5 +225,113 @@ func TestCleanup_ClearsGlobalCapabilityResolver(t *testing.T) {
 
 	if got := providerUtils.CapabilitiesFor(schemas.Anthropic, "claude-opus-5"); got != nil {
 		t.Errorf("resolver still answering from a torn-down catalog: %+v", got)
+	}
+}
+
+// Reproduce #8073 on the real SQLite -> datasheet -> capability cache ->
+// Anthropic HTTP path. The upstream witnesses max_tokens, not just a cached
+// capability value, before and after the same sync used at background startup.
+func TestModelParametersSyncPreservesCustomProviderMaxTokens(t *testing.T) {
+	const model = "custom-params-model"
+	const customProvider schemas.ModelProvider = "custom-anthropic"
+	ctx := t.Context()
+	logger := bifrost.NewNoOpLogger()
+	cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close(context.Background()) })
+	if err := cs.UpsertModelParametersBatch(ctx, []tables.TableModelParameters{
+		{Model: string(customProvider) + "/" + model, Data: `{"provider":"custom-anthropic","max_output_tokens":32000}`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	witness := make(chan int, 4)
+	var unusableFeed atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/params.json" {
+			if unusableFeed.Load() {
+				_, _ = w.Write([]byte(`{"custom-anthropic/custom-params-model":{"provider":"custom-anthropic","max_output_tokens":"invalid"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":16000}}`))
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
+			http.Error(w, "unexpected fixture route", http.StatusNotFound)
+			return
+		}
+		var request struct {
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Model != model {
+			http.Error(w, "invalid fixture request", http.StatusBadRequest)
+			return
+		}
+		witness <- request.MaxTokens
+		_, _ = fmt.Fprintf(w, `{"id":"msg_fixture","type":"message","role":"assistant","model":%q,"content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`, model)
+	}))
+	t.Cleanup(upstream.Close)
+	ds := datasheet.New(cs, logger, datasheet.Config{ModelParametersURL: upstream.URL + "/params.json"})
+	mc := &ModelCatalog{datasheet: ds, capabilities: lrucache.New[*schemas.ModelCapabilities](capabilityCacheSize)}
+	mc.loadCapabilities = mc.datasheetCapabilityLoader
+	ds.SetOnModelParametersApplied(mc.capabilities.Flush)
+	providerUtils.SetCapabilityResolver(mc.GetModelCapabilities)
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+	if _, err := ds.LoadModelParamsFromDB(ctx); err != nil {
+		t.Fatal(err)
+	}
+	provider := anthropic.NewAnthropicProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.Anthropic,
+			IsKeyLess:        true,
+		},
+	}, logger)
+	for _, phase := range []string{"before sync", "after sync", "after unusable sync", "after DB reload"} {
+		switch phase {
+		case "after unusable sync":
+			unusableFeed.Store(true)
+			fallthrough
+		case "after sync":
+			if err := ds.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
+		case "after DB reload":
+			// Also prove a cold lookup can still read the good row from SQLite.
+			if _, err := ds.LoadModelParamsFromDB(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, limit := range []*int{nil, schemas.Ptr(123)} {
+			request := &schemas.BifrostResponsesRequest{
+				Provider: customProvider,
+				Model:    model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{MaxOutputTokens: limit},
+			}
+			response, err := provider.Responses(schemas.NewBifrostContext(ctx, time.Time{}), schemas.Key{}, request)
+			if err != nil || response == nil {
+				t.Fatalf("%s: provider request failed: %+v", phase, err)
+			}
+			want := 32000
+			if limit != nil {
+				want = *limit
+			}
+			got := <-witness
+			t.Logf("%s: omitted max_output_tokens=%t, upstream max_tokens=%d", phase, limit == nil, got)
+			if got != want {
+				t.Errorf("%s: upstream max_tokens = %d, want %d", phase, got, want)
+			}
+		}
 	}
 }
