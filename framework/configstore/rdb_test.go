@@ -5252,6 +5252,8 @@ func trySetupPostgresVKMetadataStore(t *testing.T) *RDBConfigStore {
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyProviderConfigKey{},
 		&tables.TableVirtualKeyMCPConfig{},
+		&tables.TableAgentRegistration{},
+		&tables.TableVirtualKeyAgentGrant{},
 	))
 	require.NoError(t, db.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{}))
 	s := &RDBConfigStore{logger: nil}
@@ -5295,6 +5297,8 @@ func TestGetVirtualKeysPaginated_MetadataFiltersAndSearch(t *testing.T) {
 				{name: "search on metadata is case-insensitive", params: VirtualKeyQueryParams{Search: "ops@example"}, wantIDs: []string{"vk-md-c"}},
 				// The stored JSON escapes &, < and >, so the search term must be matched in that encoding.
 				{name: "search matches metadata values with & and <", params: VirtualKeyQueryParams{Search: "at&t <us"}, wantIDs: []string{"vk-md-amp"}},
+				// LIKE metacharacters in the term match literally: "cc_7" must not match "cc-7".
+				{name: "search treats _ literally in metadata", params: VirtualKeyQueryParams{Search: "cc_7"}, wantIDs: nil},
 			}
 			for _, tt := range tests {
 				t.Run(tt.name, func(t *testing.T) {
