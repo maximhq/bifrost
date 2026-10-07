@@ -46,8 +46,11 @@ func TestOpenAI(t *testing.T) {
 		ChatAudioModel:          "gpt-audio-mini",
 		PassthroughModel:        "gpt-4o",
 		ExternalCompactionModel: "gpt-4o",
+		DecisionModel:           "gpt-6-luna", // OpenAI's Decisions API: served natively in the ordered and map forms
 		DecisionEmulationModel:  "gpt-4o-mini",
 		Scenarios: llmtests.TestScenarios{
+			Decision:                   true,
+			DecisionOrdered:            true,
 			DecisionEmulation:          true,
 			TextCompletion:             true,
 			TextCompletionStream:       true,
