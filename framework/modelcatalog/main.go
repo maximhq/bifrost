@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -47,6 +48,15 @@ type ModelCatalog struct {
 	// 0 means "no cap known" and is cached too, so a model missing from the
 	// sheet pays the full-table capability scan once per generation, not per request.
 	maxOutputTokens *gencache.Cache[int]
+
+	// modelTags holds operator-assigned model tags (see ReloadModelTags).
+	modelTags atomic.Pointer[modelTagsIndex]
+	// modelTagsReloadMu serializes ReloadModelTags from the store read through publication, so
+	// an older snapshot cannot be published after a newer one.
+	modelTagsReloadMu sync.Mutex
+	// modelTagsStale is set when the last ReloadModelTags failed, so the published overlay (if
+	// any) may predate committed tag writes; syncTick keeps retrying until a reload succeeds.
+	modelTagsStale atomic.Bool
 
 	// MCP library sync configuration (protected by syncMu)
 	mcpLibraryURL          string
@@ -277,6 +287,9 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	if err := mc.datasheet.LoadOverridesFromStore(ctx); err != nil {
 		return nil, fmt.Errorf("failed to load pricing overrides: %w", err)
 	}
+	// Tags are labels, not pricing: a failed load does not fail startup and is retried in the
+	// background (loadModelTagsAtStartup), then on the hourly sync tick.
+	mc.loadModelTagsAtStartup(mc.syncCtx, modelTagsStartupRetryDelays)
 
 	mc.startSyncWorker(mc.syncCtx)
 	initSucceeded = true
@@ -294,14 +307,21 @@ func (mc *ModelCatalog) SetAfterSyncHook(fn func(ctx context.Context)) {
 	mc.afterSyncHook = fn
 }
 
-// ReloadFromDB reloads pricing + model-parameters caches from the database.
-// Gossip handler on non-leader pods.
+// ReloadFromDB reloads pricing, model-parameters and model-tag caches from the database.
+// Gossip handler on non-leader pods. A failed tag reload is logged rather than returned:
+// pricing and parameters are already reloaded, ReloadModelTags marks the overlay stale, and
+// the periodic retry publishes the tags once the store answers.
 func (mc *ModelCatalog) ReloadFromDB(ctx context.Context) error {
 	if err := mc.datasheet.LoadFromDB(ctx); err != nil {
 		return err
 	}
-	_, err := mc.datasheet.LoadModelParamsFromDB(ctx)
-	return err
+	if _, err := mc.datasheet.LoadModelParamsFromDB(ctx); err != nil {
+		return err
+	}
+	if err := mc.ReloadModelTags(ctx); err != nil && mc.logger != nil {
+		mc.logger.Warn("model tag reload failed; the overlay is stale and will be retried: %v", err)
+	}
+	return nil
 }
 
 // ReloadPricing re-reads the pricing table into the in-memory cache. The
@@ -460,6 +480,7 @@ func (mc *ModelCatalog) syncWorker(ctx context.Context) {
 }
 
 func (mc *ModelCatalog) syncTick(ctx context.Context) {
+	mc.retryModelTagsIfNeeded(ctx)
 	pricingDue := time.Since(mc.datasheet.LastSyncedAt()) >= mc.datasheet.SyncInterval()
 	mcpLibraryDue := mc.isMCPLibrarySyncDue()
 	if !pricingDue && !mcpLibraryDue {

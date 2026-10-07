@@ -3931,3 +3931,74 @@ func TestSchemaCodeModeLimitsValueBytes(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateConfigSchema_VirtualKeyMetadata checks that config.schema.json enforces the same
+// metadata rules as the configstore validator, including the reserved keys.
+func TestValidateConfigSchema_VirtualKeyMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata string
+		wantErr  bool
+	}{
+		{name: "string values", metadata: `{"cost_center": "cc-42", "owner.email": "a@example.com", "env-name": ""}`},
+		{name: "empty object", metadata: `{}`},
+		{name: "non-string value", metadata: `{"cost_center": 42}`, wantErr: true},
+		{name: "key with space", metadata: `{"cost center": "cc-42"}`, wantErr: true},
+		{name: "empty key", metadata: `{"": "cc-42"}`, wantErr: true},
+		{name: "value too long", metadata: `{"k": "` + strings.Repeat("v", 513) + `"}`, wantErr: true},
+		{name: "not an object", metadata: `["cc-42"]`, wantErr: true},
+		{name: "reserved key", metadata: `{"isAsyncRequest": "true"}`, wantErr: true},
+		{name: "load balancer prefix", metadata: `{"bifrost_alb_provider": "x"}`, wantErr: true},
+		{name: "reserved name as a substring", metadata: `{"my_bifrost_alb_x": "v", "isAsyncRequestCount": "1"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := `{"governance": {"virtual_keys": [{"id": "vk-1", "name": "Test Virtual Key", "value": "vk_test_123456", "metadata": ` + tt.metadata + `}]}}`
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tt.wantErr && err == nil {
+				t.Errorf("expected metadata %s to fail validation", tt.metadata)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("expected metadata %s to pass validation, got error: %v", tt.metadata, err)
+			}
+		})
+	}
+}
+
+// TestValidateConfigSchema_ProviderMetadataAndTags checks the providers.<name>.metadata and tags
+// rules in config.schema.json, including that tags with surrounding whitespace are accepted
+// because NormalizeTags trims them before the 1-64 character rule applies.
+func TestValidateConfigSchema_ProviderMetadataAndTags(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		key      string
+		labels   string
+		wantErr  bool
+	}{
+		{name: "metadata and tags", provider: "openai", labels: `"metadata": {"owner": "team-a", "region.primary": "eu-west-1"}, "tags": ["prod", "approved-for-pii"]`},
+		{name: "labels on a provider-specific definition", provider: "bedrock", key: `, "bedrock_key_config": {"region": "us-west-2"}`, labels: `"metadata": {"owner": "team-a"}, "tags": ["prod"]`},
+		{name: "empty labels", provider: "openai", labels: `"metadata": {}, "tags": []`},
+		{name: "non-string metadata value", provider: "openai", labels: `"metadata": {"owner": 42}`, wantErr: true},
+		{name: "metadata key with space", provider: "openai", labels: `"metadata": {"cost center": "x"}`, wantErr: true},
+		{name: "tag with comma", provider: "openai", labels: `"tags": ["a,b"]`, wantErr: true},
+		{name: "tag too long", provider: "openai", labels: `"tags": ["` + strings.Repeat("t", 65) + `"]`, wantErr: true},
+		{name: "tags not an array", provider: "openai", labels: `"tags": "prod"`, wantErr: true},
+		{name: "tag with surrounding whitespace (trimmed on load)", provider: "openai", labels: `"tags": [" prod ", "eu\t"]`},
+		{name: "whitespace-only tag", provider: "openai", labels: `"tags": ["  "]`, wantErr: true},
+		{name: "tag with inner space", provider: "openai", labels: `"tags": ["a b"]`, wantErr: true},
+		{name: "trimmed tag too long", provider: "openai", labels: `"tags": [" ` + strings.Repeat("t", 65) + ` "]`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := `{"providers": {"` + tt.provider + `": {"keys": [{"name": "k1", "weight": 1` + tt.key + `}], ` + tt.labels + `}}}`
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tt.wantErr && err == nil {
+				t.Errorf("expected %s to fail validation", tt.labels)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("expected %s to pass validation, got error: %v", tt.labels, err)
+			}
+		})
+	}
+}

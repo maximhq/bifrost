@@ -93,6 +93,11 @@ type ServerCallbacks interface {
 	// succeeds it can broadcast a peer reload via the existing pricing
 	// EntityTypeModelCatalog/ActionReloadFromDB gossip path.
 	UpsertModelPricingAttributes(ctx context.Context, entries []handlers.ModelPricingAttributesEntry) error
+	// SetModelTags writes model tags to config_models and reloads the in-memory
+	// overlay. Enterprise wraps this, like UpsertModelPricingAttributes, to
+	// broadcast a peer reload after the local write succeeds; ModelCatalog.ReloadFromDB
+	// on the peers also refreshes model tags.
+	SetModelTags(ctx context.Context, entries []handlers.ModelTagsEntry) error
 	// Proxy related callbacks
 	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
 	// Client config related callbacks
@@ -1207,6 +1212,9 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	}
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)
+	// The provider's model tag rows went with it; drop them from the overlay too, or a provider
+	// later created under the same name would show the deleted provider's model tags.
+	refreshModelTagsOverlay(ctx, s.Config.ModelCatalog, fmt.Sprintf("provider %s was removed", provider))
 
 	return nil
 }
@@ -2280,6 +2288,77 @@ func (s *BifrostHTTPServer) UpsertModelPricingAttributes(ctx context.Context, en
 		return fmt.Errorf("failed to reload pricing cache after attribute write: %w", err)
 	}
 	return nil
+}
+
+// modelTagsReloadRetryDelays are the waits before each background retry of the model tags
+// overlay reload after a committed tag write whose immediate reload failed.
+var modelTagsReloadRetryDelays = []time.Duration{time.Second, 5 * time.Second, 30 * time.Second}
+
+// SetModelTags replaces the tags of every listed model in one transaction, so
+// an unknown provider rolls back the whole batch, then reloads the in-memory
+// model tags overlay once. Enterprise overrides this method to broadcast a peer
+// reload after commit.
+//
+// Once the transaction has committed the write has taken effect, so a failed overlay reload
+// is not reported as a failed write (a client could not tell whether to retry). The reload runs
+// detached from the request's cancellation, and if it still fails it is retried in the
+// background until it succeeds or the retries run out; until then listings may show the
+// previous tags.
+func (s *BifrostHTTPServer) SetModelTags(ctx context.Context, entries []handlers.ModelTagsEntry) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("model catalog not initialized")
+	}
+	if s.Config.ConfigStore == nil {
+		return fmt.Errorf("model tags require a config store")
+	}
+	err := s.Config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		for _, e := range entries {
+			if err := s.Config.ConfigStore.SetModelTags(ctx, e.Provider, e.Model, e.Tags, tx); err != nil {
+				return fmt.Errorf("%s/%s: %w", e.Provider, e.Model, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	refreshModelTagsOverlay(ctx, s.Config.ModelCatalog, "model tags were saved")
+	return nil
+}
+
+// modelTagsReloadTimeout bounds the immediate overlay reload after a committed change.
+var modelTagsReloadTimeout = 10 * time.Second
+
+// refreshModelTagsOverlay reloads the catalog's model tags overlay after a committed config-store
+// change: a tag write, or a provider delete whose model rows go with it. The reload is detached
+// from the request's cancellation, since the change has already taken effect, but bounded by
+// modelTagsReloadTimeout so a stalled store read cannot hold the request. A failed or timed-out
+// reload is retried in the background, and it marks the overlay stale so the model catalog's
+// periodic sync keeps retrying after those retries run out; until a reload succeeds listings may
+// show the previous tags.
+func refreshModelTagsOverlay(ctx context.Context, catalog *modelcatalog.ModelCatalog, change string) {
+	reloadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), modelTagsReloadTimeout)
+	defer cancel()
+	if err := catalog.ReloadModelTags(reloadCtx); err != nil {
+		logger.Warn("%s, but reloading the in-memory model tags overlay failed, retrying in the background: %v", change, err)
+		go retryModelTagsReload(catalog, modelTagsReloadRetryDelays)
+	}
+}
+
+// retryModelTagsReload retries the model tags overlay reload after each delay in delays, stopping
+// at the first success, and logs an error if every attempt fails.
+func retryModelTagsReload(catalog *modelcatalog.ModelCatalog, delays []time.Duration) {
+	var err error
+	for _, delay := range delays {
+		time.Sleep(delay)
+		reloadCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = catalog.ReloadModelTags(reloadCtx)
+		cancel()
+		if err == nil {
+			return
+		}
+	}
+	logger.Error("model tags overlay is stale: reload after a committed tag write kept failing, the model catalog sync keeps retrying: %v", err)
 }
 
 // ReloadProxyConfig reloads the proxy configuration

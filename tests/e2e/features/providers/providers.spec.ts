@@ -1,3 +1,5 @@
+import type { APIRequestContext } from "@playwright/test";
+import { providersApi } from "../../core/actions/api";
 import { expect, test } from "../../core/fixtures/base.fixture";
 import {
   createCustomProviderData,
@@ -1154,5 +1156,79 @@ test.describe("Provider specific configuration", () => {
 
     await expect(urlInput).toBeVisible();
     await providersPage.keyCancelBtn.click();
+  });
+});
+
+test.describe("Provider Metadata & Tags", () => {
+  test.describe.configure({ mode: "serial" });
+
+  type LabeledProvider = { name: string; metadata?: Record<string, string>; tags?: string[] };
+
+  // A keyless custom provider keeps these tests away from the shared standard providers.
+  const createLabelsProvider = async (request: APIRequestContext): Promise<string> => {
+    const name = `e2e-labels-${Date.now()}`;
+    await providersApi.create(request, {
+      provider: name,
+      custom_provider_config: { base_provider_type: "openai", is_key_less: true },
+    });
+    return name;
+  };
+
+  test("should set, filter by and clear provider metadata and tags", async ({ providersPage, request }) => {
+    const name = await createLabelsProvider(request);
+    try {
+      await providersPage.goto();
+      await providersPage.selectProvider(name);
+      await providersPage.selectConfigTab("labels");
+      await providersPage.addProviderTags(["e2e-prod", " e2e-eu "]);
+      await providersPage.setProviderMetadata({ owner: "e2e-team" });
+      await providersPage.saveProviderLabels();
+
+      const saved = (await providersApi.get(request, name)) as LabeledProvider;
+      expect(saved.tags).toEqual(["e2e-eu", "e2e-prod"]);
+      expect(saved.metadata).toEqual({ owner: "e2e-team" });
+
+      // The list endpoint filters on the same tags.
+      const filtered = (await (await request.get("/api/providers?tags=e2e-prod,e2e-eu")).json()) as { providers: LabeledProvider[] };
+      expect(filtered.providers.map((p) => p.name)).toEqual([name]);
+
+      // Sidebar: the row shows its tags, and the tags URL filter hides providers without them.
+      await providersPage.page.keyboard.press("Escape");
+      await expect(providersPage.getProviderItem(name).getByTestId("provider-item-tags")).toContainText("e2e-eu");
+      await providersPage.page.goto(`/workspace/providers?tags=e2e-prod`);
+      await expect(providersPage.getProviderItem(name)).toBeVisible();
+      await expect(providersPage.getProviderItem("openai")).toHaveCount(0);
+
+      // Clearing every tag and entry clears the labels.
+      await providersPage.selectProvider(name);
+      await providersPage.selectConfigTab("labels");
+      await providersPage.removeProviderTag("e2e-prod");
+      await providersPage.removeProviderTag("e2e-eu");
+      await providersPage.page.getByTestId("provider-labels-metadata-section").locator("tbody tr").first().getByRole("button").click();
+      await providersPage.saveProviderLabels();
+      const cleared = (await providersApi.get(request, name)) as LabeledProvider;
+      expect(cleared.tags ?? []).toEqual([]);
+      expect(cleared.metadata ?? {}).toEqual({});
+    } finally {
+      // A failed delete would leave the provider behind in the shared environment.
+      expect(await providersApi.delete(request, name), `cleanup must delete provider ${name}`).toBe(true);
+    }
+  });
+
+  test("should reject an invalid tag before saving", async ({ providersPage, request }) => {
+    const name = await createLabelsProvider(request);
+    try {
+      await providersPage.goto();
+      await providersPage.selectProvider(name);
+      await providersPage.selectConfigTab("labels");
+      await providersPage.addProviderTags(["bad tag"]);
+      await expect(providersPage.page.getByTestId("provider-config-labels-content").getByText('Invalid tag "bad tag"')).toBeVisible();
+      await expect(providersPage.page.getByTestId("provider-labels-save-button")).toBeDisabled();
+      const unchanged = (await providersApi.get(request, name)) as LabeledProvider;
+      expect(unchanged.tags ?? []).toEqual([]);
+    } finally {
+      // A failed delete would leave the provider behind in the shared environment.
+      expect(await providersApi.delete(request, name), `cleanup must delete provider ${name}`).toBe(true);
+    }
   });
 });

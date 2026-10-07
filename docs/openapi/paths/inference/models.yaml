@@ -25,6 +25,17 @@ models:
       description: Token for pagination
       schema:
         type: string
+    - name: tags
+      in: query
+      description: >-
+        Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag
+        are returned. Pagination applies to the filtered list. Not forwarded to providers.
+        An invalid or empty tag is rejected with a 400. When large response mode streams the
+        provider's response through unparsed, the filter cannot be applied and the request is
+        rejected with a 400. A single-provider listing reads at most 20 pages from the provider;
+        a provider with more pages is rejected with a 502 rather than filtered from a partial list.
+      schema:
+        type: string
     responses:
       '200':
         description: Successful response
@@ -36,6 +47,12 @@ models:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '502':
+        description: A tags-filtered listing of a provider exceeded the 20-page read limit
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
     security:
     - BearerAuth: []
     - VirtualKeyAuth: []

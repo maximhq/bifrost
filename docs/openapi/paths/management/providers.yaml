@@ -13,11 +13,28 @@ providers:
     summary: List all providers
     description: |
       Returns a list of all configured providers with their configurations and status.
+      Optional metadata and tag filters are AND-ed together.
+
+      **Metadata filters:** add one `metadata_<key>=<value>` query parameter per metadata
+      key to match, where `<key>` is the metadata key itself (for example
+      `?metadata_owner=team-a&metadata_region=eu-west-1`). Only providers whose metadata
+      has every given key set to exactly the given value are returned. A key that is not
+      1-256 characters of letters, digits, '.', '_' and '-' is rejected with a 400.
+      These parameters have dynamic names, so they are described here rather than declared
+      as individual parameters.
     tags:
       - Providers
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
+    parameters:
+      - name: tags
+        in: query
+        description: >-
+          Comma-separated tags (for example tags=prod,eu); only providers carrying every listed
+          tag are returned. An invalid tag is rejected with a 400.
+        schema:
+          type: string
     responses:
       '200':
         description: Successful response
@@ -25,6 +42,8 @@ providers:
           application/json:
             schema:
               $ref: '../../schemas/management/providers.yaml#/ListProvidersResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -608,6 +627,14 @@ models:
         schema:
           type: integer
           default: 5
+      - name: tags
+        in: query
+        description: >-
+          Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag
+          are returned. Applied before limit/offset, so total counts matching models only.
+          An invalid tag is rejected with a 400.
+        schema:
+          type: string
       - name: unfiltered
         in: query
         description: If true, return all models including those filtered out by provider-level restrictions
@@ -624,6 +651,8 @@ models:
           application/json:
             schema:
               $ref: '../../schemas/management/providers.yaml#/ListModelsResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -670,6 +699,14 @@ models-details:
         schema:
           type: integer
           default: 20
+      - name: tags
+        in: query
+        description: >-
+          Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag
+          are returned. Applied before limit/offset, so total counts matching models only.
+          An invalid tag is rejected with a 400.
+        schema:
+          type: string
       - name: unfiltered
         in: query
         description: If true, return all models including those filtered out by provider-level restrictions
@@ -686,6 +723,65 @@ models-details:
           application/json:
             schema:
               $ref: '../../schemas/management/providers.yaml#/ListModelDetailsResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+models-tags:
+  put:
+    operationId: setModelTags
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Set model tags
+    description: |
+      Replaces the tags of each listed model. The provider must be configured; any model name is
+      accepted, including models that are not in the pricing datasheet. Every entry must carry
+      tags; a missing or null tags field is rejected with a 400, and an empty tags list clears a
+      model's tags. The whole batch is validated first and written in one transaction. Requires
+      a config store.
+
+      Entries are applied in request order, and the same (provider, model) pair may appear more
+      than once: each entry replaces that model's tags, so the last entry for a pair decides its
+      final tags (an empty list in that last entry clears them).
+    tags:
+      - Providers
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: array
+            minItems: 1
+            items:
+              $ref: '../../schemas/management/providers.yaml#/ModelTagsEntry'
+    responses:
+      '204':
+        description: Tags written
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: A provider in the batch is not configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '503':
+        description: No config store is configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

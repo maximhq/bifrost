@@ -8,6 +8,7 @@ import {
 	ApiStructureFormFragment,
 	BetaHeadersFormFragment,
 	GovernanceFormFragment,
+	LabelsFormFragment,
 	OpenAIConfigFormFragment,
 	ProxyFormFragment,
 } from "../fragments";
@@ -63,6 +64,10 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 	tabs.push({
 		id: "debugging",
 		label: "Debugging",
+	});
+	tabs.push({
+		id: "labels",
+		label: "Metadata & Tags",
 	});
 	if (isOpenAI) {
 		tabs.push({
@@ -157,6 +162,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							</TabsContent>
 							<TabsContent value="debugging">
 								<DebuggingFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="labels">
+								<LabelsFormFragment provider={provider} />
 							</TabsContent>
 						</Tabs>
 					</div>

@@ -3,10 +3,12 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"slices"
 	"sort"
@@ -49,6 +51,8 @@ type ModelsManager interface {
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
 	UpsertModelPricingAttributes(ctx context.Context, entries []ModelPricingAttributesEntry) error
+	// SetModelTags replaces the tags of each listed model and refreshes the in-memory overlay.
+	SetModelTags(ctx context.Context, entries []ModelTagsEntry) error
 	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
@@ -82,6 +86,14 @@ type ModelPricingAttributesEntry struct {
 	Model                string            `json:"model"`
 	Provider             string            `json:"provider"`
 	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
+}
+
+// ModelTagsEntry is the wire shape for PUT /api/models/tags. Tags replace the model's tags as a
+// whole; an empty list clears them, and a missing or null tags field is rejected.
+type ModelTagsEntry struct {
+	Provider string   `json:"provider"`
+	Model    string   `json:"model"`
+	Tags     []string `json:"tags"`
 }
 
 // ProviderHandler manages HTTP requests for provider operations
@@ -122,6 +134,8 @@ type ProviderResponse struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
+	Metadata                 map[string]string                `json:"metadata,omitempty"`               // Operator-defined key/value metadata
+	Tags                     []string                         `json:"tags,omitempty"`                   // Operator-defined tags
 	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
 	Description              string                           `json:"description,omitempty"`            // Error/status description
@@ -151,6 +165,8 @@ type providerCreatePayload struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	Metadata                 map[string]string                 `json:"metadata,omitempty"`      // Operator-defined key/value metadata
+	Tags                     []string                          `json:"tags,omitempty"`          // Operator-defined tags
 }
 
 type providerUpdatePayload struct {
@@ -163,6 +179,8 @@ type providerUpdatePayload struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	Metadata                 map[string]string                `json:"metadata,omitempty"`      // Replaces the metadata as a whole when carried
+	Tags                     []string                         `json:"tags,omitempty"`          // Replaces the tags as a whole when carried
 }
 
 // applyProviderConfigUpdates copies onto config only the nested config blocks the
@@ -200,6 +218,22 @@ func applyProviderConfigUpdates(config *configstore.ProviderConfig, payload *pro
 	if carried("prompt_cache") {
 		config.PromptCache = payload.PromptCache
 	}
+	// Labels follow the same rule: omitted leaves them alone, and a supplied map or list
+	// (including {} / [] / null) replaces them as a whole. A supplied null becomes an explicit
+	// empty value, because the config store keeps stored labels for nil (an update that does not
+	// carry them) and clears them only for an empty map or list.
+	if carried("metadata") {
+		config.Metadata = payload.Metadata
+		if config.Metadata == nil {
+			config.Metadata = map[string]string{}
+		}
+	}
+	if carried("tags") {
+		config.Tags = payload.Tags
+		if config.Tags == nil {
+			config.Tags = []string{}
+		}
+	}
 }
 
 // RegisterRoutes registers all provider management routes
@@ -226,10 +260,25 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
 	r.PUT("/api/models/catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
+	r.PUT("/api/models/tags", lib.ChainMiddlewares(h.setModelTags, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers
+//
+// Query parameters (optional, AND-ed together):
+//   - metadata_<key>=<value>: providers whose metadata has exactly this value for key
+//   - tags=a,b: providers carrying every listed tag
 func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
+	metadataFilters, err := parseMetadataLabelFilters(ctx.QueryArgs())
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	tagFilters, err := parseTagsFilter(ctx.QueryArgs())
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	// Fetching providers from database or in-memory store
 	var providers map[schemas.ModelProvider]configstore.ProviderConfig
 	if h.dbStore != nil {
@@ -252,6 +301,9 @@ func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
 	providerResponses := []ProviderResponse{}
 
 	for providerName, provider := range providers {
+		if !matchesLabelFilters(provider.Metadata, provider.Tags, metadataFilters, tagFilters) {
+			continue
+		}
 		config := provider.Redacted()
 
 		providerStatus := ProviderStatusError
@@ -413,6 +465,8 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
 		PromptCache:              payload.PromptCache,
+		Metadata:                 payload.Metadata,
+		Tags:                     payload.Tags,
 	}
 	if requireGenuineAuthForInterception(ctx, configstore.ProviderConfig{}, config) {
 		return
@@ -427,6 +481,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	// and then rejected by the provider at request time instead.
 	if err := lib.ValidatePromptCache(config.PromptCache); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
+		return
+	}
+	if err := lib.NormalizeProviderLabels(&config); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider labels: %v", err))
 		return
 	}
 	// Add provider to store (env vars will be processed by store)
@@ -467,6 +525,8 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
+			Metadata:                 config.Metadata,
+			Tags:                     config.Tags,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -563,6 +623,8 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
 		PromptCache:              oldConfigRaw.PromptCache,
+		Metadata:                 oldConfigRaw.Metadata,
+		Tags:                     oldConfigRaw.Tags,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
 		Description:              oldConfigRaw.Description,
@@ -641,6 +703,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	applyProviderConfigUpdates(&config, &payload.providerUpdatePayload, bodyFields)
+	if err := lib.NormalizeProviderLabels(&config); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider labels: %v", err))
+		return
+	}
 	// Runs after the redacted-echo restores above, so a UI save that sends the stored proxy
 	// and CA cert back masked compares equal to what is stored.
 	if requireGenuineAuthForInterception(ctx, *oldConfigRaw, config) {
@@ -716,6 +782,8 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
+			Metadata:                 config.Metadata,
+			Tags:                     config.Tags,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -770,6 +838,7 @@ type ModelResponse struct {
 	Provider         string   `json:"provider"`
 	IsDeprecated     bool     `json:"is_deprecated,omitempty"`
 	AccessibleByKeys []string `json:"accessible_by_keys,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
 }
 
 // ListModelsResponse represents the response for listing models
@@ -793,6 +862,7 @@ type ModelDetailsResponse struct {
 	IsDeprecated         bool                  `json:"is_deprecated,omitempty"`
 	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
 	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
+	Tags                 []string              `json:"tags,omitempty"`
 
 	// OverriddenPricing carries the post-override value of each cost field the
 	// UI displays, and only for fields the applied override actually changes —
@@ -856,6 +926,8 @@ type modelListQuery struct {
 	HideDeprecated bool
 	// IncludeDeprecated is the caller's explicit opt-out of HideDeprecated.
 	IncludeDeprecated bool
+	// Tags keeps only models carrying every listed tag.
+	Tags []string
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
 	HasVKFilter bool
@@ -868,6 +940,7 @@ type listedModel struct {
 	Provider         schemas.ModelProvider
 	IsDeprecated     bool
 	AccessibleByKeys []string
+	Tags             []string
 }
 
 // listModels handles GET /api/models - List models with filtering
@@ -879,6 +952,7 @@ type listedModel struct {
 //   - offset: Number of results to skip (for pagination)
 //   - include_deprecated: If true, list deprecated models even when nothing is searched for.
 //     Without it, deprecated models appear only in a search (`query`), sorted below live ones.
+//   - tags: Comma-separated tags; only models carrying every listed tag are returned
 //
 // Request headers:
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
@@ -908,6 +982,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 			Name:         model.Name,
 			Provider:     string(model.Provider),
 			IsDeprecated: model.IsDeprecated,
+			Tags:         model.Tags,
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			entry.AccessibleByKeys = model.AccessibleByKeys
@@ -929,6 +1004,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - provider: Filter by specific provider name
 //   - keys: Comma-separated list of key IDs to filter models accessible by those keys
 //   - unfiltered: If true, bypass provider-level model pool restrictions only
+//   - tags: Comma-separated tags; only models carrying every listed tag are returned
 //   - limit: Maximum number of results to return (default: 20)
 //   - offset: Number of results to skip (for pagination)
 //
@@ -966,6 +1042,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		details := ModelDetailsResponse{
 			Name:     model.Name,
 			Provider: string(model.Provider),
+			Tags:     model.Tags,
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			details.AccessibleByKeys = model.AccessibleByKeys
@@ -1101,6 +1178,12 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 		Unfiltered: string(queryArgs.Peek("unfiltered")) == "true",
 	}
 	query.IncludeDeprecated = string(queryArgs.Peek("include_deprecated")) == "true"
+	tags, err := parseTagsFilter(queryArgs)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return modelListQuery{}, false
+	}
+	query.Tags = tags
 
 	if keysRaw := queryArgs.Peek("keys"); len(keysRaw) > 0 {
 		keyIDs := strings.Split(string(keysRaw), ",")
@@ -1174,6 +1257,12 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 
 	for i := range models {
 		models[i].IsDeprecated = h.isModelDeprecated(models[i].Name, models[i].Provider)
+		models[i].Tags = h.inMemoryStore.ModelCatalog.GetModelTags(models[i].Provider, models[i].Name)
+	}
+	// Filtered before the deprecation handling and pagination below, so total and the
+	// offset/limit window count only matching models.
+	if len(query.Tags) > 0 {
+		models = slices.DeleteFunc(models, func(m listedModel) bool { return !tables.HasAllTags(m.Tags, query.Tags) })
 	}
 
 	// Browsing with nothing typed is someone looking for a model to use, so the retired
@@ -1552,6 +1641,8 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
 		PromptCache:              config.PromptCache,
+		Metadata:                 config.Metadata,
+		Tags:                     config.Tags,
 		ProviderStatus:           status,
 		Status:                   config.Status,
 		Description:              config.Description,
@@ -1627,6 +1718,75 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 
 	if err := h.modelsManager.UpsertModelPricingAttributes(ctx, payload); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
+		return
+	}
+	ctx.SetStatusCode(fasthttp.StatusNoContent)
+}
+
+// setModelTags handles PUT /api/models/tags - replaces the tags of each listed model. The
+// provider must be configured; the model name is not checked against the catalog, so models
+// outside the pricing datasheet (fine-tunes, custom deployments) can be tagged too. The whole
+// batch is validated before anything is written, and written in one transaction.
+func (h *ProviderHandler) setModelTags(ctx *fasthttp.RequestCtx) {
+	// Decoded strictly, matching the ModelTagsEntry schema (additionalProperties: false): a
+	// misspelled field would otherwise be dropped silently while the rest of the entry is written.
+	var payload []ModelTagsEntry
+	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request payload: %v", err))
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid request format: multiple JSON values")
+		return
+	}
+	if len(payload) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "at least one model tags entry is required")
+		return
+	}
+	if h.dbStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "model tags require a config store")
+		return
+	}
+	for i := range payload {
+		payload[i].Provider = strings.TrimSpace(payload[i].Provider)
+		payload[i].Model = strings.TrimSpace(payload[i].Model)
+		if payload[i].Provider == "" || payload[i].Model == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "provider and model are required for every model tags entry")
+			return
+		}
+		if len(payload[i].Model) > tables.MaxModelNameLength {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("model name for provider %s can be at most %d bytes", payload[i].Provider, tables.MaxModelNameLength))
+			return
+		}
+		if _, err := h.inMemoryStore.GetProviderConfigRaw(schemas.ModelProvider(payload[i].Provider)); err != nil {
+			if errors.Is(err, lib.ErrNotFound) {
+				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("provider %s not found", payload[i].Provider))
+				return
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get provider %s: %v", payload[i].Provider, err))
+			return
+		}
+		// A missing or null tags field is refused rather than read as "clear": an explicit []
+		// is the only way to clear a model's tags.
+		if payload[i].Tags == nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("tags is required for %s/%s; send [] to clear a model's tags", payload[i].Provider, payload[i].Model))
+			return
+		}
+		tags, err := tables.NormalizeTags(payload[i].Tags)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid tags for %s/%s: %v", payload[i].Provider, payload[i].Model, err))
+			return
+		}
+		payload[i].Tags = tags
+	}
+	if err := h.modelsManager.SetModelTags(ctx, payload); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("failed to set model tags: %v", err))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to set model tags: %v", err))
 		return
 	}
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
@@ -1720,4 +1880,64 @@ func providerDialTargetChanged(old *schemas.NetworkConfig, next schemas.NetworkC
 		return true
 	}
 	return next.BaseURL != "" && next.BaseURL != oldBaseURL
+}
+
+// parseMetadataLabelFilters collects metadata_<key>=<value> query parameters, the same shape the logs
+// endpoints accept. An invalid key, including the empty key of a bare metadata_=<value>, is a 400
+// rather than a silently ignored filter, which would return everything. Whether an invalid key
+// was seen is tracked separately from the key itself because the empty key is also invalid.
+func parseMetadataLabelFilters(args *fasthttp.Args) (map[string]string, error) {
+	var filters map[string]string
+	var invalid string
+	hasInvalid := false
+	for key, value := range args.All() {
+		metadataKey, ok := strings.CutPrefix(string(key), "metadata_")
+		if !ok {
+			continue
+		}
+		if !tables.IsValidMetadataKey(metadataKey) {
+			if !hasInvalid {
+				hasInvalid = true
+				invalid = metadataKey
+			}
+			continue
+		}
+		if filters == nil {
+			filters = make(map[string]string)
+		}
+		filters[metadataKey] = string(value)
+	}
+	if hasInvalid {
+		return nil, fmt.Errorf("invalid metadata filter key %q: keys must be 1-%d characters of letters, digits, '.', '_' or '-'", invalid, tables.MaxMetadataKeyLength)
+	}
+	return filters, nil
+}
+
+// parseTagsFilter reads the tags query parameter: a comma-separated list (repeating the parameter
+// also works) of tags that must all be present. An empty entry (tags=, tags=, or a trailing comma)
+// is a 400 like any other invalid tag; skipping it would turn tags= into no filter at all and
+// return everything.
+func parseTagsFilter(args *fasthttp.Args) ([]string, error) {
+	var tags []string
+	for _, raw := range args.PeekMulti("tags") {
+		for tag := range strings.SplitSeq(string(raw), ",") {
+			tag = strings.TrimSpace(tag)
+			if !tables.IsValidTag(tag) {
+				return nil, fmt.Errorf("invalid tags filter %q: tags must be 1-%d characters of letters, digits, '.', '_' or '-'", tag, tables.MaxTagLength)
+			}
+			tags = append(tags, tag)
+		}
+	}
+	return tags, nil
+}
+
+// matchesLabelFilters reports whether an entity's metadata carries every metadataFilters entry
+// with the same value and its tags include every tag in tagFilters.
+func matchesLabelFilters(metadata map[string]string, tags []string, metadataFilters map[string]string, tagFilters []string) bool {
+	for key, want := range metadataFilters {
+		if got, ok := metadata[key]; !ok || got != want {
+			return false
+		}
+	}
+	return tables.HasAllTags(tags, tagFilters)
 }
