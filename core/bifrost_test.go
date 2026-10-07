@@ -1252,7 +1252,7 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	// The request is served by key-a, which binds the session to it.
 	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
 	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
-	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, false, nil)
 	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
 		t.Errorf("kvstore after the request served: expected key-a, got %v (err=%v)", raw, err)
 	}
@@ -1361,7 +1361,7 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	// An earlier request served by key-a bound the session to it.
 	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
 	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
-	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, false, nil)
 
 	config := createTestConfig(3, 0, 0)
 	logger := NewDefaultLogger(schemas.LogLevelError)
