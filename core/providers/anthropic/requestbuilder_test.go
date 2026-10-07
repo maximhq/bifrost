@@ -1619,6 +1619,15 @@ type surfaceProbe struct {
 	// the egress should recover; a change is an instruction the egress must
 	// obey, and the two have to stay distinguishable.
 	mutateNeutral func(*schemas.ResponsesParameters)
+	// compatDropped is what the BUILT-IN compat plugin publishes when it removes
+	// a parameter the model catalog does not allowlist. dropNeutral above only
+	// clears the value, which is what an anonymous layer looks like; this is the
+	// plugin saying "I removed this on purpose", and the two must be answered
+	// differently -- recover the first, respect the second.
+	compatDropped []string
+	// maxTokens overrides the probe's default 1024, so a model ceiling can be
+	// made to actually lower it.
+	maxTokens int
 }
 
 // wire is the projection of the built body this change is responsible for: the
@@ -1638,9 +1647,13 @@ func (p surfaceProbe) build(t *testing.T) ([]byte, *schemas.BifrostContext) {
 	t.Helper()
 	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 
+	maxTokens := 1024
+	if p.maxTokens != 0 {
+		maxTokens = p.maxTokens
+	}
 	in := &AnthropicMessageRequest{
 		Model:     p.model,
-		MaxTokens: 1024,
+		MaxTokens: maxTokens,
 		Messages: []AnthropicMessage{
 			{Role: "user", Content: AnthropicContent{ContentStr: schemas.Ptr("hi")}},
 		},
@@ -1663,6 +1676,9 @@ func (p surfaceProbe) build(t *testing.T) ([]byte, *schemas.BifrostContext) {
 	}
 	if p.mutateNeutral != nil && neutral.Params != nil {
 		p.mutateNeutral(neutral.Params)
+	}
+	if len(p.compatDropped) > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, p.compatDropped)
 	}
 	if p.raw {
 		// Claude Code's passthrough path: the inbound body is forwarded rather
@@ -3313,4 +3329,106 @@ func TestPreservedSurfaceFieldTypes(t *testing.T) {
 	if providerUtils.JSONFieldExists(body2, "thinking.budget_tokens") {
 		t.Errorf("between_tools must not gain a budget_tokens: %s", providerUtils.GetJSONField(body2, "thinking").Raw)
 	}
+}
+
+// TestCompatPluginDropIsRespectedNotUndone draws the line this restore has to
+// hold: it recovers what the CONVERSION could not carry, and leaves alone what a
+// layer removed on purpose.
+//
+// The built-in compat plugin drops temperature, top_p or reasoning when the
+// model catalog does not allowlist them, and publishes the list on the context.
+// Recovering those would hand the provider back the very parameter the plugin
+// removed to make the request servable -- the restore would be reintroducing a
+// 400. An anonymous layer that merely clears a value (dropNeutral, with nothing
+// published) is still treated as a loss, because nothing says otherwise.
+func TestCompatPluginDropIsRespectedNotUndone(t *testing.T) {
+	const model = "claude-sonnet-5-5"
+	temp, topP := 0.7, 0.9
+
+	t.Run("a published temperature/top_p drop is not undone", func(t *testing.T) {
+		assertWire(t, surfaceProbe{
+			model: model, temp: &temp, topP: &topP,
+			dropNeutral:   "named",
+			compatDropped: []string{"temperature", "top_p"},
+		}, wAbsent)
+	})
+
+	t.Run("an unpublished clear is still recovered", func(t *testing.T) {
+		// Same drop, nothing published: this is the case the witness exists for.
+		assertWire(t, surfaceProbe{
+			model: model, temp: &temp, topP: &topP,
+			dropNeutral: "named",
+		}, `thinking=- effort=- temperature=0.7 top_p=0.9 top_k=-`)
+	})
+
+	t.Run("an unrelated published drop does not suppress sampling", func(t *testing.T) {
+		assertWire(t, surfaceProbe{
+			model: model, temp: &temp, topP: &topP,
+			dropNeutral:   "named",
+			compatDropped: []string{"seed", "service_tier"},
+		}, `thinking=- effort=- temperature=0.7 top_p=0.9 top_k=-`)
+	})
+
+	// The plugin both CLEARS the neutral reasoning and publishes the drop, so
+	// these legs do the same -- publishing alone would leave the converter a
+	// reasoning to emit from and prove nothing about the restore.
+	clearReasoning := func(params *schemas.ResponsesParameters) { params.Reasoning = nil }
+
+	t.Run("a published reasoning drop is not undone", func(t *testing.T) {
+		assertWire(t, surfaceProbe{
+			model: model, thinking: betweenTools(),
+			mutateNeutral: clearReasoning,
+			compatDropped: []string{"reasoning"},
+		}, wAbsent)
+	})
+
+	t.Run("an unpublished reasoning clear is still recovered", func(t *testing.T) {
+		assertWire(t, surfaceProbe{
+			model: model, thinking: betweenTools(),
+			mutateNeutral: clearReasoning,
+		}, `thinking={"type":"between_tools"} effort=- temperature=- top_p=- top_k=-`)
+	})
+
+	t.Run("reasoning is recovered when the published drop was something else", func(t *testing.T) {
+		assertWire(t, surfaceProbe{
+			model: model, thinking: betweenTools(),
+			mutateNeutral: clearReasoning,
+			compatDropped: []string{"temperature"},
+		}, `thinking={"type":"between_tools"} effort=- temperature=- top_p=- top_k=-`)
+	})
+}
+
+// TestClampedMaxTokensRefitsTheRestoredBudget covers the ordering hazard this
+// restore creates for itself. It runs deliberately AFTER the strip pass, and that
+// pass is where clampToModelOutputCeiling lowers max_tokens -- so a budget_tokens
+// that was valid when the caller sent it can exceed the ceiling by the time it is
+// restored. The raw path refits (fitRawThinkingBudget); the typed path must agree.
+//
+// The converse matters just as much: a budget that never fitted the caller's OWN
+// max_tokens is their request as written, and is forwarded verbatim for the
+// provider to answer for, rather than quietly rewritten.
+func TestClampedMaxTokensRefitsTheRestoredBudget(t *testing.T) {
+	const model = "claude-sonnet-5-5"
+
+	t.Run("a lowered max_tokens refits the budget", func(t *testing.T) {
+		installMaxOutputRow(t, model, 4096)
+		got := surfaceProbe{
+			model: model, thinking: &AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(8192)},
+			maxTokens: 16000,
+		}.wire(t)
+		if strings.Contains(got, `"budget_tokens":8192`) {
+			t.Fatalf("restored a budget the clamped max_tokens cannot cover: %s", got)
+		}
+		if !strings.Contains(got, `"type":"enabled"`) {
+			t.Fatalf("thinking should survive a refit that has room: %s", got)
+		}
+	})
+
+	t.Run("an unclamped request is forwarded verbatim", func(t *testing.T) {
+		// Ceiling above the caller's max_tokens, so nothing is lowered. The
+		// caller's own pair stands even though 4096 does not fit 1024 -- that is
+		// their request, and the provider answers for it.
+		installMaxOutputRow(t, model, 200000)
+		assertWire(t, surfaceProbe{model: model, thinking: enabledWithBudget()}, wEnabled)
+	})
 }
