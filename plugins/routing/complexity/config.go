@@ -18,10 +18,10 @@ type ComplexityInput struct {
 	LastUserText   string                // latest human-authored user message
 	PriorUserTexts []string              // earlier human-authored user messages
 	SystemText     string                // concatenated system/developer prompt text
-	Conversation   []ConversationMessage // role-preserving user/assistant text for Jev
+	Conversation   []ConversationMessage // role-preserving user/assistant text for the decision model
 }
 
-// ConversationMessage is one text-only conversational message passed to Jev.
+// ConversationMessage is one text-only conversational message passed to the decision model.
 type ConversationMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -37,13 +37,13 @@ type ComplexityResult struct {
 const (
 	// ClassifierSemantic selects embedding-based semantic classification.
 	ClassifierSemantic = configstore.ComplexityClassifierSemantic
-	// ClassifierJev selects the Typesafe Jev decision classifier.
-	ClassifierJev = configstore.ComplexityClassifierJev
-	// SemanticFallbackJev uses Typesafe Jev when semantic matching has no tier.
-	SemanticFallbackJev = configstore.ComplexitySemanticFallbackJev
-	TierSimple          = "SIMPLE"
-	TierMedium          = "MEDIUM"
-	TierComplex         = "COMPLEX"
+	// ClassifierDecision selects the decision-model classifier.
+	ClassifierDecision = configstore.ComplexityClassifierDecision
+	// SemanticFallbackDecision uses the decision model when semantic matching has no tier.
+	SemanticFallbackDecision = configstore.ComplexitySemanticFallbackDecision
+	TierSimple               = "SIMPLE"
+	TierMedium               = "MEDIUM"
+	TierComplex              = "COMPLEX"
 )
 
 // Routing mechanism values recorded when a routing rule demands a complexity
@@ -58,8 +58,8 @@ const (
 // there are no historical rows carrying it and nothing offers it as a filter.
 const (
 	MechanismSemantic = "semantic"
-	// MechanismJev means the Typesafe Jev decision API published the tier.
-	MechanismJev = "jev"
+	// MechanismDecision means the decision API published the tier.
+	MechanismDecision = "decision"
 	// MechanismLLM means the chat-completion classifier published the tier.
 	MechanismLLM = "llm"
 	// MechanismSession means a previously established session tier determined
@@ -91,8 +91,8 @@ type SemanticConfig = configstore.ComplexitySemanticConfig
 // LLMConfig is the chat-completion classifier configuration.
 type LLMConfig = configstore.ComplexityLLMConfig
 
-// JevConfig controls the Typesafe Jev classifier request.
-type JevConfig = configstore.ComplexityJevConfig
+// DecisionConfig controls the decision-model classifier request.
+type DecisionConfig = configstore.ComplexityDecisionConfig
 
 // SessionConfig controls monotonic complexity-tier retention across requests.
 type SessionConfig = configstore.ComplexitySessionConfig

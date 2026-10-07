@@ -4184,3 +4184,512 @@ func TestToOpenAIResponsesRequest_SanitizesGeminiShapedHarnessBodies(t *testing.
 		})
 	}
 }
+
+// TestFilterUnsupportedToolsKeepsShell locks the shell tool into the OpenAI
+// allow list. Before this it was dropped before the request left Bifrost, so the
+// model never saw the tool it was asked to use.
+func TestFilterUnsupportedToolsKeepsShell(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeShell,
+					ResponsesToolShell: &schemas.ResponsesToolShell{
+						Environment: &schemas.ResponsesToolShellEnvironment{Type: "local"},
+					},
+				},
+			},
+		},
+	}
+
+	req.filterUnsupportedTools(true, schemas.OpenAI)
+
+	if len(req.Tools) != 1 || req.Tools[0].Type != schemas.ResponsesToolTypeShell {
+		t.Fatalf("shell tool must survive the filter; got %+v", req.Tools)
+	}
+	if req.Tools[0].ResponsesToolShell == nil || req.Tools[0].ResponsesToolShell.Environment == nil {
+		t.Fatalf("shell environment must survive the filter; got %+v", req.Tools[0])
+	}
+}
+
+// TestShellToolSerializesForOpenAI checks the whole request body a shell turn
+// produces: the tool definition, and a replayed shell_call / shell_call_output pair.
+func TestShellToolSerializesForOpenAI(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-5.1",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+					ID:   schemas.Ptr("shc_1"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_1"),
+						Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesShellToolCallAction: &schemas.ResponsesShellToolCallAction{
+								Commands:  []string{"echo hi"},
+								TimeoutMS: schemas.Ptr(5000),
+							},
+						},
+						ResponsesShellCall: &schemas.ResponsesShellCall{
+							Environment: &schemas.ResponsesShellCallEnvironment{Type: "local"},
+						},
+					},
+				},
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCallOutput),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_1"),
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesShellCallOutput: []schemas.ResponsesShellCallOutputContent{{
+								Stdout:  "hi\n",
+								Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: schemas.Ptr(0)},
+							}},
+						},
+						ResponsesShellCall: &schemas.ResponsesShellCall{MaxOutputLength: schemas.Ptr(1000)},
+					},
+				},
+			},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:           schemas.ResponsesToolTypeShell,
+				AllowedCallers: []string{"direct"},
+				ResponsesToolShell: &schemas.ResponsesToolShell{
+					Environment: &schemas.ResponsesToolShellEnvironment{
+						Type:          "container_auto",
+						MemoryLimit:   schemas.Ptr("4g"),
+						NetworkPolicy: &schemas.ResponsesToolShellNetworkPolicy{Type: "allowlist", AllowedDomains: []string{"example.com"}},
+					},
+				},
+			}},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	for _, want := range []string{
+		`"type":"shell"`,
+		`"allowed_callers":["direct"]`,
+		`"type":"container_auto"`,
+		`"memory_limit":"4g"`,
+		`"allowed_domains":["example.com"]`,
+		`"commands":["echo hi"]`,
+		`"timeout_ms":5000`,
+		`"shell_call_output"`,
+		`"exit_code":0`,
+		`"max_output_length":1000`,
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("missing %s in request body; raw=%s", want, raw)
+		}
+	}
+}
+
+// TestOpenAIAllowedCallersTranslation covers the caller vocabulary map: Anthropic
+// names the sandbox caller by code execution tool version, OpenAI calls it
+// "programmatic", and both know "direct". Unknown values stay put so OpenAI can
+// reject them (it answers "Supported values are: 'direct' and 'programmatic'").
+func TestOpenAIAllowedCallersTranslation(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{name: "direct is shared", in: []string{"direct"}, want: []string{"direct"}},
+		{name: "programmatic passes through", in: []string{"programmatic"}, want: []string{"programmatic"}},
+		{name: "code execution caller", in: []string{"code_execution_20260120"}, want: []string{"programmatic"}},
+		{name: "older code execution caller", in: []string{"code_execution_20250825"}, want: []string{"programmatic"}},
+		{name: "newest code execution caller", in: []string{"code_execution_20260521"}, want: []string{"programmatic"}},
+		// Anthropic ships new code execution versions regularly; every one of them is
+		// "programmatic" to OpenAI, so they are matched by prefix rather than by list.
+		{name: "code execution version newer than we know of", in: []string{"code_execution_20270101"}, want: []string{"programmatic"}},
+		{name: "both callers", in: []string{"direct", "code_execution_20260120"}, want: []string{"direct", "programmatic"}},
+		{name: "collapses to one programmatic", in: []string{"code_execution_20250825", "code_execution_20260120"}, want: []string{"programmatic"}},
+		{name: "unknown value is left for OpenAI to reject", in: []string{"bogus_value"}, want: []string{"bogus_value"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := openAIAllowedCallers(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestShellToolAllowedCallersReachOpenAITranslated pins the translation to the wire.
+func TestShellToolAllowedCallersReachOpenAITranslated(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-5.2",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:               schemas.ResponsesToolTypeShell,
+				AllowedCallers:     []string{"direct", "code_execution_20260120"},
+				ResponsesToolShell: &schemas.ResponsesToolShell{},
+			}},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+	if !strings.Contains(raw, `"allowed_callers":["direct","programmatic"]`) {
+		t.Errorf("allowed_callers must reach OpenAI translated; raw=%s", raw)
+	}
+	if strings.Contains(raw, "code_execution") {
+		t.Errorf("Anthropic caller vocabulary must not reach OpenAI; raw=%s", raw)
+	}
+}
+
+// TestNamespaceAllowedCallersStripped pins that namespace does not carry
+// allowed_callers itself — OpenAI answers "Unknown parameter:
+// 'tools[0].allowed_callers'". Its nested tools carry them instead.
+func TestNamespaceAllowedCallersStripped(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-5.1",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:           schemas.ResponsesToolTypeNamespace,
+				Name:           schemas.Ptr("jobs"),
+				AllowedCallers: []string{"direct"},
+				ResponsesToolNamespace: &schemas.ResponsesToolNamespace{
+					Tools: []schemas.ResponsesTool{{
+						Type: schemas.ResponsesToolTypeFunction,
+						Name: schemas.Ptr("start"),
+					}},
+				},
+			}},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if raw := string(jsonBytes); strings.Contains(raw, "allowed_callers") {
+		t.Errorf("namespace must not carry allowed_callers to OpenAI; raw=%s", raw)
+	}
+}
+
+// TestFilterUnsupportedToolsKeepsBareOpenAITools locks the two bare tool types in
+// TestFilterUnsupportedToolsDropsShellOnBedrockMantle pins the drop. Mantle serves no
+// model that accepts the shell tool - its own error enumerates the types it takes and
+// omits shell - so forwarding it is always a 400.
+// The GA computer tool rejects a computer_call that carries action, alone or beside actions
+// ("must include exactly one of action or actions" on OpenAI and Azure, "use actions instead"
+// on Bedrock), so history replays the action as actions; computer_use_preview is left alone.
+func TestComputerCallHistoryActionsForGAComputerTool(t *testing.T) {
+	click := schemas.ResponsesComputerToolCallAction{Type: "click", X: schemas.Ptr(100), Y: schemas.Ptr(200), Button: schemas.Ptr("left")}
+	call := func(withActions bool) schemas.ResponsesMessage {
+		tm := &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Action: &schemas.ResponsesToolMessageActionStruct{ResponsesComputerToolCallAction: &click},
+		}
+		if withActions {
+			tm.ResponsesComputerToolCall = &schemas.ResponsesComputerToolCall{Actions: []schemas.ResponsesComputerToolCallAction{click}}
+		}
+		return schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCall), Status: schemas.Ptr("completed"), ResponsesToolMessage: tm}
+	}
+	wireCall := func(t *testing.T, tool schemas.ResponsesTool, msg schemas.ResponsesMessage) map[string]any {
+		req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-6-sol",
+			Input:    []schemas.ResponsesMessage{msg},
+			Params:   &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{tool}},
+		})
+		wire, err := sonic.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var payload struct {
+			Input []map[string]any `json:"input"`
+		}
+		if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 1 {
+			t.Fatalf("decode %s: %v", wire, err)
+		}
+		return payload.Input[0]
+	}
+	computer := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputer}
+
+	for name, msg := range map[string]schemas.ResponsesMessage{
+		"single action":         call(false),
+		"action beside actions": call(true),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := wireCall(t, computer, msg)
+			if _, ok := got["action"]; ok {
+				t.Fatalf("action must not reach the GA computer tool: %v", got)
+			}
+			actions, _ := got["actions"].([]any)
+			if len(actions) != 1 || actions[0].(map[string]any)["type"] != "click" {
+				t.Fatalf("want the click as the only action, got %v", got)
+			}
+		})
+	}
+
+	t.Run("computer_use_preview keeps action", func(t *testing.T) {
+		preview := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputerUsePreview,
+			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768, Environment: "browser"}}
+		got := wireCall(t, preview, call(false))
+		if _, ok := got["action"]; !ok {
+			t.Fatalf("computer_use_preview history must keep action: %v", got)
+		}
+		if _, ok := got["actions"]; ok {
+			t.Fatalf("computer_use_preview history must not gain actions: %v", got)
+		}
+	})
+
+	// Anthropic's zoom has no OpenAI action, so every replayed entry becomes a screenshot
+	// and loses its region, whichever tool the request declares.
+	zoomCall := func() schemas.ResponsesMessage {
+		zoom := schemas.ResponsesComputerToolCallAction{Type: "zoom", Region: []int{0, 0, 512, 384}}
+		tm := &schemas.ResponsesToolMessage{
+			CallID:                    schemas.Ptr("call_zoom"),
+			Action:                    &schemas.ResponsesToolMessageActionStruct{ResponsesComputerToolCallAction: &zoom},
+			ResponsesComputerToolCall: &schemas.ResponsesComputerToolCall{Actions: []schemas.ResponsesComputerToolCallAction{zoom}},
+		}
+		return schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCall), Status: schemas.Ptr("completed"), ResponsesToolMessage: tm}
+	}
+	assertScreenshot := func(t *testing.T, field string, v any) {
+		a, _ := v.(map[string]any)
+		if a == nil || a["type"] != "screenshot" || a["region"] != nil {
+			t.Fatalf("%s = %v, want a screenshot with no region", field, v)
+		}
+	}
+
+	t.Run("zoom history on the GA tool", func(t *testing.T) {
+		got := wireCall(t, computer, zoomCall())
+		actions, _ := got["actions"].([]any)
+		if len(actions) != 1 {
+			t.Fatalf("want one action, got %v", got)
+		}
+		assertScreenshot(t, "actions[0]", actions[0])
+	})
+
+	t.Run("zoom history on computer_use_preview", func(t *testing.T) {
+		preview := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputerUsePreview,
+			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768, Environment: "browser"}}
+		msg := zoomCall()
+		got := wireCall(t, preview, msg)
+		assertScreenshot(t, "action", got["action"])
+		actions, _ := got["actions"].([]any)
+		if len(actions) != 1 {
+			t.Fatalf("want one action, got %v", got)
+		}
+		assertScreenshot(t, "actions[0]", actions[0])
+		if msg.ResponsesToolMessage.ResponsesComputerToolCall.Actions[0].Type != "zoom" || msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Type != "zoom" {
+			t.Fatalf("the caller's zoom was rewritten in place: %+v", msg.ResponsesToolMessage)
+		}
+	})
+
+	t.Run("caller input is not mutated", func(t *testing.T) {
+		msg := call(false)
+		wireCall(t, computer, msg)
+		if msg.ResponsesToolMessage.Action == nil || msg.ResponsesToolMessage.ResponsesComputerToolCall != nil {
+			t.Fatalf("the caller's message was changed: %+v", msg.ResponsesToolMessage)
+		}
+	})
+}
+
+func TestFilterUnsupportedToolsDropsShellOnBedrockMantle(t *testing.T) {
+	shellTool := schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeShell,
+		ResponsesToolShell: &schemas.ResponsesToolShell{
+			Environment: &schemas.ResponsesToolShellEnvironment{Type: "local"},
+		},
+	}
+	applyPatchTool := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeApplyPatch}
+	functionTool := schemas.ResponsesTool{
+		Type:                  schemas.ResponsesToolTypeFunction,
+		Name:                  schemas.Ptr("get_price"),
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+	}
+
+	newReq := func() *OpenAIResponsesRequest {
+		return &OpenAIResponsesRequest{
+			ResponsesParameters: schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{shellTool, applyPatchTool, functionTool},
+			},
+		}
+	}
+
+	types := func(tools []schemas.ResponsesTool) []schemas.ResponsesToolType {
+		out := make([]schemas.ResponsesToolType, 0, len(tools))
+		for _, tool := range tools {
+			out = append(out, tool.Type)
+		}
+		return out
+	}
+
+	t.Run("dropped on bedrock_mantle", func(t *testing.T) {
+		req := newReq()
+		req.filterUnsupportedTools(true, schemas.BedrockMantle)
+		got := types(req.Tools)
+		for _, toolType := range got {
+			if toolType == schemas.ResponsesToolTypeShell {
+				t.Fatalf("shell must not reach mantle; got %v", got)
+			}
+		}
+		// Only shell goes: apply_patch is accepted on every gpt-5.x/gpt-6 model there,
+		// so dropping it would break requests that work today.
+		if len(got) != 2 || got[0] != schemas.ResponsesToolTypeApplyPatch || got[1] != schemas.ResponsesToolTypeFunction {
+			t.Fatalf("only shell may be dropped; got %v", got)
+		}
+	})
+
+	t.Run("kept on openai", func(t *testing.T) {
+		req := newReq()
+		req.filterUnsupportedTools(true, schemas.OpenAI)
+		if got := types(req.Tools); len(got) != 3 || got[0] != schemas.ResponsesToolTypeShell {
+			t.Fatalf("shell must survive on openai; got %v", got)
+		}
+	})
+}
+
+// OpenAI's Tool union that carry no fields of their own. Both used to be stripped
+// before the request left Bifrost: apply_patch is accepted by OpenAI today, and
+// programmatic_tool_calling is what turns allowed_callers: ["programmatic"] on.
+// OpenAI requires status on apply_patch_call and apply_patch_call_output input items
+// ("Missing required parameter: 'input[N].status'"), and on the output it is the only
+// sign a patch without output text failed, so the input status strip must skip them.
+func TestApplyPatchReplayKeepsStatus(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	if err := sonic.Unmarshal([]byte(`[
+		{"type":"function_call","call_id":"call_fn","name":"get_time","arguments":"{}","status":"completed"},
+		{"type":"apply_patch_call","call_id":"call_ap","status":"completed","operation":{"type":"create_file","path":"hello.txt","diff":"+hi\n"}},
+		{"type":"apply_patch_call_output","call_id":"call_ap","status":"failed"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI, Model: "gpt-5.3-codex", Input: input,
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeApplyPatch}}},
+	})
+	wire, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 3 {
+		t.Fatalf("decode %s: %v", wire, err)
+	}
+	if _, ok := payload.Input[0]["status"]; ok {
+		t.Fatalf("function_call status must still be stripped: %v", payload.Input[0])
+	}
+	if payload.Input[1]["status"] != "completed" {
+		t.Fatalf("apply_patch_call lost its status: %v", payload.Input[1])
+	}
+	if payload.Input[2]["status"] != "failed" {
+		t.Fatalf("apply_patch_call_output lost its failed status: %v", payload.Input[2])
+	}
+}
+
+func TestFilterUnsupportedToolsKeepsBareOpenAITools(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeProgrammaticToolCalling},
+				{Type: schemas.ResponsesToolTypeApplyPatch, AllowedCallers: []string{"programmatic"}},
+			},
+		},
+	}
+
+	req.filterUnsupportedTools(true, schemas.OpenAI)
+
+	if len(req.Tools) != 2 {
+		t.Fatalf("both bare tools must survive the filter; got %+v", req.Tools)
+	}
+	if req.Tools[0].Type != schemas.ResponsesToolTypeProgrammaticToolCalling ||
+		req.Tools[1].Type != schemas.ResponsesToolTypeApplyPatch {
+		t.Fatalf("tool types changed: %+v", req.Tools)
+	}
+}
+
+// TestBareOpenAIToolsSerialize checks the wire shape: a bare type emits just its
+// discriminator, and apply_patch keeps allowed_callers (OpenAI accepts it there).
+func TestBareOpenAIToolsSerialize(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-5.1",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeProgrammaticToolCalling},
+				{Type: schemas.ResponsesToolTypeApplyPatch, AllowedCallers: []string{"code_execution_20260120"}},
+				{
+					Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+					AllowedCallers:               []string{"direct"},
+					ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Container: "auto"},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	for _, want := range []string{
+		`{"type":"programmatic_tool_calling"}`,
+		`{"type":"apply_patch","allowed_callers":["programmatic"]}`, // Anthropic's caller vocabulary is translated
+		`"type":"code_interpreter","allowed_callers":["direct"]`,    // allowed_callers is no longer stripped here
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("missing %s in request body; raw=%s", want, raw)
+		}
+	}
+}
+
+// TestResponsesToolBareTypesRoundTrip guards the codec for tool types that have no
+// embedded struct: the discriminator and the common fields must survive.
+func TestResponsesToolBareTypesRoundTrip(t *testing.T) {
+	for _, input := range []string{
+		`{"type":"programmatic_tool_calling"}`,
+		`{"type":"apply_patch"}`,
+		`{"type":"apply_patch","allowed_callers":["direct"]}`,
+	} {
+		var tool schemas.ResponsesTool
+		if err := schemas.Unmarshal([]byte(input), &tool); err != nil {
+			t.Fatalf("unmarshal %s: %v", input, err)
+		}
+		encoded, err := schemas.Marshal(tool)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", input, err)
+		}
+		if string(encoded) != input {
+			t.Errorf("round trip changed %s -> %s", input, string(encoded))
+		}
+	}
+}

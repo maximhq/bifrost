@@ -631,7 +631,7 @@ export interface RoutingCall {
 }
 
 export interface RoutingMetadata {
-	// One entry per billable semantic embed or classifier call, including Jev decisions.
+	// One entry per billable semantic embed or classifier call, including decision-model calls.
 	calls?: RoutingCall[];
 }
 
@@ -760,7 +760,7 @@ export interface LogEntry {
 	routing_rule_id?: string;
 	routing_rule_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
-	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "jev", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
+	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
 	session_id?: string; // Raw opaque session ID resolved by Bifrost for key stickiness and request correlation
 	routing_engine_logs?: string; // Human-readable routing decision logs
@@ -875,7 +875,7 @@ export interface LogFilters {
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	tool_call_names?: string[]; // Requests whose response called any of these function names
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, jev, llm, session, skipped)
+	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
 	agent_names?: string[]; // Registered Agents whose context IDs correlate the matching logs
 	session_id?: string; // Exact session ID used for key stickiness and request correlation
 	agent_correlation_id?: string; // Exact Agent correlation ID shared across related protocol activity
@@ -1170,6 +1170,10 @@ export type ResponsesMessageType =
 	| "code_interpreter_call"
 	| "local_shell_call"
 	| "local_shell_call_output"
+	| "shell_call"
+	| "shell_call_output"
+	| "apply_patch_call"
+	| "apply_patch_call_output"
 	| "mcp_call"
 	| "custom_tool_call"
 	| "custom_tool_call_output"
