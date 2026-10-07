@@ -503,6 +503,11 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 				}
 			}
 
+			// Code execution carries code and logs, not content.
+			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCodeInterpreterCall && msg.ResponsesToolMessage != nil {
+				currentParts = append(currentParts, geminiPartsFromCodeInterpreterCall(&msg)...)
+			}
+
 			// Handle tool calls (function calls)
 			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall && msg.ResponsesToolMessage != nil {
 				argsRaw := json.RawMessage("{}")
@@ -1141,7 +1146,11 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		// them, so thoughtSignatures never reached a /genai SSE client at all.
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
-		return nil
+		if bifrostResp.Item == nil || bifrostResp.Item.Type == nil ||
+			*bifrostResp.Item.Type != schemas.ResponsesMessageTypeCodeInterpreterCall || bifrostResp.Item.ResponsesToolMessage == nil {
+			return nil
+		}
+		candidate.Content.Parts = append(candidate.Content.Parts, geminiPartsFromCodeInterpreterCall(bifrostResp.Item)...)
 
 	case schemas.ResponsesStreamResponseTypeContentPartAdded:
 		// Handle content parts that contain images, audio, or files
@@ -1282,6 +1291,10 @@ type GeminiResponsesStreamState struct {
 	HasStartedToolCall bool            // Whether we've started a tool call
 	TextBuffer         strings.Builder // Accumulates text deltas for output_text.done
 
+	CodeExecOutputIndex int    // -1 when no code_interpreter_call is open
+	CodeExecItemID      string // Item ID of the open code_interpreter_call
+	CodeExecCode        string // Code carried by the open call
+
 	// Web search tracking
 	HasEmittedWebSearch bool // Whether web_search_call events have been emitted
 	// Server-side searches reported by the model itself via toolCall/toolResponse parts,
@@ -1320,6 +1333,7 @@ var geminiResponsesStreamStatePool = sync.Pool{
 			HasStartedText:       false,
 			HasStartedToolCall:   false,
 			HasEmittedWebSearch:  false,
+			CodeExecOutputIndex:  -1,
 		}
 	},
 }
@@ -1384,6 +1398,9 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.HasStartedToolCall = false
 	state.HasEmittedWebSearch = false
 	state.ServerSearchRounds = nil
+	state.CodeExecOutputIndex = -1
+	state.CodeExecItemID = ""
+	state.CodeExecCode = ""
 	state.TextBuffer.Reset()
 }
 
@@ -1549,6 +1566,14 @@ func processGeminiPart(part *Part, state *GeminiResponsesStreamState, sequenceNu
 		// Result of a server-side call; carries no data Bifrost models beyond its signature.
 		responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber)...)
 
+	case part.ExecutableCode != nil:
+		// Server-side code execution: Google runs it and reports the code it ran.
+		responses = append(responses, processGeminiExecutableCodePart(part, state, sequenceNumber)...)
+
+	case part.CodeExecutionResult != nil:
+		// Result of the code above; closes the call item it belongs to.
+		responses = append(responses, processGeminiCodeExecutionResultPart(part, state, sequenceNumber)...)
+
 	case part.FunctionResponse != nil:
 		// Function response (tool result)
 		responses = append(responses, processGeminiFunctionResponsePart(part, state, sequenceNumber)...)
@@ -1571,8 +1596,10 @@ func processGeminiTextPart(part *Part, state *GeminiResponsesStreamState, sequen
 	var responses []*schemas.BifrostResponsesStreamResponse
 
 	var outputIndex int
-	// If this is the first text, emit output_item.added and content_part.added
-	if !state.HasStartedText {
+	// If this is the first text, or text resumes after its item was closed, emit output_item.added and content_part.added
+	if !state.HasStartedText || state.TextItemClosed {
+		state.TextItemClosed = false
+		state.TextBuffer.Reset()
 		outputIndex = state.nextOutputIndex()
 		state.TextOutputIndex = outputIndex // Cache the text item's output index
 		itemID := state.generateItemID("item", outputIndex)
@@ -1973,6 +2000,114 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 	return responses
 }
 
+// geminiCodeInterpreterItem rebuilds the code_interpreter_call item for the currently
+// open call, optionally carrying its result.
+func geminiCodeInterpreterItem(state *GeminiResponsesStreamState, result *CodeExecutionResult) *schemas.ResponsesMessage {
+	ci := &schemas.ResponsesCodeInterpreterToolCall{Code: schemas.Ptr(state.CodeExecCode)}
+	if result != nil {
+		ci.Outputs = geminiCodeExecutionOutputs(result)
+	}
+	return &schemas.ResponsesMessage{
+		ID:     schemas.Ptr(state.CodeExecItemID),
+		Type:   schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+		Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Status: schemas.Ptr(geminiCodeExecutionStatus(result)),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:                           schemas.Ptr(state.CodeExecItemID),
+			ResponsesCodeInterpreterToolCall: ci,
+		},
+	}
+}
+
+// geminiOpenCodeInterpreterItem is the item output_item.added announces: the run is still
+// in progress, and its final status is chosen when the result closes it.
+func geminiOpenCodeInterpreterItem(state *GeminiResponsesStreamState) *schemas.ResponsesMessage {
+	item := geminiCodeInterpreterItem(state, nil)
+	item.Status = schemas.Ptr("in_progress")
+	return item
+}
+
+// closeCodeExecItemIfOpen closes an open code_interpreter_call, folding result onto it
+// when one arrived. Returns nil when no call is open.
+func (state *GeminiResponsesStreamState) closeCodeExecItemIfOpen(result *CodeExecutionResult, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	if state.CodeExecOutputIndex < 0 {
+		return nil
+	}
+	outputIndex := state.CodeExecOutputIndex
+	itemID := state.CodeExecItemID
+	done := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+		SequenceNumber: sequenceNumber,
+		OutputIndex:    &outputIndex,
+		ItemID:         &itemID,
+		Item:           geminiCodeInterpreterItem(state, result),
+	}
+	state.CodeExecOutputIndex = -1
+	state.CodeExecItemID = ""
+	state.CodeExecCode = ""
+	return []*schemas.BifrostResponsesStreamResponse{done}
+}
+
+// processGeminiExecutableCodePart opens a code_interpreter_call for the code Google ran.
+// The item stays open until its codeExecutionResult part arrives.
+func processGeminiExecutableCodePart(part *Part, state *GeminiResponsesStreamState, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	var responses []*schemas.BifrostResponsesStreamResponse
+
+	if closeResponses := state.closeTextItemIfOpen(sequenceNumber); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
+	// A model that runs code twice without an intervening result still gets two items.
+	if closeResponses := state.closeCodeExecItemIfOpen(nil, sequenceNumber+len(responses)); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
+
+	outputIndex := state.nextOutputIndex()
+	itemID := geminiCodeExecutionCallID()
+	state.ItemIDs[outputIndex] = itemID
+	state.CodeExecOutputIndex = outputIndex
+	state.CodeExecItemID = itemID
+	state.CodeExecCode = part.ExecutableCode.Code
+
+	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		SequenceNumber: sequenceNumber + len(responses),
+		OutputIndex:    &outputIndex,
+		ItemID:         &itemID,
+		Item:           geminiOpenCodeInterpreterItem(state),
+	})
+
+	return responses
+}
+
+// processGeminiCodeExecutionResultPart closes the code_interpreter_call the result
+// belongs to. A result with no open call still produces a complete item of its own.
+func processGeminiCodeExecutionResultPart(part *Part, state *GeminiResponsesStreamState, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	var responses []*schemas.BifrostResponsesStreamResponse
+
+	if state.CodeExecOutputIndex < 0 {
+		if closeResponses := state.closeTextItemIfOpen(sequenceNumber); closeResponses != nil {
+			responses = append(responses, closeResponses...)
+		}
+		outputIndex := state.nextOutputIndex()
+		itemID := geminiCodeExecutionCallID()
+		state.ItemIDs[outputIndex] = itemID
+		state.CodeExecOutputIndex = outputIndex
+		state.CodeExecItemID = itemID
+		state.CodeExecCode = ""
+
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+			Item:           geminiOpenCodeInterpreterItem(state),
+		})
+	}
+
+	responses = append(responses, state.closeCodeExecItemIfOpen(part.CodeExecutionResult, sequenceNumber+len(responses))...)
+	return responses
+}
+
 // processGeminiFunctionResponsePart handles function response (tool result) parts
 func processGeminiFunctionResponsePart(part *Part, state *GeminiResponsesStreamState, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
@@ -2307,6 +2442,11 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 			sequenceNumber+len(responses),
 		)
 		responses = append(responses, annotationResponses...)
+	}
+
+	// Close a code_interpreter_call whose result never arrived
+	if closeResponses := state.closeCodeExecItemIfOpen(nil, sequenceNumber+len(responses)); closeResponses != nil {
+		responses = append(responses, closeResponses...)
 	}
 
 	// Close any open tool calls
@@ -2882,6 +3022,14 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					}
 					messages = append(messages, msg)
 				}
+
+			case part.ExecutableCode != nil:
+				messages = append(messages, newGeminiCodeInterpreterCall(part.ExecutableCode, nil))
+
+			case part.CodeExecutionResult != nil:
+				if !attachGeminiCodeExecutionResult(messages, part.CodeExecutionResult) {
+					messages = append(messages, newGeminiCodeInterpreterCall(nil, part.CodeExecutionResult))
+				}
 			}
 		}
 	}
@@ -3058,6 +3206,12 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 			}
 			responsesTools = append(responsesTools, responsesTool)
 		}
+		if tool.CodeExecution != nil {
+			responsesTools = append(responsesTools, schemas.ResponsesTool{
+				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{},
+			})
+		}
 		if len(tool.FunctionDeclarations) > 0 {
 			for _, fn := range tool.FunctionDeclarations {
 				responsesTool := schemas.ResponsesTool{
@@ -3226,6 +3380,10 @@ func geminiPartIdentity(part *Part) string {
 		return "tr:" + geminiCallIDWithoutSignature(part.ToolResponse.ID) + ":" + part.ToolResponse.ToolType
 	case part.FunctionCall != nil:
 		return "fc:" + geminiCallIDWithoutSignature(part.FunctionCall.ID) + ":" + part.FunctionCall.Name
+	case part.ExecutableCode != nil:
+		return "ec:" + part.ExecutableCode.Code
+	case part.CodeExecutionResult != nil:
+		return "cr:" + string(part.CodeExecutionResult.Outcome) + ":" + part.CodeExecutionResult.Output
 	case part.Text != "":
 		if part.Thought {
 			return "th:" + part.Text
@@ -3397,6 +3555,121 @@ func groundingChunkSource(chunk *GroundingChunk) (schemas.ResponsesWebSearchTool
 }
 
 // Helper functions for Responses conversion
+// geminiCodeExecutionOutputs renders a Gemini code execution result as neutral
+// code_interpreter logs. Gemini reports failures in the same output string, so a
+// non-OK outcome is prefixed rather than dropped.
+// geminiCodeExecutionErrorPrefix marks a failed result replayed as plain text, where no
+// status can carry the outcome.
+const geminiCodeExecutionErrorPrefix = "Error: "
+
+// geminiCodeExecutionStatus is the item status for a code execution result: anything but
+// OUTCOME_OK failed. A call whose result has not arrived is completed so far.
+func geminiCodeExecutionStatus(result *CodeExecutionResult) string {
+	if result != nil && result.Outcome != OutcomeOK {
+		return "failed"
+	}
+	return "completed"
+}
+
+// geminiCodeExecutionOutputs carries the result's output as raw logs; the outcome lives
+// on the item status.
+func geminiCodeExecutionOutputs(result *CodeExecutionResult) []schemas.ResponsesCodeInterpreterOutput {
+	return []schemas.ResponsesCodeInterpreterOutput{{
+		ResponsesCodeInterpreterOutputLogs: &schemas.ResponsesCodeInterpreterOutputLogs{
+			Type: "logs",
+			Logs: result.Output,
+		},
+	}}
+}
+
+// geminiPartsFromCodeInterpreterCall turns a replayed code_interpreter_call back into the
+// executableCode and codeExecutionResult parts. A result with no code to follow is sent as text.
+func geminiPartsFromCodeInterpreterCall(msg *schemas.ResponsesMessage) []*Part {
+	ci := msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+	if ci == nil {
+		return nil
+	}
+	var logs strings.Builder
+	hasResult := false // an empty logs entry is still a result: the code ran and printed nothing
+	for _, out := range ci.Outputs {
+		if out.ResponsesCodeInterpreterOutputLogs != nil {
+			hasResult = true
+			logs.WriteString(out.ResponsesCodeInterpreterOutputLogs.Logs)
+		}
+	}
+	failed := msg.Status != nil && *msg.Status == "failed"
+	if ci.Code == nil || *ci.Code == "" {
+		if logs.Len() == 0 {
+			return nil
+		}
+		if failed {
+			return []*Part{{Text: geminiCodeExecutionErrorPrefix + logs.String()}}
+		}
+		return []*Part{{Text: logs.String()}}
+	}
+	parts := []*Part{{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: *ci.Code}}}
+	if !hasResult && !failed {
+		return parts
+	}
+	outcome := OutcomeOK
+	if failed {
+		outcome = OutcomeFailed
+	}
+	return append(parts, &Part{CodeExecutionResult: &CodeExecutionResult{Outcome: outcome, Output: logs.String()}})
+}
+
+// newGeminiCodeInterpreterCall builds a code_interpreter_call from an executableCode
+// part, optionally already carrying its result. Gemini assigns these parts no id, so
+// one is generated to keep the call addressable.
+func newGeminiCodeInterpreterCall(code *ExecutableCode, result *CodeExecutionResult) schemas.ResponsesMessage {
+	callID := geminiCodeExecutionCallID()
+	ci := &schemas.ResponsesCodeInterpreterToolCall{}
+	if code != nil {
+		ci.Code = schemas.Ptr(code.Code)
+	}
+	if result != nil {
+		ci.Outputs = geminiCodeExecutionOutputs(result)
+	}
+	return schemas.ResponsesMessage{
+		ID:     schemas.Ptr(callID),
+		Type:   schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+		Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Status: schemas.Ptr(geminiCodeExecutionStatus(result)),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:                           schemas.Ptr(callID),
+			ResponsesCodeInterpreterToolCall: ci,
+		},
+	}
+}
+
+// geminiCodeExecutionCallID mints an id for a code execution call, which Gemini does
+// not identify on the wire.
+func geminiCodeExecutionCallID() string {
+	return "ci_" + schemas.GetRandomString(24)
+}
+
+// attachGeminiCodeExecutionResult folds a codeExecutionResult onto the most recent
+// code_interpreter_call that has no outputs yet, reporting whether it found one.
+func attachGeminiCodeExecutionResult(msgs []schemas.ResponsesMessage, result *CodeExecutionResult) bool {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := &msgs[i]
+		if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeCodeInterpreterCall {
+			continue
+		}
+		if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall == nil {
+			continue
+		}
+		ci := msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+		if len(ci.Outputs) > 0 {
+			return false
+		}
+		ci.Outputs = geminiCodeExecutionOutputs(result)
+		msg.Status = schemas.Ptr(geminiCodeExecutionStatus(result))
+		return true
+	}
+	return false
+}
+
 // convertGeminiCandidatesToResponsesOutput converts Gemini candidates to Responses output messages
 func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
@@ -3630,43 +3903,14 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				messages = append(messages, msg)
 
 			case part.CodeExecutionResult != nil:
-				// Handle code execution results
-				output := part.CodeExecutionResult.Output
-				if part.CodeExecutionResult.Outcome != OutcomeOK {
-					output = "Error: " + output
+				// Always follows the executableCode part it belongs to, so fold it onto
+				// that open call rather than emitting a second item.
+				if !attachGeminiCodeExecutionResult(messages, part.CodeExecutionResult) {
+					messages = append(messages, newGeminiCodeInterpreterCall(nil, part.CodeExecutionResult))
 				}
-
-				msg := schemas.ResponsesMessage{
-					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{
-							{
-								Type: schemas.ResponsesOutputMessageContentTypeText,
-								Text: &output,
-							},
-						},
-					},
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
-				}
-				messages = append(messages, msg)
 
 			case part.ExecutableCode != nil:
-				// Handle executable code
-				codeContent := "```" + part.ExecutableCode.Language + "\n" + part.ExecutableCode.Code + "\n```"
-
-				msg := schemas.ResponsesMessage{
-					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{
-							{
-								Type: schemas.ResponsesOutputMessageContentTypeText,
-								Text: &codeContent,
-							},
-						},
-					},
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-				}
-				messages = append(messages, msg)
+				messages = append(messages, newGeminiCodeInterpreterCall(part.ExecutableCode, nil))
 			case part.ToolCall != nil:
 				// Server-side tool invocation (Google executed it; we only report it).
 				// The part also carries a thoughtSignature, so keep emitting the reasoning
@@ -4157,6 +4401,7 @@ func modelSupportsToolCombination(model string) bool {
 func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerSideToolInvocations bool, provider schemas.ModelProvider, model string) ([]Tool, error) {
 	var functionDeclarations []*FunctionDeclaration
 	var googleSearch *GoogleSearch
+	var codeExecution *ToolCodeExecution
 
 	allowsMixedTools := includeServerSideToolInvocations ||
 		(provider == schemas.Vertex && modelSupportsToolCombination(model))
@@ -4170,7 +4415,9 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 		}
 	}
 
-	dropGoogleSearch := hasFunctionTool && !allowsMixedTools
+	// Google Search and code execution are both server-side tools, so both fall under
+	// the mixed-tool restriction described above.
+	dropServerSideTools := hasFunctionTool && !allowsMixedTools
 
 	for _, tool := range tools {
 		if tool.Type == schemas.ResponsesToolTypeFunction {
@@ -4197,7 +4444,12 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 				functionDeclarations = append(functionDeclarations, funcDecl)
 			}
 		}
-		if tool.Type == schemas.ResponsesToolTypeWebSearch && !dropGoogleSearch {
+		if tool.Type == schemas.ResponsesToolTypeCodeInterpreter && !dropServerSideTools {
+			// Gemini's codeExecution takes no configuration; the OpenAI container and the
+			// Anthropic version on ResponsesToolCodeInterpreter have no Gemini equivalent.
+			codeExecution = &ToolCodeExecution{}
+		}
+		if tool.Type == schemas.ResponsesToolTypeWebSearch && !dropServerSideTools {
 			googleSearch = &GoogleSearch{}
 			if tool.ResponsesToolWebSearch != nil && tool.ResponsesToolWebSearch.Filters != nil {
 				if tool.ResponsesToolWebSearch.Filters.TimeRangeFilter != nil {
@@ -4234,6 +4486,9 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 	}
 	if googleSearch != nil {
 		geminiTools = append(geminiTools, Tool{GoogleSearch: googleSearch})
+	}
+	if codeExecution != nil {
+		geminiTools = append(geminiTools, Tool{CodeExecution: codeExecution})
 	}
 	if len(geminiTools) == 0 {
 		return []Tool{}, nil
@@ -4715,6 +4970,11 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 					content.Parts = append(content.Parts, part)
 				}
+
+			case schemas.ResponsesMessageTypeCodeInterpreterCall:
+				// The call carries code and logs, not content, so rebuild the parts Gemini produced.
+				content.Role = "model"
+				content.Parts = append(content.Parts, geminiPartsFromCodeInterpreterCall(&msg)...)
 
 			case schemas.ResponsesMessageTypeFunctionCallOutput:
 				// Convert function response - collect for grouping

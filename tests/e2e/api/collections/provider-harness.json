@@ -196311,7 +196311,7 @@
     },
     {
       "name": "161. Vertex endpoint selection and header forwarding (vertex endpoint fixture)",
-      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir <dir>, start an isolated gateway with -app-dir <dir> (the fixture writes its config.json: one Vertex key per region, a service account whose token_uri points at the fixture, and a proxy_config + CA so the gateway trusts the fixture), and run with vertexEndpointFixture=1; every case is skipped otherwise. The fixture is the gateway's HTTP proxy: it terminates TLS for whatever host the gateway CONNECTs to, records the decrypted request, and answers with a canned Gemini or Claude body, so the cases assert the real host, location path segment and headers the gateway sends. Keys are selected with x-bf-api-key. Covered: global, us/eu multi-region, us-east5 regional, a regional key that stays single-region for Gemini, Claude promoted to the us multi-region pool from an unpinned us-central1 key and kept on us-central1 with force_single_region, the OAuth token path for Claude, the service-tier shared-request-type header (global endpoint only, and absent on a regional key), and extra-header forwarding, which is how Vertex Provisioned Throughput spend-limit ids (x-goog-spend-limit-id) are sent.",
+      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir <dir>, start an isolated gateway with -app-dir <dir> (the fixture writes its config.json: one Vertex key per region, a service account whose token_uri points at the fixture, and a proxy_config + CA so the gateway trusts the fixture), and run with vertexEndpointFixture=1; every case is skipped otherwise. The fixture is the gateway's HTTP proxy: it terminates TLS for whatever host the gateway CONNECTs to, records the decrypted request, and answers with a canned Gemini or Claude body, so the cases assert the real host, location path segment and headers the gateway sends. Keys are selected with x-bf-api-key. Covered: global, us/eu multi-region, us-east5 regional, a regional key that stays single-region for Gemini, Claude promoted to the us multi-region pool from an unpinned us-central1 key and kept on us-central1 with force_single_region, the OAuth token path for Claude, the service-tier shared-request-type header (global endpoint only, and absent on a regional key), and extra-header forwarding, which is how Vertex Provisioned Throughput spend-limit ids (x-goog-spend-limit-id) are sent. Video retrieve and download pinned to the us-east5 key poll the region named in the operation, us-central1, since model-less polls can land on any key.",
       "item": [
         {
           "name": "161.1 vertex/gemini-2.5-flash on the global key reaches aiplatform.googleapis.com (vertex endpoint selection)",
@@ -197091,6 +197091,126 @@
                   "  var loc = (call.path.match(/locations\\/([^/]+)\\//) || [])[1];",
                   "  pm.test('x-goog-spend-limit-id reaches Vertex', function () { pm.expect(call.headers['x-goog-spend-limit-id'], JSON.stringify(call.headers)).to.equal('fx-limit-1'); });",
                   "  pm.test('the x-bf-eh-prefixed name is not leaked upstream', function () { pm.expect(Object.keys(call.headers).filter(function (h) { return h.indexOf('x-bf-') === 0; }), JSON.stringify(call.headers)).to.eql([]); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "161.13 vertex/veo-3.0-generate-001 video retrieve on the us-east5 key polls the operation's us-central1 host (vertex video poll region)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-east5"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.0-generate-001%2Foperations%2Ffixture-op:vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.0-generate-001%2Foperations%2Ffixture-op:vertex"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('the gateway answered from the fixture', function () { pm.expect(j.id, pm.response.text().slice(0, 400)).to.equal('projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.0-generate-001%2Foperations%2Ffixture-op:vertex'); pm.expect(j.status, pm.response.text().slice(0, 400)).to.equal('completed'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST' && /:fetchPredictOperation/.test(q.path); });",
+                  "  pm.test('exactly one operation poll reached Vertex', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', path: '' };",
+                  "  pm.test('host is the operation region us-central1, not the us-east5 key region', function () { pm.expect(call.host).to.equal('us-central1-aiplatform.googleapis.com'); });",
+                  "  pm.test('path is the operation model on its own project and location', function () { pm.expect(call.path).to.match(/^\\/v1\\/projects\\/fixture-project\\/locations\\/us-central1\\/publishers\\/google\\/models\\/veo-3\\.0-generate-001:fetchPredictOperation/); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "161.14 vertex/veo-3.0-generate-001 video download on the us-east5 key polls the operation's us-central1 host (vertex video poll region)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-east5"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.0-generate-001%2Foperations%2Ffixture-op:vertex/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.0-generate-001%2Foperations%2Ffixture-op:vertex",
+                "content"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the video bytes came back from the fixture', function () { pm.expect(pm.response.headers.get('Content-Type'), pm.response.text().slice(0, 400)).to.equal('video/webm'); pm.expect(pm.response.text()).to.include('fixture-video'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST' && /:fetchPredictOperation/.test(q.path); });",
+                  "  pm.test('exactly one operation poll reached Vertex', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(1); });",
+                  "  var call = calls[0] || { host: '', path: '' };",
+                  "  pm.test('host is the operation region us-central1, not the us-east5 key region', function () { pm.expect(call.host).to.equal('us-central1-aiplatform.googleapis.com'); });",
+                  "  pm.test('path is the operation model on its own project and location', function () { pm.expect(call.path).to.match(/^\\/v1\\/projects\\/fixture-project\\/locations\\/us-central1\\/publishers\\/google\\/models\\/veo-3\\.0-generate-001:fetchPredictOperation/); });",
                   "});"
                 ]
               }
@@ -203881,7 +204001,2630 @@
       ]
     },
     {
-      "name": "178. Gemini models honor stop_sequences from /anthropic/v1/messages (#7922 / PR #7923) (gemini-stop-sequences)",
+      "name": "177. Responses shell, apply_patch and allowed_callers vocabulary (PR #7292 / #7293 / #7301) (responses-tool-vocabulary)",
+      "description": "Three stacked Responses-API features, each wire-visible and each previously uncovered here.\n\nPR #7292 adds the `shell` tool plus `shell_call` / `shell_call_output` message types. PR #7301 adds `apply_patch` and `apply_patch_call`. Both tool types were missing from the OpenAI `filterUnsupportedTools` allow-list, so they were dropped SILENTLY - the request still returned 200, just without the tool. A status assertion cannot see that, so every tool-acceptance case here asserts on `extra_fields.raw_request`, the bytes Bifrost actually sent.\n\nPR #7293 translates `allowed_callers` between the two vocabularies. OpenAI calls the sandbox context `programmatic`; Anthropic names it by code execution version and rejects the OpenAI word, and OpenAI rejects Anthropic's versioned values just as flatly. Both directions are pinned. The collection already had `allowed_callers` coverage, but every existing row was Anthropic-native ingress sending Anthropic's own vocabulary - none crossed the vocabularies, which is the only thing PR #7293 does.\n\nTwo cases pin behaviour that is easy to get wrong in the safe-looking direction: a version-less `code_interpreter` must RAISE the emitted code execution version to 20260120 (20250825 has no programmatic tool calling, so an untranslated restriction would be unreachable), and an `mcp_toolset` must DROP the restriction rather than fail the request - Anthropic has no such field on a toolset, so there is no narrower state to fall from and erroring would only reject requests Anthropic would have served.\n\nThe streamed apply_patch case (177.12) pins the new stream fields: the apply_patch_call_operation_diff.delta events must reach the client and add up to the final diff, the .done event must keep its diff (a field BifrostResponsesStreamResponse did not have, so a re-marshal dropped it), and the closed item and response.completed must carry the full operation. 177.13 replays a function_call and an apply_patch_call whose outputs arrive patch-first: the patch output renders as user text and used to be written before the function tool_result, so the user turn after the tool_use opened with text and Anthropic rejected it; the tool_result must lead that turn.",
+      "item": [
+        {
+          "name": "177.1 openai/gpt-5.3-codex shell tool survives filterUnsupportedTools onto the wire - PR #7292",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"input\": \"Say hi in one word.\",\n  \"max_output_tokens\": 40,\n  \"tools\": [{ \"type\": \"shell\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Before PR #7292 'shell' was absent from filterUnsupportedTools' allow-list, so Bifrost",
+                  "// dropped it SILENTLY - the request still returned 200, just with no shell tool. The status",
+                  "// therefore proves nothing here; only the outbound wire does.",
+                  "pm.test('openai shell tool: 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "pm.test('shell tool reaches the OpenAI wire (not silently filtered)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  var types = tools.map(function (t) { return t && t.type; });",
+                  "  pm.expect(types, 'tools on the wire: ' + wire.slice(0, 600)).to.include('shell');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.2 openai/gpt-5.3-codex shell_call and shell_call_output replay round-trip - PR #7292",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"max_output_tokens\": 60,\n  \"tools\": [{ \"type\": \"shell\" }],\n  \"input\": [\n    { \"role\": \"user\", \"content\": \"Run the shell command for this task.\" },\n    {\n      \"type\": \"shell_call\",\n      \"id\": \"sh_0c7ec83a3f9f79b9006aba4e8d2aa887d1846340548460f6c4\",\n      \"call_id\": \"call_MNMSVtf0On9YFk4qVS1Jwiry\",\n      \"status\": \"completed\",\n      \"action\": { \"commands\": [\"echo SHELLCMD7292\"] }\n    },\n    {\n      \"type\": \"shell_call_output\",\n      \"call_id\": \"call_MNMSVtf0On9YFk4qVS1Jwiry\",\n      \"output\": [\n        { \"stdout\": \"SHELLOUT7292\\n\", \"stderr\": \"\", \"outcome\": { \"type\": \"exit\", \"exit_code\": 0 } }\n      ]\n    },\n    { \"role\": \"user\", \"content\": \"What did that command print? Reply with the exact text.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// shell_call / shell_call_output had no neutral message types before PR #7292, so a replayed",
+                  "// turn lost the commands and the captured streams on the way through Bifrost.",
+                  "//",
+                  "// The command and the stdout use tokens that appear NOWHERE in the prompts, and the assertions",
+                  "// read the replayed items out of rr.input rather than searching the whole request - otherwise a",
+                  "// dropped item would still 'pass' on the prompt text that happens to quote it.",
+                  "pm.test('openai shell replay: 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "pm.test('the replayed shell_call keeps its commands', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var calls = (rr.input || []).filter(function (i) { return i && i.type === 'shell_call'; });",
+                  "  pm.expect(calls.length, 'expected exactly one shell_call item: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  pm.expect(calls[0].action && calls[0].action.commands, 'commands lost: ' + wire.slice(0, 800))",
+                  "    .to.eql(['echo SHELLCMD7292']);",
+                  "});",
+                  "pm.test('the replayed shell_call_output keeps stdout and its exit outcome', function () {",
+                  "  var outs = (rr.input || []).filter(function (i) { return i && i.type === 'shell_call_output'; });",
+                  "  pm.expect(outs.length, 'expected exactly one shell_call_output item: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  var chunk = (outs[0].output || [])[0] || {};",
+                  "  pm.expect(chunk.stdout || '', 'stdout lost: ' + wire.slice(0, 800)).to.include('SHELLOUT7292');",
+                  "  pm.expect(chunk.outcome && chunk.outcome.type, 'outcome lost: ' + wire.slice(0, 800)).to.eql('exit');",
+                  "  pm.expect(chunk.outcome && chunk.outcome.exit_code, 'exit_code lost: ' + wire.slice(0, 800)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.3 openai/gpt-5.3-codex shell streaming object-shaped delta parses - PR #7292",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"input\": \"Use the shell tool to run: echo SHELLSTREAM7292\",\n  \"max_output_tokens\": 300,\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"type\": \"shell\"\n    }\n  ],\n  \"tool_choice\": \"required\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "",
+                  "// PR #7292 added UnmarshalResponsesStreamObjectDelta because",
+                  "// response.shell_call_output_content.delta sends `delta` as an OBJECT ({stdout, stderr}),",
+                  "// which the string-typed Delta field cannot hold. A failed decode dropped the event with",
+                  "// only a log warning - a silent hole in the stream rather than an error.",
+                  "//",
+                  "// tool_choice=required pins the shell call actually happening, so this case cannot pass",
+                  "// by the model simply declining to use the tool.",
+                  "//",
+                  "// The assertions below read the parsed SSE events structurally. The previous check was",
+                  "// `txt.include('shell_call')`, which matches the output_item.added envelope and so stayed",
+                  "// green even if every delta on the item was dropped.",
+                  "pm.test('openai shell stream: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "",
+                  "var events = [];",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  var trimmed = line.trim();",
+                  "  if (trimmed.indexOf('data:') !== 0) { return; }",
+                  "  var payload = trimmed.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(payload)); } catch (e) { /* keepalive */ }",
+                  "});",
+                  "var seen = JSON.stringify(events.map(function (e) { return e.type; })).slice(0, 700);",
+                  "pm.test('stream parsed into events', function () {",
+                  "  pm.expect(events.length, 'body: ' + txt.slice(0, 700)).to.be.above(0);",
+                  "});",
+                  "pm.test('stream terminates cleanly', function () {",
+                  "  var done = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "  pm.expect(done.length, 'event types: ' + seen).to.be.above(0);",
+                  "});",
+                  "pm.test('no error event in the stream', function () {",
+                  "  var errs = events.filter(function (e) { return e.type === 'error' || e.type === 'response.failed'; });",
+                  "  pm.expect(errs.length, 'errors: ' + JSON.stringify(errs).slice(0, 500)).to.eql(0);",
+                  "});",
+                  "",
+                  "// The command arrives as string deltas; every one must decode as a string, or the",
+                  "// item is reassembled from a hole.",
+                  "var cmdDeltas = events.filter(function (e) { return e.type === 'response.shell_call_command.delta'; });",
+                  "pm.test('shell_call command deltas arrive and are strings', function () {",
+                  "  pm.expect(cmdDeltas.length, 'event types: ' + seen).to.be.above(0);",
+                  "  cmdDeltas.forEach(function (e) {",
+                  "    pm.expect(typeof e.delta, 'non-string command delta: ' + JSON.stringify(e).slice(0, 300)).to.eql('string');",
+                  "  });",
+                  "});",
+                  "",
+                  "// Structural read of the completed item, not a substring sweep of the body.",
+                  "var doneItems = events.filter(function (e) {",
+                  "  return e.type === 'response.output_item.done' && e.item && e.item.type === 'shell_call';",
+                  "});",
+                  "pm.test('a shell_call item is completed on the stream', function () {",
+                  "  pm.expect(doneItems.length, 'event types: ' + seen).to.be.above(0);",
+                  "});",
+                  "if (doneItems.length === 0) { return; }",
+                  "var item = doneItems[0].item;",
+                  "var itemDump = JSON.stringify(item).slice(0, 600);",
+                  "pm.test('the completed item carries its command through the stream', function () {",
+                  "  pm.expect(item.action && item.action.commands, 'item: ' + itemDump).to.be.an('array');",
+                  "  pm.expect(JSON.stringify(item.action.commands), 'item: ' + itemDump).to.include('SHELLSTREAM7292');",
+                  "});",
+                  "pm.test('the completed item keeps its call_id', function () {",
+                  "  pm.expect(item.call_id, 'item: ' + itemDump).to.be.a('string');",
+                  "});",
+                  "",
+                  "// The object-delta branch itself. OpenAI does not emit this event for a client-executed",
+                  "// shell (verified live: plain, tool_choice=required, and shell_call_output replay all",
+                  "// produce only shell_call_command.* with string deltas), so requiring it would fail the",
+                  "// case permanently. Asserted conditionally: if it ever arrives, it must be decoded as an",
+                  "// object rather than dropped.",
+                  "var objEvents = events.filter(function (e) {",
+                  "  return e.type === 'response.shell_call_output_content.delta';",
+                  "});",
+                  "pm.test('any shell_call_output_content.delta decodes as an object, not a dropped event', function () {",
+                  "  objEvents.forEach(function (e) {",
+                  "    pm.expect(e.delta, 'delta not an object: ' + JSON.stringify(e).slice(0, 300)).to.be.an('object');",
+                  "    var hasStream = e.delta && (e.delta.stdout !== undefined || e.delta.stderr !== undefined);",
+                  "    pm.expect(hasStream, 'object delta missing stdout/stderr: ' + JSON.stringify(e).slice(0, 300)).to.be.true;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.4 anthropic/claude-sonnet-4-5 shell_call replay renders commands and output - PR #7292",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 80,\n  \"input\": [\n    { \"role\": \"user\", \"content\": \"Run the shell command for this task.\" },\n    {\n      \"type\": \"shell_call\",\n      \"id\": \"sh_0c7ec83a3f9f79b9006aba4e8d2aa887d1846340548460f6c4\",\n      \"call_id\": \"call_MNMSVtf0On9YFk4qVS1Jwiry\",\n      \"status\": \"completed\",\n      \"action\": { \"commands\": [\"echo SHELLCMD7292\"] }\n    },\n    {\n      \"type\": \"shell_call_output\",\n      \"call_id\": \"call_MNMSVtf0On9YFk4qVS1Jwiry\",\n      \"output\": [\n        { \"stdout\": \"SHELLOUT7292\\n\", \"stderr\": \"\", \"outcome\": { \"type\": \"exit\", \"exit_code\": 0 } }\n      ]\n    },\n    { \"role\": \"user\", \"content\": \"What did that command print? Reply with the exact text.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Anthropic has no shell tool, so the call and its output are replayed as text. If they are",
+                  "// dropped instead, the turn silently loses that the command ran at all and the model answers",
+                  "// from nothing - a wrong answer, not an error.",
+                  "//",
+                  "// Neither token below appears in any prompt, so matching them proves the ITEMS were rendered;",
+                  "// the search is scoped to the rendered message content rather than the whole request.",
+                  "pm.test('anthropic shell replay: 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "pm.test('the shell_call commands are rendered into the Anthropic messages', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var rendered = JSON.stringify((rr.messages || []).map(function (m) { return m && m.content; }));",
+                  "  pm.expect(rendered, 'commands not rendered: ' + rendered.slice(0, 900)).to.include('echo SHELLCMD7292');",
+                  "});",
+                  "pm.test('the shell_call_output stdout is rendered into the Anthropic messages', function () {",
+                  "  var rendered = JSON.stringify((rr.messages || []).map(function (m) { return m && m.content; }));",
+                  "  pm.expect(rendered, 'stdout not rendered: ' + rendered.slice(0, 900)).to.include('SHELLOUT7292');",
+                  "});",
+                  "pm.test('no OpenAI-only shell item type leaks onto the Anthropic wire', function () {",
+                  "  pm.expect(wire, 'raw shell_call item leaked: ' + wire.slice(0, 900)).to.not.include('\"shell_call\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.5 anthropic/claude-sonnet-4-5 programmatic caller becomes code_execution_20260120 - PR #7293",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 256,\n  \"input\": \"Write Python that calls get_price for 'AAPL' and prints the result.\",\n  \"tools\": [\n    { \"type\": \"code_interpreter\", \"container\": { \"type\": \"auto\" } },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_price\",\n      \"description\": \"Get the current price for a stock ticker.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": { \"ticker\": { \"type\": \"string\" } },\n        \"required\": [\"ticker\"],\n        \"additionalProperties\": false\n      },\n      \"allowed_callers\": [\"programmatic\"]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Anthropic names the sandbox caller by code execution version and rejects OpenAI's word:",
+                  "//   tools.1.custom.allowed_callers.0: Input should be 'direct', 'code_execution_20250825',",
+                  "//   'code_execution_20260120' or 'code_execution_20260521'",
+                  "// A version-less code_interpreter (the OpenAI shape) would default to code_execution_20250825,",
+                  "// which has NO programmatic tool calling - so PR #7293 also raises the emitted version to",
+                  "// 20260120, otherwise the restriction it just translated would be unreachable.",
+                  "pm.test('anthropic programmatic caller: 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "pm.test('programmatic is translated, not passed through', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(wire, 'openai vocabulary leaked to anthropic: ' + wire.slice(0, 900)).to.not.include('\"programmatic\"');",
+                  "  pm.expect(wire, 'caller not translated: ' + wire.slice(0, 900)).to.include('code_execution_20260120');",
+                  "});",
+                  "pm.test('the code execution tool is raised to the version that supports the caller', function () {",
+                  "  var tools = rr.tools || [];",
+                  "  var ce = tools.filter(function (t) { return t && String(t.type || '').indexOf('code_execution_') === 0; });",
+                  "  pm.expect(ce.length, 'no code_execution tool on the wire: ' + wire.slice(0, 900)).to.be.above(0);",
+                  "  pm.expect(ce[0].type, 'version not raised: ' + wire.slice(0, 900)).to.eql('code_execution_20260120');",
+                  "});",
+                  "pm.test('the function tool carries the translated caller', function () {",
+                  "  var tools = rr.tools || [];",
+                  "  var fn = tools.filter(function (t) { return t && t.name === 'get_price'; })[0];",
+                  "  pm.expect(fn, 'get_price missing from the wire: ' + wire.slice(0, 900)).to.be.an('object');",
+                  "  pm.expect(fn.allowed_callers, 'callers on get_price: ' + wire.slice(0, 900)).to.eql(['code_execution_20260120']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.6 openai/gpt-5.6 versioned code_execution caller becomes programmatic - PR #7293",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6\",\n  \"max_output_tokens\": 256,\n  \"input\": \"Write Python that calls get_price for 'AAPL' and prints the result.\",\n  \"tools\": [\n    { \"type\": \"programmatic_tool_calling\" },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_price\",\n      \"description\": \"Get the current price for a stock ticker.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": { \"ticker\": { \"type\": \"string\" } },\n        \"required\": [\"ticker\"],\n        \"additionalProperties\": false\n      },\n      \"allowed_callers\": [\"code_execution_20260120\"]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// The reverse direction. OpenAI rejects Anthropic's versioned vocabulary outright:",
+                  "//   Invalid value: 'code_execution_20260120'. Supported values are: 'direct' and 'programmatic'.",
+                  "// so a 200 here is only reachable if Bifrost rewrote the caller before it went out.",
+                  "pm.test('openai translated caller: 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "pm.test('the anthropic caller vocabulary never reaches OpenAI', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(wire, 'anthropic vocabulary leaked to openai: ' + wire.slice(0, 900)).to.not.include('code_execution_20260120');",
+                  "});",
+                  "pm.test('the function tool carries the programmatic caller', function () {",
+                  "  var tools = rr.tools || [];",
+                  "  var fn = tools.filter(function (t) { return t && t.name === 'get_price'; })[0];",
+                  "  pm.expect(fn, 'get_price missing from the wire: ' + wire.slice(0, 900)).to.be.an('object');",
+                  "  pm.expect(fn.allowed_callers, 'callers on get_price: ' + wire.slice(0, 900)).to.eql(['programmatic']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.7 anthropic/claude-sonnet-4-5 mcp toolset drops allowed_callers instead of failing - PR #7293",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 128,\n  \"input\": \"In one sentence, what is the deepwiki MCP server for?\",\n  \"tools\": [\n    { \"type\": \"code_interpreter\", \"container\": { \"type\": \"auto\" } },\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"deepwiki\",\n      \"server_url\": \"https://mcp.deepwiki.com/mcp\",\n      \"require_approval\": \"never\",\n      \"allowed_callers\": [\"programmatic\"]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Anthropic's mcp_toolset has no allowed_callers field at all - sending one is a hard 400:",
+                  "//   tools.0.mcp_toolset.allowed_callers: Extra inputs are not permitted",
+                  "// There is no narrower state to fall from, so the restriction is dropped rather than rejected;",
+                  "// failing the request would only turn a request Anthropic would serve into an error.",
+                  "pm.test('anthropic mcp toolset with callers: 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "pm.test('mcp_toolset carries no allowed_callers (Anthropic rejects the field outright)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  var toolset = tools.filter(function (t) { return t && t.type === 'mcp_toolset'; })[0];",
+                  "  pm.expect(toolset, 'no mcp_toolset on the wire: ' + wire.slice(0, 900)).to.be.an('object');",
+                  "  pm.expect(toolset.allowed_callers, 'callers must be dropped: ' + wire.slice(0, 900)).to.eql(undefined);",
+                  "});",
+                  "pm.test('a dropped mcp caller does not raise the code execution version', function () {",
+                  "  // The callers never reach the wire, so they must not reach the shared version resolution",
+                  "  // either - otherwise an mcp tool alone silently upgrades everyone else's code_execution.",
+                  "  var tools = rr.tools || [];",
+                  "  var ce = tools.filter(function (t) { return t && String(t.type || '').indexOf('code_execution_') === 0; })[0];",
+                  "  pm.expect(ce, 'no code_execution tool on the wire: ' + wire.slice(0, 900)).to.be.an('object');",
+                  "  pm.expect(ce.type, 'version raised by a dropped caller: ' + wire.slice(0, 900)).to.eql('code_execution_20250825');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.8 openai/gpt-5.3-codex apply_patch tool survives filterUnsupportedTools onto the wire - PR #7301",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"input\": \"Say hi in one word.\",\n  \"max_output_tokens\": 40,\n  \"tools\": [{ \"type\": \"apply_patch\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Same silent-drop shape as the shell tool: an unlisted tool type was filtered out and the",
+                  "// request still returned 200, so only the outbound wire can catch the regression.",
+                  "pm.test('openai apply_patch tool: 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "pm.test('apply_patch tool reaches the OpenAI wire (not silently filtered)', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var types = (rr.tools || []).map(function (t) { return t && t.type; });",
+                  "  pm.expect(types, 'tools on the wire: ' + wire.slice(0, 600)).to.include('apply_patch');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.9 openai/gpt-5.3-codex apply_patch_call operation survives replay - PR #7301",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"max_output_tokens\": 60,\n  \"tools\": [{ \"type\": \"apply_patch\" }],\n  \"input\": [\n    { \"role\": \"user\", \"content\": \"Create the file for this task.\" },\n    {\n      \"type\": \"apply_patch_call\",\n      \"id\": \"apc_054da914d98d8080006aba4e8f801487d19b3c559f1a8ff0f9\",\n      \"call_id\": \"call_OhbEqFoiKuPF755zLe78FJaT\",\n      \"status\": \"completed\",\n      \"operation\": { \"type\": \"create_file\", \"path\": \"greet-7301.txt\", \"diff\": \"+PATCHBODY7301\\n\" }\n    },\n    {\n      \"type\": \"apply_patch_call_output\",\n      \"call_id\": \"call_OhbEqFoiKuPF755zLe78FJaT\",\n      \"status\": \"completed\",\n      \"output\": \"Done\"\n    },\n    { \"role\": \"user\", \"content\": \"What file did you create? Name only.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// The neutral tool message had no home for `operation`, so a replayed apply_patch_call lost it",
+                  "// and OpenAI answered with a hard 400:",
+                  "//   Missing required parameter: 'input[1].operation'.",
+                  "// That exact string is the pre-fix signature this case pins the absence of.",
+                  "//",
+                  "// The path and diff tokens appear in no prompt, and the operation is read off the replayed item",
+                  "// itself, so a dropped operation cannot pass on prompt text alone.",
+                  "pm.test('openai apply_patch replay: 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "pm.test('OpenAI does not report a missing operation parameter', function () {",
+                  "  pm.expect(txt, 'operation dropped in replay: ' + txt.slice(0, 500)).to.not.include(\"Missing required parameter: 'input[1].operation'\");",
+                  "  pm.expect(txt.toLowerCase(), 'operation dropped in replay: ' + txt.slice(0, 500)).to.not.include('missing_required_parameter');",
+                  "});",
+                  "pm.test('the replayed apply_patch_call keeps its operation intact', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var calls = (rr.input || []).filter(function (i) { return i && i.type === 'apply_patch_call'; });",
+                  "  pm.expect(calls.length, 'expected exactly one apply_patch_call item: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  var op = calls[0].operation || {};",
+                  "  pm.expect(op.type, 'operation.type lost: ' + wire.slice(0, 800)).to.eql('create_file');",
+                  "  pm.expect(op.path, 'operation.path lost: ' + wire.slice(0, 800)).to.eql('greet-7301.txt');",
+                  "  pm.expect(op.diff || '', 'operation.diff lost: ' + wire.slice(0, 800)).to.include('PATCHBODY7301');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.10 anthropic/claude-sonnet-4-5 apply_patch_call replay renders its operation - PR #7301",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 80,\n  \"input\": [\n    { \"role\": \"user\", \"content\": \"Create the file for this task.\" },\n    {\n      \"type\": \"apply_patch_call\",\n      \"id\": \"apc_054da914d98d8080006aba4e8f801487d19b3c559f1a8ff0f9\",\n      \"call_id\": \"call_OhbEqFoiKuPF755zLe78FJaT\",\n      \"status\": \"completed\",\n      \"operation\": { \"type\": \"create_file\", \"path\": \"greet-7301.txt\", \"diff\": \"+PATCHBODY7301\\n\" }\n    },\n    {\n      \"type\": \"apply_patch_call_output\",\n      \"call_id\": \"call_OhbEqFoiKuPF755zLe78FJaT\",\n      \"status\": \"completed\",\n      \"output\": \"Done\"\n    },\n    { \"role\": \"user\", \"content\": \"What file did you create? Name only.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Anthropic has no apply_patch tool, so the call is replayed as text. The edit lives in",
+                  "// `operation` - not in name or arguments - so without rendering it the turn keeps the fact",
+                  "// that a patch happened but loses which file and what changed.",
+                  "//",
+                  "// The path and diff tokens appear in no prompt, so matching them proves the operation was",
+                  "// rendered rather than merely echoed back from the question.",
+                  "pm.test('anthropic apply_patch replay: 200', function () { pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200); });",
+                  "pm.test('the operation is rendered into the Anthropic messages', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var rendered = JSON.stringify((rr.messages || []).map(function (m) { return m && m.content; }));",
+                  "  pm.expect(rendered, 'operation type not rendered: ' + rendered.slice(0, 900)).to.include('create_file');",
+                  "  pm.expect(rendered, 'operation path not rendered: ' + rendered.slice(0, 900)).to.include('greet-7301.txt');",
+                  "  pm.expect(rendered, 'operation diff not rendered: ' + rendered.slice(0, 900)).to.include('PATCHBODY7301');",
+                  "});",
+                  "pm.test('no OpenAI-only apply_patch item type leaks onto the Anthropic wire', function () {",
+                  "  pm.expect(wire, 'raw apply_patch_call item leaked: ' + wire.slice(0, 900)).to.not.include('\"apply_patch_call\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.11 anthropic/claude-sonnet-4-5 failed apply_patch_call_output replays its error - PR #7301",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 80,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Apply the patch for this task.\"\n    },\n    {\n      \"type\": \"apply_patch_call\",\n      \"id\": \"apc_054da914d98d8080006aba4e8f801487d19b3c55aa\",\n      \"call_id\": \"call_FailedPatch7301\",\n      \"status\": \"completed\",\n      \"operation\": {\n        \"type\": \"create_file\",\n        \"path\": \"failpatch-7301.txt\",\n        \"diff\": \"+PATCHBODY7301\\n\"\n      }\n    },\n    {\n      \"type\": \"apply_patch_call_output\",\n      \"call_id\": \"call_FailedPatch7301\",\n      \"status\": \"failed\",\n      \"error\": \"PATCHFAIL7301 context lines did not match\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Did the edit succeed? One word.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "// A failed apply_patch_call_output carries its reason in `error`, not in `output`. The",
+                  "// replay path keys off output text alone, so a failure with no output text used to drop the",
+                  "// whole message - replaying the turn as if the patch had never been attempted, which invites",
+                  "// the model to assume it succeeded.",
+                  "//",
+                  "// PATCHFAIL7301 appears in no prompt in this request, so matching it proves the error text",
+                  "// was rendered rather than echoed back from the question.",
+                  "pm.test('anthropic failed apply_patch replay: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "pm.test('the failure reaches the Anthropic messages', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var rendered = JSON.stringify((rr.messages || []).map(function (m) { return m && m.content; }));",
+                  "  pm.expect(rendered, 'failure reason not rendered: ' + rendered.slice(0, 900)).to.include('PATCHFAIL7301');",
+                  "});",
+                  "pm.test('the patch that failed is still identifiable in the turn', function () {",
+                  "  var rendered = JSON.stringify((rr.messages || []).map(function (m) { return m && m.content; }));",
+                  "  pm.expect(rendered, 'operation path not rendered: ' + rendered.slice(0, 900)).to.include('failpatch-7301.txt');",
+                  "});",
+                  "pm.test('no OpenAI-only apply_patch item type leaks onto the Anthropic wire', function () {",
+                  "  var wire = JSON.stringify(rr || null);",
+                  "  pm.expect(wire, 'raw apply_patch_call item leaked: ' + wire.slice(0, 900)).to.not.include('\"apply_patch_call\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.12 openai/gpt-5.3-codex apply_patch streamed diff reaches the client - PR #7301",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"input\": \"Create a file hello.txt containing the single line hi. Use the apply_patch tool.\",\n  \"tools\": [\n    {\n      \"type\": \"apply_patch\"\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"stream\": true,\n  \"max_output_tokens\": 400\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai apply_patch stream: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var text = pm.response.text();",
+                  "var events = [];",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  var trimmed = line.trim();",
+                  "  if (trimmed.indexOf('data:') !== 0) { return; }",
+                  "  var payload = trimmed.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(payload)); } catch (e) { /* non-JSON keepalive */ }",
+                  "});",
+                  "var dump = JSON.stringify(events.map(function (e) { return e.type; })).slice(0, 1200);",
+                  "function ofType(t) { return events.filter(function (e) { return e && e.type === t; }); }",
+                  "var doneItems = ofType('response.output_item.done').filter(function (e) { return e.item && e.item.type === 'apply_patch_call'; });",
+                  "pm.test('openai apply_patch stream: the model made an apply_patch_call', function () {",
+                  "  pm.expect(doneItems.length, 'event types: ' + dump).to.be.above(0);",
+                  "});",
+                  "if (doneItems.length === 0) { return; }",
+                  "var item = doneItems[0].item;",
+                  "var op = item.operation || {};",
+                  "pm.test('openai apply_patch stream: the closed item carries its operation', function () {",
+                  "  pm.expect(op.type, 'item: ' + JSON.stringify(item)).to.be.oneOf(['create_file', 'update_file']);",
+                  "  pm.expect(op.path, 'item: ' + JSON.stringify(item)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(op.diff, 'item: ' + JSON.stringify(item)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(item.call_id, 'item: ' + JSON.stringify(item)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "var deltas = ofType('response.apply_patch_call_operation_diff.delta').filter(function (e) { return e.item_id === item.id; });",
+                  "var diffDone = ofType('response.apply_patch_call_operation_diff.done').filter(function (e) { return e.item_id === item.id; });",
+                  "pm.test('openai apply_patch stream: diff deltas stream and add up to the final diff', function () {",
+                  "  pm.expect(deltas.length, 'event types: ' + dump).to.be.above(0);",
+                  "  var joined = deltas.map(function (e) { return e.delta; }).join('');",
+                  "  pm.expect(joined, 'joined deltas vs item diff').to.equal(op.diff);",
+                  "});",
+                  "pm.test('openai apply_patch stream: diff.done carries the full diff', function () {",
+                  "  pm.expect(diffDone.length, 'event types: ' + dump).to.equal(1);",
+                  "  pm.expect(diffDone[0].diff, 'diff.done event: ' + JSON.stringify(diffDone[0])).to.equal(op.diff);",
+                  "});",
+                  "pm.test('openai apply_patch stream: response.completed keeps the apply_patch_call operation', function () {",
+                  "  var completed = ofType('response.completed')[0];",
+                  "  pm.expect(completed, 'event types: ' + dump).to.be.an('object');",
+                  "  var calls = ((completed.response || {}).output || []).filter(function (o) { return o.type === 'apply_patch_call'; });",
+                  "  pm.expect(calls.length, 'output: ' + JSON.stringify((completed.response || {}).output).slice(0, 800)).to.be.above(0);",
+                  "  pm.expect((calls[0].operation || {}).diff, 'completed item: ' + JSON.stringify(calls[0])).to.equal(op.diff);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "177.13 anthropic/claude-sonnet-4-5 apply_patch_call_output before function_call_output keeps tool_result first - PR #7301",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 80,\n  \"tools\": [\n    { \"type\": \"function\", \"name\": \"get_time\", \"description\": \"Get the current time.\", \"parameters\": { \"type\": \"object\", \"properties\": {} } }\n  ],\n  \"input\": [\n    { \"role\": \"user\", \"content\": \"What time is it? Also create hello.txt.\" },\n    { \"type\": \"function_call\", \"call_id\": \"call_time_7301\", \"name\": \"get_time\", \"arguments\": \"{}\" },\n    {\n      \"type\": \"apply_patch_call\",\n      \"call_id\": \"call_patch_7301\",\n      \"status\": \"completed\",\n      \"operation\": { \"type\": \"create_file\", \"path\": \"hello-7301.txt\", \"diff\": \"+hi\\n\" }\n    },\n    { \"type\": \"apply_patch_call_output\", \"call_id\": \"call_patch_7301\", \"status\": \"completed\", \"output\": \"Created hello-7301.txt\" },\n    { \"type\": \"function_call_output\", \"call_id\": \"call_time_7301\", \"output\": \"12:00\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "// The patch output is replayed as user text, the function result as a tool_result. When the",
+                  "// patch output came first it was written first, so the user turn after the tool_use opened",
+                  "// with text and Anthropic 400'd: \"tool_use ids were found without tool_result blocks immediately after\".",
+                  "pm.test('anthropic mixed tool outputs replay: 200', function () {",
+                  "  pm.expect(txt, 'tool_result ordering 400 resurfaced').to.not.include('without `tool_result` blocks immediately after');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic mixed tool outputs replay: the turn after the tool_use opens with its tool_result', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var msgs = rr.messages || [];",
+                  "  var shape = JSON.stringify(msgs.map(function (m) {",
+                  "    var blocks = typeof m.content === 'string' ? [{ type: 'text' }] : (m.content || []);",
+                  "    return m.role + ':' + blocks.map(function (b) { return b.type; }).join('+');",
+                  "  }));",
+                  "  var useIdx = -1;",
+                  "  msgs.forEach(function (m, i) {",
+                  "    if (Array.isArray(m.content) && m.content.some(function (b) { return b.type === 'tool_use'; })) { useIdx = i; }",
+                  "  });",
+                  "  pm.expect(useIdx, 'no tool_use turn on the wire: ' + shape).to.be.at.least(0);",
+                  "  var nextUser = null;",
+                  "  for (var i = useIdx + 1; i < msgs.length; i++) { if (msgs[i].role === 'user') { nextUser = msgs[i]; break; } }",
+                  "  pm.expect(nextUser, 'no user turn after the tool_use: ' + shape).to.be.an('object');",
+                  "  var first = Array.isArray(nextUser.content) ? nextUser.content[0] : { type: 'text' };",
+                  "  pm.expect(first.type, 'message order: ' + shape).to.eql('tool_result');",
+                  "  pm.expect(first.tool_use_id, 'message order: ' + shape).to.eql('call_time_7301');",
+                  "});",
+                  "pm.test('anthropic mixed tool outputs replay: the patch output is still replayed', function () {",
+                  "  pm.expect(JSON.stringify(rr && rr.messages), 'patch output text missing').to.include('Created hello-7301.txt');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "178. Gemini Responses code execution tool (PR #1333) (gemini-code-execution)",
+      "description": "PR #1333 (maximhq/bifrost, open) proposed code execution across OpenAI, Anthropic and Gemini. OpenAI and Anthropic already carry it on dev - the OpenAI path forwards code_interpreter and translates the sandbox caller (core/providers/openai/types.go), and the Anthropic path models the full server_tool_use / *_code_execution_tool_result fidelity on ResponsesCodeExecutionCall. Only the Gemini half was missing, and this folder pins that half; it is an independent implementation, not PR #1333's diff.\n\nFour separate gaps in core/providers/gemini/responses.go. (a) convertResponsesToolsToGemini handled only function and web_search, so a code_interpreter tool was dropped before the wire and Gemini never ran code at all - everything downstream was dead code. (b) convertGeminiToolsToResponsesTools did not map codeExecution back, so a Gemini-native request lost the tool on the way in. (c) convertGeminiCandidatesToResponsesOutput emitted executableCode as a markdown-fenced text message and codeExecutionResult as a code_interpreter_call carrying a text content block, with no code and no outputs - not the shape OpenAI and Anthropic produce. (d) processGeminiPart had no case for either part, so a streamed code execution reached the client as nothing.\n\nFix: code_interpreter converts to Gemini's codeExecution tool (dropped alongside a function tool under the same mixed-tool restriction as Google Search, since pre-Gemini-3 models reject the combination outright), round-trips back, and both parts become one structured code_interpreter_call carrying Code and logs Outputs - on the non-streaming path and, via output_item.added/done with an id minted per call, on the stream.\n\nCases: (1) code_interpreter reaches the wire as codeExecution with no invented functionDeclarations; (2) codeExecution is dropped beside a function tool while the function declaration survives; (3) executed code returns as a structured code_interpreter_call carrying code and logs outputs, with no text content block leaking onto the item; (4) streamed execution emits added/done lifecycle events for the item, every opened item is closed, and added/done agree on item_id; (5) text that resumes after a code execution opens a new message item rather than streaming deltas onto the already-closed first one (processGeminiTextPart only opened an item on the very first text, so the answer after the code was missing from response.completed). (6) a code_interpreter_call replayed as input reaches Gemini as the executableCode and codeExecutionResult parts it came from (the structured call carries no content, so convertResponsesMessagesToGeminiContents dropped it and the next turn lost the code and its result). (7-11) the integrations convert the structured call back: the GenAI route (generateContent, streamGenerateContent and a replay of native code parts) must return or forward executableCode and codeExecutionResult parts, and the Anthropic route with a Gemini model must return the server_tool_use and code_execution_tool_result blocks, streamed and not. All eleven assert HTTP 2xx loudly with the response body in the failure message.",
+      "item": [
+        {
+          "name": "code_interpreter tool reaches the Gemini wire as codeExecution",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"Compute 6 * 7 by running Python code, then state the result.\",\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    }\n  ],\n  \"max_output_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini code_interpreter reaches wire: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini code_interpreter reaches wire: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var wire = JSON.stringify(rr);",
+                  "var ce = (rr.tools || []).filter(function (x) { return x && (x.codeExecution || x.code_execution); });",
+                  "pm.test('gemini code_interpreter reaches wire: codeExecution present on the outbound tools', function () {",
+                  "  pm.expect(ce.length, 'tools on wire: ' + wire.slice(0, 800)).to.eql(1);",
+                  "});",
+                  "pm.test('gemini code_interpreter reaches wire: no function declarations invented', function () {",
+                  "  var fns = (rr.tools || []).filter(function (x) { return x && x.functionDeclarations; });",
+                  "  pm.expect(fns.length, 'tools on wire: ' + wire.slice(0, 800)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "codeExecution is dropped when a function tool is also present",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"What is the weather in Tokyo? Use the get_weather tool.\",\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini code_interpreter mixed-tool drop: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini code_interpreter mixed-tool drop: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var wire = JSON.stringify(rr);",
+                  "var ce = (rr.tools || []).filter(function (x) { return x && (x.codeExecution || x.code_execution); });",
+                  "pm.test('gemini code_interpreter mixed-tool drop: codeExecution dropped beside a function tool', function () {",
+                  "  pm.expect(ce.length, 'tools on wire: ' + wire.slice(0, 800)).to.eql(0);",
+                  "});",
+                  "pm.test('gemini code_interpreter mixed-tool drop: the function declaration survives', function () {",
+                  "  var fns = (rr.tools || []).filter(function (x) { return x && (x.functionDeclarations || []).length > 0; });",
+                  "  pm.expect(fns.length, 'tools on wire: ' + wire.slice(0, 800)).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "executed code comes back as a structured code_interpreter_call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"Run Python code that prints the value of 127 * 3. Use the code execution tool.\",\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    }\n  ],\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini code_interpreter_call shape: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var dump = JSON.stringify(body.output || []).slice(0, 1200);",
+                  "var calls = (body.output || []).filter(function (i) { return i && i.type === 'code_interpreter_call'; });",
+                  "pm.test('gemini code_interpreter_call shape: at least one code_interpreter_call item' , function () {",
+                  "  pm.expect(calls.length, 'output: ' + dump).to.be.above(0);",
+                  "});",
+                  "if (calls.length === 0) { return; }",
+                  "pm.test('gemini code_interpreter_call shape: the call carries the executed code, not prose text', function () {",
+                  "  pm.expect(calls[0].code, 'output: ' + dump).to.be.a('string');",
+                  "  pm.expect(calls[0].code.length, 'output: ' + dump).to.be.above(0);",
+                  "});",
+                  "pm.test('gemini code_interpreter_call shape: outputs are structured logs blocks', function () {",
+                  "  var withLogs = calls.filter(function (c) {",
+                  "    return (c.outputs || []).some(function (o) { return o && o.type === 'logs' && typeof o.logs === 'string'; });",
+                  "  });",
+                  "  pm.expect(withLogs.length, 'output: ' + dump).to.be.above(0);",
+                  "});",
+                  "pm.test('gemini code_interpreter_call shape: no code_interpreter_call leaks a text content block', function () {",
+                  "  var texty = calls.filter(function (c) { return c.content !== undefined; });",
+                  "  pm.expect(texty.length, 'output: ' + dump).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "streamed code execution emits code_interpreter_call item lifecycle events",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"Run Python code that prints the value of 127 * 3. Use the code execution tool.\",\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    }\n  ],\n  \"stream\": true,\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini code_interpreter_call streaming: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var text = pm.response.text();",
+                  "var events = [];",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  var trimmed = line.trim();",
+                  "  if (trimmed.indexOf('data:') !== 0) { return; }",
+                  "  var payload = trimmed.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(payload)); } catch (e) { /* non-JSON keepalive */ }",
+                  "});",
+                  "pm.test('gemini code_interpreter_call streaming: stream parsed' , function () {",
+                  "  pm.expect(events.length, 'body: ' + text.slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "function ciItems(kind) {",
+                  "  return events.filter(function (e) {",
+                  "    return e && e.type === kind && e.item && e.item.type === 'code_interpreter_call';",
+                  "  });",
+                  "}",
+                  "var added = ciItems('response.output_item.added');",
+                  "var done = ciItems('response.output_item.done');",
+                  "var dump = JSON.stringify(events.map(function (e) { return e.type; })).slice(0, 800);",
+                  "pm.test('gemini code_interpreter_call streaming: an item is opened for the code execution', function () {",
+                  "  pm.expect(added.length, 'event types: ' + dump).to.be.above(0);",
+                  "});",
+                  "pm.test('gemini code_interpreter_call streaming: every opened item is also closed', function () {",
+                  "  pm.expect(done.length, 'event types: ' + dump).to.eql(added.length);",
+                  "});",
+                  "if (done.length === 0) { return; }",
+                  "var closed = JSON.stringify(done.map(function (e) { return e.item; })).slice(0, 1200);",
+                  "pm.test('gemini code_interpreter_call streaming: the closed item carries code and logs outputs', function () {",
+                  "  var complete = done.filter(function (e) {",
+                  "    var it = e.item || {};",
+                  "    return typeof it.code === 'string' && it.code.length > 0 &&",
+                  "      (it.outputs || []).some(function (o) { return o && o.type === 'logs'; });",
+                  "  });",
+                  "  pm.expect(complete.length, 'closed items: ' + closed).to.be.above(0);",
+                  "});",
+                  "pm.test('gemini code_interpreter_call streaming: added and done agree on item_id', function () {",
+                  "  function idOf(e) { return (e.item && e.item.id) || e.item_id; }",
+                  "  var ids = added.map(idOf);",
+                  "  var doneIds = done.map(idOf);",
+                  "  ids.concat(doneIds).forEach(function (id) {",
+                  "    pm.expect(id, 'closed items: ' + closed).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "  pm.expect(doneIds.sort(), 'closed items: ' + closed).to.eql(ids.sort());",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "streamed text after code execution opens a new message item",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"First say in one sentence what you will do. Then run Python code that prints the sum of the first 10 primes. Then state the answer in one sentence.\",\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    }\n  ],\n  \"stream\": true,\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini text after code streaming: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var text = pm.response.text();",
+                  "var events = [];",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  var trimmed = line.trim();",
+                  "  if (trimmed.indexOf('data:') !== 0) { return; }",
+                  "  var payload = trimmed.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(payload)); } catch (e) { /* non-JSON keepalive */ }",
+                  "});",
+                  "var dump = JSON.stringify(events.map(function (e) { return [e.type, e.output_index]; })).slice(0, 1200);",
+                  "pm.test('gemini text after code streaming: the model ran code', function () {",
+                  "  var ran = events.some(function (e) { return e.type === 'response.output_item.added' && e.item && e.item.type === 'code_interpreter_call'; });",
+                  "  pm.expect(ran, 'events: ' + dump).to.be.true;",
+                  "});",
+                  "// The reopen path only runs when text streams before the code: require it, so a model",
+                  "// that skips the introduction fails here instead of passing without exercising it.",
+                  "var firstCode = -1;",
+                  "events.forEach(function (e, i) { if (firstCode < 0 && e.type === 'response.output_item.added' && e.item && e.item.type === 'code_interpreter_call') { firstCode = i; } });",
+                  "function textItem(e) { return e.item_id || String(e.output_index); }",
+                  "var before = events.filter(function (e, i) { return i < firstCode && e.type === 'response.output_text.delta' && e.delta; });",
+                  "var after = events.filter(function (e, i) { return firstCode >= 0 && i > firstCode && e.type === 'response.output_text.delta' && e.delta; });",
+                  "pm.test('gemini text after code streaming: text streams before the code runs', function () {",
+                  "  pm.expect(firstCode, 'events: ' + dump).to.be.at.least(0);",
+                  "  pm.expect(before.length, 'no text before the code - the model skipped the introduction: ' + dump).to.be.above(0);",
+                  "});",
+                  "pm.test('gemini text after code streaming: the answer opens a different message item', function () {",
+                  "  pm.expect(after.length, 'no text after the code: ' + dump).to.be.above(0);",
+                  "  var pre = before.map(textItem);",
+                  "  after.forEach(function (e) {",
+                  "    pm.expect(pre, 'answer delta reused the pre-code item ' + textItem(e) + ': ' + dump).to.not.include(textItem(e));",
+                  "  });",
+                  "});",
+                  "pm.test('gemini text after code streaming: no text delta targets an item already done', function () {",
+                  "  var closed = {};",
+                  "  var stray = [];",
+                  "  events.forEach(function (e) {",
+                  "    if (e.type === 'response.output_item.done') { closed[e.output_index] = true; }",
+                  "    if (e.type === 'response.output_text.delta' && closed[e.output_index]) { stray.push(e.output_index + ': ' + e.delta); }",
+                  "  });",
+                  "  pm.expect(stray, 'events: ' + dump).to.eql([]);",
+                  "});",
+                  "pm.test('gemini text after code streaming: response.completed ends with the answer message', function () {",
+                  "  var completed = events.filter(function (e) { return e.type === 'response.completed'; })[0];",
+                  "  pm.expect(completed, 'events: ' + dump).to.be.an('object');",
+                  "  var output = (completed.response && completed.response.output) || [];",
+                  "  var types = JSON.stringify(output.map(function (o) { return o.type; }));",
+                  "  var ci = -1;",
+                  "  output.forEach(function (o, i) { if (o.type === 'code_interpreter_call') { ci = i; } });",
+                  "  pm.expect(ci, 'output types: ' + types).to.be.at.least(0);",
+                  "  var after = output.slice(ci + 1).filter(function (o) {",
+                  "    return o.type === 'message' && (o.content || []).some(function (c) { return typeof c.text === 'string' && c.text.trim().length > 0; });",
+                  "  });",
+                  "  pm.expect(after.length, 'output types: ' + types + ' events: ' + dump).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "replayed code_interpreter_call reaches Gemini as executableCode and codeExecutionResult",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_output_tokens\": 200,\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Pick a random number with Python using seed 4242.\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"I'll run the code now.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"code_interpreter_call\",\n      \"id\": \"ci_replaytest0000000000000001\",\n      \"call_id\": \"ci_replaytest0000000000000001\",\n      \"status\": \"completed\",\n      \"code\": \"import random\\nrandom.seed(4242)\\nprint(random.randint(1, 10**9))\",\n      \"outputs\": [\n        {\n          \"type\": \"logs\",\n          \"logs\": \"583920117\\n\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What exact number did the code print? Reply with only the number.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini code_interpreter_call replay: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini code_interpreter_call replay: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var shape = JSON.stringify(contents.map(function (c) { return c.role + ':' + (c.parts || []).map(function (p) { return Object.keys(p).join('+'); }).join(','); }));",
+                  "// The call carries code and outputs, not content, so it used to be dropped before the wire.",
+                  "pm.test('gemini code_interpreter_call replay: a model turn carries the executableCode and its codeExecutionResult', function () {",
+                  "  var turn = contents.filter(function (c) {",
+                  "    return c.role === 'model' && (c.parts || []).some(function (p) { return p.executableCode; });",
+                  "  })[0];",
+                  "  pm.expect(turn, 'contents: ' + shape).to.be.an('object');",
+                  "  var code = turn.parts.filter(function (p) { return p.executableCode; })[0].executableCode;",
+                  "  var result = (turn.parts.filter(function (p) { return p.codeExecutionResult; })[0] || {}).codeExecutionResult;",
+                  "  pm.expect(code.code, 'contents: ' + shape).to.include('random.seed(4242)');",
+                  "  pm.expect(result, 'contents: ' + shape).to.be.an('object');",
+                  "  pm.expect(result.outcome).to.eql('OUTCOME_OK');",
+                  "  pm.expect(result.output).to.eql('583920117\\n');",
+                  "});",
+                  "pm.test('gemini code_interpreter_call replay: the model answers from the replayed result', function () {",
+                  "  pm.expect(JSON.stringify(body.output || []), 'the number only exists in the replayed logs').to.include('583920117');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "genai generateContent returns executableCode and codeExecutionResult parts (gemini-2.5-flash)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Use code execution: run Python code that prints the sum of the first 10 primes, then state the answer in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"codeExecution\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('genai code execution: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var parts = (((body.candidates || [])[0] || {}).content || {}).parts || [];",
+                  "var dump = JSON.stringify(parts.map(function (p) { return Object.keys(p).join('+'); }));",
+                  "// The code and its result reach Bifrost as a code_interpreter_call item; the GenAI route used",
+                  "// to rebuild parts from text only, so both vanished from the reply.",
+                  "pm.test('genai code execution: the reply carries executableCode', function () {",
+                  "  var code = parts.filter(function (p) { return p.executableCode; });",
+                  "  pm.expect(code.length, 'parts: ' + dump).to.be.above(0);",
+                  "  pm.expect(code[0].executableCode.code, 'parts: ' + dump).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('genai code execution: the reply carries codeExecutionResult after its code', function () {",
+                  "  var ci = -1, ri = -1;",
+                  "  parts.forEach(function (p, i) { if (p.executableCode && ci < 0) { ci = i; } if (p.codeExecutionResult && ri < 0) { ri = i; } });",
+                  "  pm.expect(ri, 'parts: ' + dump).to.be.above(ci);",
+                  "  pm.expect(parts[ri].codeExecutionResult.output, 'parts: ' + dump).to.include('129');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "genai streamGenerateContent streams executableCode and codeExecutionResult parts (gemini-2.5-flash)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Use code execution: run Python code that prints the sum of the first 10 primes, then state the answer in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"codeExecution\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('genai code execution stream: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var events = [];",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  var trimmed = line.trim();",
+                  "  if (trimmed.indexOf('data:') !== 0) { return; }",
+                  "  var payload = trimmed.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(payload)); } catch (e) { /* non-JSON keepalive */ }",
+                  "});",
+                  "var parts = [];",
+                  "events.forEach(function (e) { (((e.candidates || [])[0] || {}).content || {}).parts && e.candidates[0].content.parts.forEach(function (p) { parts.push(p); }); });",
+                  "var dump = JSON.stringify(parts.map(function (p) { return Object.keys(p).join('+'); }));",
+                  "// The code and its result reach Bifrost as a code_interpreter_call item; the GenAI route used",
+                  "// to rebuild parts from text only, so both vanished from the reply.",
+                  "pm.test('genai code execution stream: the reply carries executableCode', function () {",
+                  "  var code = parts.filter(function (p) { return p.executableCode; });",
+                  "  pm.expect(code.length, 'parts: ' + dump).to.be.above(0);",
+                  "  pm.expect(code[0].executableCode.code, 'parts: ' + dump).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('genai code execution stream: the reply carries codeExecutionResult after its code', function () {",
+                  "  var ci = -1, ri = -1;",
+                  "  parts.forEach(function (p, i) { if (p.executableCode && ci < 0) { ci = i; } if (p.codeExecutionResult && ri < 0) { ri = i; } });",
+                  "  pm.expect(ri, 'parts: ' + dump).to.be.above(ci);",
+                  "  pm.expect(parts[ri].codeExecutionResult.output, 'parts: ' + dump).to.include('129');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "genai generateContent replays executableCode and codeExecutionResult history (gemini-2.5-flash)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Pick a random number with Python using seed 4242.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"model\",\n      \"parts\": [\n        {\n          \"executableCode\": {\n            \"language\": \"PYTHON\",\n            \"code\": \"import random\\nrandom.seed(4242)\\nprint(random.randint(1, 10**9))\"\n          }\n        },\n        {\n          \"codeExecutionResult\": {\n            \"outcome\": \"OUTCOME_OK\",\n            \"output\": \"583920117\\n\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What exact number did the code print? Reply with only the number.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"codeExecution\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 200\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('genai code execution replay: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var text = JSON.stringify((((body.candidates || [])[0] || {}).content || {}).parts || []);",
+                  "// The number exists only in the replayed result; the request converter used to drop native",
+                  "// code parts, so Gemini never saw it.",
+                  "pm.test('genai code execution replay: the model answers from the replayed result', function () {",
+                  "  pm.expect(text).to.include('583920117');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic messages with gemini/gemini-2.5-flash returns code_execution blocks",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 1024,\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use code execution: run Python code that prints the sum of the first 10 primes, then state the answer in one sentence.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic route gemini code execution: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var blocks = body.content || [];",
+                  "var dump = JSON.stringify(blocks.map(function (b) { return b.type; }));",
+                  "pm.test('anthropic route gemini code execution: a server_tool_use carries the code', function () {",
+                  "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use'; })[0];",
+                  "  pm.expect(use, 'blocks: ' + dump).to.be.an('object');",
+                  "  pm.expect(JSON.stringify(use.input || {}), 'blocks: ' + dump).to.include('code');",
+                  "});",
+                  "pm.test('anthropic route gemini code execution: its code_execution_tool_result carries the output', function () {",
+                  "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use'; })[0] || {};",
+                  "  var res = blocks.filter(function (b) { return /code_execution_tool_result$/.test(b.type || ''); })[0];",
+                  "  pm.expect(res, 'blocks: ' + dump).to.be.an('object');",
+                  "  pm.expect(res.tool_use_id, 'blocks: ' + dump).to.eql(use.id);",
+                  "  pm.expect(JSON.stringify(res.content || {}), 'result: ' + JSON.stringify(res)).to.include('129');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic messages stream with gemini/gemini-2.5-flash streams code_execution blocks",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 1024,\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use code execution: run Python code that prints the sum of the first 10 primes, then state the answer in one sentence.\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic route gemini code execution stream: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var events = [];",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  var trimmed = line.trim();",
+                  "  if (trimmed.indexOf('data:') !== 0) { return; }",
+                  "  var payload = trimmed.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(payload)); } catch (e) { /* non-JSON keepalive */ }",
+                  "});",
+                  "var blocks = events.filter(function (e) { return e.type === 'content_block_start' && e.content_block; }).map(function (e) { return e.content_block; });",
+                  "// server_tool_use input streams as input_json_delta, so read the code from the deltas.",
+                  "var json = {};",
+                  "events.forEach(function (e) { if (e.type === 'content_block_delta' && e.delta && e.delta.type === 'input_json_delta') { json[e.index] = (json[e.index] || '') + e.delta.partial_json; } });",
+                  "events.forEach(function (e) { if (e.type === 'content_block_start' && e.content_block && e.content_block.type === 'server_tool_use' && json[e.index]) { try { e.content_block.input = JSON.parse(json[e.index]); } catch (x) {} } });",
+                  "var dump = JSON.stringify(blocks.map(function (b) { return b.type; }));",
+                  "pm.test('anthropic route gemini code execution stream: a server_tool_use carries the code', function () {",
+                  "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use'; })[0];",
+                  "  pm.expect(use, 'blocks: ' + dump).to.be.an('object');",
+                  "  pm.expect(JSON.stringify(use.input || {}), 'blocks: ' + dump).to.include('code');",
+                  "});",
+                  "pm.test('anthropic route gemini code execution stream: its code_execution_tool_result carries the output', function () {",
+                  "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use'; })[0] || {};",
+                  "  var res = blocks.filter(function (b) { return /code_execution_tool_result$/.test(b.type || ''); })[0];",
+                  "  pm.expect(res, 'blocks: ' + dump).to.be.an('object');",
+                  "  pm.expect(res.tool_use_id, 'blocks: ' + dump).to.eql(use.id);",
+                  "  pm.expect(JSON.stringify(res.content || {}), 'result: ' + JSON.stringify(res)).to.include('129');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "179. Responses computer_call batched actions (computer-call-actions)",
+      "description": "Newer models batch computer actions into an actions array on a computer_call item instead of the singular action (observed on gpt-6.1-sol: \"actions\": [{\"type\": \"screenshot\"}] with \"action\": null). schemas.ResponsesComputerToolCall (core/schemas/responses.go) modelled only the older shape - it carried pending_safety_checks and nothing else - and computer_call is not a raw-preserved item type, so it goes through field-level decode and sonic dropped the unknown key. The field was gone by the time providerUtils.HandleProviderResponseCtx returned and nothing later could recover it. The client received a computer_call with a call_id and no instruction, so it could not tell it should take a screenshot and the computer-use loop stalled.\n\nFix: add Actions []ResponsesComputerToolCallAction `json:\"actions,omitempty\"` to ResponsesComputerToolCall. The embedded struct already round-trips through ResponsesMessage, so request and response directions are both covered by the one field. The singular Action is deliberately NOT synthesized from actions[0] - inventing a field the wire did not send would be a capability claim, and a unit test pins that it stays nil.\n\nCase: a replay carrying a computer_call with actions plus its computer_call_output asserts both directions - the replayed item still carries its actions on the outbound wire (raw_request), and the model's own returned computer_call reaches the client with a non-empty actions array and its call_id intact.",
+      "item": [
+        {
+          "name": "179.1 openai/gpt-6.1-sol computer_call batched actions survive both directions",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"store\": false,\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read the docs on this page.\"\n    },\n    {\n      \"type\": \"computer_call\",\n      \"id\": \"cu_harness7400\",\n      \"call_id\": \"call_harness7400\",\n      \"status\": \"completed\",\n      \"actions\": [\n        {\n          \"type\": \"screenshot\"\n        }\n      ]\n    },\n    {\n      \"type\": \"computer_call_output\",\n      \"call_id\": \"call_harness7400\",\n      \"output\": {\n        \"type\": \"computer_screenshot\",\n        \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\"\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"tools\": [\n    {\n      \"type\": \"computer\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Newer models batch computer actions into an `actions` array instead of the singular",
+                  "// `action`. The schema modelled only the older shape, so the field was dropped on decode:",
+                  "// the client received a computer_call carrying a call_id and no instruction, and the",
+                  "// computer-use loop stalled with nothing to execute.",
+                  "pm.test('computer_call actions: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "",
+                  "// Request side: the replayed call must still carry its actions on the outbound wire.",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('computer_call actions: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "if (rr && typeof rr === 'object') {",
+                  "  var sent = (rr.input || []).filter(function (i) { return i && i.type === 'computer_call'; });",
+                  "  var sentDump = JSON.stringify(sent).slice(0, 700);",
+                  "  pm.test('the replayed computer_call survives to the wire', function () {",
+                  "    pm.expect(sent.length, 'input: ' + sentDump).to.eql(1);",
+                  "  });",
+                  "  pm.test('its actions array is not dropped on the way out', function () {",
+                  "    pm.expect(sent[0] && sent[0].actions, 'computer_call sent: ' + sentDump).to.be.an('array');",
+                  "    pm.expect((sent[0].actions || []).length, 'computer_call sent: ' + sentDump).to.eql(1);",
+                  "    pm.expect(sent[0].actions[0].type, 'computer_call sent: ' + sentDump).to.eql('screenshot');",
+                  "  });",
+                  "}",
+                  "",
+                  "// Response side: this is the reported bug - the model answers with actions and the",
+                  "// client used to receive the item without them.",
+                  "var calls = (body.output || []).filter(function (o) { return o && o.type === 'computer_call'; });",
+                  "var dump = JSON.stringify(body.output || []).slice(0, 900);",
+                  "pm.test('the model returned a computer_call', function () {",
+                  "  pm.expect(calls.length, 'output: ' + dump).to.be.above(0);",
+                  "});",
+                  "if (calls.length === 0) { return; }",
+                  "pm.test('the returned computer_call carries an instruction, not just a call_id', function () {",
+                  "  var actionable = calls.filter(function (c) {",
+                  "    return (c.actions && c.actions.length > 0) || (c.action && c.action.type);",
+                  "  });",
+                  "  pm.expect(actionable.length, 'output: ' + dump).to.be.above(0);",
+                  "});",
+                  "pm.test('the batched actions array reaches the client', function () {",
+                  "  var batched = calls.filter(function (c) { return c.actions && c.actions.length > 0; });",
+                  "  pm.expect(batched.length, 'output: ' + dump).to.be.above(0);",
+                  "  pm.expect(batched[0].actions[0].type, 'output: ' + dump).to.be.a('string');",
+                  "});",
+                  "pm.test('the call_id still pairs the call with its output', function () {",
+                  "  pm.expect(calls[0].call_id, 'output: ' + dump).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "180. Anthropic computer tool mux, batched computer actions, server-tool cache_control (anthropic-computer-mux)",
+      "description": "Three conversion fixes on the Responses -> Anthropic path (core/providers/anthropic/responses.go), plus the reverse tool mapping.\n\n1. Server-tool cache_control. convertBifrostToolToAnthropic built every server tool (web_search, web_fetch, code_execution, dated computer, memory, tool_search, bash, text_editor, advisor) without cache_control; only plain function tools and the computer toolset kept it. A prompt-cache breakpoint on a server tool silently vanished. Fix: applyResponsesToolAnthropicFlags copies cache_control for every branch. 180.1 pins it on web_search and the dated computer tool.\n\n2. OpenAI computer tool. The newer {type:\"computer\"} tool (no display or environment fields) had no case in convertBifrostToolToAnthropic, fell through to the function-tool path and was dropped for having no name - the model ran without the tool and nothing reported it. Fix: it becomes the bare computer_toolset_20260801 wherever the target takes a toolset (180.2 Anthropic, 180.3 Vertex) and is dropped where it does not, since dated tools require display_*_px >= 1 (180.4, a guard: it was already dropped, now by design and reported by ValidateResponsesToolsForProvider). Reverse: an Anthropic toolset used to become computer_use_preview with a 0x0 display; it now maps to {type:\"computer\"} (180.5, /anthropic drop-in -> OpenAI).\n\n3. Batched computer actions. computer_call.actions (folder 179 added the field) was ignored by the Anthropic converter. Request side: a call carrying only actions became a tool_use with no input. It now becomes one tool_use per action - earlier actions get <call_id>_<i>, the last keeps the call id so the single screenshot output pairs with it - and each earlier action gets an \"ok\" filler tool_result (180.6). Response side: a Claude computer tool_use now reaches the client with the action in both action (computer_use_preview clients) and actions:[action] (computer tool clients), non-streaming (180.6) and streaming (180.7). This differs from folder 179, which leaves action unsynthesized for OpenAI's own replies: there the upstream chose the batched shape, here Bifrost is producing the OpenAI shape from Anthropic's single action, so it fills both readers' fields.",
+      "item": [
+        {
+          "name": "180.1 anthropic/claude-sonnet-4-6 /v1/responses server tools keep cache_control (web_search, dated computer)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"tool_choice\": \"none\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"web_search\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1280,\n      \"display_height\": 800,\n      \"environment\": \"browser\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "if (!raw || typeof raw !== 'object') { return; }",
+                  "var tools = raw.tools || [];",
+                  "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+                  "function sent(prefix) { return tools.filter(function (t) { return t && String(t.type || '').indexOf(prefix) === 0; })[0]; }",
+                  "var ws = sent('web_search_');",
+                  "var cu = sent('computer_2');",
+                  "pm.test('both server tools reach Anthropic', function () {",
+                  "  pm.expect(ws, 'web_search missing: ' + toolsDump).to.be.an('object');",
+                  "  pm.expect(cu, 'dated computer tool missing: ' + toolsDump).to.be.an('object');",
+                  "});",
+                  "pm.test('web_search keeps its cache_control breakpoint', function () {",
+                  "  pm.expect((ws || {}).cache_control, 'cache_control dropped: ' + toolsDump).to.eql({ type: 'ephemeral' });",
+                  "});",
+                  "pm.test('the dated computer tool keeps its cache_control breakpoint', function () {",
+                  "  pm.expect((cu || {}).cache_control, 'cache_control dropped: ' + toolsDump).to.eql({ type: 'ephemeral' });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "180.2 anthropic/claude-opus-5-5 /v1/responses OpenAI computer tool becomes the bare toolset",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_output_tokens\": 16,\n  \"tool_choice\": \"none\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "if (!raw || typeof raw !== 'object') { return; }",
+                  "var tools = raw.tools || [];",
+                  "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+                  "// The OpenAI computer tool has no display geometry, so its only Anthropic form is the bare toolset.",
+                  "// Before the fix it fell through to the function-tool path and was dropped for having no name.",
+                  "var toolset = tools.filter(function (t) { return t && t.type === 'computer_toolset_20260801'; });",
+                  "pm.test('the computer tool is sent as the bare toolset', function () {",
+                  "  pm.expect(toolset.length, 'no toolset on the wire: ' + toolsDump).to.eql(1);",
+                  "  pm.expect(toolset[0].name, 'name is rejected on a toolset entry: ' + toolsDump).to.be.undefined;",
+                  "  pm.expect(toolset[0].display_width_px, 'a toolset takes no geometry: ' + toolsDump).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "180.3 vertex/claude-opus-5-5 /v1/responses OpenAI computer tool becomes the bare toolset",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_output_tokens\": 16,\n  \"tool_choice\": \"none\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "if (!raw || typeof raw !== 'object') { return; }",
+                  "var tools = raw.tools || [];",
+                  "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+                  "// The OpenAI computer tool has no display geometry, so its only Anthropic form is the bare toolset.",
+                  "// Before the fix it fell through to the function-tool path and was dropped for having no name.",
+                  "var toolset = tools.filter(function (t) { return t && t.type === 'computer_toolset_20260801'; });",
+                  "pm.test('the computer tool is sent as the bare toolset', function () {",
+                  "  pm.expect(toolset.length, 'no toolset on the wire: ' + toolsDump).to.eql(1);",
+                  "  pm.expect(toolset[0].name, 'name is rejected on a toolset entry: ' + toolsDump).to.be.undefined;",
+                  "  pm.expect(toolset[0].display_width_px, 'a toolset takes no geometry: ' + toolsDump).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "180.4 anthropic/claude-sonnet-4-6 /v1/responses OpenAI computer tool dropped on a dated-only model",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "if (!raw || typeof raw !== 'object') { return; }",
+                  "var tools = raw.tools || [];",
+                  "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+                  "// Sonnet 4.6 takes only dated computer tools, which require display_*_px >= 1; the computer tool has none.",
+                  "pm.test('no computer tool is sent in a form the model would reject', function () {",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    pm.expect(String(tools[i].type || ''), 'computer tool sent to a dated-only model: ' + toolsDump).to.not.include('computer');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "180.5 openai/gpt-6.1-sol /anthropic/v1/messages computer toolset becomes the OpenAI computer tool",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"max_tokens\": 16,\n  \"tool_choice\": {\n    \"type\": \"none\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "if (!raw || typeof raw !== 'object') { return; }",
+                  "var tools = raw.tools || [];",
+                  "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+                  "// The toolset carries no geometry. It used to become computer_use_preview with display 0x0;",
+                  "// the geometry-free OpenAI computer tool is the faithful counterpart.",
+                  "var computer = tools.filter(function (t) { return t && t.type === 'computer'; });",
+                  "pm.test('the toolset is sent as the OpenAI computer tool', function () {",
+                  "  pm.expect(computer.length, 'no computer tool on the wire: ' + toolsDump).to.eql(1);",
+                  "  pm.expect(computer[0].display_width, 'the computer tool takes no geometry: ' + toolsDump).to.be.undefined;",
+                  "  pm.expect(computer[0].display_height, 'the computer tool takes no geometry: ' + toolsDump).to.be.undefined;",
+                  "});",
+                  "pm.test('no 0x0 computer_use_preview is synthesized', function () {",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    pm.expect(tools[i].type, toolsDump).to.not.eql('computer_use_preview');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "180.6 anthropic/claude-sonnet-4-6 /v1/responses batched computer_call actions split per action, reply carries action and actions",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Click at 100,200 and type hi.\"\n    },\n    {\n      \"type\": \"computer_call\",\n      \"id\": \"cu_harness131\",\n      \"call_id\": \"call_harness131\",\n      \"status\": \"completed\",\n      \"actions\": [\n        {\n          \"type\": \"click\",\n          \"button\": \"left\",\n          \"x\": 100,\n          \"y\": 200\n        },\n        {\n          \"type\": \"type\",\n          \"text\": \"hi\"\n        }\n      ]\n    },\n    {\n      \"type\": \"computer_call_output\",\n      \"call_id\": \"call_harness131\",\n      \"output\": {\n        \"type\": \"computer_screenshot\",\n        \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Now take a screenshot. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1280,\n      \"display_height\": 800,\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "if (!raw || typeof raw !== 'object') { return; }",
+                  "var tools = raw.tools || [];",
+                  "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+                  "function assertBothActions(call, dump) {",
+                  "  pm.expect(call.action, 'computer_call lost the single action (computer_use_preview clients read it): ' + dump).to.be.an('object');",
+                  "  pm.expect(call.actions, 'computer_call has no actions array (new computer tool clients read it): ' + dump).to.be.an('array');",
+                  "  pm.expect(call.actions.length, dump).to.eql(1);",
+                  "  pm.expect(call.actions[0].type, 'actions[0] must match action: ' + dump).to.eql(call.action.type);",
+                  "}",
+                  "var msgs = raw.messages || [];",
+                  "var msgsDump = JSON.stringify(msgs).slice(0, 1200);",
+                  "function blocks(m) { return (m && Array.isArray(m.content)) ? m.content : []; }",
+                  "var uses = [], results = [];",
+                  "for (var i = 0; i < msgs.length; i++) {",
+                  "  var bs = blocks(msgs[i]);",
+                  "  for (var j = 0; j < bs.length; j++) {",
+                  "    if (bs[j].type === 'tool_use') { uses.push(bs[j]); }",
+                  "    if (bs[j].type === 'tool_result') { results.push(bs[j]); }",
+                  "  }",
+                  "}",
+                  "// Anthropic takes one action per tool_use. Before the fix the call became a single tool_use with no input.",
+                  "pm.test('one tool_use per batched action, last one keeps the call id', function () {",
+                  "  pm.expect(uses.length, 'messages: ' + msgsDump).to.eql(2);",
+                  "  pm.expect(uses[0].id, msgsDump).to.eql('call_harness131_0');",
+                  "  pm.expect((uses[0].input || {}).action, msgsDump).to.eql('left_click');",
+                  "  pm.expect((uses[0].input || {}).coordinate, msgsDump).to.eql([100, 200]);",
+                  "  pm.expect(uses[1].id, msgsDump).to.eql('call_harness131');",
+                  "  pm.expect((uses[1].input || {}).action, msgsDump).to.eql('type');",
+                  "  pm.expect((uses[1].input || {}).text, msgsDump).to.eql('hi');",
+                  "});",
+                  "pm.test('every tool_use has a tool_result, the screenshot on the last', function () {",
+                  "  var ids = results.map(function (r) { return r.tool_use_id; });",
+                  "  pm.expect(ids, msgsDump).to.eql(['call_harness131_0', 'call_harness131']);",
+                  "  pm.expect(JSON.stringify(results[1].content || ''), 'screenshot not on the last result: ' + msgsDump).to.include('image');",
+                  "});",
+                  "var calls = (body.output || []).filter(function (o) { return o && o.type === 'computer_call'; });",
+                  "var outDump = JSON.stringify(body.output || []).slice(0, 900);",
+                  "pm.test('the model returned a computer_call', function () {",
+                  "  pm.expect(calls.length, 'output: ' + outDump).to.be.above(0);",
+                  "});",
+                  "pm.test('the returned computer_call carries both action and actions', function () {",
+                  "  for (var k = 0; k < calls.length; k++) { assertBothActions(calls[k], outDump); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "180.7 anthropic/claude-sonnet-4-6 /v1/responses stream computer_call carries action and actions",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 256,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1280,\n      \"display_height\": 800,\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completed without an upstream rejection', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+                  "});",
+                  "function assertBothActions(call, dump) {",
+                  "  pm.expect(call.action, 'computer_call lost the single action (computer_use_preview clients read it): ' + dump).to.be.an('object');",
+                  "  pm.expect(call.actions, 'computer_call has no actions array (new computer tool clients read it): ' + dump).to.be.an('array');",
+                  "  pm.expect(call.actions.length, dump).to.eql(1);",
+                  "  pm.expect(call.actions[0].type, 'actions[0] must match action: ' + dump).to.eql(call.action.type);",
+                  "}",
+                  "pm.test('output_item.done for the computer_call carries both action and actions', function () {",
+                  "  var lines = pm.response.text().split('\\n');",
+                  "  var seen = 0;",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    var line = lines[i].trim();",
+                  "    if (line.indexOf('data:') !== 0) { continue; }",
+                  "    var payload = line.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { continue; }",
+                  "    var ev;",
+                  "    try { ev = JSON.parse(payload); } catch (e) { continue; }",
+                  "    if (ev.type !== 'response.output_item.done') { continue; }",
+                  "    var it = ev.item || {};",
+                  "    if (it.type !== 'computer_call') { continue; }",
+                  "    seen++;",
+                  "    assertBothActions(it, payload.slice(0, 700));",
+                  "  }",
+                  "  pm.expect(seen, 'no computer_call in the stream: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "180.8 openai/gpt-6.1-sol /anthropic/v1/messages stream computer_call actions become complete tool_use blocks",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"max_tokens\": 800,\n  \"stream\": true,\n  \"tool_choice\": {\n    \"type\": \"any\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot of the screen now using the computer tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var events = [];",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  var trimmed = line.trim();",
+                  "  if (trimmed.indexOf('data:') !== 0) { return; }",
+                  "  var payload = trimmed.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(payload)); } catch (e) { /* non-JSON keepalive */ }",
+                  "});",
+                  "var dump = JSON.stringify(events.map(function (e) { return e.type + (e.index !== undefined ? '@' + e.index : ''); })).slice(0, 1200);",
+                  "var uses = {};",
+                  "events.forEach(function (e) {",
+                  "  if (e.type === 'content_block_start' && e.content_block && e.content_block.type === 'tool_use') {",
+                  "    uses[e.index] = { id: e.content_block.id, name: e.content_block.name, input: '', stopped: false };",
+                  "  } else if (e.type === 'content_block_delta' && uses[e.index] && e.delta && e.delta.type === 'input_json_delta') {",
+                  "    uses[e.index].input += e.delta.partial_json || '';",
+                  "  } else if (e.type === 'content_block_stop' && uses[e.index]) {",
+                  "    uses[e.index].stopped = true;",
+                  "  }",
+                  "});",
+                  "var list = Object.keys(uses).map(function (k) { return uses[k]; });",
+                  "pm.test('the model made at least one computer tool_use', function () {",
+                  "  pm.expect(list.length, 'events: ' + dump).to.be.above(0);",
+                  "});",
+                  "// OpenAI streams a computer_call's actions only on output_item.done, as actions with no",
+                  "// action. The converter read only action, so each block closed with an empty input.",
+                  "pm.test('every computer tool_use streams a complete action', function () {",
+                  "  list.forEach(function (u) {",
+                  "    pm.expect(u.stopped, 'block never closed: ' + JSON.stringify(u)).to.be.true;",
+                  "    var input = null;",
+                  "    try { input = JSON.parse(u.input); } catch (e) { input = null; }",
+                  "    pm.expect(input, 'input is not a JSON object: ' + JSON.stringify(u)).to.be.an('object');",
+                  "    pm.expect(input.action, 'input carries no action: ' + JSON.stringify(u)).to.be.a('string').and.not.empty;",
+                  "    pm.expect(u.id, 'tool_use without id: ' + JSON.stringify(u)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "180.9 openai/gpt-6.1-sol /anthropic/v1/messages computer-use turn 2 replays the tool_use as a GA computer_call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"max_tokens\": 400,\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then tell me what you see in one sentence.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"call_turn2_180\",\n          \"name\": \"computer\",\n          \"input\": {\n            \"action\": \"screenshot\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"call_turn2_180\",\n          \"content\": [\n            {\n              \"type\": \"image\",\n              \"source\": {\n                \"type\": \"base64\",\n                \"media_type\": \"image/png\",\n                \"data\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"\n              }\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Turn 2 of every computer-use loop replays the tool_use. The GA computer tool rejects a",
+                  "// computer_call carrying action (\"must include exactly one of action or actions\") and one",
+                  "// whose id does not begin with \"cu\", and Bifrost sent both.",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(txt, 'action/actions 400 resurfaced').to.not.include('exactly one of');",
+                  "  pm.expect(txt, 'computer_call id prefix 400 resurfaced').to.not.include(\"begins with 'cu'\");",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + txt).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var calls = (rr.input || []).filter(function (i) { return i && i.type === 'computer_call'; });",
+                  "pm.test('the replayed computer_call carries actions only, with a cu id', function () {",
+                  "  pm.expect(calls.length, 'input: ' + JSON.stringify(rr.input).slice(0, 700)).to.eql(1);",
+                  "  pm.expect(calls[0].action, 'action must not reach the GA computer tool: ' + JSON.stringify(calls[0])).to.be.undefined;",
+                  "  pm.expect((calls[0].actions || []).map(function (a) { return a.type; })).to.eql(['screenshot']);",
+                  "  pm.expect(String(calls[0].id || 'cu'), JSON.stringify(calls[0])).to.match(/^cu/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "181. Bedrock drops OpenAI hosted tools it rejects (PR #7668) (bedrock-hosted-tool-drop)",
+      "description": "PR #7668 (fix: drop shell tool for bedrock). filterUnsupportedTools in core/providers/openai/responses.go forwarded shell, local_shell, code_interpreter, image_generation, computer_use_preview and programmatic_tool_calling to every OpenAI-compatible target. Bedrock Mantle (/openai/v1 and /v1) and the bedrock-runtime /openai/v1/responses route reject all six on every model they serve (Mantle enumerates the tool types it takes in the 400 and omits them), so any Codex-style request carrying one of them failed outright. Fix: isOpenAISupportedToolType gates those six on the base provider and drops them for bedrock and bedrock_mantle; apply_patch stays because the gpt-5.x/gpt-6 models there accept it.\n\nCases: (1) bedrock_mantle and (2) bedrock (legacy runtime route) send all six plus apply_patch and a function tool and assert via x-bf-send-back-raw-request that only apply_patch and the function reach the wire, with a 2xx (pre-fix: 400 from the provider); (3) openai control - the same filter must keep shell for OpenAI itself, so the drop is provider-scoped, not global.",
+      "item": [
+        {
+          "name": "181.1 bedrock_mantle/openai.gpt-5.6-sol /v1/responses drops shell, local_shell, code_interpreter, image_generation, computer_use_preview and programmatic_tool_calling (Mantle) - PR #7668",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"input\": \"Say hi in one word.\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"shell\",\n      \"environment\": {\n        \"type\": \"local\"\n      }\n    },\n    {\n      \"type\": \"local_shell\"\n    },\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    },\n    {\n      \"type\": \"image_generation\"\n    },\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1024,\n      \"display_height\": 768,\n      \"environment\": \"browser\"\n    },\n    {\n      \"type\": \"programmatic_tool_calling\"\n    },\n    {\n      \"type\": \"apply_patch\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_time\",\n      \"description\": \"Get the current time.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock_mantle/openai.gpt-5.6-sol hosted tool drop: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock_mantle/openai.gpt-5.6-sol hosted tool drop: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var wireTypes = (rr.tools || []).map(function (t) { return t && t.type; });",
+                  "pm.test('bedrock_mantle/openai.gpt-5.6-sol hosted tool drop: no rejected tool type reaches the wire', function () {",
+                  "  ['shell', 'local_shell', 'code_interpreter', 'image_generation', 'computer_use_preview', 'programmatic_tool_calling'].forEach(function (t) {",
+                  "    pm.expect(wireTypes, t + ' reached Bedrock, which rejects it on every model').to.not.include(t);",
+                  "  });",
+                  "});",
+                  "pm.test('bedrock_mantle/openai.gpt-5.6-sol hosted tool drop: apply_patch and the function tool survive', function () {",
+                  "  pm.expect(wireTypes, 'wire tools: ' + JSON.stringify(wireTypes)).to.eql(['apply_patch', 'function']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "181.2 bedrock/openai.gpt-5.6-sol /v1/responses drops shell, local_shell, code_interpreter, image_generation, computer_use_preview and programmatic_tool_calling (bedrock-runtime /openai/v1) - PR #7668",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"input\": \"Say hi in one word.\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"shell\",\n      \"environment\": {\n        \"type\": \"local\"\n      }\n    },\n    {\n      \"type\": \"local_shell\"\n    },\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    },\n    {\n      \"type\": \"image_generation\"\n    },\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1024,\n      \"display_height\": 768,\n      \"environment\": \"browser\"\n    },\n    {\n      \"type\": \"programmatic_tool_calling\"\n    },\n    {\n      \"type\": \"apply_patch\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_time\",\n      \"description\": \"Get the current time.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock/openai.gpt-5.6-sol hosted tool drop: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock/openai.gpt-5.6-sol hosted tool drop: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var wireTypes = (rr.tools || []).map(function (t) { return t && t.type; });",
+                  "pm.test('bedrock/openai.gpt-5.6-sol hosted tool drop: no rejected tool type reaches the wire', function () {",
+                  "  ['shell', 'local_shell', 'code_interpreter', 'image_generation', 'computer_use_preview', 'programmatic_tool_calling'].forEach(function (t) {",
+                  "    pm.expect(wireTypes, t + ' reached Bedrock, which rejects it on every model').to.not.include(t);",
+                  "  });",
+                  "});",
+                  "pm.test('bedrock/openai.gpt-5.6-sol hosted tool drop: apply_patch and the function tool survive', function () {",
+                  "  pm.expect(wireTypes, 'wire tools: ' + JSON.stringify(wireTypes)).to.eql(['apply_patch', 'function']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "181.3 openai/gpt-5.3-codex /v1/responses keeps the shell tool (drop is Bedrock-only) - PR #7668",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"input\": \"Say hi in one word.\",\n  \"max_output_tokens\": 40,\n  \"tools\": [\n    {\n      \"type\": \"shell\",\n      \"environment\": {\n        \"type\": \"local\"\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_time\",\n      \"description\": \"Get the current time.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai shell control: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('openai shell control: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var wireTypes = (rr.tools || []).map(function (t) { return t && t.type; });",
+                  "pm.test('openai shell control: shell still reaches OpenAI', function () {",
+                  "  pm.expect(wireTypes, 'wire tools: ' + JSON.stringify(wireTypes)).to.eql(['shell', 'function']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "191. Gemini models honor stop_sequences from /anthropic/v1/messages (#7922 / PR #7923) (gemini-stop-sequences)",
       "description": "Issue #7922: stop_sequences sent to /anthropic/v1/messages and routed to Gemini or Vertex Gemini never reached generationConfig.stopSequences. The Anthropic (and Bedrock) ingress store stop sequences under ExtraParams[\"stop\"], while ToGeminiResponsesRequest in core/providers/gemini/responses.go only read \"stop_sequences\", so the value was dropped and generation ran past the requested stop strings. The fix reads \"stop\" (falling back to \"stop_sequences\") and consumes the key so it is not forwarded as an unknown wire field. The request succeeds either way, so both cases assert on the outbound payload via x-bf-send-back-raw-request: generationConfig.stopSequences equals the client list, and neither stop nor stop_sequences appears at the top level. One case per provider because Vertex reaches the shared converter through its own provider and rewrites the body before sending it. The folder name deliberately omits the word vertex so the gemini rows stay in the gemini partition. Run with PROVIDER=gemini and PROVIDER=vertex, FEATURE=\"gemini-stop-sequences\".",
       "item": [
         {
