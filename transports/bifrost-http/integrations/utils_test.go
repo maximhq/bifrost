@@ -321,10 +321,13 @@ func TestSendStreamError_ForwardsProviderHeaders(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	bifrostCtx := newTestBifrostContext()
 
-	// Set provider response headers on the context
+	// Set provider response headers on the context. The tracing middleware wrote this gateway's
+	// request id before the handler ran; a chained upstream Bifrost's own must not replace it.
+	ctx.Response.Header.Set("x-bifrost-request-id", "gateway-req")
 	bifrostCtx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{
-		"x-amzn-requestid": "req-123",
-		"x-amzn-errortype": "ValidationException",
+		"x-amzn-requestid":     "req-123",
+		"x-amzn-errortype":     "ValidationException",
+		"X-Bifrost-Request-Id": "upstream-req",
 	})
 
 	bifrostErr := &schemas.BifrostError{
@@ -345,6 +348,7 @@ func TestSendStreamError_ForwardsProviderHeaders(t *testing.T) {
 	assert.Equal(t, 400, ctx.Response.StatusCode())
 	assert.Equal(t, "req-123", string(ctx.Response.Header.Peek("x-amzn-requestid")))
 	assert.Equal(t, "ValidationException", string(ctx.Response.Header.Peek("x-amzn-errortype")))
+	assert.Equal(t, "gateway-req", string(ctx.Response.Header.Peek("x-bifrost-request-id")))
 }
 
 // TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders verifies that
@@ -357,6 +361,13 @@ func TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders(t *testing.T) {
 	bifrostCtx := newTestBifrostContext()
 	bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseReader, io.NopCloser(strings.NewReader("audio-bytes")))
+	// This branch forwards provider headers after writing the routed identity, so a chained
+	// upstream Bifrost's x-bifrost-* headers must not replace it.
+	bifrostCtx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{
+		"X-Bifrost-Provider":         "upstream-provider",
+		"X-Bifrost-Routing-Info-Key": "upstream-key",
+		"X-Request-Id":               "req_upstream",
+	})
 
 	extra := schemas.BifrostResponseExtraFields{
 		Provider:          schemas.OpenAI,
@@ -378,4 +389,5 @@ func TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders(t *testing.T) {
 	assert.Equal(t, "openai", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoProvider)))
 	assert.Equal(t, "tts-1", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoModel)))
 	assert.Equal(t, "openai-key", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoKey)))
+	assert.Equal(t, "req_upstream", string(ctx.Response.Header.Peek("x-request-id")))
 }
