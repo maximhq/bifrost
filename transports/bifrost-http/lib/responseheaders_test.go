@@ -199,6 +199,44 @@ func TestApplyBifrostResponseHeaders(t *testing.T) {
 	})
 }
 
+func TestForwardProviderResponseHeaders_CorrelationPrecedence(t *testing.T) {
+	for _, existing := range []struct {
+		name, requestID, traceID string
+	}{
+		{"traced", "gateway-request", "gateway-trace"},
+		{"request only", "gateway-request", ""},
+		{"trace only", "", "gateway-trace"},
+		{"untraced", "", ""},
+	} {
+		t.Run(existing.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Response.Header.Set("x-request-id", existing.requestID)
+			ctx.Response.Header.Set("x-bifrost-trace-id", existing.traceID)
+			ctx.Response.Header.Set("x-ratelimit-remaining", "old")
+			headers := map[string]string{
+				"X-ReQuEsT-Id": "provider-request", "X-BiFrOsT-TrAcE-Id": "provider-trace",
+				"x-amzn-requestid": "bedrock-request", "x-ratelimit-remaining": "17",
+				"x-bifrost-provider": "upstream-bifrost",
+			}
+			ForwardProviderResponseHeaders(ctx, headers)
+			wantRequest, wantTrace := existing.requestID, existing.traceID
+			if wantRequest == "" {
+				wantRequest = "provider-request"
+			}
+			if wantTrace == "" {
+				wantTrace = "provider-trace"
+			}
+			assert.Equal(t, wantRequest, string(ctx.Response.Header.Peek("x-request-id")))
+			assert.Equal(t, wantTrace, string(ctx.Response.Header.Peek("x-bifrost-trace-id")))
+			assert.Equal(t, "bedrock-request", string(ctx.Response.Header.Peek("x-amzn-requestid")))
+			assert.Equal(t, "17", string(ctx.Response.Header.Peek("x-ratelimit-remaining")))
+			assert.Equal(t, "upstream-bifrost", string(ctx.Response.Header.Peek("x-bifrost-provider")), "only correlation headers are protected")
+			assert.Equal(t, "provider-request", headers["X-ReQuEsT-Id"], "core response metadata must be retained")
+			assert.Equal(t, "provider-trace", headers["X-BiFrOsT-TrAcE-Id"])
+		})
+	}
+}
+
 // TestApplyBifrostStreamResponseHeaders covers the streaming variant: identity
 // comes from the RoutingInfo snapshot core stashes in the context at stream
 // setup, since no chunk (and hence no ExtraFields) exists at header-write time.

@@ -31,9 +31,7 @@ import (
 
 // forwardProviderHeaders forwards provider response headers to the HTTP response.
 func forwardProviderHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
-	for key, value := range headers {
-		ctx.Response.Header.Set(key, value)
-	}
+	lib.ForwardProviderResponseHeaders(ctx, headers)
 }
 
 // forwardProviderHeadersFromContext extracts provider response headers from the bifrost context

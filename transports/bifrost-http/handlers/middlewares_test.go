@@ -20,6 +20,7 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/fasthttp/router"
 	"github.com/klauspost/compress/zstd"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -3254,6 +3255,98 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 	})
 }
 
+// TestTracingMiddleware_ProviderHeadersPreserveCorrelation exercises the real
+// tracing/context/extraction/forwarding chain. Provider IDs must not replace the
+// gateway IDs used by access logs and the exported W3C trace.
+func TestTracingMiddleware_ProviderHeadersPreserveCorrelation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	mw := NewTracingMiddleware(tracer).Middleware()
+	const traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+	paths := []struct {
+		name  string
+		write func(*fasthttp.RequestCtx, *schemas.BifrostContext, map[string]string)
+	}{
+		{"success", func(c *fasthttp.RequestCtx, b *schemas.BifrostContext, headers map[string]string) {
+			lib.ApplyBifrostResponseHeaders(c, b, schemas.BifrostResponseExtraFields{
+				Provider: schemas.OpenAI, ProviderResponseHeaders: headers,
+			})
+			c.SetBodyString(`{"id":"chatcmpl-offline"}`)
+		}},
+		{"error", func(c *fasthttp.RequestCtx, b *schemas.BifrostContext, _ map[string]string) {
+			forwardProviderHeadersFromContext(c, b)
+			SendBifrostError(c, &schemas.BifrostError{
+				StatusCode:  schemas.Ptr(fasthttp.StatusBadGateway),
+				Error:       &schemas.ErrorField{Message: "offline provider error"},
+				ExtraFields: schemas.BifrostErrorExtraFields{Provider: schemas.OpenAI},
+			})
+		}},
+		{"stream_headers", func(c *fasthttp.RequestCtx, b *schemas.BifrostContext, _ map[string]string) {
+			forwardProviderHeadersFromContext(c, b)
+			lib.ApplyBifrostStreamResponseHeaders(c, b, schemas.ChatCompletionStreamRequest)
+			c.SetContentType("text/event-stream")
+		}},
+	}
+	for _, path := range paths {
+		for _, suppliedID := range []bool{false, true} {
+			for _, mixedCase := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/caller_id_%t/mixed_case_%t", path.name, suppliedID, mixedCase), func(t *testing.T) {
+					ctx := &fasthttp.RequestCtx{}
+					ctx.Request.SetRequestURI("/v1/chat/completions")
+					ctx.Request.Header.SetMethod("POST")
+					ctx.Request.Header.Set("traceparent", "00-"+traceID+"-00f067aa0ba902b7-01")
+					if suppliedID {
+						ctx.Request.Header.Set("x-request-id", "caller-request-7592")
+					}
+					var gatewayRequestID string
+					mw(func(c *fasthttp.RequestCtx) {
+						bifrostCtx, cancel := lib.ConvertToBifrostContext(c, nil)
+						defer cancel()
+						gatewayRequestID, _ = bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string)
+						if gatewayRequestID == "" || (suppliedID && gatewayRequestID != "caller-request-7592") {
+							t.Fatalf("gateway request identity was not established: %q", gatewayRequestID)
+						}
+						if got := c.UserValue(schemas.BifrostContextKeyExportTraceID); got != traceID {
+							t.Fatalf("exported W3C trace = %v, want %s", got, traceID)
+						}
+						// A real upstream response goes through the same extraction helper
+						// providers use; disable normalization to retain mixed-case names.
+						upstream := &fasthttp.Response{}
+						upstream.Header.DisableNormalizing()
+						requestHeader, traceHeader := "x-request-id", "x-bifrost-trace-id"
+						if mixedCase {
+							requestHeader, traceHeader = "X-ReQuEsT-Id", "X-BiFrOsT-TrAcE-Id"
+						}
+						upstream.Header.Set(requestHeader, "provider-request-7592")
+						upstream.Header.Set(traceHeader, "provider-trace-7592")
+						upstream.Header.Set("x-amzn-requestid", "provider-specific-7592")
+						upstream.Header.Set("x-ratelimit-remaining-requests", "19")
+						headers := providerUtils.ExtractProviderResponseHeaders(upstream)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
+						path.write(c, bifrostCtx, headers)
+					})(ctx)
+
+					if got := string(ctx.Response.Header.Peek("x-request-id")); got != gatewayRequestID {
+						t.Errorf("x-request-id = %q, want gateway request %q", got, gatewayRequestID)
+					}
+					if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got != traceID {
+						t.Errorf("x-bifrost-trace-id = %q, want exported W3C trace %q", got, traceID)
+					}
+					for key, want := range map[string]string{"x-amzn-requestid": "provider-specific-7592", "x-ratelimit-remaining-requests": "19"} {
+						if got := string(ctx.Response.Header.Peek(key)); got != want {
+							t.Errorf("provider header %s = %q, want %q", key, got, want)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 // captureLogEvent records the structured string and int fields emitted on the access
 // log so a test can assert which correlation keys and status were written.
 type captureLogEvent struct {
@@ -3643,6 +3736,47 @@ func TestTransportResponseHeadersHook_NonStreaming(t *testing.T) {
 	}
 	if got := ctx.Response.StatusCode(); got != fasthttp.StatusCreated {
 		t.Fatalf("status = %d, want read-only status %d", got, fasthttp.StatusCreated)
+	}
+}
+
+func TestTransportHooks_CanExplicitlyReplaceCorrelation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	var postSawGateway, headersSawPost bool
+	plugin := &fakeResponseHeadersPlugin{
+		name: "explicit-correlation",
+		postHook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+			for key, value := range resp.Headers {
+				if strings.EqualFold(key, "x-request-id") {
+					postSawGateway = value == "caller-request"
+					resp.Headers[key] = "plugin-request"
+				}
+			}
+			return nil
+		},
+		hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
+			headersSawPost = resp.Header("x-request-id") == "plugin-request"
+			resp.SetHeader("x-bifrost-trace-id", "plugin-trace")
+			return nil
+		},
+	}
+	handler := NewTracingMiddleware(tracer).Middleware()(TransportInterceptorMiddleware(responseHeadersTestConfig(t, plugin))(func(ctx *fasthttp.RequestCtx) {
+		lib.ApplyBifrostResponseHeaders(ctx, nil, schemas.BifrostResponseExtraFields{
+			ProviderResponseHeaders: map[string]string{"x-request-id": "provider-request", "x-bifrost-trace-id": "provider-trace"},
+		})
+		ctx.SetBodyString("ok")
+	}))
+	ctx := preAuthTestCtx()
+	ctx.Request.Header.Set("x-request-id", "caller-request")
+	handler(ctx)
+	if !postSawGateway || !headersSawPost {
+		t.Fatal("transport hooks did not observe gateway identity followed by the explicit post-hook replacement")
+	}
+	if string(ctx.Response.Header.Peek("x-request-id")) != "plugin-request" || string(ctx.Response.Header.Peek("x-bifrost-trace-id")) != "plugin-trace" {
+		t.Fatal("explicit transport plugin correlation replacements must remain supported")
 	}
 }
 

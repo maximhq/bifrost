@@ -198630,6 +198630,256 @@
       ]
     },
     {
+      "name": "166. Gateway correlation headers survive provider forwarding (#7592)",
+      "description": "Issue #7592: provider response headers could overwrite x-request-id and x-bifrost-trace-id assigned by the outer tracing middleware, breaking pivots from a gateway response to its logs and W3C trace. These four local-only cases exercise real keyless OpenAI provider calls: completion success, provider HTTP 404, SSE success, and a streaming request rejected with 404 before its first chunk. The upstream returns conflicting mixed-case correlation headers, an ordinary Request-Id, and a per-request marker. Assertions preserve the caller request ID and inherited traceparent trace ID while still forwarding the ordinary provider header and validating the upstream body. Each row creates its own provider and deletes only that owned fixture. Requires a same-host run-correlation-header-mock.mjs and its ENV_FILE, genuine dashboard auth, and INCLUDE_PREVIEW=1. The shared provider config and plugin settings are untouched. No paid provider calls.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "(function () {",
+              "  if ((pm.environment.get('include_preview') || pm.variables.get('include_preview') || '') !== '1') { return; }",
+              "  var base = pm.variables.replaceIn('{{baseUrl}}');",
+              "  var nonce = Date.now() + '_' + Math.floor(Math.random() * 1000000);",
+              "  var fixture = 'openai_correlation_' + nonce;",
+              "  var traceID = ''; for (var i = 0; i < 32; i++) { traceID += Math.floor(Math.random() * 16).toString(16); }",
+              "  traceID = '7' + traceID.slice(1);",
+              "  pm.variables.set('correlationProvider', fixture); pm.variables.set('correlationProviderCreated', 'false');",
+              "  pm.variables.set('correlationNonce', nonce); pm.variables.set('correlationRequestID', 'gateway-request-' + nonce);",
+              "  pm.variables.set('correlationTraceID', traceID); pm.variables.set('correlationTraceparent', '00-' + traceID + '-7592759275927592-01');",
+              "  var body = JSON.parse(pm.variables.replaceIn(pm.request.body.raw));",
+              "  pm.variables.set('correlationScenario', body.messages[0].content.split(':')[1]);",
+              "  var mock = pm.environment.get('correlationMockBaseUrl') || pm.variables.get('correlationMockBaseUrl') || '';",
+              "  var auth = pm.environment.get('correlationAdminAuth') || pm.variables.get('correlationAdminAuth') || '';",
+              "  pm.test('setup: explicit local fixture URL and authenticated dashboard access are configured', function () {",
+              "    pm.expect(/^http:\\/\\/127\\.0\\.0\\.1:[0-9]+$/.test(mock), 'start run-correlation-header-mock.mjs and pass its environment file').to.eql(true);",
+              "    pm.expect(typeof auth === 'string' && auth.length > 0, 'enable dashboard auth and provide correlationAdminAuth via the fixture environment').to.eql(true);",
+              "  });",
+              "  if (!/^http:\\/\\/127\\.0\\.0\\.1:[0-9]+$/.test(mock) || !auth) { return; }",
+              "  pm.request.headers.upsert({key: 'Authorization', value: auth});",
+              "  var headers = {'Content-Type': 'application/json', Authorization: auth};",
+              "  pm.sendRequest({url: mock + '/__health', method: 'GET'}, function (err, response) {",
+              "    pm.test('setup: conflict-header upstream fixture is ready', function () {",
+              "      pm.expect(err, 'fixture request failed: ' + String(err)).to.not.exist;",
+              "      pm.expect(response && response.code, 'fixture failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+              "      pm.expect(response.json().fixture, 'unexpected upstream fixture: ' + response.text()).to.eql('bifrost-correlation-7592');",
+              "      pm.expect(response.json().version, 'unexpected fixture contract: ' + response.text()).to.eql(1);",
+              "    });",
+              "    if (err || !response || response.code !== 200) { return; }",
+              "    var ready; try { ready = response.json(); } catch (e) { return; }",
+              "    if (ready.fixture !== 'bifrost-correlation-7592' || ready.version !== 1) { return; }",
+              "    var config = {provider: fixture, custom_provider_config: {base_provider_type: 'openai', is_key_less: true, allowed_requests: {chat_completion: true, chat_completion_stream: true}}, network_config: {base_url: mock, allow_private_network: true, default_request_timeout_in_seconds: 10, max_retries: 0, retry_backoff_initial: 500, retry_backoff_max: 5000}, concurrency_and_buffer_size: {concurrency: 2, buffer_size: 10}, keys: []};",
+              "    pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(config)}}, function (createErr, createResponse) {",
+              "      pm.test('setup: run-scoped keyless OpenAI provider is created', function () {",
+              "        pm.expect(createErr, 'provider setup failed: ' + String(createErr)).to.not.exist;",
+              "        pm.expect(createResponse && createResponse.code, 'provider setup failed: ' + (createResponse ? createResponse.text() : 'no response')).to.eql(200);",
+              "      });",
+              "      if (!createErr && createResponse && createResponse.code === 200) { pm.variables.set('correlationProviderCreated', 'true'); }",
+              "    });",
+              "  });",
+              "})();"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('gateway correlation headers survive real conflicting provider headers', function () {",
+              "  var text = pm.response.text() || '';",
+              "  var nonce = pm.variables.get('correlationNonce'); var scenario = pm.variables.get('correlationScenario');",
+              "  pm.expect(pm.variables.get('correlationProviderCreated'), 'owned upstream provider setup did not complete: ' + text).to.eql('true');",
+              "  var error = scenario === 'error' || scenario === 'stream-error';",
+              "  pm.expect(pm.response.code, 'unexpected gateway status: ' + text).to.eql(error ? 404 : 200);",
+              "  pm.expect(pm.response.headers.get('x-request-id'), 'gateway request ID overwritten: ' + text).to.eql(pm.variables.get('correlationRequestID'));",
+              "  pm.expect(pm.response.headers.get('x-bifrost-trace-id'), 'gateway inherited W3C trace ID overwritten: ' + text).to.eql(pm.variables.get('correlationTraceID'));",
+              "  pm.expect(pm.response.headers.get('request-id'), 'ordinary provider request ID must still be forwarded: ' + text).to.eql('upstream-request-' + nonce);",
+              "  pm.expect(pm.response.headers.get('x-correlation-mock'), 'request did not reach the conflict-header upstream: ' + text).to.eql(nonce);",
+              "  if (error) {",
+              "    var json = pm.response.json();",
+              "    pm.expect(json.error && json.error.message && json.error.message.indexOf('correlation mock error:' + nonce) >= 0, 'expected upstream error missing: ' + text).to.eql(true);",
+              "  } else if (scenario === 'stream') {",
+              "    pm.expect((pm.response.headers.get('content-type') || '').indexOf('text/event-stream') >= 0, 'SSE response missing: ' + text).to.eql(true);",
+              "    var content = ''; var stopped = false; var done = false;",
+              "    text.split(/\\r?\\n/).forEach(function (line) {",
+              "      if (line.indexOf('data:') !== 0) { return; }",
+              "      var value = line.slice(5).trim(); if (value === '[DONE]') { done = true; return; }",
+              "      var chunk = JSON.parse(value); pm.expect(!!chunk.error, 'SSE error: ' + text).to.eql(false);",
+              "      (chunk.choices || []).forEach(function (choice) { content += (choice.delta && choice.delta.content) || ''; if (choice.finish_reason === 'stop') { stopped = true; } });",
+              "    });",
+              "    pm.expect(content, 'upstream stream content missing: ' + text).to.eql('correlation mock stream:' + nonce);",
+              "    pm.expect(stopped && done, 'stream did not finish cleanly: ' + text).to.eql(true);",
+              "  } else {",
+              "    var json = pm.response.json();",
+              "    pm.expect(json.choices && json.choices[0] && json.choices[0].message.content, 'upstream completion missing: ' + text).to.eql('correlation mock success:' + nonce);",
+              "  }",
+              "});",
+              "if (pm.variables.get('correlationProviderCreated') === 'true') {",
+              "  var base = pm.variables.replaceIn('{{baseUrl}}');",
+              "  var fixture = pm.variables.get('correlationProvider'); var headers = {Authorization: pm.request.headers.get('Authorization')};",
+              "  pm.sendRequest({url: base + '/api/providers/' + fixture, method: 'DELETE', header: headers}, function (err, response) {",
+              "    pm.test('cleanup: owned correlation provider is deleted', function () {",
+              "      pm.expect(err, 'cleanup failed: ' + String(err)).to.not.exist;",
+              "      pm.expect(response && response.code, 'cleanup failed: ' + (response ? response.text() : 'no response')).to.eql(200);",
+              "    });",
+              "    pm.sendRequest({url: base + '/api/providers/' + fixture, method: 'GET', header: headers}, function (lookupErr, lookupResponse) {",
+              "      pm.test('cleanup: owned correlation provider no longer exists', function () {",
+              "        pm.expect(lookupErr, 'cleanup verification failed: ' + String(lookupErr)).to.not.exist;",
+              "        pm.expect(lookupResponse && lookupResponse.code, 'provider remains: ' + (lookupResponse ? lookupResponse.text() : 'no response')).to.eql(404);",
+              "      });",
+              "    });",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "[PREVIEW] openai/correlation-fixture success - gateway correlation headers - #7592",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{correlationRequestID}}"
+              },
+              {
+                "key": "traceparent",
+                "value": "{{correlationTraceparent}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{correlationProvider}}/correlation-fixture\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"correlation-header:success:{{correlationNonce}}\"\n    }\n  ],\n  \"max_tokens\": 4,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-404] openai/correlation-fixture error - gateway correlation headers - #7592",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{correlationRequestID}}"
+              },
+              {
+                "key": "traceparent",
+                "value": "{{correlationTraceparent}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{correlationProvider}}/correlation-fixture\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"correlation-header:error:{{correlationNonce}}\"\n    }\n  ],\n  \"max_tokens\": 4,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] openai/correlation-fixture stream - gateway correlation headers - #7592",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{correlationRequestID}}"
+              },
+              {
+                "key": "traceparent",
+                "value": "{{correlationTraceparent}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{correlationProvider}}/correlation-fixture\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"correlation-header:stream:{{correlationNonce}}\"\n    }\n  ],\n  \"max_tokens\": 4,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-404] openai/correlation-fixture stream-error - gateway correlation headers - #7592",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{correlationRequestID}}"
+              },
+              {
+                "key": "traceparent",
+                "value": "{{correlationTraceparent}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{correlationProvider}}/correlation-fixture\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"correlation-header:stream-error:{{correlationNonce}}\"\n    }\n  ],\n  \"max_tokens\": 4,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "Provider endpoint URL components (endpoint-url-components)",
       "description": "Reject ambiguous URL components before destination lookup, persistence, or discovery. Uses the default profile with dashboard auth disabled; no provider calls.",
       "item": [
