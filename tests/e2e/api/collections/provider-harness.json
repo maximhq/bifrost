@@ -208003,6 +208003,539 @@
           }
         }
       ]
+    },
+    {
+      "name": "173. A caller's key pin on the routed provider keeps a session from moving the request (session-caller-pin)",
+      "description": "A key the caller pins (x-bf-api-key-id or x-bf-api-key) belongs to one provider. When that provider heads the routed chain, a session used to reorder the request onto the provider it was bound to anyway, carrying the pin to a provider with no such key: that attempt failed at key selection, the fallback cleared the pin, and the request was served on a key the caller never chose. The session now leaves the chain alone when the caller pinned one of the head provider's keys, as it already does for a provider-prefixed model. A pin on another provider's key, and a direct key, still leave the session to decide.\n\nEach row builds two run-scoped OpenAI-backed providers and a header-gated rule targeting P1 with P2 as its fallback, then binds a session to P2 by having P1 refuse its keys. (1) P1's keys are repaired and the request pins P1's weight-0 key 1: P1 must serve on key 1 as the primary. Before the change the session promoted P2, the pin failed there, and P1 served as a fallback on key 1b. (2) The request pins P2's weight-0 key 2p: the session still promotes P2, which serves on key 2p as the primary. Each row deletes what it made. Run with FEATURE=\"session-caller-pin\".",
+      "item": [
+        {
+          "name": "openai session with a caller key pin on the rule target stays on the pinned key's provider - session-caller-pin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sesspin-';",
+                  "var BAD = 'sk-harness-session-pin-invalid';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, p1: PREFIX + 'a-' + run, p2: PREFIX + 'b-' + run, session: 'session-caller-pin-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) };",
+                  "pm.collectionVariables.set('sessPinState', JSON.stringify(state));",
+                  "function key(provider, suffix, weight, value, cb) {",
+                  "  call('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', { name: provider + '-' + suffix, value: value, models: ['*'], weight: weight }, function (res, k) {",
+                  "    if (!expectOk('setup: created key ' + suffix, res)) { return cb(false); }",
+                  "    state['key' + suffix] = { id: k.id, name: k.name }; cb();",
+                  "  });",
+                  "}",
+                  "function provider(name, cb) {",
+                  "  call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) { cb(expectOk('setup: created provider ' + name.slice(PREFIX.length, PREFIX.length + 1), res)); });",
+                  "}",
+                  "var chatHeaders = function (extra) { var h = { 'Content-Type': 'application/json', 'x-harness-session-pin-run': run, 'x-bf-session-id': state.session }; for (var k in extra) { h[k] = extra[k]; } return h; };",
+                  "seq([",
+                  "  function (next) {",
+                  "    call('GET', '/api/providers', null, function (res, j) {",
+                  "      var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "      var i = 0; (function del() { if (i >= stale.length) { return next(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { del(); }); })();",
+                  "    });",
+                  "  },",
+                  "  function (next) { provider(state.p1, function (ok) { next(ok); }); },",
+                  "  function (next) { key(state.p1, '1', 0, BAD, next); },",
+                  "  function (next) { key(state.p1, '1b', 1, BAD, next); },",
+                  "  function (next) { provider(state.p2, function (ok) { next(ok); }); },",
+                  "  function (next) { key(state.p2, '2', 1, 'env.OPENAI_API_KEY', next); },",
+                  "  function (next) {",
+                  "    call('POST', '/api/governance/routing-rules', { name: 'Harness session caller pin ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: 500000 + (Date.now() % 90000), cel_expression: '\"x-harness-session-pin-run\" in headers && headers[\"x-harness-session-pin-run\"] == \"' + run + '\"', targets: [{ provider: state.p1, model: 'gpt-4o-mini', weight: 1 }], fallbacks: [{ provider: state.p2, model: 'gpt-4o-mini' }], scope: 'global' }, function (res, j) {",
+                  "      if (!expectOk('setup: created the rule that targets P1 and falls back to P2', res)) { return next(false); }",
+                  "      state.ruleId = ((j || {}).rule || {}).id; next();",
+                  "    });",
+                  "  },",
+                  "  // Bind the session to P2: P1 refuses its keys, so the rule's fallback serves.",
+                  "  function (next) {",
+                  "    pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: chatHeaders({}), body: { mode: 'raw', raw: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Reply OK.' }], max_tokens: 3 }) } }, function (err, res) {",
+                  "      var ri = {}; try { ri = ((res.json() || {}).extra_fields || {}).routing_info || {}; } catch (e) { ri = {}; }",
+                  "      var bound = !err && res && res.code === 200 && ri.provider === state.p2;",
+                  "      pm.test('setup: the session is bound to P2, which served after P1 refused its keys', function () { pm.expect(bound, err ? String(err) : (res.code + ' ' + res.text())).to.eql(true); });",
+                  "      next(bound);",
+                  "    });",
+                  "  },",
+                  "  function (next) { call('PUT', '/api/providers/' + encodeURIComponent(state.p1) + '/keys/' + state.key1.id, { name: state.key1.name, value: 'env.OPENAI_API_KEY' }, function (res) { next(expectOk('setup: key 1 repaired', res)); }); },",
+                  "  function (next) { call('PUT', '/api/providers/' + encodeURIComponent(state.p1) + '/keys/' + state.key1b.id, { name: state.key1b.name, value: 'env.OPENAI_API_KEY' }, function (res) { next(expectOk('setup: key 1b repaired', res)); }); },",
+                  "], function () {",
+                  "  pm.collectionVariables.set('sessPinState', JSON.stringify(state));",
+                  "  pm.collectionVariables.set('sessPinRun', run);",
+                  "  pm.collectionVariables.set('sessPinSession', state.session);",
+                  "  pm.collectionVariables.set('sessPinKeyId', (state.key1 || {}).id || 'missing');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sesspin-';",
+                  "var BAD = 'sk-harness-session-pin-invalid';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('sessPinState') || '{}');",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('the pinned request succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('P1 serves on the pinned key 1, not P2 promoted by the session binding', function () {",
+                  "  pm.expect(ri.provider, pm.response.text()).to.eql(state.p1);",
+                  "  pm.expect(ri.key, 'the caller pinned key 1: ' + pm.response.text()).to.eql((state.key1 || {}).name);",
+                  "  pm.expect(ri.is_fallback === true, 'P1 is the rule target; serving it as a fallback means the session moved the request: ' + pm.response.text()).to.eql(false);",
+                  "});",
+                  "cleanup(state);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-session-pin-run",
+                "value": "{{sessPinRun}}"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{sessPinSession}}"
+              },
+              {
+                "key": "x-bf-api-key-id",
+                "value": "{{sessPinKeyId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "openai session with a caller key pin on the session's provider still follows the session - session-caller-pin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sesspin-';",
+                  "var BAD = 'sk-harness-session-pin-invalid';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, p1: PREFIX + 'a-' + run, p2: PREFIX + 'b-' + run, session: 'session-caller-pin-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) };",
+                  "pm.collectionVariables.set('sessPinBoundState', JSON.stringify(state));",
+                  "function key(provider, suffix, weight, value, cb) {",
+                  "  call('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', { name: provider + '-' + suffix, value: value, models: ['*'], weight: weight }, function (res, k) {",
+                  "    if (!expectOk('setup: created key ' + suffix, res)) { return cb(false); }",
+                  "    state['key' + suffix] = { id: k.id, name: k.name }; cb();",
+                  "  });",
+                  "}",
+                  "function provider(name, cb) {",
+                  "  call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) { cb(expectOk('setup: created provider ' + name.slice(PREFIX.length, PREFIX.length + 1), res)); });",
+                  "}",
+                  "var chatHeaders = function (extra) { var h = { 'Content-Type': 'application/json', 'x-harness-session-pin-run': run, 'x-bf-session-id': state.session }; for (var k in extra) { h[k] = extra[k]; } return h; };",
+                  "seq([",
+                  "  function (next) {",
+                  "    call('GET', '/api/providers', null, function (res, j) {",
+                  "      var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "      var i = 0; (function del() { if (i >= stale.length) { return next(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { del(); }); })();",
+                  "    });",
+                  "  },",
+                  "  function (next) { provider(state.p1, function (ok) { next(ok); }); },",
+                  "  function (next) { key(state.p1, '1', 1, BAD, next); },",
+                  "  function (next) { provider(state.p2, function (ok) { next(ok); }); },",
+                  "  function (next) { key(state.p2, '2', 1, 'env.OPENAI_API_KEY', next); },",
+                  "  function (next) { key(state.p2, '2p', 0, 'env.OPENAI_API_KEY', next); },",
+                  "  function (next) {",
+                  "    call('POST', '/api/governance/routing-rules', { name: 'Harness session caller pin ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: 500000 + (Date.now() % 90000), cel_expression: '\"x-harness-session-pin-run\" in headers && headers[\"x-harness-session-pin-run\"] == \"' + run + '\"', targets: [{ provider: state.p1, model: 'gpt-4o-mini', weight: 1 }], fallbacks: [{ provider: state.p2, model: 'gpt-4o-mini' }], scope: 'global' }, function (res, j) {",
+                  "      if (!expectOk('setup: created the rule that targets P1 and falls back to P2', res)) { return next(false); }",
+                  "      state.ruleId = ((j || {}).rule || {}).id; next();",
+                  "    });",
+                  "  },",
+                  "  // Bind the session to P2: P1 refuses its keys, so the rule's fallback serves.",
+                  "  function (next) {",
+                  "    pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: chatHeaders({}), body: { mode: 'raw', raw: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Reply OK.' }], max_tokens: 3 }) } }, function (err, res) {",
+                  "      var ri = {}; try { ri = ((res.json() || {}).extra_fields || {}).routing_info || {}; } catch (e) { ri = {}; }",
+                  "      var bound = !err && res && res.code === 200 && ri.provider === state.p2;",
+                  "      pm.test('setup: the session is bound to P2, which served after P1 refused its keys', function () { pm.expect(bound, err ? String(err) : (res.code + ' ' + res.text())).to.eql(true); });",
+                  "      next(bound);",
+                  "    });",
+                  "  },",
+                  "], function () {",
+                  "  pm.collectionVariables.set('sessPinBoundState', JSON.stringify(state));",
+                  "  pm.collectionVariables.set('sessPinBoundRun', run);",
+                  "  pm.collectionVariables.set('sessPinBoundSession', state.session);",
+                  "  pm.collectionVariables.set('sessPinBoundKeyId', (state.key2p || {}).id || 'missing');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sesspin-';",
+                  "var BAD = 'sk-harness-session-pin-invalid';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('sessPinBoundState') || '{}');",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('the pinned request succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('the session still moves the request to P2, which serves on the pinned key 2p', function () {",
+                  "  pm.expect(ri.provider, pm.response.text()).to.eql(state.p2);",
+                  "  pm.expect(ri.key, 'the caller pinned key 2p: ' + pm.response.text()).to.eql((state.key2p || {}).name);",
+                  "  pm.expect(ri.is_fallback === true, 'the session promotes P2 to primary; serving it as a fallback means the pin kept the request on P1: ' + pm.response.text()).to.eql(false);",
+                  "});",
+                  "cleanup(state);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-session-pin-run",
+                "value": "{{sessPinBoundRun}}"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{sessPinBoundSession}}"
+              },
+              {
+                "key": "x-bf-api-key-id",
+                "value": "{{sessPinBoundKeyId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "174. A fallback that served a request with a direct key does not become the session's provider (session-direct-key)",
+      "description": "A direct key (x-bf-direct-key: true plus the caller's own provider key, enabled by client.allow_direct_keys) is tried only on the first route of the chain; fallbacks run on the gateway's keys. A fallback that served such a request used to become the session's provider, so the next request of the session was moved there first and the caller's key was sent to a provider it was never meant for. That attempt was refused, and the demoted provider then served on the gateway's keys. A fallback that serves a direct-key request now binds no route, and the next request follows the routing decision.\n\nThe row builds two run-scoped OpenAI-backed providers, each with a working gateway key, and a header-gated rule targeting P1 with P2 as its fallback. Turn 1 sends a throwaway direct key on a session: P1 refuses it and P2 serves as the fallback. Turn 2 repeats it on the same session and must start on P1 again: P1 refuses the key and P2 serves as the fallback, with the request's primary attempt logged on P1. Before the change turn 2 started on P2 and P1 served it as the fallback. Everything is deleted by the row. Run with FEATURE=\"session-direct-key\".",
+      "item": [
+        {
+          "name": "openai session with a direct key starts on the routed provider again after a fallback served - session-direct-key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sessdk-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var nonce = Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "var state = { run: run, p1: PREFIX + 'a-' + run, p2: PREFIX + 'b-' + run, session: 'session-direct-key-' + nonce, directKey: 'sk-harness-session-direct-' + pm.variables.replaceIn('{{$guid}}'), turn2: 'session-direct-key-turn2-' + nonce };",
+                  "pm.collectionVariables.set('sessDkState', JSON.stringify(state));",
+                  "function provider(name, cb) {",
+                  "  call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) { cb(expectOk('setup: created provider ' + name.slice(PREFIX.length, PREFIX.length + 1), res)); });",
+                  "}",
+                  "function key(name, cb) {",
+                  "  call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', { name: name + '-key', value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }, function (res) { cb(expectOk('setup: created the gateway key on ' + name.slice(PREFIX.length, PREFIX.length + 1), res)); });",
+                  "}",
+                  "seq([",
+                  "  function (next) {",
+                  "    call('GET', '/api/providers', null, function (res, j) {",
+                  "      var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "      var i = 0; (function del() { if (i >= stale.length) { return next(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { del(); }); })();",
+                  "    });",
+                  "  },",
+                  "  // Both providers hold a working gateway key; the caller's direct key works on neither.",
+                  "  function (next) { provider(state.p1, next); },",
+                  "  function (next) { key(state.p1, next); },",
+                  "  function (next) { provider(state.p2, next); },",
+                  "  function (next) { key(state.p2, next); },",
+                  "  function (next) {",
+                  "    call('POST', '/api/governance/routing-rules', { name: 'Harness session direct key ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: 500000 + (Date.now() % 90000), cel_expression: '\"x-harness-session-direct-run\" in headers && headers[\"x-harness-session-direct-run\"] == \"' + run + '\"', targets: [{ provider: state.p1, model: 'gpt-4o-mini', weight: 1 }], fallbacks: [{ provider: state.p2, model: 'gpt-4o-mini' }], scope: 'global' }, function (res, j) {",
+                  "      if (!expectOk('setup: created the rule that targets P1 and falls back to P2', res)) { return next(false); }",
+                  "      state.ruleId = ((j || {}).rule || {}).id; next();",
+                  "    });",
+                  "  },",
+                  "  // Turn 1: P1 refuses the caller's key, and P2 serves as the fallback on the gateway's key.",
+                  "  function (next) {",
+                  "    pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-harness-session-direct-run': run, 'x-bf-session-id': state.session, 'x-bf-direct-key': 'true', 'Authorization': 'Bearer ' + state.directKey }, body: { mode: 'raw', raw: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Reply OK.' }], max_tokens: 3 }) } }, function (err, res) {",
+                  "      var ri = {}; try { ri = ((res.json() || {}).extra_fields || {}).routing_info || {}; } catch (e) { ri = {}; }",
+                  "      var rescued = !err && res && res.code === 200 && ri.provider === state.p2 && ri.is_fallback === true;",
+                  "      pm.test('setup: turn 1 was refused by P1 and served by the P2 fallback on the gateway key', function () { pm.expect(rescued, err ? String(err) : (res.code + ' ' + res.text())).to.eql(true); });",
+                  "      next(rescued);",
+                  "    });",
+                  "  },",
+                  "], function () {",
+                  "  pm.collectionVariables.set('sessDkState', JSON.stringify(state));",
+                  "  pm.collectionVariables.set('sessDkRun', run);",
+                  "  pm.collectionVariables.set('sessDkSession', state.session);",
+                  "  pm.collectionVariables.set('sessDkKey', state.directKey);",
+                  "  pm.collectionVariables.set('sessDkRequestId', state.turn2);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sessdk-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('sessDkState') || '{}');",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('turn 2 is served', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('turn 2 starts on P1 again, and P2 serves it as the fallback', function () {",
+                  "  pm.expect(ri.provider, 'a P1 fallback serving means the session moved turn 2 to P2 first: ' + pm.response.text()).to.eql(state.p2);",
+                  "  pm.expect(ri.is_fallback === true, pm.response.text()).to.eql(true);",
+                  "});",
+                  "// The primary attempt is logged under the request id: it names the provider the caller's key went to first.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(state.turn2), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('the caller\\u2019s key goes first to P1, the provider routing chose, not to the P2 fallback that served turn 1', function () {",
+                  "        pm.expect(j.provider, 'the turn-2 primary attempt: ' + JSON.stringify({ provider: j.provider, status: j.status, fallback_index: j.fallback_index })).to.eql(state.p1);",
+                  "      });",
+                  "      return cleanup(state);",
+                  "    }",
+                  "    if (attempt < 15) { return setTimeout(function () { checkLog(attempt + 1); }, 1000); }",
+                  "    pm.test('the caller\\u2019s key goes first to P1, the provider routing chose, not to the P2 fallback that served turn 1', function () { pm.expect.fail('log ' + state.turn2 + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "    cleanup(state);",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-session-direct-run",
+                "value": "{{sessDkRun}}"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{sessDkSession}}"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sessDkKey}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{sessDkRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

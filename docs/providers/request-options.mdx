@@ -191,6 +191,10 @@ A direct key only replaces the provider credential — it bypasses the **key poo
 </Warning>
 
 <Note>
+A direct key is tried only on the first provider of the request's chain; fallback providers run on their own configured keys. With a bare model that first provider is whatever routing or [session affinity](/providers/session-affinity) puts first. Name the provider (`openai/gpt-4o`) and a session never moves the request away from it. A fallback that serves a request with a direct key does not become the session's provider.
+</Note>
+
+<Note>
 A direct key belongs to one provider, so listing models with one never fans out to every provider. The drop-in model routes list only their own provider (`/openai/v1/models` lists OpenAI, `/anthropic/v1/models` Anthropic, `/genai/v1beta/models` Gemini), and answer `400` when that provider is not configured; `x-bf-model-provider` names another one. `GET /v1/models` must name the provider with `?provider=`, and a listing across all providers (`/v1/models` without one, or `x-bf-model-provider: all`) is refused with `400`.
 </Note>
 
@@ -236,14 +240,14 @@ response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 
 Keep a session on what served it before, so a conversation keeps hitting the same provider prompt cache. Affinity works at two levels:
 
-- **Provider**: when routing offers more than one provider for what the caller asked for (virtual key weights, load balancing, model catalog candidates), the provider that last served the session is tried first, as long as routing still offers it. Routing decides which providers are allowed; the session only decides their order. A request that names its provider (`openai/gpt-4o`) is never reordered: the caller asked for that provider, so only the key level applies to it, even when a fallback served an earlier turn.
+- **Provider**: when routing offers more than one provider for what the caller asked for (virtual key weights, load balancing, model catalog candidates), the provider that last served the session is tried first, as long as routing still offers it. Routing decides which providers are allowed; the session only decides their order. A request that names its provider (`openai/gpt-4o`) is never reordered: the caller asked for that provider, so only the key level applies to it, even when a fallback served an earlier turn. Nor is one that pins one of the routed provider's keys with [`x-bf-api-key-id` or `x-bf-api-key`](#api-key-selection), since that key exists only there.
 - **Key**: within a provider, the key that last served the session is used while it stays eligible.
 
 Bindings are written when a request is served, never when it fails, and are scoped to the virtual key and user the request is attributed to. A fallback that serves becomes the session's new home. Bindings live in the KV store for the session TTL, refreshed by every served request.
 
 **Retry and Fallback Behavior:**
 - **Retries**: A bound key is used for every retry of a request. A session with no key binding yet rotates keys on rate limits like any other request, and the key that serves is the one that gets bound.
-- **Fallbacks**: Fallback providers select keys freely. When a fallback serves, the session is rebound to that provider and its key, so the next request starts there.
+- **Fallbacks**: Fallback providers select keys freely. When a fallback serves, the session is rebound to that provider and its key, so the next request starts there. A request with a [direct key](#direct-api-key) is the exception: the fallback served on the gateway's keys, so only its key is bound and the next request follows the routing decision.
 - **Switch**: `x-bf-session-affinity: off` turns affinity off for a request, at both levels; `on` is the default.
 - **Routing trail**: Decisions the session made appear in the request's routing logs under the `session-affinity` engine, which is also listed among the routing engines used. The UI labels it **Session**.
 
