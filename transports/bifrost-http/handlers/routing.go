@@ -691,6 +691,14 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 
 	// Create in database
 	if err := h.configStore.CreateRoutingRule(ctx, rule); err != nil {
+		if errors.Is(err, configstore.ErrRoutingRulePriorityTaken) {
+			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("%v; use a different priority", err))
+			return
+		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to create routing rule: %v", err))
 		return
 	}
@@ -814,6 +822,14 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 
 	// Update in database
 	if err := h.configStore.UpdateRoutingRule(ctx, rule); err != nil {
+		if errors.Is(err, configstore.ErrRoutingRulePriorityTaken) {
+			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("%v; use a different priority", err))
+			return
+		}
+		if errors.Is(err, configstore.ErrAlreadyExists) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to update routing rule in database: %v", err))
 		return
 	}
