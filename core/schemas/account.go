@@ -159,6 +159,81 @@ type Key struct {
 	Description            string                  `json:"description,omitempty"`               // Description of key
 }
 
+// hasSecretReference reports whether any field of the key, its provider configs or its
+// aliases is an env. or vault. reference rather than a literal value.
+func (k *Key) hasSecretReference() bool {
+	if k.Value.IsFromSecret() {
+		return true
+	}
+	if c := k.AzureKeyConfig; c != nil && anyFromSecret(&c.Endpoint, c.ClientID, c.ClientSecret, c.TenantID) {
+		return true
+	}
+	if c := k.VertexKeyConfig; c != nil {
+		if anyFromSecret(&c.ProjectID, &c.ProjectNumber, &c.Region, &c.AuthCredentials) {
+			return true
+		}
+		if w := c.AWSWorkloadIdentity; w != nil && anyFromSecret(&w.Audience, w.ServiceAccountEmail, w.AWSRegion, w.AWSRoleARN) {
+			return true
+		}
+	}
+	if c := k.BedrockKeyConfig; c != nil {
+		if anyFromSecret(&c.AccessKey, &c.SecretKey, c.SessionToken, c.Region, c.ARN, c.RoleARN, c.ExternalID, c.RoleSessionName, c.BatchRoleARN, c.ProjectID) || c.Endpoints.hasSecretReference() {
+			return true
+		}
+	}
+	if c := k.BedrockMantleKeyConfig; c != nil {
+		if anyFromSecret(&c.AccessKey, &c.SecretKey, c.SessionToken, c.Region, c.RoleARN, c.ExternalID, c.RoleSessionName, c.ProjectID) || c.Endpoints.hasSecretReference() {
+			return true
+		}
+	}
+	if c := k.VLLMKeyConfig; c != nil && c.URL.IsFromSecret() {
+		return true
+	}
+	if c := k.OllamaKeyConfig; c != nil && c.URL.IsFromSecret() {
+		return true
+	}
+	if c := k.SGLKeyConfig; c != nil && c.URL.IsFromSecret() {
+		return true
+	}
+	if c := k.DatabricksKeyConfig; c != nil && anyFromSecret(&c.WorkspaceURL, c.ClientID, c.ClientSecret) {
+		return true
+	}
+	if c := k.GithubCopilotKeyConfig; c != nil && anyFromSecret(&c.AppID, &c.InstallationID, &c.RepositoryID, &c.PrivateKey, &c.GithubDomain) {
+		return true
+	}
+	for _, alias := range k.Aliases {
+		if anyFromSecret(alias.Region, alias.ProjectID) {
+			return true
+		}
+		if c := alias.AzureAliasCfg; c != nil && c.Endpoint.IsFromSecret() {
+			return true
+		}
+		if c := alias.VertexAliasCfg; c != nil && anyFromSecret(c.ProjectID, c.ProjectNumber) {
+			return true
+		}
+		if c := alias.BedrockAliasCfg; c != nil && c.InferenceProfileARN.IsFromSecret() {
+			return true
+		}
+	}
+	return false
+}
+
+// hasSecretReference reports whether any endpoint override is an env. or vault. reference.
+func (e *BedrockEndpoints) hasSecretReference() bool {
+	return e != nil && anyFromSecret(e.Runtime, e.ControlPlane, e.Mantle, e.AgentRuntime, e.S3)
+}
+
+// anyFromSecret reports whether any of vars is an env. or vault. reference. Nil entries are
+// skipped.
+func anyFromSecret(vars ...*SecretVar) bool {
+	for _, v := range vars {
+		if v.IsFromSecret() {
+			return true
+		}
+	}
+	return false
+}
+
 // ModelFamily is a typed enum identifying the underlying model family of an alias target.
 // It enables provider routing decisions (request shape, response parsing, auth headers,
 // URL construction) without substring-sniffing the wire model ID.
