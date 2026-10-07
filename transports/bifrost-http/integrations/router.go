@@ -3570,7 +3570,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	// provider, so it must be anchored at a segment boundary and shaped like a rooted path
 	// before anything else happens. Both checks run before the Bifrost context exists so a
 	// rejected request never reaches key selection or the upstream.
-	path, ok := stripPassthroughPrefix(string(ctx.Path()), cfg.StripPrefix)
+	path, apiVersion, ok := stripPassthroughPrefix(string(ctx.Path()), cfg.StripPrefix)
 	if !ok {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "no passthrough route matches the request path", fasthttp.StatusNotFound))
 		return
@@ -3611,6 +3611,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	passthroughReq := &schemas.BifrostPassthroughRequest{
 		Method:      string(ctx.Method()),
 		Path:        path,
+		APIVersion:  apiVersion,
 		RawQuery:    string(ctx.URI().QueryString()),
 		UpstreamURL: cfg.UpstreamURL,
 		Body:        body,

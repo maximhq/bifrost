@@ -206622,6 +206622,244 @@
           ]
         }
       ]
+    },
+    {
+      "name": "182. GenAI passthrough Interactions API create, flat and v1beta1 project paths (genai-interactions-passthrough)",
+      "description": "Interactions API creation through /genai_passthrough.\n\nGemini: POST /genai_passthrough/v1beta/interactions was refused with 403 by the passthrough inference filter, which only admitted models/*:generateContent-style paths.\n\nVertex: Google serves Interactions only at /v1beta1/projects/{p}/locations/{l}/interactions. The genai passthrough router strips /genai_passthrough/v1beta1 and the Vertex provider rebuilt the upstream URL with a hardcoded /v1, so the request reached /v1/.../interactions and Google answered 404. The router now carries the stripped version and Vertex honors v1beta1.\n\nBifrost rewrites the project and location in a Vertex passthrough path to the selected key's, so the {{vertexProject}} default needs no override; the key must hold service-account credentials (Interactions rejects API keys). get/cancel/delete of a stored interaction stay refused, so these rows only create.",
+      "item": [
+        {
+          "name": "182.1 gemini interactions create via /genai_passthrough/v1beta - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{genaiModel}}\",\n  \"input\": \"Reply with exactly: OK\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The passthrough inference filter refused every /interactions path with 403",
+                  "// \"passthrough requires a supported inference endpoint\"; interaction creation is now admitted.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini interactions create: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('gemini interactions create: served by gemini - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), dump).to.eql('gemini');",
+                  "});",
+                  "pm.test('gemini interactions create: completed Interaction forwarded verbatim - genai-interactions-passthrough', function () {",
+                  "  pm.expect(j.id, dump).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.status, dump).to.eql('completed');",
+                  "  pm.expect(j.outputs, dump).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "182.2 gemini interactions create stream via /genai_passthrough/v1beta - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{genaiModel}}\",\n  \"input\": \"Reply with exactly: OK\",\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The passthrough inference filter refused every /interactions path with 403",
+                  "// \"passthrough requires a supported inference endpoint\"; interaction creation is now admitted.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini interactions stream: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini interactions stream: SSE stream runs to interaction.complete - genai-interactions-passthrough', function () {",
+                  "  pm.expect(String(pm.response.headers.get('Content-Type')), 'content-type').to.include('text/event-stream');",
+                  "  pm.expect(body, body.slice(0, 400)).to.include('interaction.complete');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "182.3 vertex interactions create via /genai_passthrough/v1beta1 project path - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{vertexModel}}\",\n  \"input\": \"Reply with exactly: OK\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta1/projects/{{vertexProject}}/locations/global/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "global",
+                "interactions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Vertex serves Interactions only under v1beta1. The router stripped /v1beta1 with its prefix and",
+                  "// Vertex rebuilt the URL with /v1, so Google answered 404; on dev the inference filter also 403'd.",
+                  "var body = pm.response.text();",
+                  "pm.test('vertex interactions create: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('vertex interactions create: served by vertex - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), dump).to.eql('vertex');",
+                  "});",
+                  "pm.test('vertex interactions create: completed Interaction forwarded verbatim - genai-interactions-passthrough', function () {",
+                  "  pm.expect(j.id, dump).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.status, dump).to.eql('completed');",
+                  "  pm.expect(j.outputs, dump).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "182.4 vertex interactions create stream via /genai_passthrough/v1beta1 project path - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{vertexModel}}\",\n  \"input\": \"Reply with exactly: OK\",\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta1/projects/{{vertexProject}}/locations/global/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "global",
+                "interactions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Vertex serves Interactions only under v1beta1. The router stripped /v1beta1 with its prefix and",
+                  "// Vertex rebuilt the URL with /v1, so Google answered 404; on dev the inference filter also 403'd.",
+                  "var body = pm.response.text();",
+                  "pm.test('vertex interactions stream: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('vertex interactions stream: SSE stream runs to interaction.complete - genai-interactions-passthrough', function () {",
+                  "  pm.expect(String(pm.response.headers.get('Content-Type')), 'content-type').to.include('text/event-stream');",
+                  "  pm.expect(body, body.slice(0, 400)).to.include('interaction.complete');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

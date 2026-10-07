@@ -4618,7 +4618,12 @@ func (provider *VertexProvider) Passthrough(
 		keyRegion = "global"
 	}
 
-	baseURL := getVertexAPIBaseURL(keyRegion, "v1")
+	// Honor the version the client addressed; Interactions exists only under v1beta1.
+	apiVersion := "v1"
+	if req.APIVersion == "v1beta1" {
+		apiVersion = req.APIVersion
+	}
+	baseURL := getVertexAPIBaseURL(keyRegion, apiVersion)
 
 	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments (e.g. /v1/v1/...)
 	path := req.Path
@@ -4772,7 +4777,11 @@ func (provider *VertexProvider) PassthroughStream(
 		keyRegion = "global"
 	}
 
-	baseURL := getVertexAPIBaseURL(keyRegion, "v1")
+	apiVersion := "v1"
+	if req.APIVersion == "v1beta1" {
+		apiVersion = req.APIVersion
+	}
+	baseURL := getVertexAPIBaseURL(keyRegion, apiVersion)
 
 	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments.
 	path := req.Path

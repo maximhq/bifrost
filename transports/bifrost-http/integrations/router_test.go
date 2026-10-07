@@ -1153,16 +1153,18 @@ type passthroughUpstreamHit struct {
 func TestStripPassthroughPrefix(t *testing.T) {
 	genai := []string{"/genai_passthrough/v1beta1", "/genai_passthrough/v1beta", "/genai_passthrough/v1", "/genai_passthrough"}
 	tests := []struct {
-		name     string
-		path     string
-		prefixes []string
-		want     string
-		wantOK   bool
+		name        string
+		path        string
+		prefixes    []string
+		want        string
+		wantVersion string
+		wantOK      bool
 	}{
-		{name: "versioned prefix at boundary", path: "/genai_passthrough/v1beta/models/x", prefixes: genai, want: "/models/x", wantOK: true},
-		{name: "v1 prefix at boundary", path: "/genai_passthrough/v1/models/x", prefixes: genai, want: "/models/x", wantOK: true},
+		{name: "versioned prefix at boundary", path: "/genai_passthrough/v1beta/models/x", prefixes: genai, want: "/models/x", wantVersion: "v1beta", wantOK: true},
+		{name: "v1 prefix at boundary", path: "/genai_passthrough/v1/models/x", prefixes: genai, want: "/models/x", wantVersion: "v1", wantOK: true},
+		{name: "v1beta1 prefix keeps its version for vertex", path: "/genai_passthrough/v1beta1/projects/p/locations/global/interactions", prefixes: genai, want: "/projects/p/locations/global/interactions", wantVersion: "v1beta1", wantOK: true},
 		{name: "bare prefix at boundary", path: "/genai_passthrough/files/abc", prefixes: genai, want: "/files/abc", wantOK: true},
-		{name: "exact prefix yields root", path: "/genai_passthrough/v1beta", prefixes: genai, want: "/", wantOK: true},
+		{name: "exact prefix yields root", path: "/genai_passthrough/v1beta", prefixes: genai, want: "/", wantVersion: "v1beta", wantOK: true},
 		{name: "longer first segment falls through to shorter prefix", path: "/genai_passthrough/v1beta1foo/x", prefixes: genai, want: "/v1beta1foo/x", wantOK: true},
 		{name: "userinfo separator after prefix falls through to shorter prefix", path: "/genai_passthrough/v1@127.0.0.1/x", prefixes: genai, want: "/v1@127.0.0.1/x", wantOK: true},
 		{name: "single prefix with userinfo separator does not match", path: "/anthropic_passthrough@evil.example/x", prefixes: []string{"/anthropic_passthrough"}, wantOK: false},
@@ -1171,10 +1173,11 @@ func TestStripPassthroughPrefix(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := stripPassthroughPrefix(tc.path, tc.prefixes)
+			got, version, ok := stripPassthroughPrefix(tc.path, tc.prefixes)
 			require.Equal(t, tc.wantOK, ok)
 			if ok {
 				require.Equal(t, tc.want, got)
+				require.Equal(t, tc.wantVersion, version)
 			}
 		})
 	}
@@ -1404,6 +1407,7 @@ func TestPassthroughInferenceRoutes(t *testing.T) {
 		{schemas.Azure, "/openai/v1/responses"}, {schemas.Gemini, "/models/gemini-2.5-flash:streamGenerateContent"},
 		{schemas.Gemini, "/projects/p/locations/us/publishers/google/models/gemini-2.5-flash:generateContent"},
 		{schemas.Runware, "/v1"},
+		{schemas.Gemini, "/interactions"}, {schemas.Gemini, "/projects/p/locations/global/interactions"},
 	} {
 		cfg := &PassthroughConfig{Provider: tc.provider}
 		require.True(t, passthroughInferenceRoute(cfg, "POST", tc.path), "%s %s", tc.provider, tc.path)
@@ -1412,7 +1416,8 @@ func TestPassthroughInferenceRoutes(t *testing.T) {
 		}
 	}
 	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Azure, schemas.Gemini, schemas.Runware} {
-		for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/organization/users", "/v1/chat/completions/id/messages", "/v1/messages/batches", "/v1/responses/id", "/models/m:delete", "/v1/./responses", "/v1/%72esponses", "/models/x:generateContent/extra"} {
+		for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/organization/users", "/v1/chat/completions/id/messages", "/v1/messages/batches", "/v1/responses/id", "/models/m:delete", "/v1/./responses", "/v1/%72esponses", "/models/x:generateContent/extra",
+			"/interactions/abc", "/interactions/abc/cancel", "/projects/p/locations/global/interactions/abc", "/projects/p/interactions"} {
 			require.False(t, passthroughInferenceRoute(&PassthroughConfig{Provider: provider}, "POST", path), "%s %s", provider, path)
 		}
 	}

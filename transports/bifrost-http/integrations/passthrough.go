@@ -22,6 +22,11 @@ type PassthroughRouter struct {
 
 var genAIInferencePath = regexp.MustCompile(`^/(projects/[^/]+/locations/[^/]+/publishers/[^/]+/)?(models|tunedModels)/[^/:]+:(generateContent|streamGenerateContent|countTokens|embedContent|batchEmbedContents|predict|rawPredict|streamRawPredict)$`)
 
+// genAIInteractionsPath admits only interaction creation; get/cancel/delete address stored interactions.
+var genAIInteractionsPath = regexp.MustCompile(`^/(projects/[^/]+/locations/[^/]+/)?interactions$`)
+
+var apiVersionSegment = regexp.MustCompile(`^v\d+((alpha|beta)\d*)?$`)
+
 // passthroughInferenceRoute limits HTTP passthrough to inference operations.
 // A provider key grants more capabilities than an inference credential; raw
 // forwarding must not expose the provider's object or account management APIs.
@@ -49,7 +54,7 @@ func passthroughInferenceRoute(cfg *PassthroughConfig, method, path string) bool
 		parts := strings.SplitN(path, "/", 5)
 		return len(parts) == 5 && parts[1] == "openai" && parts[2] == "deployments" && parts[3] != "" && openAIInferencePath("/"+parts[4])
 	case schemas.Gemini, schemas.Vertex:
-		return genAIInferencePath.MatchString(path)
+		return genAIInferencePath.MatchString(path) || genAIInteractionsPath.MatchString(path)
 	case schemas.Runware:
 		return path == "/v1"
 	case schemas.Bedrock:
@@ -74,21 +79,26 @@ func openAIInferencePath(path string) bool {
 // path or is followed by "/", so "/genai_passthrough/v1" never matches
 // "/genai_passthrough/v1@host/x" or "/genai_passthrough/v1beta1foo/x"; the shorter
 // "/genai_passthrough" prefix is tried in turn. ok is false when nothing matches, which the
-// router treats as no route rather than forwarding an unanchored remainder.
-func stripPassthroughPrefix(path string, prefixes []string) (string, bool) {
+// router treats as no route rather than forwarding an unanchored remainder. The second result
+// is the version segment the matched prefix ends with ("v1beta1"), empty when it ends with none.
+func stripPassthroughPrefix(path string, prefixes []string) (string, string, bool) {
 	for _, prefix := range prefixes {
 		rest, found := strings.CutPrefix(path, prefix)
 		if !found {
 			continue
 		}
+		apiVersion := prefix[strings.LastIndexByte(prefix, '/')+1:]
+		if !apiVersionSegment.MatchString(apiVersion) {
+			apiVersion = ""
+		}
 		if rest == "" {
-			return "/", true
+			return "/", apiVersion, true
 		}
 		if strings.HasPrefix(rest, "/") {
-			return rest, true
+			return rest, apiVersion, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // validatePassthroughPath rejects passthrough remainders that could change how the upstream

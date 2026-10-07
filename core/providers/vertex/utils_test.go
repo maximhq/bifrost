@@ -2,16 +2,21 @@ package vertex
 
 import (
 	"context"
+	"crypto/tls"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
+	"golang.org/x/oauth2"
 )
 
 func TestGetVertexAPIHost(t *testing.T) {
@@ -1099,5 +1104,84 @@ func TestVertexVideoPollUsesOperationRegion(t *testing.T) {
 	want := []string{"us-central1-aiplatform.googleapis.com:443", "us-central1-aiplatform.googleapis.com:443"}
 	if !reflect.DeepEqual(dialed, want) {
 		t.Fatalf("video polls dialed %v, want %v", dialed, want)
+	}
+}
+
+// The /genai_passthrough router strips the API version with its prefix, so Vertex must build
+// the upstream URL from the version the client addressed: Interactions exists only under v1beta1.
+func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"i-1"}`))
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID:       *schemas.NewSecretVar("proj"),
+		Region:          *schemas.NewSecretVar("global"),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+
+	for _, tc := range []struct {
+		apiVersion string
+		want       string
+	}{
+		{"v1beta1", "/v1beta1/projects/proj/locations/global/interactions"},
+		{"v1", "/v1/projects/proj/locations/global/interactions"},
+		{"", "/v1/projects/proj/locations/global/interactions"},
+		{"v1beta", "/v1/projects/proj/locations/global/interactions"}, // Gemini-only version; Vertex has no v1beta
+	} {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		req := &schemas.BifrostPassthroughRequest{
+			Method:      http.MethodPost,
+			Path:        "/projects/client-proj/locations/global/interactions",
+			APIVersion:  tc.apiVersion,
+			Body:        []byte(`{"model":"gemini-3-flash","input":"hi"}`),
+			SafeHeaders: map[string]string{"content-type": "application/json"},
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.Passthrough(ctx, key, req); bifrostErr != nil {
+			t.Fatalf("Passthrough(%q): %s", tc.apiVersion, bifrostErr.GetErrorString())
+		}
+		stream, bifrostErr := provider.PassthroughStream(ctx, noHooks, nil, key, req)
+		if bifrostErr != nil {
+			t.Fatalf("PassthroughStream(%q): %s", tc.apiVersion, bifrostErr.GetErrorString())
+		}
+		for drained := false; !drained; {
+			select {
+			case _, ok := <-stream:
+				drained = !ok
+			case <-time.After(5 * time.Second):
+				t.Fatalf("PassthroughStream(%q) did not finish", tc.apiVersion)
+			}
+		}
+
+		mu.Lock()
+		got := paths
+		mu.Unlock()
+		if want := []string{tc.want, tc.want}; !reflect.DeepEqual(got, want) {
+			t.Errorf("APIVersion %q: upstream paths %v, want %v (unary and stream)", tc.apiVersion, got, want)
+		}
 	}
 }
