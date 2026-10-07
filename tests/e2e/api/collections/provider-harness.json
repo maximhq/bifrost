@@ -221620,9 +221620,13 @@
                   "  deltas.forEach(function (l, i) {",
                   "    var frame = JSON.parse(l.replace(/^data:\\s*/, ''));",
                   "    if (!frame.usage) { return; }",
-                  "    if (Object.prototype.hasOwnProperty.call(frame.usage, 'input_tokens')) {",
-                  "      pm.expect(frame.usage.input_tokens, 'message_delta #' + i + ' reports input_tokens:' + frame.usage.input_tokens + ', which overwrites the ' + promptTokens + ' from message_start in every accumulating client: ' + l.slice(0, 300)).to.equal(promptTokens);",
-                  "    }",
+                  "    // Anthropic reports prompt counters on message_start and output-only on",
+                  "    // message_delta. Comparing against message_start's figure would also pass",
+                  "    // for a gateway that COPIES it onto the delta -- which is the invented",
+                  "    // counter this case exists to catch -- so absence is what gets asserted.",
+                  "    ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'].forEach(function (key) {",
+                  "      pm.expect(frame.usage, 'message_delta #' + i + ' reports ' + key + ':' + frame.usage[key] + '; the upstream sends no prompt counters on this frame, and an accumulating client OVERWRITES the ' + promptTokens + ' it already has from message_start: ' + l.slice(0, 300)).to.not.have.property(key);",
+                  "    });",
                   "  });",
                   "});"
                 ]
