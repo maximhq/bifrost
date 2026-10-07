@@ -4929,11 +4929,13 @@ func TestRequestScopedProviderRules(t *testing.T) {
 }
 
 // requestScopedTestPlugin gives requests request-scoped configuration: configure runs in
-// PreRequestHook and attempt in PreLLMHook with the attempt's fallback index. It records the
-// errors PostLLMHook observes.
+// PreRequestHook and attempt in PreLLMHook with the attempt's fallback index. It counts the
+// hook calls and records the errors PostLLMHook observes.
 type requestScopedTestPlugin struct {
 	configure func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest)
 	attempt   func(fallbackIndex int, req *schemas.BifrostRequest)
+
+	preRequestCalls, preLLMCalls, postLLMCalls atomic.Int64
 
 	mu         sync.Mutex
 	postErrors []string
@@ -4942,12 +4944,14 @@ type requestScopedTestPlugin struct {
 func (p *requestScopedTestPlugin) GetName() string { return "request-scoped-test" }
 func (p *requestScopedTestPlugin) Cleanup() error  { return nil }
 func (p *requestScopedTestPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	p.preRequestCalls.Add(1)
 	if p.configure != nil {
 		p.configure(ctx, req)
 	}
 	return nil
 }
 func (p *requestScopedTestPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.preLLMCalls.Add(1)
 	if p.attempt != nil {
 		fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
 		p.attempt(fallbackIndex, req)
@@ -4955,6 +4959,7 @@ func (p *requestScopedTestPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *s
 	return req, nil, nil
 }
 func (p *requestScopedTestPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.postLLMCalls.Add(1)
 	if bifrostErr != nil && bifrostErr.Error != nil {
 		p.mu.Lock()
 		p.postErrors = append(p.postErrors, requestScopedErrorText(bifrostErr))
@@ -5725,5 +5730,35 @@ func TestRequestScopedConfiguration_Concurrent(t *testing.T) {
 	wg.Wait()
 	if n := mismatches.Load(); n != 0 {
 		t.Fatalf("%d requests reached an endpoint with another request's credential", n)
+	}
+}
+
+// TestRequestScopedConfiguration_BatchCreateChecksProviderFirst pins that BatchCreateRequest keeps
+// checking its provider before any plugin runs, so a provider that is neither configured nor
+// dynamically configurable fails there even when a plugin would configure it per request.
+func TestRequestScopedConfiguration_BatchCreateChecksProviderFirst(t *testing.T) {
+	server, calls := requestScopedTestServer(t)
+	plugin := &requestScopedTestPlugin{configure: func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+		if err := req.UpdateProviderKey(schemas.Ollama, schemas.Key{Value: *schemas.NewSecretVar("k")}); err != nil {
+			t.Errorf("UpdateProviderKey: %v", err)
+		}
+		if err := req.UpdateProviderBaseURL(schemas.Ollama, server.URL); err != nil {
+			t.Errorf("UpdateProviderBaseURL: %v", err)
+		}
+	}}
+	client := newRequestScopedTestClient(t, NewMockAccount(), plugin, nil)
+
+	_, bifrostErr := client.BatchCreateRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostBatchCreateRequest{
+		Provider: schemas.Ollama,
+		Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "m"}}},
+	})
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Message != "provider not found for batch create request" {
+		t.Fatalf("error = %v, want the batch create provider check", bifrostErr)
+	}
+	if n := plugin.preRequestCalls.Load(); n != 0 {
+		t.Errorf("PreRequestHook ran %d times before the provider check failed", n)
+	}
+	if got := calls(); len(got) != 0 {
+		t.Errorf("upstream was reached: %+v", got)
 	}
 }
