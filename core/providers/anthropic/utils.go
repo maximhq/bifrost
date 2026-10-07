@@ -155,6 +155,9 @@ func ValidateResponsesToolsForProvider(tools []schemas.ResponsesTool, caps schem
 			supported = caps.SupportsCodeExecution(features.CodeExecution || features.CodeExecNova)
 		case schemas.ResponsesToolTypeComputerUsePreview:
 			supported = features.ComputerUse
+		case schemas.ResponsesToolTypeComputer:
+			supported = features.ComputerUse &&
+				(ComputerUseGeneration(caps) == ComputerUseGenToolset20260801 || AcceptsComputerToolset(caps))
 		case schemas.ResponsesToolTypeMCP:
 			supported = caps.SupportsMCP(features.MCP)
 		case schemas.ResponsesToolTypeLocalShell:
@@ -2627,6 +2630,79 @@ func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
 	return true
 }
 
+// resolveAnthropicProgrammaticCaller decides what OpenAI's "programmatic" caller becomes for this request.
+func resolveAnthropicProgrammaticCaller(declaredVersion string, hasCodeExecutionTool bool) (caller string, emitVersion string) {
+	switch AnthropicToolType(declaredVersion) {
+	case AnthropicToolTypeCodeExecution, AnthropicToolTypeCodeExecution20260120, AnthropicToolTypeCodeExecution20260521:
+		return declaredVersion, ""
+	case AnthropicToolTypeCodeExecution20250522:
+		// Legacy Python-only: allowed_callers rejects it, and naming any other version
+		// makes the auto-injected code_execution tool collide with the declared one.
+		return "", ""
+	}
+	if hasCodeExecutionTool {
+		if declaredVersion != "" {
+			return declaredVersion, ""
+		}
+		// A version-less code_interpreter (the OpenAI shape) would default to
+		// code_execution_20250825, which has no programmatic tool calling — emit
+		// 20260120 instead so the caller restriction is reachable.
+		return string(AnthropicToolTypeCodeExecution20260120), string(AnthropicToolTypeCodeExecution20260120)
+	}
+	// No code execution tool declared: Anthropic auto-injects the version named here.
+	return string(AnthropicToolTypeCodeExecution20260120), ""
+}
+
+// anthropicAllowedCallers rewrites OpenAI's "programmatic" caller into Anthropic's
+// versioned vocabulary, dropping it when the request's code execution version has no
+// caller value. Anthropic's own values pass through untouched.
+func anthropicAllowedCallers(callers []string, programmaticCaller string) []string {
+	if len(callers) == 0 {
+		return callers
+	}
+	mapped := make([]string, 0, len(callers))
+	seen := make(map[string]bool, len(callers))
+	for _, caller := range callers {
+		if caller == schemas.ResponsesToolCallerProgrammatic {
+			if programmaticCaller == "" {
+				continue
+			}
+			caller = programmaticCaller
+		}
+		if seen[caller] {
+			continue
+		}
+		seen[caller] = true
+		mapped = append(mapped, caller)
+	}
+	if len(mapped) == 0 {
+		return nil
+	}
+	return mapped
+}
+
+// declaredChatCodeExecutionVersion is declaredCodeExecutionVersion for the Chat
+// shape, where the code execution tool carries its version in Type.
+func declaredChatCodeExecutionVersion(tools []schemas.ChatTool) (string, bool) {
+	for _, tool := range tools {
+		if strings.HasPrefix(string(tool.Type), string(AnthropicToolNameCodeExecution)+"_") {
+			return string(tool.Type), true
+		}
+	}
+	return "", false
+}
+
+// hasProgrammaticCaller reports whether any caller list asks for OpenAI's
+// "programmatic" context, which is the only value needing translation.
+func hasProgrammaticCaller(callers []string) bool {
+	for _, caller := range callers {
+		if caller == schemas.ResponsesToolCallerProgrammatic {
+			return true
+		}
+	}
+	return false
+}
+
 // StripEmptyThinkingBlocks removes thinking content blocks that would be
 // rejected by Anthropic: those with an empty "thinking" field, or those
 // with an empty "signature" field. An empty signature means the block came
@@ -3641,16 +3717,22 @@ func unstreamedToolUseEvents(state *anthropicToResponsesStreamState, output []sc
 		if item.Type == nil || item.ResponsesToolMessage == nil || isReasoningItem(item) {
 			continue
 		}
-		var block *AnthropicContentBlock
-		input := ""
+		// A function call becomes one tool_use block; a computer call one per batched
+		// action (convertBifrostComputerCallToAnthropicToolUse), each with its own ID.
+		type pendingBlock struct {
+			block AnthropicContentBlock
+			input string
+		}
+		var pending []pendingBlock
 		switch *item.Type {
 		case schemas.ResponsesMessageTypeFunctionCall:
-			block = &AnthropicContentBlock{
+			block := AnthropicContentBlock{
 				Type:        AnthropicContentBlockTypeToolUse,
 				ID:          providerUtils.SanitizeAnthropicToolUseIDPtr(item.ResponsesToolMessage.CallID),
 				Name:        item.ResponsesToolMessage.Name,
 				ToolsetName: item.ResponsesToolMessage.ToolsetName,
 			}
+			input := ""
 			if item.ResponsesToolMessage.Arguments != nil {
 				input = *item.ResponsesToolMessage.Arguments
 				// Same sanitization the streamed output_item.done path applies.
@@ -3658,33 +3740,33 @@ func unstreamedToolUseEvents(state *anthropicToResponsesStreamState, output []sc
 					input = sanitizeWebSearchArguments(input)
 				}
 			}
+			pending = append(pending, pendingBlock{block: block, input: input})
 		case schemas.ResponsesMessageTypeComputerCall:
-			block = convertBifrostComputerCallToAnthropicToolUse(item)
-			if block != nil {
-				input = string(block.Input)
+			for _, block := range convertBifrostComputerCallToAnthropicToolUse(item) {
+				pending = append(pending, pendingBlock{block: block, input: string(block.Input)})
 			}
 		}
-		if block == nil {
-			continue
+		for _, p := range pending {
+			block := p.block
+			if block.ID != nil && state.streamedToolUseIDs[*block.ID] {
+				continue
+			}
+			// Like a streamed block, open with empty input and deliver it as deltas.
+			block.Input = json.RawMessage("{}")
+			idx := state.allocBlockIndex("")
+			events = append(events, &AnthropicStreamEvent{
+				Type:         AnthropicStreamEventTypeContentBlockStart,
+				Index:        idx,
+				ContentBlock: &block,
+			})
+			if p.input != "" {
+				events = append(events, generateSyntheticInputJSONDeltas(p.input, idx)...)
+			}
+			events = append(events, &AnthropicStreamEvent{
+				Type:  AnthropicStreamEventTypeContentBlockStop,
+				Index: idx,
+			})
 		}
-		if block.ID != nil && state.streamedToolUseIDs[*block.ID] {
-			continue
-		}
-		// Like a streamed block, open with empty input and deliver it as deltas.
-		block.Input = json.RawMessage("{}")
-		idx := state.allocBlockIndex("")
-		events = append(events, &AnthropicStreamEvent{
-			Type:         AnthropicStreamEventTypeContentBlockStart,
-			Index:        idx,
-			ContentBlock: block,
-		})
-		if input != "" {
-			events = append(events, generateSyntheticInputJSONDeltas(input, idx)...)
-		}
-		events = append(events, &AnthropicStreamEvent{
-			Type:  AnthropicStreamEventTypeContentBlockStop,
-			Index: idx,
-		})
 	}
 	return events
 }

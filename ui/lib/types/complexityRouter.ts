@@ -14,28 +14,32 @@ export type SemanticVectorStore = "embedded" | "vector_store";
 // Mirrors ComplexitySemanticFallback* in framework/configstore: what answers
 // when semantic classification produces no tier. An absent field on the wire
 // means "none".
-export type ClassifierMode = "semantic" | "jev";
-export type SemanticFallback = "none" | "llm" | "jev";
+export type ClassifierMode = "semantic" | "decision";
+export type SemanticFallback = "none" | "llm" | "decision";
 
-export type JevTier = (typeof COMPLEXITY_TIER_VALUES)[number];
+export type DecisionTier = (typeof COMPLEXITY_TIER_VALUES)[number];
 
-// One tier's editable Jev criteria. An omitted field means the gateway sends
+// One tier's editable decision-model criteria. An omitted field means the gateway sends
 // its shipped default for that field.
-export interface JevTierCriteria {
+export interface DecisionTierCriteria {
 	definition?: string;
 	signals?: string[];
 	examples?: string[];
 }
 
-export interface JevConfig {
+export interface DecisionConfig {
+	// The decision model to call. Both omitted selects the gateway default
+	// (DEFAULT_DECISION_PROVIDER/MODEL); otherwise both are set.
+	provider?: string;
+	model?: string;
 	previous_message_count: number;
 	timeout?: string;
-	criteria?: Partial<Record<JevTier, JevTierCriteria>>;
+	criteria?: Partial<Record<DecisionTier, DecisionTierCriteria>>;
 }
 
-// The shipped Jev guidance, served by the status endpoint.
-export interface JevGuidanceDefaults {
-	criteria: Record<JevTier, Required<JevTierCriteria>>;
+// The shipped decision-model guidance, served by the status endpoint.
+export interface DecisionGuidanceDefaults {
+	criteria: Record<DecisionTier, Required<DecisionTierCriteria>>;
 }
 
 export interface LLMConfig {
@@ -113,15 +117,15 @@ export interface SemanticStatusInfo {
 	// seed itself and offer a reset without holding a copy that drifts from
 	// the gateway's. The fixed reinforcement is never exposed.
 	llm_default_prompt?: string;
-	// The shipped Jev per-tier criteria, served for the same reason as
+	// The shipped decision-model per-tier criteria, served for the same reason as
 	// llm_default_prompt.
-	jev_defaults?: JevGuidanceDefaults;
+	decision_defaults?: DecisionGuidanceDefaults;
 }
 
 export interface AnalyzerConfig {
 	keywords: EditableKeywordConfig;
 	classifier?: ClassifierMode;
-	jev?: JevConfig;
+	decision?: DecisionConfig;
 	semantic?: SemanticConfig;
 	// The fallback classifier, engaged only when semantic.fallback selects
 	// "llm". May be present while the fallback says "none": the block is
@@ -148,7 +152,7 @@ export const LEGACY_COMPLEXITY_TIER_VALUES = ["REASONING"] as const;
 // LEGACY_COMPLEXITY_TIER_VALUES): the complexity_mechanism column ships with the
 // semantic classifier, so no row was ever written with the retired "lexical"
 // mechanism and filtering on it could only ever return nothing.
-export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "jev", "llm", "session", "skipped"] as const;
+export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "decision", "llm", "session", "skipped"] as const;
 
 // Labels cover "lexical" even though nothing filters on it. Rows predating the
 // structured columns record their decision only in the prose routing log, and
@@ -157,7 +161,7 @@ export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "jev", "llm", "session",
 export const COMPLEXITY_MECHANISM_LABELS: Record<string, string> = {
 	lexical: "Lexical",
 	semantic: "Semantic",
-	jev: "Jev",
+	decision: "Decision model",
 	llm: "LLM",
 	session: "Session",
 	skipped: "Skipped",
@@ -196,14 +200,14 @@ export const TIER_PHRASE_LIST_DEFINITIONS: Array<{
 
 // Mirrors classifier timeout and history defaults in framework/configstore.
 export const DEFAULT_SEMANTIC_TIMEOUT_MS = 1500;
-export const DEFAULT_JEV_TIMEOUT_MS = 1500;
-export const DEFAULT_JEV_PREVIOUS_MESSAGE_COUNT = 1;
-export const MAX_JEV_PREVIOUS_MESSAGE_COUNT = 5;
+export const DEFAULT_DECISION_TIMEOUT_MS = 1500;
+export const DEFAULT_DECISION_PREVIOUS_MESSAGE_COUNT = 1;
+export const MAX_DECISION_PREVIOUS_MESSAGE_COUNT = 5;
 
-// Server-side bounds from validateComplexityJevGuidance in framework/configstore.
-export const MAX_JEV_DEFINITION_CHARACTERS = 500;
-export const MAX_JEV_CRITERIA_ITEMS = 12;
-export const MAX_JEV_CRITERIA_ITEM_CHARACTERS = 300;
+// Server-side bounds from validateComplexityDecisionGuidance in framework/configstore.
+export const MAX_DECISION_DEFINITION_CHARACTERS = 500;
+export const MAX_DECISION_CRITERIA_ITEMS = 12;
+export const MAX_DECISION_CRITERIA_ITEM_CHARACTERS = 300;
 
 // The timeout is stored as a Go time.Duration — int64 nanoseconds — so this is
 // the largest whole millisecond value time.ParseDuration accepts. One more and
@@ -218,10 +222,33 @@ export const MAX_SEMANTIC_MESSAGE_HISTORY = 10;
 export const MAX_SEMANTIC_PHRASE_CHARACTERS = 2000;
 export const MAX_SEMANTIC_PHRASES = 750;
 
-// DEFAULT_JEV_CONFIG supplies the history window and timeout for Jev requests.
-export const DEFAULT_JEV_CONFIG: Required<Pick<JevConfig, "previous_message_count" | "timeout">> = {
-	previous_message_count: DEFAULT_JEV_PREVIOUS_MESSAGE_COUNT,
-	timeout: `${DEFAULT_JEV_TIMEOUT_MS}ms`,
+// DEFAULT_DECISION_PROVIDER and DEFAULT_DECISION_MODEL mirror the gateway's
+// default decision model (DefaultComplexityDecisionProvider/Model in framework/configstore).
+export const DEFAULT_DECISION_PROVIDER = "typesafe";
+export const DEFAULT_DECISION_MODEL = "jev-latest";
+
+// The checkpoints self-hosted decision models serve, grouped by model. Offered
+// when a custom provider cannot list its own models (Laya has no model listing,
+// and a Clef served by Ollama has no Cloudflare URL to read its model from), so
+// the operator picks a real checkpoint instead of typing its name. Clef starts on
+// the smaller Flash model, the one a typical self-hosted box actually has pulled.
+export const SELF_HOSTED_DECISION_MODELS = [
+	{ label: "Laya", models: ["english", "multilingual", "typed-decisions"] },
+	{ label: "Nimble", models: ["nimble-latest", "bespokelabs/Bespoke-Nimble-9B"] },
+	{ label: "Clef", models: ["clef-flash", "clef"] },
+] as const;
+
+// The Jev models OpenRouter serves on its decisions endpoint, latest alias first.
+// OpenRouter's catalog also lists chat models under Typesafe's namespace (such as
+// the Jev Router), which that endpoint does not accept, so only these are offered.
+export const OPENROUTER_DECISION_MODELS = ["~typesafe/jev-latest", "typesafe/jev-1.13"] as const;
+
+// DEFAULT_DECISION_CONFIG supplies the model, history window, and timeout for decision-model requests.
+export const DEFAULT_DECISION_CONFIG: Required<Pick<DecisionConfig, "provider" | "model" | "previous_message_count" | "timeout">> = {
+	provider: DEFAULT_DECISION_PROVIDER,
+	model: DEFAULT_DECISION_MODEL,
+	previous_message_count: DEFAULT_DECISION_PREVIOUS_MESSAGE_COUNT,
+	timeout: `${DEFAULT_DECISION_TIMEOUT_MS}ms`,
 };
 
 // Seeded when a deployment has no semantic block saved yet. Provider and model
@@ -326,16 +353,17 @@ export const SEMANTIC_FALLBACK_OPTIONS: Array<{ value: SemanticFallback; label: 
 		description: "A chat model names the tier instead. Slower and costlier than an embedding, but only unmatched requests pay for it.",
 	},
 	{
-		value: "jev",
-		label: "Jev classifier",
-		description: "Typesafe Jev names the tier when semantic matching has no result. Typesafe provider credentials are used.",
+		value: "decision",
+		label: "Decision model",
+		description:
+			"A decision model names the tier when semantic matching has no result, using the same tier guidance as when it is the primary classifier.",
 	},
 ];
 
 export const SEMANTIC_FALLBACK_LABELS: Record<SemanticFallback, string> = {
 	none: "None",
 	llm: "LLM classifier",
-	jev: "Jev classifier",
+	decision: "Decision model",
 };
 
 // Same duration round-trip as parseSemanticTimeoutMs, with the llm default.
