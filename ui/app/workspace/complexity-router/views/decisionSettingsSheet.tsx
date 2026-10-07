@@ -6,31 +6,32 @@ import type { ReactNode } from "react";
 interface Props {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-	// The shared Typesafe alert and Jev fields, built once by the page so the
+	// The shared provider alert and decision-model fields, built once by the page so the
 	// primary sheet and the embedding sheet's fallback section stay identical.
-	jevSettings: ReactNode;
+	decisionSettings: ReactNode;
 	canSave: boolean;
 	isSaving: boolean;
 	onSave: () => void;
 	submitError: string | null;
 }
 
-// JevSettingsSheet holds Jev's set-once request settings when Jev is the
+// DecisionSettingsSheet holds the decision model's set-once settings when it is the
 // primary classifier, mirroring the embedding sheet so the page itself is left
 // for the tier guidance operators actually iterate on.
-export default function JevSettingsSheet({ open, onOpenChange, jevSettings, canSave, isSaving, onSave, submitError }: Props) {
+export default function DecisionSettingsSheet({ open, onOpenChange, decisionSettings, canSave, isSaving, onSave, submitError }: Props) {
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex flex-col p-0" data-testid="complexity-router-jev-sheet">
+			<SheetContent className="flex flex-col p-0" data-testid="complexity-router-decision-sheet">
 				<SheetHeader className="flex flex-col items-start gap-1 py-4" headerClassName="bg-card z-10 mb-0 border-b px-4 md:px-6">
-					<SheetTitle>Jev settings</SheetTitle>
+					<SheetTitle>Model configuration</SheetTitle>
 					<SheetDescription>
-						How much conversation Jev sees and how long it may take. Credentials come from your Typesafe provider.
+						Which decision model classifies requests, how much conversation it sees, and how long it may take. Credentials come from its
+						provider.
 					</SheetDescription>
 				</SheetHeader>
 
 				<div className="custom-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
-					{jevSettings}
+					{decisionSettings}
 					{submitError && (
 						<div
 							role="alert"
@@ -47,7 +48,7 @@ export default function JevSettingsSheet({ open, onOpenChange, jevSettings, canS
 						variant="outline"
 						size="sm"
 						onClick={() => onOpenChange(false)}
-						data-testid="complexity-router-jev-sheet-close-button"
+						data-testid="complexity-router-decision-sheet-close-button"
 					>
 						Close
 					</Button>
@@ -56,7 +57,7 @@ export default function JevSettingsSheet({ open, onOpenChange, jevSettings, canS
 						size="sm"
 						onClick={onSave}
 						disabled={!canSave || isSaving}
-						data-testid="complexity-router-jev-sheet-save-button"
+						data-testid="complexity-router-decision-sheet-save-button"
 					>
 						{isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
 						{isSaving ? "Saving…" : "Save changes"}
