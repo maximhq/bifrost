@@ -1543,6 +1543,55 @@ func TestUpdateVirtualKey_PersistsBusinessUnitOwner(t *testing.T) {
 	assert.Nil(t, result.BusinessUnitID, "clearing the business unit must write NULL")
 }
 
+// TestVirtualKeyMetadata_PersistsThroughCreateAndUpdate pins the metadata round trip: create
+// stores it, update replaces it (the update path names its columns, so a missing "metadata" would
+// silently drop the change), an empty map clears it to NULL, and invalid metadata is refused.
+func TestVirtualKeyMetadata_PersistsThroughCreateAndUpdate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-metadata",
+		Name:     "Metadata",
+		Value:    *schemas.NewSecretVar("vk-metadata-value"),
+		Metadata: map[string]string{"cost_center": "cc-42", "owner": "team-a@example.com"},
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	result, err := store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"cost_center": "cc-42", "owner": "team-a@example.com"}, result.Metadata)
+
+	vk.Metadata = map[string]string{"cost_center": "cc-7"}
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, result.Metadata, "an update must replace the metadata")
+
+	// An update that does not set metadata (nil), such as a config.json sync of an entry without a
+	// metadata field, keeps what is stored; only an explicit empty map clears it.
+	vk.Metadata = nil
+	vk.Description = "edited elsewhere"
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, result.Metadata, "a nil metadata must keep the stored value")
+	assert.Equal(t, "edited elsewhere", result.Description)
+
+	vk.Metadata = map[string]string{}
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	var raw *string
+	require.NoError(t, store.DB().Table("governance_virtual_keys").Select("metadata").Where("id = ?", vk.ID).Scan(&raw).Error)
+	assert.Nil(t, raw, "clearing the metadata must write NULL, not an empty object")
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Empty(t, result.Metadata)
+
+	vk.Metadata = map[string]string{"bad key": "x"}
+	require.ErrorContains(t, store.UpdateVirtualKey(ctx, vk), "invalid metadata key")
+	bad := &tables.TableVirtualKey{ID: "vk-metadata-bad", Name: "Bad", Value: *schemas.NewSecretVar("vk-metadata-bad-value"), Metadata: map[string]string{"bifrost_alb_provider": "x"}}
+	require.ErrorContains(t, store.CreateVirtualKey(ctx, bad), "reserved")
+}
+
 func TestUpdateVirtualKey_PreservesRotationStateOnPlainUpdate(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

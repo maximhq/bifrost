@@ -1121,6 +1121,22 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			hash.Write([]byte("disableContentLogging:false"))
 		}
 	}
+	// Hash Metadata only when the key has some, so every key that predates the column keeps its
+	// hash. Written as JSON-encoded [key, value] pairs in key order, so map iteration order cannot
+	// move the hash and no key/value boundary is ambiguous.
+	if len(vk.Metadata) > 0 {
+		pairs := make([][2]string, 0, len(vk.Metadata))
+		for k, v := range vk.Metadata {
+			pairs = append(pairs, [2]string{k, v})
+		}
+		sort.Slice(pairs, func(i, j int) bool { return pairs[i][0] < pairs[j][0] })
+		data, err := sonic.Marshal(pairs)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("metadata:"))
+		hash.Write(data)
+	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
