@@ -947,5 +947,79 @@ test("proxy restore skips unless a leak was flagged and a raw snapshot exists", 
   assert.strictEqual(live.pm.request.body.raw, proxyBefore, "the earlier config is resent byte for byte");
 });
 
+const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
+const orderingFolder = providerHarness.item.find((item) => item.name.startsWith("195. Builtin plugin ordering"));
+const orderingGate = orderingFolder.event?.find((event) => event.listen === "prerequest")?.script.exec.join("\n") || "";
+
+test("plugin ordering never runs against the shared harness by default", () => {
+  assert.strictEqual(run(orderingGate).state.skipped, true);
+  for (const item of orderingFolder.item) {
+    assert.ok(item.request.url.startsWith("{{builtinPluginOrderingBaseUrl}}/api/plugins"));
+    assert.notStrictEqual(item.request.method, "DELETE", "cleanup must discard the isolated store, not remove a running plugin");
+  }
+});
+
+test("plugin ordering requires a loopback fixture URL and its setup token", () => {
+  for (const variables of [
+    { builtinPluginOrderingFixture: "1" },
+    { builtinPluginOrderingFixture: "1", builtinPluginOrderingBaseUrl: "http://127.0.0.1:8087" },
+    { builtinPluginOrderingFixture: "1", builtinPluginOrderingBaseUrl: "https://shared.example.com", builtinPluginOrderingSetupToken: "test" },
+  ]) {
+    const ctx = sandbox({ variables });
+    assert.throws(() => new Function("pm", orderingGate)(ctx.pm), /disposable/);
+    assert.strictEqual(ctx.state.skipped, true, "invalid fixture configuration cannot send a request");
+  }
+  const ctx = sandbox({ variables: {
+    builtinPluginOrderingFixture: "1", builtinPluginOrderingBaseUrl: "http://127.0.0.1:8087", builtinPluginOrderingSetupToken: "unique-token",
+  } });
+  let header;
+  ctx.pm.request.headers = { upsert: (value) => { header = value; } };
+  new Function("pm", orderingGate)(ctx.pm);
+  assert.strictEqual(ctx.state.skipped, false);
+  assert.deepStrictEqual(header, { key: "X-Bifrost-Setup-Token", value: "unique-token" });
+});
+
+function orderingSandbox(options) {
+  const ctx = sandbox(options);
+  ctx.pm.expect = (value) => {
+    const chain = { equal: (expected) => assert.strictEqual(value, expected), an: (type) => assert.strictEqual(Array.isArray(value) ? "array" : typeof value, type) };
+    chain.a = chain.an;
+    chain.to = chain.be = chain;
+    return chain;
+  };
+  return ctx;
+}
+
+test("plugin ordering requires the absent telemetry row on every fixture run", () => {
+  const script = orderingFolder.item[0].event.find((event) => event.listen === "test").script.exec.join("\n");
+  for (const enabled of [true, false, undefined]) {
+    const ctx = orderingSandbox({ responseBody: JSON.stringify({ plugins: enabled === undefined ? [] : [{ name: "telemetry", enabled }] }) });
+    new Function("pm", script)(ctx.pm);
+    assert.strictEqual(ctx.state.tests.every((result) => result.passed), enabled === undefined);
+    assert.strictEqual(ctx.vars.builtinPluginOriginalEnabled, enabled === undefined ? true : undefined);
+  }
+});
+
+for (const [index, item] of orderingFolder.item.entries()) {
+  const script = item.event.find((event) => event.listen === "test").script.exec.join("\n");
+  for (const status of [401, 403, 404, 429, 500]) {
+    test(`plugin ordering request ${index + 1} rejects HTTP ${status}`, () => {
+      const ctx = orderingSandbox({ responseCode: status, responseBody: '{"error":"unexpected"}', variables: { builtinPluginOrderWrite: true, builtinPluginOriginalEnabled: true } });
+      new Function("pm", script)(ctx.pm);
+      assert.ok(ctx.state.tests.some((result) => !result.passed));
+      assert.equal(ctx.state.skipped, false, "never skip a received error status");
+    });
+  }
+  if (index === 0) continue;
+  test(`plugin ordering request ${index + 1} accepts only canonical metadata`, () => {
+    for (const [placement, order, pass] of [["builtin", 1, true], ["post_builtin", 1, false], ["builtin", 99, false]]) {
+      const plugin = { name: "telemetry", enabled: true, placement, order };
+      const ctx = orderingSandbox({ responseBody: JSON.stringify(index === 2 ? plugin : { plugin }), variables: { builtinPluginOrderWrite: true, builtinPluginOriginalEnabled: true } });
+      new Function("pm", script)(ctx.pm);
+      assert.equal(ctx.state.tests.every((result) => result.passed), pass);
+    }
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

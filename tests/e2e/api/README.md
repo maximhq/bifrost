@@ -210,6 +210,36 @@ The cases are skipped unless `bedrockEndpointFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Builtin plugin ordering
+
+Folder 195 changes telemetry configuration, so it is **skipped in shared provider-harness
+runs**. Run it with the dedicated runner inside your Go/Node development container,
+using the checkout under test. Build and install Newman in that container first:
+
+```bash
+make build LOCAL=1
+make install-newman
+node tests/e2e/api/runners/run-builtin-plugin-ordering.mjs --binary ./tmp/bifrost-http
+```
+
+The runner does not accept an existing gateway or app directory. It creates a fresh
+temporary directory, SQLite config store, setup token and loopback gateway, then runs
+only these four requests sequentially with `--bail`. Pricing/model metadata comes
+from local empty files; no provider credentials, LLM calls or backing services are
+needed. The first request requires that no telemetry row exists, so every run covers
+the absent-row upsert path. The gateway is stopped before its directory is discarded
+on success, failure or SIGINT/SIGTERM. No DELETE is sent to a reused gateway.
+
+Do not manually enable `builtinPluginOrderingFixture` against a shared gateway.
+The runner alone supplies it, `builtinPluginOrderingBaseUrl`, and
+`builtinPluginOrderingSetupToken`. To check the isolation and cleanup without running
+the harness, run these offline script tests in the same container:
+
+```bash
+node tests/e2e/api/collections/collection-scripts.test.mjs
+node tests/e2e/api/runners/run-builtin-plugin-ordering.test.mjs
+```
+
 ## Contents
 
 ### V1 Endpoint Tests
