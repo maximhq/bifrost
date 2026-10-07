@@ -66,6 +66,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableWebhookJob{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
+	require.NoError(t, migrationAddAgentGatewayTables(context.Background(), db, testMigrationLogger), "Failed to migrate Agent Gateway tables")
 
 	// Virtual MCP tables (separate call: the in-batch AutoMigrate above does not create
 	// enterprise_mcp_tool_groups reliably). MCP client create now cross-checks slugs against them.
@@ -2497,6 +2498,59 @@ func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
 }
 
+func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(limits *schemas.MCPCodeModeLimits) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			MCPCodeModeLimits:    limits,
+		}
+	}
+	limits := &schemas.MCPCodeModeLimits{MaxSteps: 5_000_000, MaxToolCalls: 500, MaxNestingDepth: 128}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(limits)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, limits, result.MCPCodeModeLimits)
+
+	mcpConfig, err := store.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, mcpConfig)
+	require.NotNil(t, mcpConfig.ToolManagerConfig)
+	assert.Equal(t, limits, mcpConfig.ToolManagerConfig.CodeModeLimits, "the MCP config built from the store must carry the limits")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(nil)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, result.MCPCodeModeLimits, "clearing the limits must persist")
+}
+
+func TestGenerateClientConfigHash_MCPCodeModeLimits(t *testing.T) {
+	hash := func(limits *schemas.MCPCodeModeLimits) string {
+		h, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, MCPCodeModeLimits: limits}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	base := hash(nil)
+	baseHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, base, "unset limits must not change existing hashes")
+	assert.NotEqual(t, base, hash(&schemas.MCPCodeModeLimits{MaxSteps: 5}))
+	assert.NotEqual(t, hash(&schemas.MCPCodeModeLimits{MaxSteps: 5}), hash(&schemas.MCPCodeModeLimits{MaxSteps: 6}))
+
+	cc := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	withoutLimits, err := cc.GenerateClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{MaxAgentDepth: 10})
+	require.NoError(t, err)
+	withLimits, err := cc.GenerateClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{MaxAgentDepth: 10, CodeModeLimits: &schemas.MCPCodeModeLimits{MaxToolCalls: 5}})
+	require.NoError(t, err)
+	assert.NotEqual(t, withoutLimits, withLimits, "tool_manager_config.code_mode_limits must take part in the file hash")
+}
+
 func TestUpdateClientConfig_CompatAzureDeepseekRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2522,6 +2576,41 @@ func TestUpdateClientConfig_CompatAzureDeepseekRoundTrip(t *testing.T) {
 	assert.True(t, result.Compat.AzureDeepseek, "re-enabling the toggle must persist")
 }
 
+func TestUpdateClientConfig_CompatForceReasoningOnlyModelsToResponsesRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(enabled bool) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			Compat:               CompatConfig{ForceReasoningOnlyModelsToResponses: enabled},
+		}
+	}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(false)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Compat.ForceReasoningOnlyModelsToResponses, "disabling the toggle must persist")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(true)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Compat.ForceReasoningOnlyModelsToResponses, "re-enabling the toggle must persist")
+}
+
+func TestGenerateClientConfigHash_CompatForceReasoningOnlyModelsToResponses(t *testing.T) {
+	on := &ClientConfig{InitialPoolSize: 100, Compat: CompatConfig{ForceReasoningOnlyModelsToResponses: true}}
+	off := &ClientConfig{InitialPoolSize: 100}
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash, "toggling force_reasoning_only_models_to_responses must change the hash")
+}
+
 func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
 	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
 	baseHash, err := base.GenerateClientConfigHash()
@@ -2539,6 +2628,25 @@ func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
 	cooldownHash, err := withCooldown.GenerateClientConfigHash()
 	require.NoError(t, err)
 	assert.NotEqual(t, baseHash, cooldownHash)
+}
+
+func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
+	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+
+	// An unset A2A external client URL must not change the hash: existing
+	// deployments see no config drift after upgrade.
+	unset := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, A2AExternalClientURL: schemas.NewSecretVar("")}
+	unsetHash, err := unset.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
+
+	// A configured URL is a meaningful config change.
+	withURL := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, A2AExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com")}
+	urlHash, err := withURL.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, urlHash)
 }
 
 func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {

@@ -343,6 +343,7 @@ type ChatReasoning struct {
 	MaxTokens *int    `json:"max_tokens,omitempty"` // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 	Display   *string `json:"display,omitempty"`    // Anthropic thinking.display: "summarized" | "omitted" (requires model support for adaptive thinking)
 	Type      *string `json:"type,omitempty"`       // Anthropic thinking.type: "between_tools" (no up-front thinking); independent of effort
+	Mode      *string `json:"mode,omitempty"`       // OpenAI reasoning.mode: "standard" | "pro" (Responses API only; routes OpenAI/Azure chat through Responses)
 }
 
 // ChatPrediction represents predicted output content for the model to reference (OpenAI only).
@@ -1960,6 +1961,11 @@ type BifrostLLMUsage struct {
 	Cost        *BifrostCost `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
+	// Laya decision usage: state token accounting and truncation, reported on /v1/decisions.
+	StateTokens        *int     `json:"state_tokens,omitempty"`
+	StateTokensDropped *int     `json:"state_tokens_dropped,omitempty"`
+	Truncated          *bool    `json:"truncated,omitempty"`
+	TruncatedQuestions []string `json:"truncated_questions,omitempty"`
 	// Served Anthropic tier (fast mode / data residency), carried internally so
 	// cancel/timeout billing (which reads a bare usage via BilledUsage) can apply
 	// the tier multiplier. json:"-" keeps them out of every serialized usage payload.
@@ -2519,6 +2525,15 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 	if u.Speed != nil {
 		s := *u.Speed
 		c.Speed = &s
+	}
+	c.StateTokens = copyIntPtr(u.StateTokens)
+	c.StateTokensDropped = copyIntPtr(u.StateTokensDropped)
+	if u.Truncated != nil {
+		tr := *u.Truncated
+		c.Truncated = &tr
+	}
+	if u.TruncatedQuestions != nil {
+		c.TruncatedQuestions = append([]string(nil), u.TruncatedQuestions...)
 	}
 	if u.InferenceGeo != nil {
 		g := *u.InferenceGeo

@@ -54,6 +54,10 @@ type Service struct {
 	// is not offered.
 	vkDecorator    VirtualKeyDecorator
 	userGovernance UserGovernanceReader
+	// callerRestriction says whether row-level access control narrows a
+	// caller's reads (see CallerRestrictionResolver). Nil by default: the
+	// scope is then read off the context alone.
+	callerRestriction CallerRestrictionResolver
 	// responses is the gateway client's responses path, which Warp chats
 	// through. Set once at construction; tests replace chatOverride instead, so
 	// the loop can be driven by a scripted model.
@@ -169,6 +173,14 @@ func WithVirtualKeyDecorator(decorator VirtualKeyDecorator) Option {
 // nil reader leaves the tool out, which is what an OSS deployment wants.
 func WithUserGovernanceReader(reader UserGovernanceReader) Option {
 	return func(s *Service) { s.userGovernance = reader }
+}
+
+// WithCallerRestrictionResolver tells Warp whether row-level access control
+// narrows a caller's reads, on a deployment whose store applies that scope per
+// read rather than carrying it on the request. A nil resolver leaves the
+// context-derived answer in place, which is what an OSS deployment wants.
+func WithCallerRestrictionResolver(resolver CallerRestrictionResolver) Option {
+	return func(s *Service) { s.callerRestriction = resolver }
 }
 
 // NewService builds a Service over the deployment's config store. A store that

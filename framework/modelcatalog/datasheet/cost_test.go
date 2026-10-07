@@ -189,6 +189,95 @@ func TestCalculateCost_RealtimeTranscriptionMissingPricingIsNonFatal(t *testing.
 	assert.Nil(t, s.CalculateCostBreakdown(resp, nil))
 }
 
+// liveVoiceWindow is the synthetic response the Live handler bills per voice window.
+func liveVoiceWindow(model string, seconds float64) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{AudioSeconds: &seconds},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.LiveRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, model),
+			},
+		},
+	}
+}
+
+func TestCalculateCost_LiveVoiceDuration(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:              "gpt-live-1",
+		Provider:           "openai",
+		Mode:               "live",
+		InputCostPerSecond: new(0.05 / 60),
+		CostPerRequest:     new(0.01),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+
+	// 37s is the final usage of a recorded live session: 37 × $0.05/min.
+	breakdown := s.CalculateCostBreakdown(liveVoiceWindow("gpt-live-1", 37), nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.0308333333, breakdown.TotalCost, 1e-9)
+	require.NotNil(t, breakdown.InputCostDetails)
+	assert.InDelta(t, breakdown.TotalCost, breakdown.InputCostDetails.AudioCost, 1e-12)
+	// A billing window is not a request, so the flat per-request fee is not added.
+	assert.Zero(t, breakdown.InputCostDetails.RequestCost)
+	assert.Zero(t, breakdown.OutputCost)
+}
+
+func TestCalculateCost_LiveFallsBackToRealtimeModeRow(t *testing.T) {
+	// The datasheet feed files GPT Live models under mode "realtime", the same mode as the
+	// Realtime API models, so a live window must find its per-second rate there.
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-live-1", "openai", "realtime"): {
+			Model: "gpt-live-1", Provider: "openai", Mode: "realtime",
+			InputCostPerSecond: new(0.05 / 60),
+		},
+	})
+
+	breakdown := s.CalculateCostBreakdown(liveVoiceWindow("gpt-live-1", 116), nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.0966666667, breakdown.TotalCost, 1e-9)
+}
+
+func TestCalculateCost_LiveDoesNotFallBackToTokenPricing(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-live-1", "openai", "responses"): {
+			Model: "gpt-live-1", Provider: "openai", Mode: "responses",
+			InputCostPerToken:  new(0.000005),
+			InputCostPerSecond: new(1.0),
+		},
+	})
+
+	assert.Nil(t, s.CalculateCostBreakdown(liveVoiceWindow("gpt-live-1", 30), nil))
+}
+
+func TestCalculateCost_LiveMissingPricingIsZero(t *testing.T) {
+	s := testStoreWithPricing(nil)
+	assert.Nil(t, s.CalculateCostBreakdown(liveVoiceWindow("gpt-live-1", 30), nil))
+
+	noRate := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-live-1", "openai", "live"): {Model: "gpt-live-1", Provider: "openai", Mode: "live"},
+	})
+	assert.Nil(t, noRate.CalculateCostBreakdown(liveVoiceWindow("gpt-live-1", 30), nil))
+}
+
+func TestCalculateCost_LiveOverrideOnlyPricing(t *testing.T) {
+	s := testStoreWithPricing(nil)
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "live-override",
+			ScopeKind:        string(ScopeKindGlobal),
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-live-1",
+			RequestTypes:     []schemas.RequestType{schemas.LiveRequest},
+			PricingPatchJSON: `{"input_cost_per_second":0.001}`,
+		},
+	}))
+
+	assert.InDelta(t, 0.03, s.CalculateCost(liveVoiceWindow("gpt-live-1", 30), nil), 1e-12)
+}
+
 // chatPricing returns a TableModelPricing with the given per-token rates.
 func chatPricing(input, output float64) configstoreTables.TableModelPricing {
 	return configstoreTables.TableModelPricing{

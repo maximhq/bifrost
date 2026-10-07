@@ -79,6 +79,7 @@ type AnthropicResponsesStreamState struct {
 	Model                     *string                           // Model name from message_start
 	StopReason                *string                           // Stop reason for the message
 	StopDetails               *schemas.ResponsesStopDetails     // Refusal stop_details (server-side fallback), carried to the final message_delta
+	StopSequence              *string                           // Matched custom stop sequence when stop_reason is stop_sequence
 	CreatedAt                 int                               // Timestamp for created_at consistency
 	HasEmittedCreated         bool                              // Whether we've emitted response.created
 	HasEmittedInProgress      bool                              // Whether we've emitted response.in_progress
@@ -753,6 +754,7 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.MessageID = nil
 	state.StopReason = nil
 	state.StopDetails = nil
+	state.StopSequence = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
@@ -817,6 +819,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.MessageID = nil
 	state.StopReason = nil
 	state.StopDetails = nil
+	state.StopSequence = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
@@ -2739,6 +2742,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				mapped = string(schemas.BifrostFinishReasonStop)
 			}
 			state.StopReason = &mapped
+			if *chunk.Delta.StopReason == AnthropicStopReasonStopSequence {
+				state.StopSequence = chunk.Delta.StopSequence
+			}
 		}
 		if chunk.Delta.StopDetails != nil {
 			state.StopDetails = stopDetailsToBifrost(chunk.Delta.StopDetails)
@@ -2768,6 +2774,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				response.StopReason = stopReason
 			}
 			response.StopDetails = state.StopDetails
+			response.StopSequence = state.StopSequence
 			if bifrostUsage != nil {
 				response.Usage = bifrostUsage
 				response.Speed = chunk.Usage.Speed
@@ -2812,6 +2819,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			response.StopReason = state.StopReason
 		}
 		response.StopDetails = state.StopDetails
+		response.StopSequence = state.StopSequence
 
 		// Fold the sandbox container (delivered on the final message_delta) onto
 		// every code_interpreter_call so response.completed carries it (mirrors the
@@ -2967,6 +2975,9 @@ func enforceStreamBlockTypes(state *anthropicToResponsesStreamState, events []*A
 	return kept
 }
 
+// toAnthropicResponsesStreamEvents maps a single Bifrost Responses stream chunk to the
+// raw Anthropic stream events it represents, including the stop_reason/stop_sequence
+// carried on message_delta. ToAnthropicResponsesStreamResponse post-processes the result.
 func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *schemas.BifrostResponsesStreamResponse) []*AnthropicStreamEvent {
 	if bifrostResp == nil {
 		return nil
@@ -3896,9 +3907,10 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		if bifrostResp.Response != nil {
 			anthropicContentDeltaEvent.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
 			if bifrostResp.Response.StopReason != nil {
+				reason, stopSequence := anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason), bifrostResp.Response.StopSequence)
 				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
-					StopReason:   schemas.Ptr(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)),
-					StopSequence: nil,
+					StopReason:   schemas.Ptr(reason),
+					StopSequence: stopSequence,
 				}
 			} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.Response.IncompleteDetails); reason != "" {
 				// A truncated turn carrying only incomplete_details must not report end_turn.
@@ -3972,8 +3984,10 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 
 			// Convert stop reason from Bifrost format to Anthropic format
 			if bifrostResp.Response != nil && bifrostResp.Response.StopReason != nil {
+				reason, stopSequence := anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason), bifrostResp.Response.StopSequence)
 				streamResp.Delta = &AnthropicStreamDelta{
-					StopReason: schemas.Ptr(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)),
+					StopReason:   schemas.Ptr(reason),
+					StopSequence: stopSequence,
 				}
 			} else if bifrostResp.Delta != nil {
 				// Handle text delta if present
@@ -4330,7 +4344,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	// Convert basic parameters
 	if bifrostReq.Params != nil {
 		if bifrostReq.Params.MaxOutputTokens != nil {
-			anthropicReq.MaxTokens = *bifrostReq.Params.MaxOutputTokens
+			anthropicReq.MaxTokens = clampToModelOutputCeiling(caps, *bifrostReq.Params.MaxOutputTokens)
 		}
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
 		// top_k with a 400 error.
@@ -4434,6 +4448,12 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					}
 					if budgetTokens < MinimumReasoningMaxTokens {
 						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic: %w", MinimumReasoningMaxTokens, ErrReasoningMaxTokensTooLow)
+					}
+					// The output clamp can leave the caller's budget at or above max_tokens; refit it below.
+					if requested := bifrostReq.Params.MaxOutputTokens; requested != nil && *requested > anthropicReq.MaxTokens {
+						if fitted, ok := fitThinkingBudget(&budgetTokens, bifrostReq.Params.Reasoning.Effort, anthropicReq.MaxTokens); ok {
+							budgetTokens = fitted
+						}
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",
@@ -5024,6 +5044,15 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 			}
 		}
 		bifrostResp.StopReason = &mapped
+		if response.StopReason == AnthropicStopReasonStopSequence {
+			bifrostResp.StopSequence = response.StopSequence
+		}
+	}
+	// Surface truncation/refusal per the Responses contract; without Status a
+	// max_tokens turn is indistinguishable from a complete one.
+	bifrostResp.Status, bifrostResp.IncompleteDetails = anthropicResponsesStatus(bifrostResp.StopReason)
+	if bifrostResp.Status != nil && *bifrostResp.Status == schemas.ResponsesResponseStatusIncomplete {
+		schemas.MarkTruncatedOutputItem(bifrostResp.Output)
 	}
 	// Surface truncation/refusal per the Responses contract; without Status a
 	// max_tokens turn is indistinguishable from a complete one.
@@ -5126,7 +5155,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 
 	// Stop reason precedence: StopReason > IncompleteDetails > tool_use inference > end_turn.
 	if bifrostResp.StopReason != nil {
-		anthropicResp.StopReason = ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason)
+		anthropicResp.StopReason, anthropicResp.StopSequence = anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason), bifrostResp.StopSequence)
 	} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.IncompleteDetails); reason != "" {
 		// OpenAI-shaped providers never send stop_reason; a turn truncated by the
 		// output cap or a content filter carries only incomplete_details. Reporting
@@ -5235,8 +5264,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// Per-message effort (output_config.effort on a role:"system" message) is a separate,
 	// narrower gate: models without per-turn effort 400 on the field, so the override is
 	// dropped fail-soft for them rather than forwarded.
-	midConvOutputConfigSupported := isRequestMessage &&
-		DefaultSupportsMidConversationOutputConfig(caps.Provider(), caps.Model())
+	midConvOutputConfigSupported := isRequestMessage && supportsPerMessageOutputConfig(caps)
 	// When the native role:"system" form isn't available, inline the reminder as a user turn
 	// rather than hoisting it into the top-level system block: hoisting preserves the
 	// breakpoint but invalidates the cached prefix behind it, costing roughly half the prompt on
@@ -5514,11 +5542,13 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				}
 				// Per-message effort override (beta mid-conversation-output-config). The
 				// effort-only form carries no text, is exempt from the placement rules and can
-				// sit anywhere in messages, so it is emitted where it appears. A system message
-				// that also carries text keeps the placement rules and gains the override only
-				// on the native emission; the inline and hoist fallbacks cannot carry it.
+				// sit anywhere in messages, including as the first entry (Anthropic effort
+				// docs), so it is emitted where it appears. A system message that also carries
+				// text keeps the placement rules and carries the override itself only on the
+				// native emission; on the inline and hoist fallbacks the text cannot carry it,
+				// so the override goes out as a separate effort-only message instead.
 				perMessageOutputConfig := perMessageOutputConfigFor(&msg, midConvOutputConfigSupported)
-				if content == nil {
+				appendEffortOnly := func() {
 					if perMessageOutputConfig != nil {
 						anthropicMessages = append(anthropicMessages, AnthropicMessage{
 							Role:         AnthropicMessageRoleSystem,
@@ -5526,6 +5556,9 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 							OutputConfig: perMessageOutputConfig,
 						})
 					}
+				}
+				if content == nil {
+					appendEffortOnly()
 					continue
 				}
 				switch {
@@ -5539,13 +5572,17 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				case seenConversation && inlineMidConvSystem:
 					// Native form unavailable (unsupported model, or a placement Anthropic
 					// rejects). Inline in place so the cache anchor stays inside `messages`
-					// instead of collapsing the prefix from the system block.
+					// instead of collapsing the prefix from the system block. The override goes
+					// first: effort applies "from the next user turn on", so the reply to the
+					// reminder turn already runs at the new level, as the native item would.
+					appendEffortOnly()
 					if inlined := inlineMidConversationSystem(content); inlined != nil {
 						anthropicMessages = append(anthropicMessages, *inlined)
 					}
 				default:
 					// Leading system run, or a non-Anthropic model: hoist (historical behavior).
 					systemContent = appendToSystemContent(systemContent, *content)
+					appendEffortOnly()
 				}
 				continue
 			}

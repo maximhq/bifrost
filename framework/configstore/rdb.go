@@ -280,53 +280,56 @@ func mcpExternalURLToString(e *schemas.SecretVar) string {
 // UpdateClientConfig updates the client configuration in the database.
 func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientConfig) error {
 	dbConfig := tables.TableClientConfig{
-		DropExcessRequests:                    config.DropExcessRequests,
-		InitialPoolSize:                       config.InitialPoolSize,
-		EnableLogging:                         config.EnableLogging,
-		DisableContentLogging:                 config.DisableContentLogging,
-		RetainContentInObjectStorage:          config.RetainContentInObjectStorage,
-		DisableDBPingsInHealth:                config.DisableDBPingsInHealth,
-		DumpErrorsInConsoleLogs:               config.DumpErrorsInConsoleLogs,
-		LogRetentionDays:                      config.LogRetentionDays,
-		EnforceAuthOnInference:                config.EnforceAuthOnInference,
-		DualCredentialConflictBehavior:        config.DualCredentialConflictBehavior,
-		EnforceGovernanceHeader:               config.EnforceGovernanceHeader,
-		EnforceSCIMAuth:                       config.EnforceSCIMAuth,
-		PrometheusLabels:                      config.PrometheusLabels,
-		AllowedOrigins:                        config.AllowedOrigins,
-		AllowedHeaders:                        config.AllowedHeaders,
-		MaxRequestBodySizeMB:                  config.MaxRequestBodySizeMB,
-		CompatConvertTextToChat:               config.Compat.ConvertTextToChat,
-		CompatConvertChatToResponses:          config.Compat.ConvertChatToResponses,
-		CompatShouldDropParams:                config.Compat.ShouldDropParams,
-		CompatShouldConvertParams:             config.Compat.ShouldConvertParams,
-		CompatAzureDeepseek:                   config.Compat.AzureDeepseek,
-		MCPAgentDepth:                         config.MCPAgentDepth,
-		MCPMaxInstructionsPerClient:           config.MCPMaxInstructionsPerClient,
-		MCPMaxInstructionsTotal:               config.MCPMaxInstructionsTotal,
-		MCPToolExecutionTimeout:               config.MCPToolExecutionTimeout,
-		MCPCodeModeBindingLevel:               config.MCPCodeModeBindingLevel,
-		MCPToolSyncInterval:                   config.MCPToolSyncInterval,
-		MCPDisableAutoToolInject:              config.MCPDisableAutoToolInject,
-		MCPEnableTempTokenAuth:                config.MCPEnableTempTokenAuth,
-		AsyncJobResultTTL:                     config.AsyncJobResultTTL,
-		RequiredHeaders:                       config.RequiredHeaders,
-		LoggingHeaders:                        config.LoggingHeaders,
-		WhitelistedRoutes:                     config.WhitelistedRoutes,
-		HideDeletedVirtualKeysInFilters:       config.HideDeletedVirtualKeysInFilters,
-		DeleteExpiredVirtualKeys:              config.DeleteExpiredVirtualKeys,
-		HiddenRequestTypes:                    config.HiddenRequestTypes,
-		RoutingChainMaxDepth:                  config.RoutingChainMaxDepth,
-		MCPExternalClientURL:                  mcpExternalURLToString(config.MCPExternalClientURL),
-		HeaderFilterConfig:                    config.HeaderFilterConfig,
-		AllowPerRequestContentStorageOverride: config.AllowPerRequestContentStorageOverride,
-		AllowPerRequestRawOverride:            config.AllowPerRequestRawOverride,
-		AllowDirectKeys:                       config.AllowDirectKeys,
-		VKRotationCooldownNS:                  int64(config.VKRotationCooldown),
-		MCPServerAuthMode:                     config.MCPServerAuthMode,
-		OAuth2ServerConfig:                    config.OAuth2ServerConfig,
-		WebhookConfig:                         config.WebhookConfig,
-		ConfigHash:                            config.ConfigHash,
+		DropExcessRequests:                        config.DropExcessRequests,
+		InitialPoolSize:                           config.InitialPoolSize,
+		EnableLogging:                             config.EnableLogging,
+		DisableContentLogging:                     config.DisableContentLogging,
+		RetainContentInObjectStorage:              config.RetainContentInObjectStorage,
+		DisableDBPingsInHealth:                    config.DisableDBPingsInHealth,
+		DumpErrorsInConsoleLogs:                   config.DumpErrorsInConsoleLogs,
+		LogRetentionDays:                          config.LogRetentionDays,
+		EnforceAuthOnInference:                    config.EnforceAuthOnInference,
+		DualCredentialConflictBehavior:            config.DualCredentialConflictBehavior,
+		EnforceGovernanceHeader:                   config.EnforceGovernanceHeader,
+		EnforceSCIMAuth:                           config.EnforceSCIMAuth,
+		PrometheusLabels:                          config.PrometheusLabels,
+		AllowedOrigins:                            config.AllowedOrigins,
+		AllowedHeaders:                            config.AllowedHeaders,
+		MaxRequestBodySizeMB:                      config.MaxRequestBodySizeMB,
+		CompatConvertTextToChat:                   config.Compat.ConvertTextToChat,
+		CompatConvertChatToResponses:              config.Compat.ConvertChatToResponses,
+		CompatShouldDropParams:                    config.Compat.ShouldDropParams,
+		CompatShouldConvertParams:                 config.Compat.ShouldConvertParams,
+		CompatAzureDeepseek:                       config.Compat.AzureDeepseek,
+		CompatForceReasoningOnlyModelsToResponses: config.Compat.ForceReasoningOnlyModelsToResponses,
+		MCPAgentDepth:                             config.MCPAgentDepth,
+		MCPMaxInstructionsPerClient:               config.MCPMaxInstructionsPerClient,
+		MCPMaxInstructionsTotal:                   config.MCPMaxInstructionsTotal,
+		MCPCodeModeLimits:                         config.MCPCodeModeLimits,
+		MCPToolExecutionTimeout:                   config.MCPToolExecutionTimeout,
+		MCPCodeModeBindingLevel:                   config.MCPCodeModeBindingLevel,
+		MCPToolSyncInterval:                       config.MCPToolSyncInterval,
+		MCPDisableAutoToolInject:                  config.MCPDisableAutoToolInject,
+		MCPEnableTempTokenAuth:                    config.MCPEnableTempTokenAuth,
+		AsyncJobResultTTL:                         config.AsyncJobResultTTL,
+		RequiredHeaders:                           config.RequiredHeaders,
+		LoggingHeaders:                            config.LoggingHeaders,
+		WhitelistedRoutes:                         config.WhitelistedRoutes,
+		HideDeletedVirtualKeysInFilters:           config.HideDeletedVirtualKeysInFilters,
+		DeleteExpiredVirtualKeys:                  config.DeleteExpiredVirtualKeys,
+		HiddenRequestTypes:                        config.HiddenRequestTypes,
+		RoutingChainMaxDepth:                      config.RoutingChainMaxDepth,
+		MCPExternalClientURL:                      mcpExternalURLToString(config.MCPExternalClientURL),
+		A2AExternalClientURL:                      mcpExternalURLToString(config.A2AExternalClientURL),
+		HeaderFilterConfig:                        config.HeaderFilterConfig,
+		AllowPerRequestContentStorageOverride:     config.AllowPerRequestContentStorageOverride,
+		AllowPerRequestRawOverride:                config.AllowPerRequestRawOverride,
+		AllowDirectKeys:                           config.AllowDirectKeys,
+		VKRotationCooldownNS:                      int64(config.VKRotationCooldown),
+		MCPServerAuthMode:                         config.MCPServerAuthMode,
+		OAuth2ServerConfig:                        config.OAuth2ServerConfig,
+		WebhookConfig:                             config.WebhookConfig,
+		ConfigHash:                                config.ConfigHash,
 	}
 	// Delete existing client config and create new one in a transaction.
 	// MetadataJSON is preserved here because Metadata is a UI/admin-preferences
@@ -597,15 +600,17 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		AllowedHeaders:                 dbConfig.AllowedHeaders,
 		MaxRequestBodySizeMB:           dbConfig.MaxRequestBodySizeMB,
 		Compat: CompatConfig{
-			ConvertTextToChat:      dbConfig.CompatConvertTextToChat,
-			ConvertChatToResponses: dbConfig.CompatConvertChatToResponses,
-			ShouldDropParams:       dbConfig.CompatShouldDropParams,
-			ShouldConvertParams:    dbConfig.CompatShouldConvertParams,
-			AzureDeepseek:          dbConfig.CompatAzureDeepseek,
+			ConvertTextToChat:                   dbConfig.CompatConvertTextToChat,
+			ConvertChatToResponses:              dbConfig.CompatConvertChatToResponses,
+			ShouldDropParams:                    dbConfig.CompatShouldDropParams,
+			ShouldConvertParams:                 dbConfig.CompatShouldConvertParams,
+			AzureDeepseek:                       dbConfig.CompatAzureDeepseek,
+			ForceReasoningOnlyModelsToResponses: dbConfig.CompatForceReasoningOnlyModelsToResponses,
 		},
 		MCPAgentDepth:                         dbConfig.MCPAgentDepth,
 		MCPMaxInstructionsPerClient:           dbConfig.MCPMaxInstructionsPerClient,
 		MCPMaxInstructionsTotal:               dbConfig.MCPMaxInstructionsTotal,
+		MCPCodeModeLimits:                     dbConfig.MCPCodeModeLimits,
 		MCPToolExecutionTimeout:               dbConfig.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel:               dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   dbConfig.MCPToolSyncInterval,
@@ -620,6 +625,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		HiddenRequestTypes:                    dbConfig.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
+		A2AExternalClientURL:                  schemas.NewSecretVar(dbConfig.A2AExternalClientURL),
 		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
 		AllowPerRequestContentStorageOverride: dbConfig.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            dbConfig.AllowPerRequestRawOverride,
@@ -1759,6 +1765,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		MaxAgentDepth:            clientConfig.MCPAgentDepth,
 		MaxInstructionsPerClient: clientConfig.MCPMaxInstructionsPerClient,
 		MaxInstructionsTotal:     clientConfig.MCPMaxInstructionsTotal,
+		CodeModeLimits:           clientConfig.MCPCodeModeLimits,
 		CodeModeBindingLevel:     schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
 		DisableAutoToolInject:    clientConfig.MCPDisableAutoToolInject,
 	}
@@ -3650,6 +3657,38 @@ func (s *RDBConfigStore) attachCustomerVirtualKeyCounts(ctx context.Context, cus
 	return nil
 }
 
+// attachCustomerTeamCounts sets TeamCount on each customer with one grouped COUNT,
+// so list responses report the count without loading the teams themselves.
+func (s *RDBConfigStore) attachCustomerTeamCounts(ctx context.Context, customers []tables.TableCustomer) error {
+	if len(customers) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(customers))
+	for i := range customers {
+		ids = append(ids, customers[i].ID)
+	}
+	var rows []struct {
+		CustomerID string
+		Count      int
+	}
+	if err := s.DB().WithContext(ctx).
+		Model(&tables.TableTeam{}).
+		Select("customer_id, COUNT(*) AS count").
+		Where("customer_id IN ?", ids).
+		Group("customer_id").
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	countByCustomer := make(map[string]int, len(rows))
+	for _, row := range rows {
+		countByCustomer[row.CustomerID] = row.Count
+	}
+	for i := range customers {
+		customers[i].TeamCount = countByCustomer[customers[i].ID]
+	}
+	return nil
+}
+
 // preloadVirtualKeyBaseRelations preloads the base relationships for a virtual key.
 func preloadVirtualKeyBaseRelations(db *gorm.DB) *gorm.DB {
 	return db.
@@ -3665,7 +3704,8 @@ func preloadVirtualKeyBaseRelations(db *gorm.DB) *gorm.DB {
 			return db.Select("id, name, key_id, models_json, provider")
 		}).
 		Preload("MCPConfigs").
-		Preload("MCPConfigs.MCPClient")
+		Preload("MCPConfigs.MCPClient").
+		Preload("AgentGrants")
 }
 
 // preloadVirtualKeyDetailRelations preloads the detail relationships for a virtual key.
@@ -4311,6 +4351,10 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		}
 		// Delete all MCP configs associated with the virtual key
 		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "virtual_key_id = ?", id).Error; err != nil {
+			return err
+		}
+		// Delete all direct Agent Gateway grants associated with the virtual key.
+		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyAgentGrant{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
 		}
 		// Delete upstream OAuth flow rows tied to this VK. No flow_mode
@@ -5359,13 +5403,18 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 		offset = 0
 	}
 	var customers []tables.TableCustomer
-	if err := preloadCustomerRelationsWithoutVirtualKeys(baseQuery, "").
+	if err := baseQuery.
+		Preload("Budgets").
+		Preload("RateLimit").
 		Order("created_at ASC, id ASC").
 		Offset(offset).Limit(limit).
 		Find(&customers).Error; err != nil {
 		return nil, 0, err
 	}
 	if err := s.attachCustomerVirtualKeyCounts(ctx, customers); err != nil {
+		return nil, 0, err
+	}
+	if err := s.attachCustomerTeamCounts(ctx, customers); err != nil {
 		return nil, 0, err
 	}
 	return customers, totalCount, nil
@@ -6424,7 +6473,7 @@ func (s *RDBConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) 
 
 // GetModelConfigsPaginated retrieves model configs with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableModelConfig{})
+	baseQuery := s.ScopedDB(ctx).Model(&tables.TableModelConfig{})
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -7155,7 +7204,7 @@ func (s *RDBConfigStore) readComplexityCarryOverWithDB(ctx context.Context, db *
 	hashes.ComplexKeywords = semanticRow.ConfigHashes.ComplexKeywords
 	hashes.SemanticSettings = semanticRow.ConfigHashes.SemanticSettings
 	hashes.ClassifierSettings = semanticRow.ConfigHashes.ClassifierSettings
-	hashes.JevSettings = semanticRow.ConfigHashes.JevSettings
+	hashes.DecisionSettings = semanticRow.ConfigHashes.DecisionSettings
 	hashes.LLMSettings = semanticRow.ConfigHashes.LLMSettings
 	hashes.SessionSettings = semanticRow.ConfigHashes.SessionSettings
 	return hashes, semanticRow.EmbeddingFingerprint, nil

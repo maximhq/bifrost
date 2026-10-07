@@ -260,8 +260,9 @@ type BifrostResponsesResponse struct {
 	Container            *ResponsesResponseContainer         `json:"container,omitempty"`         // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
 	Status               *string                             `json:"status,omitempty"`            // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
-	StopReason           *string                             `json:"stop_reason,omitempty"`  // Not in OpenAI's spec, but sent by other providers
-	StopDetails          *ResponsesStopDetails               `json:"stop_details,omitempty"` // Anthropic refusal detail; null unless stop_reason is "refusal"
+	StopReason           *string                             `json:"stop_reason,omitempty"`   // Not in OpenAI's spec, but sent by other providers
+	StopDetails          *ResponsesStopDetails               `json:"stop_details,omitempty"`  // Anthropic refusal detail; null unless stop_reason is "refusal"
+	StopSequence         *string                             `json:"stop_sequence,omitempty"` // Anthropic: the custom stop sequence that ended generation (StopReason is "stop")
 	Store                *bool                               `json:"store,omitempty"`
 	Temperature          *float64                            `json:"temperature,omitempty"`
 	Text                 *ResponsesTextConfig                `json:"text,omitempty"`
@@ -2015,8 +2016,8 @@ type ResponsesInputMessageContentBlockAudio struct {
 // =============================================================================
 
 type ResponsesOutputMessageContentText struct {
-	Annotations []ResponsesOutputMessageContentTextAnnotation `json:"annotations"` // Citations and references
-	LogProbs    []ResponsesOutputMessageContentTextLogProb    `json:"logprobs"`    // Token log probabilities
+	Annotations []ResponsesOutputMessageContentTextAnnotation `json:"annotations"`       // Citations and references
+	LogProbs    []ResponsesOutputMessageContentTextLogProb    `json:"logprobs,omitzero"` // Token log probabilities; nil is omitted, [] is kept
 }
 
 type ResponsesOutputMessageContentTextAnnotation struct {

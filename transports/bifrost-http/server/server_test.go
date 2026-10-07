@@ -2,13 +2,17 @@ package server
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/agent"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -18,8 +22,31 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
+
+func TestAgentRegistrationCallbacksRejectUninitializedGateway(t *testing.T) {
+	t.Parallel()
+
+	server := &BifrostHTTPServer{}
+	ctx := context.Background()
+
+	_, err := server.CreateAgentRegistration(ctx, agent.CreateRequest{})
+	if !errors.Is(err, errAgentGatewayNotInitialized) {
+		t.Fatalf("CreateAgentRegistration error = %v, want %v", err, errAgentGatewayNotInitialized)
+	}
+
+	_, err = server.UpdateAgentRegistration(ctx, "fixture", agent.UpdateRequest{})
+	if !errors.Is(err, errAgentGatewayNotInitialized) {
+		t.Fatalf("UpdateAgentRegistration error = %v, want %v", err, errAgentGatewayNotInitialized)
+	}
+
+	err = server.DeleteAgentRegistration(ctx, "fixture")
+	if !errors.Is(err, errAgentGatewayNotInitialized) {
+		t.Fatalf("DeleteAgentRegistration error = %v, want %v", err, errAgentGatewayNotInitialized)
+	}
+}
 
 // reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.
 type reloadVirtualKeyConfigStore struct {
@@ -220,6 +247,100 @@ func TestReloadVirtualKeysMatchesPerKeyReload(t *testing.T) {
 	}
 	if store.governanceDataCalls != 0 {
 		t.Fatalf("GetGovernanceData called %d times, want 0", store.governanceDataCalls)
+	}
+}
+
+// agentGatewayRouteStore satisfies only the persistence calls the Agent Gateway
+// startup path makes, so route registration can be exercised without a database.
+type agentGatewayRouteStore struct {
+	configstore.ConfigStore
+}
+
+func (*agentGatewayRouteStore) CreateAgentRegistration(context.Context, *schemas.AgentRegistration) error {
+	return nil
+}
+func (*agentGatewayRouteStore) UpdateAgentRegistration(context.Context, *schemas.AgentRegistration) error {
+	return nil
+}
+func (*agentGatewayRouteStore) ListAgentRegistrations(context.Context) ([]schemas.AgentRegistration, error) {
+	return nil, nil
+}
+func (*agentGatewayRouteStore) GetAgentRegistration(context.Context, string) (*schemas.AgentRegistration, error) {
+	return nil, agent.ErrNotFound
+}
+func (*agentGatewayRouteStore) DeleteAgentRegistration(context.Context, string) error { return nil }
+func (*agentGatewayRouteStore) ListDueAgentPushDeliveries(context.Context, time.Time, int) ([]schemas.AgentPushDelivery, error) {
+	return nil, nil
+}
+func (*agentGatewayRouteStore) PruneAgentPushDeliveries(context.Context, time.Time) error { return nil }
+func (*agentGatewayRouteStore) GetVirtualKey(context.Context, string) (*configstoreTables.TableVirtualKey, error) {
+	return nil, configstore.ErrNotFound
+}
+func (*agentGatewayRouteStore) GetVirtualKeyByValue(context.Context, string) (*configstoreTables.TableVirtualKey, error) {
+	return nil, configstore.ErrNotFound
+}
+
+type agentGatewayRouteLogger struct{}
+
+func (agentGatewayRouteLogger) Debug(string, ...any)                   {}
+func (agentGatewayRouteLogger) Info(string, ...any)                    {}
+func (agentGatewayRouteLogger) Warn(string, ...any)                    {}
+func (agentGatewayRouteLogger) Error(string, ...any)                   {}
+func (agentGatewayRouteLogger) Fatal(string, ...any)                   {}
+func (agentGatewayRouteLogger) SetLevel(schemas.LogLevel)              {}
+func (agentGatewayRouteLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (agentGatewayRouteLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+func TestAgentGatewayRoutesRegisteredAfterStartupInitialization(t *testing.T) {
+	store := &agentGatewayRouteStore{}
+	s := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ConfigStore:  store,
+			ClientConfig: &configstore.ClientConfig{},
+		},
+		Router: router.New(),
+	}
+
+	requireNoError := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	SetLogger(agentGatewayRouteLogger{})
+	t.Cleanup(func() { SetLogger(nil) })
+	requireNoError(s.InitializeAgentGateway(context.Background(), nil, nil))
+	firstHandler := s.AgentGatewayHandler
+	if firstHandler == nil {
+		t.Fatal("expected Agent Gateway handler to be initialized")
+	}
+	defer s.CloseAgentGateway()
+	requireNoError(s.InitializeAgentGateway(context.Background(), nil, nil))
+	if s.AgentGatewayHandler != firstHandler {
+		t.Fatal("expected Agent Gateway handler to be constructed only once")
+	}
+
+	s.AgentGatewayHandler.RegisterManagementRoutes(s.Router)
+	s.AgentGatewayHandler.RegisterProtocolRoutes(s.Router)
+	s.Router.NotFound = func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusTeapot) }
+
+	for _, route := range []struct {
+		method     string
+		path       string
+		wantStatus int
+	}{
+		{fasthttp.MethodGet, "/api/agents", fasthttp.StatusOK},
+		{fasthttp.MethodGet, "/agents/a2a/missing/.well-known/agent-card.json", fasthttp.StatusNotFound},
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(route.method)
+		ctx.Request.SetRequestURI(route.path)
+		s.Router.Handler(ctx)
+		if ctx.Response.StatusCode() != route.wantStatus {
+			t.Fatalf("route %s returned %d, want %d", route.path, ctx.Response.StatusCode(), route.wantStatus)
+		}
 	}
 }
 
@@ -1288,4 +1409,60 @@ func TestNotificationPublisher_ResolvesPublisherSetAfterRegistration(t *testing.
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, "late", got[0].Title)
+}
+
+// TestReloadProxyConfigUpdatesHTTPClientFactory pins that saving the global proxy reaches
+// the factory behind webhooks, skills and plugin downloads, not only provider inference.
+func TestReloadProxyConfigUpdatesHTTPClientFactory(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	factory := network.NewHTTPClientFactory(nil, nil)
+	s := &BifrostHTTPServer{Config: &lib.Config{}, HTTPClientFactory: factory}
+	proxy := &configstoreTables.GlobalProxyConfig{Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://10.0.0.9:3128", EnableForAPI: true}
+
+	if err := s.ReloadProxyConfig(context.Background(), proxy); err != nil {
+		t.Fatalf("ReloadProxyConfig: %v", err)
+	}
+	got := factory.GetProxyConfig()
+	if got == nil || !got.Enabled || got.URL != proxy.URL || !got.EnableForAPI {
+		t.Fatalf("factory proxy config = %+v, want the reloaded one", got)
+	}
+}
+
+// TestReloadProxyConfigUpdatesConfigFactory pins that a server running its own bootstrap
+// (enterprise never sets s.HTTPClientFactory) still pushes a proxy change to the
+// config's factory, the one registered as the process default.
+func TestReloadProxyConfigUpdatesConfigFactory(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	factory := network.NewHTTPClientFactory(nil, nil)
+	s := &BifrostHTTPServer{Config: &lib.Config{HTTPClientFactory: factory}}
+	proxy := &configstoreTables.GlobalProxyConfig{Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://10.0.0.9:3128", EnableForAPI: true}
+	if err := s.ReloadProxyConfig(context.Background(), proxy); err != nil {
+		t.Fatalf("ReloadProxyConfig: %v", err)
+	}
+	if got := factory.GetProxyConfig(); got == nil || got.URL != proxy.URL {
+		t.Fatalf("config factory proxy = %+v, want the reloaded one", got)
+	}
+}
+
+// TestReloadProxyConfigAcceptsRemoval pins that removing the global proxy (a nil config,
+// which enterprise passes on removal) clears it everywhere instead of panicking.
+func TestReloadProxyConfigAcceptsRemoval(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	factory := network.NewHTTPClientFactory(&network.GlobalProxyConfig{Enabled: true, URL: "http://10.0.0.9:3128", EnableForAPI: true}, nil)
+	s := &BifrostHTTPServer{Config: &lib.Config{HTTPClientFactory: factory}}
+	if err := s.ReloadProxyConfig(context.Background(), nil); err != nil {
+		t.Fatalf("ReloadProxyConfig(nil): %v", err)
+	}
+	if got := factory.GetProxyConfig(); got != nil {
+		t.Fatalf("factory proxy = %+v, want none after removal", got)
+	}
 }

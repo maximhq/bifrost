@@ -78,6 +78,62 @@ func TestApplyGovernanceContextRecordsEveryDimension(t *testing.T) {
 	assertStrings(t, "rate_limit_ids", entry.RateLimitIDsParsed, []string{"rl1"})
 }
 
+func TestA2AApplyGovernanceContextRecordsSnapshot(t *testing.T) {
+	entry := &AgentLog{}
+	entry.ApplyGovernanceContext(governanceCtx(t, map[schemas.BifrostContextKey]any{
+		schemas.BifrostContextKeyGovernanceVirtualKeyID:      "vk1",
+		schemas.BifrostContextKeyGovernanceVirtualKeyName:    "VK One",
+		schemas.BifrostContextKeyUserID:                      "user1",
+		schemas.BifrostContextKeyUserName:                    "User One",
+		schemas.BifrostContextKeyGovernanceTeamID:            "team1",
+		schemas.BifrostContextKeyGovernanceTeamName:          "Team One",
+		schemas.BifrostContextKeyGovernanceTeamIDs:           []string{"team1", "team2"},
+		schemas.BifrostContextKeyGovernanceTeamNames:         []string{"Team One", "Team Two"},
+		schemas.BifrostContextKeyGovernanceCustomerID:        "customer1",
+		schemas.BifrostContextKeyGovernanceCustomerName:      "Customer One",
+		schemas.BifrostContextKeyGovernanceCustomerIDs:       []string{"customer1", "customer2"},
+		schemas.BifrostContextKeyGovernanceCustomerNames:     []string{"Customer One", "Customer Two"},
+		schemas.BifrostContextKeyGovernanceBusinessUnitID:    "bu1",
+		schemas.BifrostContextKeyGovernanceBusinessUnitName:  "Business Unit One",
+		schemas.BifrostContextKeyGovernanceBusinessUnitIDs:   []string{"bu1", "bu2"},
+		schemas.BifrostContextKeyGovernanceBusinessUnitNames: []string{"Business Unit One", "Business Unit Two"},
+		schemas.BifrostContextKeyGovernanceProjectID:         "project1",
+		schemas.BifrostContextKeyGovernanceProjectName:       "Project One",
+		schemas.BifrostContextKeyGovernanceBudgetIDs:         []string{"budget1"},
+		schemas.BifrostContextKeyGovernanceRateLimitIDs:      []string{"rate-limit1"},
+	}))
+	for _, field := range []struct {
+		name string
+		got  *string
+		want string
+	}{
+		{"user_id", entry.UserID, "user1"},
+		{"user_name", entry.UserName, "User One"},
+		{"virtual_key_id", entry.VirtualKeyID, "vk1"},
+		{"virtual_key_name", entry.VirtualKeyName, "VK One"},
+		{"team_id", entry.TeamID, "team1"},
+		{"team_name", entry.TeamName, "Team One"},
+		{"customer_id", entry.CustomerID, "customer1"},
+		{"customer_name", entry.CustomerName, "Customer One"},
+		{"business_unit_id", entry.BusinessUnitID, "bu1"},
+		{"business_unit_name", entry.BusinessUnitName, "Business Unit One"},
+		{"project_id", entry.ProjectID, "project1"},
+		{"project_name", entry.ProjectName, "Project One"},
+	} {
+		if field.got == nil || *field.got != field.want {
+			t.Fatalf("%s = %v, want %q", field.name, field.got, field.want)
+		}
+	}
+	assertStrings(t, "team_ids", entry.TeamIDsParsed, []string{"team1", "team2"})
+	assertStrings(t, "team_names", entry.TeamNamesParsed, []string{"Team One", "Team Two"})
+	assertStrings(t, "customer_ids", entry.CustomerIDsParsed, []string{"customer1", "customer2"})
+	assertStrings(t, "customer_names", entry.CustomerNamesParsed, []string{"Customer One", "Customer Two"})
+	assertStrings(t, "business_unit_ids", entry.BusinessUnitIDsParsed, []string{"bu1", "bu2"})
+	assertStrings(t, "business_unit_names", entry.BusinessUnitNamesParsed, []string{"Business Unit One", "Business Unit Two"})
+	assertStrings(t, "budget_ids", entry.BudgetIDsParsed, []string{"budget1"})
+	assertStrings(t, "rate_limit_ids", entry.RateLimitIDsParsed, []string{"rate-limit1"})
+}
+
 // TestApplyGovernanceContextKeepsRecordedName covers a second hook re-stamping the
 // same identity. The name already recorded is the one read with that id, so it
 // stands rather than being rewritten from a cache that may have moved on.
@@ -131,6 +187,9 @@ func TestApplyGovernanceContextNilSafe(t *testing.T) {
 	var entry *MCPToolLog
 	entry.ApplyGovernanceContext(nil)
 	(&MCPToolLog{}).ApplyGovernanceContext(nil)
+	var a2aEntry *AgentLog
+	a2aEntry.ApplyGovernanceContext(nil)
+	(&AgentLog{}).ApplyGovernanceContext(nil)
 }
 
 func assertStrings(t *testing.T, field string, got, want []string) {

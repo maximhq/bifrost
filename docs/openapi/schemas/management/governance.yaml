@@ -380,6 +380,9 @@ VirtualKey:
       type: [string, 'null']
       format: date-time
       description: Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires.
+    delete_after_expire:
+      type: [boolean, 'null']
+      description: Per-key override for client.delete_expired_virtual_keys. Absent or null inherits the client setting; true or false decide for this key whether the daily cleanup job deletes it once expires_at has passed.
     previous_value_expires_at:
       type: [string, 'null']
       format: date-time
@@ -560,6 +563,9 @@ CreateVirtualKeyRequest:
       type: string
       format: date-time
       description: Optional expiry timestamp. Must be in the future. Omit for a key that never expires.
+    delete_after_expire:
+      type: boolean
+      description: Override client.delete_expired_virtual_keys for this key. Omit to inherit the client setting. Rejected with 400 when expires_at is not set.
   example:
     name: engineering-vk
     provider_configs:
@@ -671,6 +677,9 @@ UpdateVirtualKeyRequest:
     expires_at:
       type: string
       description: RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged.
+    delete_after_expire:
+      type: [boolean, 'null']
+      description: Override client.delete_expired_virtual_keys for this key. true or false set it, null resets the key to inherit the client setting, omitted leaves it unchanged. A value requires an expiry; clearing expires_at resets it to inherit.
   example:
     description: Updated engineering access
     provider_configs:
@@ -2632,17 +2641,23 @@ ComplexitySemanticConfig:
         and falls back to the embedded store otherwise.
     fallback:
       type: string
-      enum: [none, llm, jev]
+      enum: [none, llm, decision]
       description: |
         What answers when semantic classification produces no tier. `none`
         (the default) records the request as skipped, `llm` uses the configured
-        chat model, and `jev` uses the Typesafe decision API.
+        chat model, and `decision` uses the configured decision model.
 
-ComplexityJevConfig:
+ComplexityDecisionConfig:
   type: object
-  description: Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.
+  description: Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.
   additionalProperties: false
   properties:
+    provider:
+      type: string
+      description: Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`.
+    model:
+      type: string
+      description: Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`.
     previous_message_count:
       type: integer
       minimum: 0
@@ -2650,7 +2665,7 @@ ComplexityJevConfig:
       default: 1
       description: Number of preceding user messages sent with the current user request. Assistant messages are excluded.
     timeout:
-      description: Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.
+      description: Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.
       oneOf:
         - type: string
           pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'
@@ -2658,17 +2673,17 @@ ComplexityJevConfig:
           minimum: 0
     criteria:
       type: object
-      description: Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.
+      description: Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.
       additionalProperties: false
       properties:
         SIMPLE:
-          $ref: '#/ComplexityJevTierCriteria'
+          $ref: '#/ComplexityDecisionTierCriteria'
         MEDIUM:
-          $ref: '#/ComplexityJevTierCriteria'
+          $ref: '#/ComplexityDecisionTierCriteria'
         COMPLEX:
-          $ref: '#/ComplexityJevTierCriteria'
+          $ref: '#/ComplexityDecisionTierCriteria'
 
-ComplexityJevTierCriteria:
+ComplexityDecisionTierCriteria:
   type: object
   additionalProperties: false
   properties:
@@ -2777,9 +2792,9 @@ ComplexitySemanticStatus:
     llm_default_prompt:
       type: string
       description: The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured.
-    jev_defaults:
+    decision_defaults:
       type: object
-      description: The shipped Jev per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.
+      description: The shipped decision-model per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.
       properties:
         criteria:
           type: object
@@ -2827,7 +2842,7 @@ ComplexityAnalyzerConfig:
           required: [classifier]
           properties:
             classifier:
-              const: jev
+              const: decision
         properties:
           session:
             properties:
@@ -2860,13 +2875,13 @@ ComplexityAnalyzerConfig:
       $ref: '#/ComplexityKeywordConfig'
     classifier:
       type: string
-      enum: [semantic, jev]
+      enum: [semantic, decision]
       default: semantic
       description: Primary complexity classifier; omitted configuration keeps the semantic default.
     semantic:
       $ref: '#/ComplexitySemanticConfig'
-    jev:
-      $ref: '#/ComplexityJevConfig'
+    decision:
+      $ref: '#/ComplexityDecisionConfig'
     llm:
       $ref: '#/ComplexityLLMConfig'
     session:

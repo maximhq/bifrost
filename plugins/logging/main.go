@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -285,6 +286,19 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 	entry.ApplyGovernanceContext(ctx)
 }
 
+func applyMCPCorrelationFieldsToEntry(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
+	if ctx == nil || entry == nil {
+		return
+	}
+	if sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID); sessionID != "" {
+		entry.SessionID = &sessionID
+	}
+	if agentCorrelationID := requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"); agentCorrelationID != "" {
+		agentCorrelationID = clampString(agentCorrelationID, maxPersistedAgentCorrelationIDLen)
+		entry.AgentCorrelationID = &agentCorrelationID
+	}
+}
+
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
 // applyErrorBillingFromBilledUsage backfills a failed/cancelled request's log
 // entry from the usage the provider already processed before the failure
@@ -328,7 +342,7 @@ func guardrailMetadataForLog(ctx *schemas.BifrostContext, result *schemas.Bifros
 }
 
 // routingMetadataForLog returns the request's routing-classification metadata
-// snapshot — a semantic embed, LLM completion, Jev decision, or the embed plus
+// snapshot — a semantic embed, LLM completion, decision-model call, or the embed plus
 // its configured classifier fallback. Classification runs once in PreRequestHook,
 // before any retry or fallback attempt, so the context snapshot is stable across every
 // PostLLMHook call for this request; unlike applyInternalCallCosts, this is
@@ -1121,6 +1135,7 @@ type InitialLogData struct {
 	Tools                  []schemas.ChatTool
 	RoutingEngineUsed      []string
 	Metadata               map[string]any
+	AgentCorrelationID     string
 	PassthroughRequestBody string // Raw body for passthrough requests (UTF-8)
 	UserAgent              string // Raw HTTP User-Agent of the calling client; mapped to a client app in the UI
 	App                    string // Backend-detected client app derived from UserAgent
@@ -1213,6 +1228,8 @@ type LoggerPlugin struct {
 	pendingLogsToInject          sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
 	pendingMCPLogsToInject       sync.Map              // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
 	provisionalMCPArguments      sync.Map              // Maps mcpLogID -> tool arguments captured before governance stamped the presented key; attached in PostMCPHook only if content ends up visible
+	pendingAgentLogs             sync.Map              // Maps request/operation key -> *logstore.AgentLog awaiting PostA2AHook
+	pendingAgentLogsToInject     sync.Map              // Maps traceID -> *pendingAgentInjectEntries (A2A request rows awaiting Inject latency backfill)
 	writerConfig                 logstore.WriterConfig // Resolved async writer queue and batch settings
 	writeQueue                   chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                       atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
@@ -1402,7 +1419,12 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 		p.logger.Warn("failed to cleanup old processing MCP tool logs: %v", err)
 	}
 
-	// Clean up stale pending log entries (requests where PostLLMHook never fired)
+	// Delete A2A processing logs older than 30 minutes.
+	if err := p.store.FlushAgentLogs(p.ctx, thirtyMinutesAgo); err != nil {
+		p.logger.Warn("failed to cleanup old processing A2A logs: %v", err)
+	}
+
+	// Clean up stale pending log entries (requests where a post-hook never fired)
 	p.cleanupStalePendingLogs()
 }
 
@@ -1599,21 +1621,26 @@ func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext,
 	return chunk, nil
 }
 
+func requestHeaderFromContext(ctx *schemas.BifrostContext, name string) string {
+	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if value := allHeaders[strings.ToLower(name)]; value != "" {
+		return value
+	}
+	for key, value := range allHeaders {
+		if strings.EqualFold(key, name) && value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // userAgentFromContext returns the raw HTTP User-Agent of the calling client from
 // the request header map, or "" when absent. Keys in the map are lowercased, so
 // the lookup is case-insensitive. The value is stored verbatim on the log entry;
 // mapping it to a client app happens in the UI.
 func userAgentFromContext(ctx *schemas.BifrostContext) string {
-	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-	if allHeaders != nil {
-		if ua := allHeaders["user-agent"]; ua != "" {
-			return ua
-		}
-		for key, value := range allHeaders {
-			if strings.EqualFold(key, "user-agent") && value != "" {
-				return value
-			}
-		}
+	if ua := requestHeaderFromContext(ctx, "user-agent"); ua != "" {
+		return ua
 	}
 	ua, _ := ctx.Value(schemas.BifrostContextKeyUserAgent).(string)
 	return ua
@@ -1710,6 +1737,16 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
+	// A live session is one row: only the unit that opens it registers, under the session's id.
+	liveUnit := liveUnitKind(ctx)
+	if liveUnit != "" {
+		if !liveFlag(ctx, schemas.BifrostContextKeyLiveSessionStart) {
+			return req, nil, nil
+		}
+		if sessionID := liveSessionID(ctx); sessionID != "" {
+			requestID = sessionID
+		}
+	}
 	createdTimestamp := time.Now().UTC()
 
 	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
@@ -1732,10 +1769,14 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if req.RequestType == schemas.RealtimeRequest {
 		initialData.Object = "realtime.turn"
 	}
+	if liveUnit != "" {
+		initialData.Object = liveSessionObject
+	}
 
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
 	initialData.UserAgent = userAgentFromContext(ctx)
+	initialData.AgentCorrelationID = requestHeaderFromContext(ctx, "x-bf-agent-correlation-id")
 	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
 	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
 		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
@@ -1922,7 +1963,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Determine effective request ID (fallback override)
 	effectiveRequestID := requestID
 	var parentRequestID string
-	if directParentRequestID, ok := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); ok && directParentRequestID != "" {
+	if directParentRequestID, ok := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); ok && directParentRequestID != "" && directParentRequestID != requestID {
+		// A live session's units name the session as their parent; the session row itself is the root.
 		parentRequestID = directParentRequestID
 	}
 	fallbackRequestID, ok := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
@@ -1960,6 +2002,9 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		CreatedAt:          time.Now(),
 		Status:             logStatusProcessing,
 	}
+	if liveUnit != "" {
+		pending.Live = &liveSessionState{}
+	}
 	// Seed LastActivity so the first idle-eviction check has a baseline even if no
 	// PostLLMHook chunk has fired yet.
 	pending.LastActivity.Store(pending.CreatedAt.UnixNano())
@@ -1996,6 +2041,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if !ok || requestID == "" {
 		p.logger.Error("request-id not found in context or is empty")
 		return result, bifrostErr, nil
+	}
+	if kind := liveUnitKind(ctx); kind != "" {
+		return p.postLiveUnit(ctx, kind, result, bifrostErr)
 	}
 	// If fallback request ID is present, use it instead of the primary request ID
 	fallbackRequestID, ok := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
@@ -2044,6 +2092,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				Stream:    bifrost.IsStreamRequestType(requestType),
 				Timestamp: time.Now().UTC(),
 				CreatedAt: time.Now().UTC(),
+			}
+			if agentCorrelationID := requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"); agentCorrelationID != "" {
+				agentCorrelationID = clampString(agentCorrelationID, maxPersistedAgentCorrelationIDLen)
+				entry.AgentCorrelationID = &agentCorrelationID
 			}
 			if ua := userAgentFromContext(ctx); ua != "" {
 				entry.UserAgent = &ua
@@ -2724,6 +2776,11 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	if joinKey == "" {
 		joinKey = trace.TraceID
 	}
+	// A2A request rows parked by PostA2AHook are drained here too, so their
+	// upstream/overhead/breakdown come from the same authoritative root-span
+	// attributes as LLM rows. Done before the LLM early-return below: an A2A
+	// trace has no pending LLM entries.
+	p.injectAgentEntries(trace, joinKey)
 	entryVal, ok := p.pendingLogsToInject.LoadAndDelete(joinKey)
 	if !ok {
 		return nil
@@ -2843,6 +2900,368 @@ func serializePluginLogs(logs []schemas.PluginLogEntry) string {
 	return string(data)
 }
 
+// serializePluginLogsBounded drops the oldest entries until the complete JSON document fits.
+func serializePluginLogsBounded(logs []schemas.PluginLogEntry, maxLen int) string {
+	for len(logs) > 0 {
+		serialized := serializePluginLogs(logs)
+		if serialized == "" || len(serialized) <= maxLen {
+			return serialized
+		}
+		logs = logs[1:]
+	}
+	return ""
+}
+
+// A2A Plugin Interface Implementation
+
+const maxA2APluginLogsLen = 16 * 1024
+
+func a2aPendingKey(requestID string, requestType schemas.A2ARequestType) string {
+	return requestID + "\x00" + string(requestType)
+}
+
+func optionalBoundedA2AValue(value string, max int) *string {
+	if value == "" {
+		return nil
+	}
+	bounded := clampString(value, max)
+	return &bounded
+}
+
+func applyA2ARequestCorrelation(entry *logstore.AgentLog, req *schemas.BifrostA2ARequest) {
+	if entry == nil || req == nil {
+		return
+	}
+	if send := req.BifrostA2ASendMessageRequest; send != nil {
+		entry.RequestMessageID = optionalBoundedA2AValue(send.MessageID, 255)
+		entry.ContextID = optionalBoundedA2AValue(send.ContextID, 255)
+		entry.TaskID = optionalBoundedA2AValue(send.TaskID, 255)
+	}
+	if task := req.BifrostA2ATaskRequest; task != nil {
+		entry.TaskID = optionalBoundedA2AValue(task.TaskID, 255)
+	}
+	if push := req.BifrostA2APushRequest; push != nil {
+		entry.PushConfigID = optionalBoundedA2AValue(push.PushConfigID, 255)
+		entry.DeliveryID = optionalBoundedA2AValue(push.DeliveryID, 255)
+		entry.AttemptID = optionalBoundedA2AValue(push.AttemptID, 255)
+	}
+}
+
+func applyA2AResponseCorrelation(entry *logstore.AgentLog, resp *schemas.BifrostA2AResponse) {
+	if entry == nil || resp == nil {
+		return
+	}
+	if send := resp.BifrostA2ASendMessageResponse; send != nil {
+		entry.ResponseMessageID = optionalBoundedA2AValue(send.MessageID, 255)
+		if value := optionalBoundedA2AValue(send.ContextID, 255); value != nil {
+			entry.ContextID = value
+		}
+		if value := optionalBoundedA2AValue(send.TaskID, 255); value != nil {
+			entry.TaskID = value
+		}
+	}
+	if task := resp.BifrostA2ATaskResponse; task != nil {
+		if value := optionalBoundedA2AValue(task.TaskID, 255); value != nil {
+			entry.TaskID = value
+		}
+		if value := optionalBoundedA2AValue(task.ContextID, 255); value != nil {
+			entry.ContextID = value
+		}
+		entry.TaskState = optionalBoundedA2AValue(task.State, 64)
+	}
+	if push := resp.BifrostA2APushResponse; push != nil {
+		if value := optionalBoundedA2AValue(push.PushConfigID, 255); value != nil {
+			entry.PushConfigID = value
+		}
+		if value := optionalBoundedA2AValue(push.DeliveryID, 255); value != nil {
+			entry.DeliveryID = value
+		}
+		if value := optionalBoundedA2AValue(push.AttemptID, 255); value != nil {
+			entry.AttemptID = value
+		}
+	}
+}
+
+func applyA2ATransports(entry *logstore.AgentLog, ctx *schemas.BifrostContext) {
+	if entry == nil || ctx == nil {
+		return
+	}
+	if downstream, ok := ctx.Value(schemas.BifrostContextKeyA2ADownstreamTransport).(string); ok {
+		entry.DownstreamTransport = optionalBoundedA2AValue(downstream, 32)
+	}
+	if upstream, ok := ctx.Value(schemas.BifrostContextKeyA2AUpstreamTransport).(string); ok {
+		entry.UpstreamTransport = optionalBoundedA2AValue(upstream, 32)
+	}
+}
+
+func applyA2AContentPolicy(entry *logstore.AgentLog, policy contentPolicy) {
+	if entry == nil {
+		return
+	}
+	entry.ContentHidden = policy.hidden
+	if policy.storeContent {
+		return
+	}
+	entry.RequestBody = nil
+	entry.ResponseBody = nil
+	entry.EventBody = nil
+}
+
+// PreA2AHook records protocol-neutral correlation fields and the payload values
+// supplied by the A2A transport after its existing redaction policy is applied.
+func (p *LoggerPlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
+	if ctx == nil || req == nil {
+		return req, nil, nil
+	}
+	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	if requestID == "" {
+		p.logger.Warn("request-id not found in context or is empty in PreA2AHook")
+		return req, nil, nil
+	}
+	entry := &logstore.AgentLog{
+		ID:         uuid.New().String(),
+		Timestamp:  time.Now().UTC(),
+		RecordKind: "request",
+		Operation:  clampString(req.RequestType.OperationName(), 128),
+		Status:     "processing",
+		AgentName:  clampString(req.AgentName, 255),
+		RequestID:  clampString(requestID, 255),
+	}
+	entry.ApplyGovernanceContext(ctx)
+	applyA2ATransports(entry, ctx)
+	entry.TraceID = optionalBoundedA2AValue(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyTraceID), 255)
+	entry.RequestBody = req.RequestBody
+	applyA2ARequestCorrelation(entry, req)
+	p.pendingAgentLogs.Store(a2aPendingKey(requestID, req.RequestType), entry)
+	return req, nil, nil
+}
+
+// PostA2AHook completes and asynchronously persists the operation log.
+func (p *LoggerPlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error) {
+	if ctx == nil {
+		return resp, bifrostErr, nil
+	}
+	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	requestType := schemas.A2ARequestType("")
+	agentName := ""
+	if resp != nil {
+		requestType = resp.ExtraFields.A2ARequestType
+		agentName = resp.ExtraFields.AgentName
+	} else if bifrostErr != nil {
+		requestType = bifrostErr.ExtraFields.A2ARequestType
+		agentName = bifrostErr.ExtraFields.A2AAgentName
+	}
+	pending, loaded := p.pendingAgentLogs.LoadAndDelete(a2aPendingKey(requestID, requestType))
+	entry, _ := pending.(*logstore.AgentLog)
+	if entry == nil {
+		entry = &logstore.AgentLog{
+			ID:         uuid.New().String(),
+			Timestamp:  time.Now().UTC(),
+			RecordKind: "request",
+			Operation:  clampString(requestType.OperationName(), 128),
+			Status:     "processing",
+			AgentName:  clampString(agentName, 255),
+			RequestID:  clampString(requestID, 255),
+		}
+		if !loaded {
+			entry.TraceID = optionalBoundedA2AValue(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyTraceID), 255)
+		}
+	}
+	// Governance may run after the logging pre-hook, so refresh the snapshot
+	// after every plugin has observed the request. Missing context values preserve
+	// attribution captured earlier in the operation.
+	entry.ApplyGovernanceContext(ctx)
+	applyA2ATransports(entry, ctx)
+	if resp != nil {
+		latency := float64(resp.ExtraFields.Latency)
+		entry.Latency = &latency
+		// Provisional upstream/overhead measured by the agent gate. Superseded by
+		// the root-span backfill in injectAgentEntries when the trace completes.
+		if resp.ExtraFields.UpstreamLatency != nil {
+			up := float64(*resp.ExtraFields.UpstreamLatency)
+			entry.UpstreamLatency = &up
+		}
+		if resp.ExtraFields.OverheadLatency != nil {
+			ov := float64(*resp.ExtraFields.OverheadLatency)
+			entry.OverheadLatency = &ov
+		}
+		entry.ResponseBody = resp.ResponseBody
+		applyA2AResponseCorrelation(entry, resp)
+	}
+	policy := p.resolveContentPolicy(ctx)
+	if bifrostErr != nil {
+		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+		entry.Status = "error"
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, policy.visible(), shouldStoreRaw)
+	} else {
+		entry.Status = "success"
+	}
+	applyA2AContentPolicy(entry, policy)
+	entry.PluginLogs = serializePluginLogsBounded(ctx.GetPluginLogs(), maxA2APluginLogsLen)
+	p.storeOrEnqueueAgentEntry(ctx, entry)
+	return resp, bifrostErr, nil
+}
+
+// storeOrEnqueueAgentEntry parks a terminal A2A request row for Inject() to
+// backfill authoritative latency numbers from the completed trace, mirroring
+// storeOrEnqueueEntry for LLM rows. Rows with no trace (or an already-ended
+// trace) are written directly without backfill.
+func (p *LoggerPlugin) storeOrEnqueueAgentEntry(ctx *schemas.BifrostContext, entry *logstore.AgentLog) {
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	if traceID == "" || p.traceAlreadyEnded(ctx, traceID) {
+		p.enqueueAgentLogEntry(entry)
+		return
+	}
+	existing, loaded := p.pendingAgentLogsToInject.LoadOrStore(traceID, &pendingAgentInjectEntries{entries: []*logstore.AgentLog{entry}, createdAt: time.Now()})
+	if !loaded {
+		// The trace may have ended between the check above and this store; a slot
+		// parked now would be orphaned. Reclaim it, exactly as storeOrEnqueueEntry does.
+		if p.traceAlreadyEnded(ctx, traceID) {
+			if val, ok := p.pendingAgentLogsToInject.LoadAndDelete(traceID); ok {
+				orphaned := val.(*pendingAgentInjectEntries)
+				orphaned.mu.Lock()
+				orphaned.drained = true
+				late := orphaned.entries
+				orphaned.mu.Unlock()
+				for _, e := range late {
+					p.enqueueAgentLogEntry(e)
+				}
+			}
+		}
+		return
+	}
+	pending := existing.(*pendingAgentInjectEntries)
+	pending.mu.Lock()
+	if pending.drained {
+		pending.mu.Unlock()
+		p.enqueueAgentLogEntry(entry)
+		return
+	}
+	pending.entries = append(pending.entries, entry)
+	pending.mu.Unlock()
+}
+
+// injectAgentEntries drains the A2A request rows parked for a completed trace and
+// backfills upstream/overhead from the root-span attributes plus the per-span
+// overhead breakdown, mirroring the LLM backfill in Inject. Request-level
+// numbers go on one row per trace (latest Timestamp, tie-broken by ID); any
+// other parked rows keep only their per-row latency.
+func (p *LoggerPlugin) injectAgentEntries(trace *schemas.Trace, joinKey string) {
+	val, ok := p.pendingAgentLogsToInject.LoadAndDelete(joinKey)
+	if !ok {
+		return
+	}
+	pending, ok := val.(*pendingAgentInjectEntries)
+	if !ok {
+		return
+	}
+	pending.mu.Lock()
+	pending.drained = true
+	entries := pending.entries
+	pending.mu.Unlock()
+	if len(entries) == 0 {
+		return
+	}
+	var upstreamMs, overheadMs float64
+	var upOK, ovOK bool
+	if trace.RootSpan != nil && trace.RootSpan.Attributes != nil {
+		upstreamMs, upOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostUpstreamDurationMs)
+		overheadMs, ovOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
+	}
+	overheadBreakdown, measuredOverheadMs, isStreaming := overhead.Compute(trace, overheadMs, ovOK, upstreamMs, upOK)
+	// Prefer the parent request row over incremental stream-event rows. Within
+	// the same record kind, use the latest row for deterministic fallback.
+	stampIdx := 0
+	for i, entry := range entries {
+		best := entries[stampIdx]
+		entryIsRequest := entry.RecordKind == "request"
+		bestIsRequest := best.RecordKind == "request"
+		if (entryIsRequest && !bestIsRequest) ||
+			(entryIsRequest == bestIsRequest && (entry.Timestamp.After(best.Timestamp) ||
+				(entry.Timestamp.Equal(best.Timestamp) && entry.ID > best.ID))) {
+			stampIdx = i
+		}
+	}
+	for i, entry := range entries {
+		if i == stampIdx {
+			// Clear both provisional components before backfilling, so a partial
+			// root span never mixes the two sources.
+			if upOK || ovOK {
+				entry.UpstreamLatency = nil
+				entry.OverheadLatency = nil
+			}
+			if isStreaming && upOK && ovOK {
+				total := upstreamMs + overheadMs
+				measured := measuredOverheadMs
+				if measured > overheadMs {
+					measured = overheadMs
+				}
+				if measured < 0 {
+					measured = 0
+				}
+				up := total - measured
+				entry.UpstreamLatency = &up
+				entry.OverheadLatency = &measured
+				entry.Latency = &total
+			} else {
+				if upOK {
+					u := upstreamMs
+					entry.UpstreamLatency = &u
+				}
+				if ovOK {
+					o := overheadMs
+					entry.OverheadLatency = &o
+				}
+				if upOK && ovOK {
+					total := upstreamMs + overheadMs
+					entry.Latency = &total
+				}
+			}
+			if len(overheadBreakdown) > 0 {
+				entry.OverheadBreakdownParsed = overheadBreakdown
+			}
+		} else if upOK || ovOK {
+			entry.UpstreamLatency = nil
+			entry.OverheadLatency = nil
+		}
+		p.enqueueAgentLogEntry(entry)
+	}
+}
+
+func (p *LoggerPlugin) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
+	if ctx == nil || event == nil {
+		return
+	}
+	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	if requestID == "" {
+		return
+	}
+	sequence := event.Sequence
+	entry := &logstore.AgentLog{
+		ID:            uuid.New().String(),
+		Timestamp:     time.Now().UTC(),
+		RecordKind:    "event",
+		Operation:     clampString(event.RequestType.OperationName(), 128),
+		Status:        "success",
+		AgentName:     clampString(event.AgentName, 255),
+		RequestID:     clampString(requestID, 255),
+		EventSequence: &sequence,
+		EventType:     optionalBoundedA2AValue(string(event.EventType), 64),
+		TaskID:        optionalBoundedA2AValue(event.TaskID, 255),
+		ContextID:     optionalBoundedA2AValue(event.ContextID, 255),
+		MessageID:     optionalBoundedA2AValue(event.MessageID, 255),
+		ArtifactID:    optionalBoundedA2AValue(event.ArtifactID, 255),
+		TaskState:     optionalBoundedA2AValue(event.TaskState, 64),
+		ContentType:   optionalBoundedA2AValue(event.ContentType, 255),
+		EventBody:     event.Body,
+	}
+	entry.ApplyGovernanceContext(ctx)
+	applyA2ATransports(entry, ctx)
+	applyA2AContentPolicy(entry, p.resolveContentPolicy(ctx))
+	entry.TraceID = optionalBoundedA2AValue(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyTraceID), 255)
+	p.enqueueAgentLogEntry(entry)
+}
+
 // MCP Plugin Interface Implementation
 
 // SetMCPToolLogCallback sets a callback function that will be called for each MCP tool log entry
@@ -2936,6 +3355,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
+	applyMCPCorrelationFieldsToEntry(ctx, entry)
 
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
@@ -3049,6 +3469,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	if !contentVisible {
 		entry.ArgumentsParsed = nil
 	}
+	applyMCPCorrelationFieldsToEntry(ctx, entry)
 	if resp != nil {
 		latency := float64(resp.ExtraFields.Latency)
 		entry.Latency = &latency

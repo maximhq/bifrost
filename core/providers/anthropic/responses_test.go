@@ -979,6 +979,96 @@ func TestToAnthropicResponsesRequest_PerMessageEffortFromNeutralInput(t *testing
 	assertEffortOnlySystemMessage(t, msgs[1], "low", wire)
 }
 
+// TestToAnthropicResponsesRequest_PerMessageEffortSurvivesTextFallbacks: a system item that
+// carries text AND a per-message effort can only go out natively when its placement is
+// valid. On the hoist (leading run) and inline (rejected placement) fallbacks the text cannot
+// carry the override, so it is re-emitted as an effort-only system message, which Anthropic
+// exempts from placement rules ("It can appear anywhere in messages, including as the first
+// entry", https://platform.claude.com/docs/en/build-with-claude/effort). Without it the
+// caller's effort change is silently lost (PR #8018 review).
+func TestToAnthropicResponsesRequest_PerMessageEffortSurvivesTextFallbacks(t *testing.T) {
+	t.Parallel()
+
+	convert := func(t *testing.T, provider schemas.ModelProvider, inputJSON string) ([]map[string]any, string, *AnthropicMessageRequest) {
+		t.Helper()
+		var input []schemas.ResponsesMessage
+		if err := schemas.Unmarshal([]byte(inputJSON), &input); err != nil {
+			t.Fatalf("decode neutral input: %v", err)
+		}
+		out, err := ToAnthropicResponsesRequest(effortTestCtx(t), &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    "claude-opus-5-5",
+			Input:    input,
+			Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(128)},
+		})
+		if err != nil {
+			t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+		}
+		msgs, wire := jsonArrayOfObjects(t, out.Messages)
+		return msgs, wire, out
+	}
+
+	t.Run("hoisted leading system item keeps its effort", func(t *testing.T) {
+		t.Parallel()
+		msgs, wire, out := convert(t, schemas.Anthropic, `[
+			{"type":"message","role":"system","content":"Be terse.","output_config":{"effort":"low"}},
+			{"type":"message","role":"user","content":"Say hello."}
+		]`)
+		system, _ := sonic.Marshal(out.System)
+		if !strings.Contains(string(system), "Be terse.") {
+			t.Fatalf("leading system text was not hoisted into system: %s", system)
+		}
+		if len(msgs) != 2 {
+			t.Fatalf("messages = %d, want 2 (effort-only override + user): %s", len(msgs), wire)
+		}
+		assertEffortOnlySystemMessage(t, msgs[0], "low", wire)
+		if msgs[1]["role"] != "user" {
+			t.Fatalf("messages[1].role = %v, want user: %s", msgs[1]["role"], wire)
+		}
+	})
+
+	t.Run("inlined mid-conversation system item keeps its effort", func(t *testing.T) {
+		t.Parallel()
+		// Followed by a user turn, so the native placement is rejected and the text is inlined.
+		msgs, wire, _ := convert(t, schemas.Anthropic, `[
+			{"type":"message","role":"user","content":"First question."},
+			{"type":"message","role":"system","content":"Be terse.","output_config":{"effort":"low"}},
+			{"type":"message","role":"user","content":"Second question."}
+		]`)
+		effortAt := -1
+		for i, m := range msgs {
+			if m["role"] == "system" {
+				if effortAt != -1 {
+					t.Fatalf("more than one system message: %s", wire)
+				}
+				effortAt = i
+				assertEffortOnlySystemMessage(t, m, "low", wire)
+			}
+		}
+		if effortAt == -1 {
+			t.Fatalf("per-message effort lost on the inline fallback: %s", wire)
+		}
+		if effortAt+1 >= len(msgs) {
+			t.Fatalf("effort-only message must precede the inlined reminder: %s", wire)
+		}
+		next, _ := sonic.Marshal(msgs[effortAt+1])
+		if !strings.Contains(string(next), "system-reminder") || !strings.Contains(string(next), "Be terse.") {
+			t.Fatalf("message after the effort-only override is not the inlined reminder: %s", wire)
+		}
+	})
+
+	t.Run("unsupported surface emits no override on the hoist", func(t *testing.T) {
+		t.Parallel()
+		msgs, wire, _ := convert(t, schemas.Vertex, `[
+			{"type":"message","role":"system","content":"Be terse.","output_config":{"effort":"low"}},
+			{"type":"message","role":"user","content":"Say hello."}
+		]`)
+		if len(msgs) != 1 || msgs[0]["role"] != "user" {
+			t.Fatalf("Vertex must receive only the user turn: %s", wire)
+		}
+	})
+}
+
 // TestAnthropicRoundTrip_PerMessageEffortDroppedWhenModelLacksSupport pins the fail-soft
 // side: Opus 4.8 accepts mid-conversation system messages but not per-turn effort
 // (Anthropic 400s "output_config.effort requires a model that supports per-turn effort"),
@@ -1167,4 +1257,136 @@ func TestToAnthropicResponsesRequest_LeadingEffortOnlyKeepsSystemPromptHoisted(t
 		t.Fatalf("forwarded roles wrong, want system(effort-only),user (system prompt demoted to a user reminder): %s", wire)
 	}
 	assertEffortOnlySystemMessage(t, msgs[0], "low", wire)
+}
+
+// A turn that ended on a requested stop sequence must reach Anthropic-compatible
+// clients as stop_reason "stop_sequence" with the matched string, not end_turn/null,
+// after the Anthropic -> Bifrost Responses -> Anthropic round trip.
+
+// assertStopFields checks that a converted stop_reason and stop_sequence match the
+// expected pair, treating a nil wantSeq as requiring a null stop_sequence.
+func assertStopFields(t *testing.T, gotReason AnthropicStopReason, gotSeq *string, wantReason AnthropicStopReason, wantSeq *string) {
+	t.Helper()
+	if gotReason != wantReason {
+		t.Errorf("stop_reason = %q, want %q", gotReason, wantReason)
+	}
+	switch {
+	case wantSeq == nil && gotSeq != nil:
+		t.Errorf("stop_sequence = %q, want null", *gotSeq)
+	case wantSeq != nil && (gotSeq == nil || *gotSeq != *wantSeq):
+		t.Errorf("stop_sequence = %v, want %q", gotSeq, *wantSeq)
+	}
+}
+
+// TestStopSequence_NonStreamingRoundTrip verifies that a non-streaming Anthropic message
+// keeps its stop_reason and matched stop_sequence through the Responses round trip, and
+// that a stray sequence on a non-stop_sequence reason is dropped.
+func TestStopSequence_NonStreamingRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		reason     AnthropicStopReason
+		sequence   *string
+		wantReason AnthropicStopReason
+		wantSeq    *string
+	}{
+		{"stop_sequence keeps reason and match", AnthropicStopReasonStopSequence, schemas.Ptr("###"), AnthropicStopReasonStopSequence, schemas.Ptr("###")},
+		{"end_turn stays end_turn", AnthropicStopReasonEndTurn, nil, AnthropicStopReasonEndTurn, nil},
+		{"stray sequence on end_turn is dropped", AnthropicStopReasonEndTurn, schemas.Ptr("###"), AnthropicStopReasonEndTurn, nil},
+		{"max_tokens unaffected", AnthropicStopReasonMaxTokens, nil, AnthropicStopReasonMaxTokens, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+
+			anthropicResp := &AnthropicMessageResponse{
+				ID:           "msg_stopseq",
+				Type:         "message",
+				Role:         "assistant",
+				Model:        "claude-sonnet-4-5",
+				StopReason:   tt.reason,
+				StopSequence: tt.sequence,
+				Content:      []AnthropicContentBlock{{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("1 2 3")}},
+			}
+			result := ToAnthropicResponsesResponse(ctx, anthropicResp.ToBifrostResponsesResponse(ctx))
+			assertStopFields(t, result.StopReason, result.StopSequence, tt.wantReason, tt.wantSeq)
+		})
+	}
+}
+
+// TestStopSequence_BifrostStopWithoutSequenceIsEndTurn verifies that the ambiguous "stop"
+// OpenAI-style providers report with no matched sequence keeps mapping to end_turn
+// rather than guessing stop_sequence.
+func TestStopSequence_BifrostStopWithoutSequenceIsEndTurn(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	result := ToAnthropicResponsesResponse(ctx, &schemas.BifrostResponsesResponse{
+		Model:      "gpt-5.1",
+		StopReason: schemas.Ptr(string(schemas.BifrostFinishReasonStop)),
+	})
+	assertStopFields(t, result.StopReason, result.StopSequence, AnthropicStopReasonEndTurn, nil)
+}
+
+// TestStopSequence_StreamingRoundTrip verifies that stop_reason and stop_sequence survive
+// streaming conversion, both on the relayed message_delta and on the message_delta
+// synthesized from response.completed.
+func TestStopSequence_StreamingRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		reason     AnthropicStopReason
+		sequence   *string
+		wantReason AnthropicStopReason
+		wantSeq    *string
+	}{
+		{"stop_sequence", AnthropicStopReasonStopSequence, schemas.Ptr("END"), AnthropicStopReasonStopSequence, schemas.Ptr("END")},
+		{"end_turn", AnthropicStopReasonEndTurn, nil, AnthropicStopReasonEndTurn, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ingressCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyIntegrationType, "anthropic")
+			state := newFallbackStreamState()
+
+			delta := &AnthropicStreamEvent{
+				Type:  AnthropicStreamEventTypeMessageDelta,
+				Delta: &AnthropicStreamDelta{StopReason: schemas.Ptr(tt.reason), StopSequence: tt.sequence},
+				Usage: &AnthropicUsage{OutputTokens: 3},
+			}
+			deltaResps, bErr, _ := delta.ToBifrostResponsesStream(ingressCtx, 1, state)
+			if bErr != nil || len(deltaResps) != 1 || deltaResps[0].Response == nil {
+				t.Fatalf("unexpected message_delta conversion: %v %+v", bErr, deltaResps)
+			}
+			stop := &AnthropicStreamEvent{Type: AnthropicStreamEventTypeMessageStop}
+			stopResps, bErr, _ := stop.ToBifrostResponsesStream(ingressCtx, 2, state)
+			if bErr != nil || len(stopResps) != 1 || stopResps[0].Response == nil {
+				t.Fatalf("unexpected message_stop conversion: %v %+v", bErr, stopResps)
+			}
+
+			// Egress of the relayed message_delta event.
+			egressCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			egressCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+			events := ToAnthropicResponsesStreamResponse(egressCtx, deltaResps[0])
+			if len(events) == 0 || events[0].Delta == nil || events[0].Delta.StopReason == nil {
+				t.Fatalf("message_delta egress missing stop_reason: %+v", events)
+			}
+			assertStopFields(t, *events[0].Delta.StopReason, events[0].Delta.StopSequence, tt.wantReason, tt.wantSeq)
+
+			// Egress when message_delta is synthesized from response.completed.
+			completedCtx, cancel2 := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel2()
+			events = ToAnthropicResponsesStreamResponse(completedCtx, stopResps[0])
+			if len(events) != 2 || events[0].Delta == nil || events[0].Delta.StopReason == nil {
+				t.Fatalf("completed egress missing message_delta: %+v", events)
+			}
+			assertStopFields(t, *events[0].Delta.StopReason, events[0].Delta.StopSequence, tt.wantReason, tt.wantSeq)
+		})
+	}
 }

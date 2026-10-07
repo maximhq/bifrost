@@ -7,7 +7,7 @@ import { SecretVar } from "./schemas";
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export const BaseProviderNames = ["openai", "anthropic", "cohere", "gemini", "bedrock", "replicate", "fireworks"] as const;
+export const BaseProviderNames = ["openai", "anthropic", "cohere", "gemini", "bedrock", "replicate", "fireworks", "typesafe"] as const;
 
 export type BaseProvider = (typeof BaseProviderNames)[number];
 
@@ -382,6 +382,7 @@ export type RequestType =
 	| "responses_input_items"
 	| "embedding"
 	| "rerank"
+	| "decisions"
 	| "speech"
 	| "speech_stream"
 	| "transcription"
@@ -423,7 +424,8 @@ export type RequestType =
 	| "container_file_content"
 	| "container_file_delete"
 	| "websocket_responses"
-	| "realtime";
+	| "realtime"
+	| "live";
 
 // AllowedRequests matching Go's schemas.AllowedRequests
 export interface AllowedRequests {
@@ -453,6 +455,7 @@ export interface AllowedRequests {
 	list_models: boolean;
 	model_retrieve?: boolean;
 	rerank: boolean;
+	decisions?: boolean;
 	video_generation: boolean;
 	video_edit: boolean;
 	video_retrieve: boolean;
@@ -462,6 +465,7 @@ export interface AllowedRequests {
 	video_remix: boolean;
 	websocket_responses: boolean;
 	realtime: boolean;
+	live?: boolean;
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig
@@ -690,6 +694,10 @@ export interface BifrostConfig {
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
 	env_label?: string;
+	agent_gateway?: {
+		grpc_base_domain: string;
+		grpc_port: number;
+	};
 }
 
 export interface CompatConfig {
@@ -698,6 +706,18 @@ export interface CompatConfig {
 	should_drop_params: boolean;
 	should_convert_params: boolean;
 	azure_deepseek: boolean;
+	force_reasoning_only_models_to_responses: boolean;
+}
+
+// Per-execution code mode limits; an omitted or 0 field uses the server default.
+export interface MCPCodeModeLimits {
+	max_source_bytes?: number;
+	max_steps?: number;
+	max_memory_bytes?: number;
+	max_log_bytes?: number;
+	max_tool_calls?: number;
+	max_value_bytes?: number;
+	max_nesting_depth?: number;
 }
 
 // Core Bifrost configuration types
@@ -733,6 +753,7 @@ export interface CoreConfig {
 	mcp_disable_auto_tool_inject: boolean;
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;
+	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
 	async_job_result_ttl: number;
 	required_headers: string[];
@@ -747,11 +768,13 @@ export interface CoreConfig {
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	a2a_external_client_url?: SecretVar;
 	mcp_server_auth_mode?: "headers" | "both" | "oauth";
 	oauth2_server_config?: {
 		issuer_url?: SecretVar;
 		auth_code_ttl?: number;
 		access_token_ttl?: number;
+		allowed_redirect_uris?: string[];
 		disable_vk_identity?: boolean;
 	};
 }
@@ -770,7 +793,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	disable_db_pings_in_health: false,
 	dump_errors_in_console_logs: false,
 	log_retention_days: 365,
-	enforce_auth_on_inference: false,
+	enforce_auth_on_inference: true,
 	dual_credential_conflict_behavior: "prefer_idp",
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
@@ -780,6 +803,7 @@ export const DefaultCoreConfig: CoreConfig = {
 		should_drop_params: false,
 		should_convert_params: false,
 		azure_deepseek: false,
+		force_reasoning_only_models_to_responses: true,
 	},
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,

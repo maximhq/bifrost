@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -16,6 +17,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -65,6 +67,9 @@ type MetricsExporter struct {
 	// OTel MCP semconv duration histogram. _count gives call volume and error.type gives
 	// the error rate, so no separate MCP counters are needed.
 	mcpClientOperationDuration *syncFloat64Histogram
+
+	// A2A (Agent Gateway) metrics
+	a2aClientOperationDuration *syncFloat64Histogram
 
 	// HTTP metrics
 	httpRequestsTotal     *syncInt64Counter
@@ -269,6 +274,8 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetrichttp.Option{
 		otlpmetrichttp.WithEndpointURL(config.Endpoint),
+		// The global proxy when it is enabled for API traffic, else the environment.
+		otlpmetrichttp.WithProxy(network.DefaultProxyFunc(network.ClientPurposeAPI)),
 	}
 
 	if len(config.Headers) > 0 {
@@ -290,7 +297,11 @@ func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 
 func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetricgrpc.Option{
-		otlpmetricgrpc.WithEndpoint(config.Endpoint),
+		// passthrough hands the host name to the proxy dialer unresolved (see
+		// network.GRPCPassthroughTarget); the dialer uses the global proxy when it is
+		// enabled for API traffic, else the environment's HTTPS proxy as gRPC reads it.
+		otlpmetricgrpc.WithEndpoint(network.GRPCPassthroughTarget(config.Endpoint)),
+		otlpmetricgrpc.WithDialOption(grpc.WithContextDialer(network.DefaultGRPCDialer(network.ClientPurposeAPI))),
 	}
 
 	if len(config.Headers) > 0 {
@@ -447,6 +458,15 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: mcpOperationDurationBuckets,
 	}
 
+	// Mirrors mcp.client.operation.duration; there is no A2A semconv metric yet.
+	m.a2aClientOperationDuration = &syncFloat64Histogram{
+		name:       "a2a.client.operation.duration",
+		desc:       "Duration of an A2A operation as observed by the gateway (Bifrost) from send until the response is received",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: mcpOperationDurationBuckets,
+	}
+
 	// HTTP metrics
 	m.httpRequestsTotal = &syncInt64Counter{
 		name:  "http_requests_total",
@@ -580,6 +600,11 @@ func (m *MetricsExporter) RecordRequestRetries(ctx context.Context, retries floa
 // RecordMCPOperationDuration records the mcp.client.operation.duration metric for one op.
 func (m *MetricsExporter) RecordMCPOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
 	m.mcpClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordA2AOperationDuration records the duration of one A2A (Agent Gateway) operation
+func (m *MetricsExporter) RecordA2AOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.a2aClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
 // RecordHTTPRequest records an HTTP request metric

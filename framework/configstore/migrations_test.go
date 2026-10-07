@@ -1288,6 +1288,8 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 		&tables.TableVirtualKeyMCPConfig{},
 		&tables.TableNotification{},
 		&tables.TableWarpConfig{},
+		&tables.TableAgentRegistration{},
+		&tables.TableVirtualKeyAgentGrant{},
 	}
 
 	migrator := db.Migrator()
@@ -1295,6 +1297,34 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 		assert.True(t, migrator.HasTable(table), "table should exist: %T", table)
 	}
 	assert.True(t, migrator.HasColumn(&tables.TableModelPricing{}, "is_deprecated"), "model pricing is_deprecated column should exist")
+	assert.False(t, migrator.HasColumn(&tables.TableVirtualKey{}, "agent_grants"), "agent_grants is a has-many association, not a database column")
+}
+
+func TestMigrationAddAgentGatewayTables_UpgradesExistingDatabase(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// The shipped foundational migration must not create Agent Gateway tables.
+	require.NoError(t, migrationInit(ctx, db, testMigrationLogger))
+	require.False(t, db.Migrator().HasTable(&tables.TableAgentRegistration{}), "init must not create Agent Gateway tables")
+	require.False(t, db.Migrator().HasTable(&tables.TableVirtualKeyAgentGrant{}), "init must not create Agent Gateway tables")
+
+	require.NoError(t, migrationAddAgentGatewayTables(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasTable(&tables.TableAgentRegistration{}))
+	require.True(t, db.Migrator().HasTable(&tables.TableVirtualKeyAgentGrant{}))
+	require.True(t, db.Migrator().HasTable(&tables.TableAgentPushConfig{}))
+	require.True(t, db.Migrator().HasTable(&tables.TableAgentPushDelivery{}))
+	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "extension_uris"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "forward_accepted_credential_overrides_auth"))
+
+	var grantDDL string
+	require.NoError(t, db.Raw("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", tables.TableVirtualKeyAgentGrant{}.TableName()).Scan(&grantDDL).Error)
+	assert.Contains(t, grantDDL, "REFERENCES", "grant table should carry foreign key constraints")
+	assert.Contains(t, grantDDL, "ON DELETE CASCADE", "grant table foreign keys should cascade on delete")
+
+	// Re-running is a no-op on an already upgraded database.
+	require.NoError(t, migrationAddAgentGatewayTables(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasTable(&tables.TableVirtualKeyAgentGrant{}))
 }
 
 func TestTriggerMigrations_Idempotent(t *testing.T) {
@@ -2340,6 +2370,58 @@ func TestMigrationAddCompatAzureDeepseekColumn(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.True(t, rows[0].CompatAzureDeepseek, "existing rows must keep the conversion enabled")
+}
+
+func TestMigrationAddMCPCodeModeLimitsClientColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+
+	// Simulate the pre-migration schema
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "mcp_code_mode_limits_json"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "mcp_code_mode_limits_json"))
+
+	require.NoError(t, migrationAddMCPCodeModeLimitsClientColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "mcp_code_mode_limits_json"))
+
+	// Idempotent: a second run on an already-migrated schema is a no-op.
+	require.NoError(t, migrationAddMCPCodeModeLimitsClientColumn(ctx, db, testMigrationLogger))
+}
+
+func TestMigrationAddCompatForceReasoningOnlyModelsToResponsesColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	err = db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+
+	// Simulate the pre-migration schema
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "compat_force_reasoning_only_models_to_responses"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "compat_force_reasoning_only_models_to_responses"))
+
+	now := time.Now()
+	require.NoError(t, db.Exec(`INSERT INTO config_client (created_at, updated_at) VALUES (?, ?)`, now, now).Error)
+
+	require.NoError(t, migrationAddCompatForceReasoningOnlyModelsToResponsesColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "compat_force_reasoning_only_models_to_responses"))
+	require.NoError(t, migrationBackfillCompatForceReasoningOnlyModelsToResponses(ctx, db, testMigrationLogger))
+
+	type row struct {
+		CompatForceReasoningOnlyModelsToResponses bool `gorm:"column:compat_force_reasoning_only_models_to_responses"`
+	}
+	var rows []row
+	require.NoError(t, db.Table("config_client").Select("compat_force_reasoning_only_models_to_responses").Order("id").Find(&rows).Error)
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].CompatForceReasoningOnlyModelsToResponses, "existing rows must have the toggle on by default")
 }
 
 // setupCalendarAlignedPreMigrationDB creates a SQLite DB with governance_virtual_keys,
@@ -4296,6 +4378,21 @@ func TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable(t *te
 	require.NoError(t, db.First(&got, "id = ?", seed.ID).Error)
 	require.NotNil(t, got.DisableContentLogging)
 	assert.True(t, *got.DisableContentLogging, "the surviving decision must be untouched")
+}
+
+func TestMigrationAddAgentGatewayTables_NonRollbackable(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, migrationAddAgentGatewayTables(context.Background(), db, testMigrationLogger))
+
+	err := rollbackAgentGatewayTables(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasTable(&tables.TableAgentRegistration{}))
+	assert.True(t, db.Migrator().HasTable(&tables.TableVirtualKeyAgentGrant{}))
+	assert.True(t, db.Migrator().HasTable(&tables.TableAgentPushConfig{}))
+	assert.True(t, db.Migrator().HasTable(&tables.TableAgentPushDelivery{}))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "A2AExternalClientURL"))
 }
 
 // TestMigrationAddWarpAPIKeyIDColumn_NonRollbackable pins that rolling Warp's

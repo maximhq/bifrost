@@ -97,7 +97,7 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 }
 
 // RoutingCallCost calculates the cost of one routing-classification call — a
-// semantic embed, LLM completion, or Jev decision. Exported so
+// semantic embed, LLM completion, or decision-model call. Exported so
 // telemetry can price each call independently and unconditionally, while
 // CalculateCost folds a call's cost into the request's cost only when that
 // call's CountTowardBudgets is set. If scopes is nil, an empty LookupScopes is
@@ -649,6 +649,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
 		cost = computeContainerCreationCost(pricing)
+	case schemas.LiveRequest:
+		cost = computeLiveCost(pricing, input.audioSeconds)
 	default:
 		return nil
 	}
@@ -666,8 +668,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	// the resolved pricing row carries one. It maps to no token category, so it
 	// folds into the input side (InputCostDetails.RequestCost) and the total.
 	// Deliberately added after the off-peak scaling: a flat per-request fee is
-	// not a usage charge and is not discounted.
-	if pricing.CostPerRequest != nil {
+	// not a usage charge and is not discounted. A live billing window is not a request.
+	if pricing.CostPerRequest != nil && requestType != schemas.LiveRequest {
 		if cost == nil {
 			cost = &schemas.BifrostCost{}
 		}
@@ -1709,6 +1711,16 @@ func videoResolutionBand(size string) int {
 	return min(width, height)
 }
 
+// computeLiveCost bills GPT Live voice duration: session seconds × input_cost_per_second.
+// Backend model tokens are priced separately as Responses usage.
+func computeLiveCost(pricing *configstoreTables.TableModelPricing, seconds *float64) *schemas.BifrostCost {
+	if seconds == nil || *seconds <= 0 || pricing.InputCostPerSecond == nil {
+		return nil
+	}
+	cost := *seconds * *pricing.InputCostPerSecond
+	return newInputOutputCostWithDetails(cost, 0, &schemas.InputCostDetails{AudioCost: cost}, nil)
+}
+
 // computeOCRCost handles OCR requests, billing per page processed.
 // ocr_cost_per_page covers base processing; annotation_cost_per_page is added when set.
 func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPages *int, ocrIsAnnotated *bool) *schemas.BifrostCost {
@@ -2225,6 +2237,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 //   - Bedrock Mantle: folded onto the "bedrock" provider up front (datasheet rows for all Bedrock variants are stored there), so it shares every Bedrock fallback.
 //   - All providers: chat and responses requests retry in each other's mode, since a model served over both APIs often has a datasheet row under only one of them.
 //   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
+//   - All providers: live requests retry in "realtime" mode, where the datasheet feed files GPT Live models.
 //
 // The method acquires a read lock for the duration of the lookup.
 //
@@ -2332,6 +2345,15 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	if hasFallbackMode {
 		s.logger.Debug("primary lookup failed, trying the same model in %s mode", fallbackMode)
 		pricing, ok = s.pricingData[makeKey(model, provider, fallbackMode)]
+		if ok {
+			return &pricing, true
+		}
+	}
+
+	// The feed files GPT Live models under the Realtime API's mode.
+	if requestType == schemas.LiveRequest {
+		s.logger.Debug("primary lookup failed, trying realtime mode for the same live model")
+		pricing, ok = s.pricingData[makeKey(model, provider, "realtime")]
 		if ok {
 			return &pricing, true
 		}

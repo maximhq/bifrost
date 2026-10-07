@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/internal/memtest"
+	"github.com/maximhq/bifrost/core/keyselectors"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/text/cases"
@@ -564,6 +565,32 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
+	}
+}
+
+// TestCreateBaseProvider_CustomTypesafeBase pins that typesafe is accepted as a
+// custom provider base and that the provider answers to the custom name, while
+// a base outside SupportedBaseProviders is still refused.
+func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	provider, err := bifrost.createBaseProvider("my-typesafe", &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", DefaultRequestTimeoutInSeconds: 1},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.Typesafe,
+		},
+	})
+	if err != nil {
+		t.Fatalf("typesafe must be a supported base provider: %v", err)
+	}
+	if provider.GetProviderKey() != schemas.ModelProvider("my-typesafe") {
+		t.Fatalf("expected custom provider key my-typesafe, got %q", provider.GetProviderKey())
+	}
+
+	_, err = bifrost.createBaseProvider("my-vertex", &schemas.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
+		t.Fatalf("vertex is not a supported base provider, got err=%v", err)
 	}
 }
 
@@ -1510,6 +1537,116 @@ func TestSelectKeyFromProviderForModel_VLLMAliasResolution(t *testing.T) {
 		}
 		if len(keys) != 1 || keys[0].ID != "vllm-a" {
 			t.Fatalf("got keys %v, want [vllm-a]", keys)
+		}
+	})
+}
+
+// affinityPrefers is a session policy that keeps a session on one key whenever that key is offered.
+type affinityPrefers struct{ id string }
+
+func (affinityPrefers) ResolveRoute(_ *schemas.BifrostContext, _ schemas.Route, chain []schemas.Route) []schemas.Route {
+	return chain
+}
+
+func (a affinityPrefers) ResolveKey(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, eligible []schemas.Key) (schemas.Key, bool) {
+	for _, key := range eligible {
+		if key.ID == a.id {
+			return key, true
+		}
+	}
+	return schemas.Key{}, false
+}
+
+func (affinityPrefers) Observe(*schemas.BifrostContext, schemas.Route, schemas.RouteOutcome) {}
+
+func TestSelectKeyForProviderRequestType_AdditionalModels(t *testing.T) {
+	account := NewMockAccount()
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError), keySelector: keyselectors.WeightedRandom}
+	newKey := func(id string, models schemas.WhiteList, blacklisted schemas.BlackList) schemas.Key {
+		return schemas.Key{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-" + id), Weight: 1, Models: models, BlacklistedModels: blacklisted}
+	}
+	voiceOnly := newKey("voice-only", schemas.WhiteList{"gpt-live-1"}, nil)
+	both := newKey("both", schemas.WhiteList{"gpt-live-1", "gpt-5.6-luna"}, nil)
+	backendOnly := newKey("backend-only", schemas.WhiteList{"gpt-5.6-luna"}, nil)
+	wildcardBlocked := newKey("wildcard-blocked", schemas.WhiteList{"*"}, schemas.BlackList{"gpt-5.6-luna"})
+
+	t.Run("selects only keys that serve every model", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly, both, backendOnly, wildcardBlocked})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		for range 20 {
+			key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna")
+			if err != nil {
+				t.Fatalf("SelectKeyForProviderRequestType: %v", err)
+			}
+			if key.ID != "both" {
+				t.Fatalf("selected %q, want both", key.ID)
+			}
+		}
+	})
+
+	t.Run("errors when no key serves every model", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly, backendOnly, wildcardBlocked})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna")
+		if err == nil || !strings.Contains(err.Error(), "gpt-live-1") || !strings.Contains(err.Error(), "gpt-5.6-luna") {
+			t.Fatalf("err = %v, want an error naming both models", err)
+		}
+	})
+
+	t.Run("pinned key must serve every model", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly, both})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "both")
+		if key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna"); err != nil || key.ID != "both" {
+			t.Fatalf("pinned both: key=%q err=%v", key.ID, err)
+		}
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "voice-only")
+		if key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna"); err == nil {
+			t.Fatalf("pinned voice-only: selected %q, want error", key.ID)
+		}
+	})
+
+	t.Run("session affinity picks among keys that serve every model", func(t *testing.T) {
+		// The session's last key serves only the voice model; another key serves both. Affinity
+		// must choose from the pool narrowed by every model, not rebind to the voice-only key.
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly, both})
+		sticky := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError), keySelector: keyselectors.WeightedRandom, sessionAffinity: affinityPrefers{id: "voice-only"}}
+		key, err := sticky.SelectKeyForProviderRequestType(sessionCtx("live-1"), schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna")
+		if err != nil || key.ID != "both" {
+			t.Fatalf("key=%q err=%v, want both", key.ID, err)
+		}
+	})
+
+	t.Run("empty additional model and no additional models keep single-model selection", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		for _, extra := range [][]string{nil, {""}} {
+			key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", extra...)
+			if err != nil || key.ID != "voice-only" {
+				t.Fatalf("additional=%v: key=%q err=%v", extra, key.ID, err)
+			}
+		}
+	})
+
+	t.Run("KeySupportsModel applies the same rules to a pinned session key", func(t *testing.T) {
+		if !bifrost.KeySupportsModel(schemas.OpenAI, both, "gpt-5.6-luna") {
+			t.Fatal("key listing the model should support it")
+		}
+		if bifrost.KeySupportsModel(schemas.OpenAI, voiceOnly, "gpt-5.6-luna") {
+			t.Fatal("key not listing the model should not support it")
+		}
+		if bifrost.KeySupportsModel(schemas.OpenAI, wildcardBlocked, "gpt-5.6-luna") {
+			t.Fatal("deny list must win over a wildcard allow list")
+		}
+	})
+
+	t.Run("direct key bypasses model lists", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct", Value: *schemas.NewSecretVar("sk-direct")})
+		key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna")
+		if err != nil || key.ID != "direct" {
+			t.Fatalf("key=%q err=%v, want direct", key.ID, err)
 		}
 	})
 }
@@ -3837,6 +3974,32 @@ func TestApplyRawCaptureSignals_RunsAfterPassthroughClear(t *testing.T) {
 				t.Error("DropRawResponseFromClient = true, want false (store is off)")
 			}
 		})
+	}
+}
+
+// TestApplyProviderProxySignal_RewritesPerAttempt pins that each attempt publishes its
+// own provider's proxy, so a fallback from a proxied provider (Vertex behind a corporate
+// proxy) to a directly reachable one (Bedrock over a VPC endpoint) does not send the
+// fallback's URL fetches through the first provider's proxy.
+func TestApplyProviderProxySignal_RewritesPerAttempt(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	vertexProxy := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://10.0.0.9:3128")}
+
+	applyProviderProxySignal(ctx, &schemas.ProviderConfig{ProxyConfig: vertexProxy})
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != vertexProxy {
+		t.Fatalf("primary attempt: proxy = %v, want the Vertex proxy", got)
+	}
+
+	applyProviderProxySignal(ctx, &schemas.ProviderConfig{})
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != nil {
+		t.Fatalf("fallback attempt: proxy = %v, want nil (the fallback has no proxy)", got)
+	}
+
+	ctx.BlockRestrictedWrites()
+	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, vertexProxy)
+	ctx.UnblockRestrictedWrites()
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != nil {
+		t.Fatal("a plugin write must not be able to redirect provider fetches through another proxy")
 	}
 }
 

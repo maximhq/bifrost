@@ -29,7 +29,8 @@ export default function CompatibilityView() {
 			localCompatConfig.convert_chat_to_responses !== baseline.convert_chat_to_responses ||
 			localCompatConfig.should_drop_params !== baseline.should_drop_params ||
 			localCompatConfig.should_convert_params !== baseline.should_convert_params ||
-			(localCompatConfig.azure_deepseek ?? true) !== (baseline.azure_deepseek ?? true)
+			(localCompatConfig.azure_deepseek ?? true) !== (baseline.azure_deepseek ?? true) ||
+			(localCompatConfig.force_reasoning_only_models_to_responses ?? true) !== (baseline.force_reasoning_only_models_to_responses ?? true)
 		);
 	}, [config, localCompatConfig]);
 
@@ -158,6 +159,26 @@ export default function CompatibilityView() {
 						size="md"
 						checked={localCompatConfig.azure_deepseek ?? true}
 						onCheckedChange={(checked) => handleCompatChange("azure_deepseek", checked)}
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				<div className="flex items-center justify-between space-x-2">
+					<div className="space-y-0.5">
+						<label htmlFor="compat-force-reasoning-only-models-to-responses" className="text-sm font-medium">
+							Use Responses API for reasoning only OpenAI models
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Route chat completion requests to the Responses API for models that cannot reason with tool calls on chat completions, instead
+							of turning reasoning off.
+						</p>
+					</div>
+					<Switch
+						id="compat-force-reasoning-only-models-to-responses"
+						data-testid="compat-force-reasoning-only-models-to-responses"
+						size="md"
+						checked={localCompatConfig.force_reasoning_only_models_to_responses ?? true}
+						onCheckedChange={(checked) => handleCompatChange("force_reasoning_only_models_to_responses", checked)}
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>
