@@ -183,6 +183,7 @@ export interface VirtualKeyMCPConfig {
 		connection_type: string;
 		connection_string?: string;
 		tools_to_execute: string[];
+		disabled?: boolean;
 		created_at: string;
 		updated_at: string;
 	};

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,6 +61,8 @@ type HybridLogStore struct {
 	pendingBytes   atomic.Int64
 	// excludedPayloadFields is the set of payload field names (DB column names) that must NOT be offloaded to object storage and must remain in the DB.
 	excludedPayloadFields map[string]struct{}
+	// excludedRequestTypes is the set of log object types that are never offloaded; their rows stay complete in the DB.
+	excludedRequestTypes map[string]struct{}
 }
 
 type scopedDBLogStore interface {
@@ -69,11 +72,18 @@ type scopedDBLogStore interface {
 // newHybridLogStore creates a HybridLogStore wrapping the given inner store.
 // excludeFields lists payload field DB column names that should be kept in the
 // database rather than offloaded to object storage. Pass nil for the default
-// behaviour of offloading all payload fields.
-func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix string, logger schemas.Logger, excludeFields []string) *HybridLogStore {
+// behaviour of offloading all payload fields. excludeRequestTypes lists log
+// object types whose rows are written to the DB unchanged and never uploaded.
+func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix string, logger schemas.Logger, excludeFields []string, excludeRequestTypes []string) *HybridLogStore {
 	excluded := make(map[string]struct{}, len(excludeFields))
 	for _, f := range excludeFields {
 		excluded[f] = struct{}{}
+	}
+	excludedTypes := make(map[string]struct{}, len(excludeRequestTypes))
+	for _, t := range excludeRequestTypes {
+		if t = strings.TrimSpace(t); t != "" {
+			excludedTypes[t] = struct{}{}
+		}
 	}
 	h := &HybridLogStore{
 		inner:                 inner,
@@ -82,6 +92,7 @@ func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix s
 		logger:                logger,
 		uploadQueue:           make(chan *uploadWork, defaultUploadQueueSize),
 		excludedPayloadFields: excluded,
+		excludedRequestTypes:  excludedTypes,
 	}
 	// Start upload workers.
 	for i := 0; i < defaultUploadWorkers; i++ {
@@ -339,7 +350,22 @@ func (h *HybridLogStore) extractUploadPayload(entry *Log) map[string]string {
 	return ExtractPayloadFiltered(entry, h.excludedPayloadFields)
 }
 
+// skipsOffload reports whether entry's request type is excluded from object
+// storage. Excluded entries are written to the inner store unchanged, which
+// builds their content summary on write. Hidden entries are always offloaded:
+// their content may only live in object storage, never in the DB row.
+func (h *HybridLogStore) skipsOffload(entry *Log) bool {
+	if entry.ContentHidden {
+		return false
+	}
+	_, ok := h.excludedRequestTypes[entry.Object]
+	return ok
+}
+
 func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
+	if h.skipsOffload(entry) {
+		return h.inner.Create(ctx, entry)
+	}
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
@@ -360,6 +386,9 @@ func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 // same ID exists, then offloads the full payload to object storage on insert.
 // Same payload-stripping and shallow-copy semantics as Create.
 func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
+	if h.skipsOffload(entry) {
+		return h.inner.CreateIfNotExists(ctx, entry)
+	}
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
@@ -395,6 +424,11 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 	origEntries := make([]*Log, 0, len(entries))
 	for _, entry := range entries {
 		if entry == nil {
+			continue
+		}
+		if h.skipsOffload(entry) {
+			dbEntries = append(dbEntries, entry)
+			origEntries = append(origEntries, entry)
 			continue
 		}
 		if err := entry.SerializeFields(); err != nil {
