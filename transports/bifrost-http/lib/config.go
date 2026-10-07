@@ -3389,38 +3389,49 @@ type virtualKeyMatches struct {
 
 // matchConfigVirtualKeys pairs config.json virtual key entries with stored rows.
 //
-// An entry with an id matches by id only. An entry without one falls back to its name: names are
-// unique per owner (team, customer, business unit, or none), so the stored key with the same name
-// and owner is the match. Both of those claim their row first, so no other entry can take it.
+// An entry with an id matches by id only, and those matches claim their rows first. An entry
+// without an id then falls back to its name: names are unique per owner (team, customer, business
+// unit, or none), so the unclaimed stored key with the same name and owner is the match, and it
+// claims that row. A row already claimed by an id match (for example a key renamed by id) is never
+// taken by an id-less entry still using its old name; that entry is a new key.
 //
 // An entry still unmatched after that may take the one remaining unclaimed key with its name, as it
 // would have when names were globally unique (e.g. the key's owner was changed in the UI), but only
 // when it is the only unmatched entry with that name: another owner's entry for the same name never
-// lands on a key that is already spoken for. With several unclaimed candidates, or several unmatched
-// entries competing for one, the entry is ambiguous and must set its id.
+// lands on a key that is already spoken for. The entry is ambiguous, and must set its id, when
+// several unclaimed keys have its name, or when several unmatched entries want the one that does.
 func matchConfigVirtualKeys(stored, entries []configstoreTables.TableVirtualKey) virtualKeyMatches {
 	m := virtualKeyMatches{
 		idx:       make([]int, len(entries)),
 		ambiguous: make([]bool, len(entries)),
 	}
 	claimed := make(map[int]bool, len(entries))
+	// Id matches claim their rows first, so a row renamed by id can't also be taken by an id-less
+	// entry that still uses its old name.
 	for i, entry := range entries {
 		m.idx[i] = -1
+		if entry.ID == "" {
+			continue
+		}
 		for j := range stored {
-			if entry.ID != "" {
-				if stored[j].ID == entry.ID {
-					m.idx[i] = j
-					break
-				}
-				continue
-			}
-			if stored[j].Name == entry.Name && sameVirtualKeyOwner(stored[j], entry) {
+			if stored[j].ID == entry.ID {
 				m.idx[i] = j
+				claimed[j] = true
 				break
 			}
 		}
-		if m.idx[i] >= 0 {
-			claimed[m.idx[i]] = true
+	}
+	// Then id-less entries take the unclaimed row with their name and owner.
+	for i, entry := range entries {
+		if entry.ID != "" {
+			continue
+		}
+		for j := range stored {
+			if !claimed[j] && stored[j].Name == entry.Name && sameVirtualKeyOwner(stored[j], entry) {
+				m.idx[i] = j
+				claimed[j] = true
+				break
+			}
 		}
 	}
 	unmatched := make(map[string][]int)
@@ -3450,11 +3461,12 @@ func matchConfigVirtualKeys(stored, entries []configstoreTables.TableVirtualKey)
 	return m
 }
 
-// ambiguousConfigVirtualKeysError returns an error naming every id-less config.json virtual key whose
-// name matches several stored keys that are not its owner's, or nil when there is none. Bifrost
-// cannot tell which stored key such an entry means: updating one would take over another owner's
-// key, and keeping or skipping them would leave keys live that the file no longer declares. So the
-// sync stops until the operator sets the entry's id.
+// ambiguousConfigVirtualKeysError returns an error naming every ambiguous id-less config.json
+// virtual key (see matchConfigVirtualKeys: its name matches several unclaimed keys of other owners,
+// or several id-less entries want the one such key), or nil when there is none. Bifrost cannot tell
+// which stored key such an entry means: updating one would take over another owner's key, and
+// keeping or skipping them would leave keys live that the file no longer declares. So the sync
+// stops until the operator sets the entry's id.
 func ambiguousConfigVirtualKeysError(entries []configstoreTables.TableVirtualKey, m virtualKeyMatches) error {
 	var names []string
 	for i, entry := range entries {
@@ -3465,7 +3477,7 @@ func ambiguousConfigVirtualKeysError(entries []configstoreTables.TableVirtualKey
 	if len(names) == 0 {
 		return nil
 	}
-	return fmt.Errorf("config.json virtual key %s has no id and its name matches more than one existing virtual key of other owners, so Bifrost cannot tell which key it refers to; set the entry's id to the key it should update (or to a new id to create one)", strings.Join(names, ", "))
+	return fmt.Errorf("config.json virtual key %s has no id, and its name matches existing virtual keys of other owners that more than one key or entry could claim, so Bifrost cannot tell which key it refers to; set the entry's id to the key it should update (or to a new id to create one)", strings.Join(names, ", "))
 }
 
 // checkConfigVirtualKeysResolvable fails the load when an id-less config.json virtual key is
@@ -4897,6 +4909,17 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
+		// Update virtual keys (config.json changed) before creating new ones: a key renamed by id
+		// frees its old name, which a new key in the same file may reuse under the per-owner index.
+		for _, virtualKey := range virtualKeysToUpdate {
+			if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, virtualKey.ID, virtualKey.ProviderConfigs, virtualKey.MCPConfigs); err != nil {
+				return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", virtualKey.ID, err)
+			}
+			if err := config.ConfigStore.UpdateVirtualKey(ctx, &virtualKey, tx); err != nil {
+				return fmt.Errorf("failed to update virtual key %s: %w", virtualKey.ID, err)
+			}
+		}
+
 		// Create virtual keys with explicit association handling
 		for i := range virtualKeysToAdd {
 			virtualKey := &virtualKeysToAdd[i]
@@ -4923,16 +4946,6 @@ func updateGovernanceConfigInStore(
 
 			virtualKey.ProviderConfigs = providerConfigs
 			virtualKey.MCPConfigs = mcpConfigs
-		}
-
-		// Update virtual keys (config.json changed)
-		for _, virtualKey := range virtualKeysToUpdate {
-			if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, virtualKey.ID, virtualKey.ProviderConfigs, virtualKey.MCPConfigs); err != nil {
-				return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", virtualKey.ID, err)
-			}
-			if err := config.ConfigStore.UpdateVirtualKey(ctx, &virtualKey, tx); err != nil {
-				return fmt.Errorf("failed to update virtual key %s: %w", virtualKey.ID, err)
-			}
 		}
 
 		// Create virtual-key-owned budgets after virtual keys exist.

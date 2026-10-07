@@ -2119,6 +2119,14 @@ func TestMatchConfigVirtualKeys(t *testing.T) {
 			wantIdx: []int{-1, 3},
 		},
 		{
+			// vk-ci-customer1 is renamed by id, and a new id-less ci key is declared for the same
+			// customer: the id match claims the row, so the id-less entry is a new key rather than a
+			// second claim on vk-ci-customer1.
+			name:    "id match claims the row before a same-owner name match",
+			entries: []tables.TableVirtualKey{{ID: "vk-ci-customer1", Name: "renamed", CustomerID: &customer1}, {Name: "ci", CustomerID: &customer1}},
+			wantIdx: []int{3, -1},
+		},
+		{
 			name:          "two id-less entries cannot both fall back to one lone key",
 			entries:       []tables.TableVirtualKey{{Name: "ci", TeamID: &team3}, {Name: "ci", TeamID: &team4}},
 			wantIdx:       []int{-1, -1},
@@ -2246,6 +2254,55 @@ func TestLoadConfig_AmbiguousVirtualKeyFailsBeforeAnyWrite(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, providers, schemas.OpenAI, "a failed load must not delete stored providers")
 	assert.NotContains(t, providers, schemas.Anthropic, "a failed load must not add providers")
+}
+
+// TestLoadConfig_RenamedVirtualKeyFreesItsNameForANewKey covers a reload that renames a key by id
+// and declares a new id-less key with the old name for the same team. The id match keeps vk-prod
+// (renamed), the id-less entry creates a new key, and the rename is written before the create so
+// the new key does not collide with the old name.
+func TestLoadConfig_RenamedVirtualKeyFreesItsNameForANewKey(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	team1 := "team-1"
+	first := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
+	}, tempDir)
+	first.Governance = &configstore.GovernanceConfig{
+		Teams:       []tables.TableTeam{{ID: team1, Name: "Team 1"}},
+		VirtualKeys: []tables.TableVirtualKey{{ID: "vk-prod", Name: "prod", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-old"), IsActive: new(true)}},
+	}
+	createConfigFile(t, tempDir, first)
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	second := first
+	second.Governance = &configstore.GovernanceConfig{
+		Teams: first.Governance.Teams,
+		VirtualKeys: []tables.TableVirtualKey{
+			{ID: "vk-prod", Name: "renamed", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-old"), IsActive: new(true)},
+			{Name: "prod", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-new"), IsActive: new(true)},
+		},
+	}
+	createConfigFile(t, tempDir, second)
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	keys, err := config2.ConfigStore.GetVirtualKeys(ctx)
+	require.NoError(t, err)
+	byName := map[string]*tables.TableVirtualKey{}
+	for i := range keys {
+		byName[keys[i].Name] = &keys[i]
+	}
+	require.Len(t, keys, 2, "the id-less entry must create a new key, not update vk-prod")
+	assert.Equal(t, "vk-prod", byName["renamed"].ID)
+	assert.Equal(t, "sk-bf-old", byName["renamed"].Value.GetValue())
+	require.Contains(t, byName, "prod")
+	assert.NotEqual(t, "vk-prod", byName["prod"].ID)
+	assert.Equal(t, "sk-bf-new", byName["prod"].Value.GetValue())
 }
 
 func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
