@@ -4711,3 +4711,225 @@ func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
 		t.Errorf("provider must receive state null, got bodies %v", bodies)
 	}
 }
+
+// requestScopedTestConfig is the configuration request-scoped provider instances are built with.
+func requestScopedTestConfig(allowPrivateNetwork bool) *schemas.ProviderConfig {
+	networkConfig := schemas.DefaultNetworkConfig
+	networkConfig.AllowPrivateNetwork = allowPrivateNetwork
+	networkConfig.LoopbackIsPrivate = true
+	return &schemas.ProviderConfig{
+		NetworkConfig:            networkConfig,
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
+	}
+}
+
+// TestRequestScopedProviderInstances builds every schemas.RequestScopedProvider implementer the
+// way request-scoped attempts do and pins that ForRequest returns the receiver without
+// allocating when there is no base URL, copies it for a base URL, and that the instance reaches
+// a loopback endpoint only when private networks are allowed.
+func TestRequestScopedProviderInstances(t *testing.T) {
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"test"}}`))
+	}))
+	defer server.Close()
+
+	baseURLKey := func(string) schemas.Key { return schemas.Key{ID: "k", Value: *schemas.NewSecretVar("sk-test")} }
+	tests := []struct {
+		provider schemas.ModelProvider
+		model    string
+		key      func(url string) schemas.Key
+		baseURL  func(url string) string // empty when the endpoint is on the key
+	}{
+		{provider: schemas.OpenAI, key: baseURLKey},
+		{provider: schemas.Anthropic, key: baseURLKey},
+		{provider: schemas.Gemini, key: baseURLKey, baseURL: func(url string) string { return url + "/v1beta" }},
+		{provider: schemas.Cohere, key: baseURLKey},
+		{provider: schemas.Cerebras, key: baseURLKey},
+		{provider: schemas.Groq, key: baseURLKey},
+		{provider: schemas.Mistral, key: baseURLKey},
+		{provider: schemas.Nebius, key: baseURLKey},
+		{provider: schemas.OpenRouter, key: baseURLKey},
+		{provider: schemas.Parasail, key: baseURLKey},
+		{provider: schemas.Perplexity, key: baseURLKey},
+		{provider: schemas.XAI, key: baseURLKey},
+		{provider: schemas.Replicate, key: baseURLKey},
+		{provider: schemas.HuggingFace, model: "org/model", key: baseURLKey},
+		{provider: schemas.Ollama, key: baseURLKey},
+		{provider: schemas.SGL, key: baseURLKey},
+		{provider: schemas.VLLM, key: func(url string) schemas.Key {
+			return schemas.Key{ID: "k", VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: *schemas.NewSecretVar(url)}}
+		}},
+		{provider: schemas.Azure, key: func(url string) schemas.Key {
+			return schemas.Key{ID: "k", Value: *schemas.NewSecretVar("sk-test"), AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar(url)}}
+		}},
+	}
+	b := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	for _, tt := range tests {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			endpointOnKey := tt.provider == schemas.VLLM || tt.provider == schemas.Azure
+			baseURL := ""
+			if !endpointOnKey {
+				baseURL = server.URL
+				if tt.baseURL != nil {
+					baseURL = tt.baseURL(server.URL)
+				}
+			}
+			model := tt.model
+			if model == "" {
+				model = "test-model"
+			}
+			key := tt.key(server.URL)
+			for _, allowPrivateNetwork := range []bool{true, false} {
+				instance, err := b.createBaseProvider(tt.provider, requestScopedTestConfig(allowPrivateNetwork))
+				if err != nil {
+					t.Fatalf("createBaseProvider: %v", err)
+				}
+				scopedProvider, ok := instance.(schemas.RequestScopedProvider)
+				if !ok {
+					t.Fatalf("%T does not implement schemas.RequestScopedProvider", instance)
+				}
+
+				same, err := scopedProvider.ForRequest(schemas.ChatCompletionRequest, key, "")
+				if err != nil || same != instance {
+					t.Fatalf("ForRequest without a base URL = (%p, %v), want the receiver %p", same, err, instance)
+				}
+				if allocs := testing.AllocsPerRun(100, func() { _, _ = scopedProvider.ForRequest(schemas.ChatCompletionRequest, key, "") }); allocs != 0 {
+					t.Errorf("ForRequest without a base URL: %v allocs, want 0", allocs)
+				}
+				attempt := same
+				if !endpointOnKey {
+					attempt, err = scopedProvider.ForRequest(schemas.ChatCompletionRequest, key, baseURL)
+					if err != nil || attempt == instance {
+						t.Fatalf("ForRequest with a base URL = (%p, %v), want a copy of %p", attempt, err, instance)
+					}
+					if attempt.GetProviderKey() != tt.provider {
+						t.Fatalf("copy reports provider %q", attempt.GetProviderKey())
+					}
+					if allocs := testing.AllocsPerRun(100, func() { _, _ = scopedProvider.ForRequest(schemas.ChatCompletionRequest, key, baseURL) }); allocs != 1 {
+						t.Errorf("ForRequest with a base URL: %v allocs, want 1", allocs)
+					}
+				}
+
+				before := hits.Load()
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				content := "hello"
+				_, bifrostErr := attempt.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+					Provider: tt.provider,
+					Model:    model,
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}}},
+					Params:   &schemas.ChatParameters{},
+				})
+				reached := hits.Load() - before
+				if allowPrivateNetwork {
+					if reached != 1 {
+						t.Fatalf("with private networks allowed the loopback endpoint was reached %d times, want 1 (error: %v)", reached, bifrostErr)
+					}
+					continue
+				}
+				if reached != 0 || bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Error == nil ||
+					!strings.Contains(bifrostErr.Error.Error.Error(), "private IP") {
+					t.Fatalf("without private networks the loopback endpoint must be refused at dial time: reached %d times, error %v", reached, bifrostErr)
+				}
+			}
+		})
+	}
+}
+
+// TestRequestScopedProviderRules pins the configurations each implementer refuses because it would
+// serve them with ambient credentials, per-credential caches or an endpoint it cannot honor, and
+// that providers without the interface cannot be configured per request.
+func TestRequestScopedProviderRules(t *testing.T) {
+	region := func(r string) *schemas.SecretVar { return schemas.NewSecretVar(r) }
+	azureKey := func(mutate func(*schemas.Key)) schemas.Key {
+		k := schemas.Key{Value: *schemas.NewSecretVar("az-key"), AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://x.openai.azure.com")}}
+		if mutate != nil {
+			mutate(&k)
+		}
+		return k
+	}
+	bedrockBearer := func(mutate func(*schemas.BedrockKeyConfig)) schemas.Key {
+		cfg := &schemas.BedrockKeyConfig{Region: region("us-east-1")}
+		if mutate != nil {
+			mutate(cfg)
+		}
+		return schemas.Key{Value: *schemas.NewSecretVar("bedrock-api-key"), BedrockKeyConfig: cfg}
+	}
+	bedrockStatic := schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+		AccessKey: *schemas.NewSecretVar("AKIAEXAMPLE"), SecretKey: *schemas.NewSecretVar("secret"), Region: region("eu-west-2"),
+	}}
+
+	tests := []struct {
+		name        string
+		provider    schemas.ModelProvider
+		requestType schemas.RequestType
+		key         schemas.Key
+		baseURL     string
+		wantErr     string
+	}{
+		{name: "openai keyless", provider: schemas.OpenAI, requestType: schemas.EmbeddingRequest},
+		{name: "openai batch", provider: schemas.OpenAI, requestType: schemas.BatchCreateRequest, key: schemas.Key{Value: *schemas.NewSecretVar("sk")}},
+		{name: "vllm base URL", provider: schemas.VLLM, requestType: schemas.ChatCompletionRequest, baseURL: "https://vllm.example.com", wantErr: "vllm_key_config.url"},
+		{name: "azure api key", provider: schemas.Azure, requestType: schemas.ResponsesRequest, key: azureKey(nil)},
+		{name: "azure base URL", provider: schemas.Azure, requestType: schemas.ChatCompletionRequest, key: azureKey(nil), baseURL: "https://x.example.com", wantErr: "not a base URL"},
+		{name: "azure no endpoint", provider: schemas.Azure, requestType: schemas.ChatCompletionRequest, key: azureKey(func(k *schemas.Key) { k.AzureKeyConfig = nil }), wantErr: "endpoint"},
+		{name: "azure no key", provider: schemas.Azure, requestType: schemas.ChatCompletionRequest, key: azureKey(func(k *schemas.Key) { k.Value = schemas.SecretVar{} }), wantErr: "API key"},
+		{name: "azure service principal", provider: schemas.Azure, requestType: schemas.ChatCompletionRequest, key: azureKey(func(k *schemas.Key) {
+			k.AzureKeyConfig.ClientID = schemas.NewSecretVar("client")
+		}), wantErr: "service principal"},
+		{name: "azure batch results", provider: schemas.Azure, requestType: schemas.BatchResultsRequest, key: azureKey(nil), wantErr: "ambient storage"},
+		{name: "bedrock bearer chat", provider: schemas.Bedrock, requestType: schemas.ChatCompletionRequest, key: bedrockBearer(nil)},
+		{name: "bedrock bearer rerank", provider: schemas.Bedrock, requestType: schemas.RerankRequest, key: bedrockBearer(nil)},
+		{name: "bedrock static batch", provider: schemas.Bedrock, requestType: schemas.BatchCreateRequest, key: bedrockStatic},
+		{name: "bedrock static file", provider: schemas.Bedrock, requestType: schemas.FileUploadRequest, key: bedrockStatic},
+		{name: "bedrock bearer batch", provider: schemas.Bedrock, requestType: schemas.BatchCreateRequest, key: bedrockBearer(nil), wantErr: "access key and secret key"},
+		{name: "bedrock bearer file", provider: schemas.Bedrock, requestType: schemas.FileListRequest, key: bedrockBearer(nil), wantErr: "access key and secret key"},
+		{name: "bedrock no credentials", provider: schemas.Bedrock, requestType: schemas.ChatCompletionRequest, key: schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{Region: region("us-east-1")}}, wantErr: "API key"},
+		{name: "bedrock no key config", provider: schemas.Bedrock, requestType: schemas.ChatCompletionRequest, key: schemas.Key{Value: *schemas.NewSecretVar("k")}, wantErr: "region"},
+		{name: "bedrock no region", provider: schemas.Bedrock, requestType: schemas.ChatCompletionRequest, key: bedrockBearer(func(c *schemas.BedrockKeyConfig) { c.Region = nil }), wantErr: "region"},
+		{name: "bedrock crafted region", provider: schemas.Bedrock, requestType: schemas.ChatCompletionRequest, key: bedrockBearer(func(c *schemas.BedrockKeyConfig) { c.Region = region("evil.com/#") }), wantErr: "region"},
+		{name: "bedrock crafted alias region", provider: schemas.Bedrock, requestType: schemas.ChatCompletionRequest, key: func() schemas.Key {
+			k := bedrockBearer(nil)
+			k.Aliases = schemas.KeyAliases{"m": {ModelID: "m", Region: region("evil.com/#")}}
+			return k
+		}(), wantErr: "alias regions"},
+		{name: "bedrock role", provider: schemas.Bedrock, requestType: schemas.ChatCompletionRequest, key: bedrockBearer(func(c *schemas.BedrockKeyConfig) { c.RoleARN = schemas.NewSecretVar("arn:aws:iam::1:role/r") }), wantErr: "role assumption"},
+		{name: "bedrock endpoints", provider: schemas.Bedrock, requestType: schemas.ChatCompletionRequest, key: bedrockBearer(func(c *schemas.BedrockKeyConfig) {
+			c.Endpoints = &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("vpce.example.com")}
+		}), wantErr: "endpoint overrides"},
+		{name: "bedrock base URL", provider: schemas.Bedrock, requestType: schemas.ChatCompletionRequest, key: bedrockBearer(nil), baseURL: "https://x.example.com", wantErr: "not a base URL"},
+	}
+	b := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			instance, err := b.createBaseProvider(tt.provider, requestScopedTestConfig(false))
+			if err != nil {
+				t.Fatalf("createBaseProvider: %v", err)
+			}
+			_, err = instance.(schemas.RequestScopedProvider).ForRequest(tt.requestType, tt.key, tt.baseURL)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ForRequest: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ForRequest error = %v, want one containing %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	// These fall back to ambient credentials or cache tokens per credential, so none of them
+	// can be configured per request.
+	for _, provider := range []schemas.ModelProvider{schemas.Vertex, schemas.BedrockMantle, schemas.Databricks, schemas.GithubCopilot} {
+		instance, err := b.createBaseProvider(provider, requestScopedTestConfig(false))
+		if err != nil {
+			t.Fatalf("createBaseProvider(%s): %v", provider, err)
+		}
+		if _, ok := instance.(schemas.RequestScopedProvider); ok {
+			t.Errorf("%s must not implement schemas.RequestScopedProvider", provider)
+		}
+	}
+}

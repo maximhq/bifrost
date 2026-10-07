@@ -198,7 +198,7 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialerFor(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	return &AzureProvider{
@@ -215,6 +215,26 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 // GetProviderKey returns the provider identifier for Azure.
 func (provider *AzureProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Azure
+}
+
+// ForRequest implements schemas.RequestScopedProvider. Azure is served with an API key and the
+// endpoint on the key only: an empty key would fall back to DefaultAzureCredential, service
+// principal credentials are cached per client, and batch results are read with ambient storage
+// credentials. The receiver is never copied, since it holds a sync.Map by value.
+func (provider *AzureProvider) ForRequest(requestType schemas.RequestType, key schemas.Key, baseURL string) (schemas.Provider, error) {
+	switch cfg := key.AzureKeyConfig; {
+	case baseURL != "":
+		return nil, errors.New("azure takes its endpoint from azure_key_config.endpoint, not a base URL")
+	case cfg == nil || cfg.Endpoint.GetValue() == "":
+		return nil, errors.New("azure requires azure_key_config.endpoint")
+	case key.Value.GetValue() == "":
+		return nil, errors.New("azure requires an API key")
+	case cfg.ClientID.GetValue() != "" || cfg.ClientSecret.GetValue() != "" || cfg.TenantID.GetValue() != "":
+		return nil, errors.New("azure service principal credentials are not supported, use an API key")
+	case requestType == schemas.BatchResultsRequest:
+		return nil, errors.New("azure batch results are read with ambient storage credentials")
+	}
+	return provider, nil
 }
 
 // listModelsByKey performs a list models request for a single key.

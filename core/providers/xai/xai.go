@@ -42,7 +42,7 @@ func NewXAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*XAI
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialerFor(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
@@ -64,6 +64,18 @@ func NewXAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*XAI
 // GetProviderKey returns the provider identifier for xAI.
 func (provider *XAIProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.XAI
+}
+
+// ForRequest implements schemas.RequestScopedProvider. The provider authenticates with the
+// key alone, so it serves every request type. A base URL yields a copy that shares the
+// receiver's clients.
+func (provider *XAIProvider) ForRequest(_ schemas.RequestType, _ schemas.Key, baseURL string) (schemas.Provider, error) {
+	if baseURL == "" {
+		return provider, nil
+	}
+	scoped := *provider
+	scoped.networkConfig.BaseURL = baseURL
+	return &scoped, nil
 }
 
 // ListModels performs a list models request to xAI's API.

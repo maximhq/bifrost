@@ -592,6 +592,20 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 // Dead connections are detected within ~25s (10 + 5*3), before the 30s
 // MaxIdleConnDuration expires and the connection is reused.
 func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthttp.Client {
+	return configureDialer(client, allowPrivateNetwork, false)
+}
+
+// ConfigureDialerFor is ConfigureDialer driven by a provider's network config. Besides
+// AllowPrivateNetwork it honors LoopbackIsPrivate, which Bifrost sets on the instances that
+// serve request-scoped configuration; providers implementing schemas.RequestScopedProvider
+// must build their dialers with it.
+func ConfigureDialerFor(client *fasthttp.Client, networkConfig schemas.NetworkConfig) *fasthttp.Client {
+	return configureDialer(client, networkConfig.AllowPrivateNetwork, networkConfig.LoopbackIsPrivate)
+}
+
+// configureDialer implements ConfigureDialer. Loopback addresses are always reachable unless
+// loopbackIsPrivate is set, in which case they need allowPrivateNetwork like RFC 1918 ones.
+func configureDialer(client *fasthttp.Client, allowPrivateNetwork, loopbackIsPrivate bool) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
 
@@ -666,8 +680,9 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 				if network.IsLinkLocal(ip) {
 					return nil, fmt.Errorf("connection to link-local IP %s is not allowed", ip)
 				}
-				// RFC 1918 blocked unless operator explicitly opted in; loopback always allowed
-				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
+				// RFC 1918 blocked unless operator explicitly opted in; loopback allowed
+				// unless the client was built with loopbackIsPrivate
+				if (loopbackIsPrivate || !ip.IsLoopback()) && !allowPrivateNetwork && network.IsPrivateIP(ip) {
 					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
 				}
 				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
