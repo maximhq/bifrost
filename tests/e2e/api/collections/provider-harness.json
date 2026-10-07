@@ -208536,6 +208536,174 @@
           }
         }
       ]
+    },
+    {
+      "name": "183. Claude Haiku 5.5 bills prompts over 100k tokens at its long-context rates (haiku-100k-pricing-tier)",
+      "description": "Claude Haiku 5.5 is priced by prompt length: once a prompt exceeds 100,000 tokens (input plus cache reads and writes), every token category in that request bills at the higher rate (input $0.50, output $2.50, 5m cache write $0.625, 1h cache write $1, cache read $0.05 per MTok vs $0.10 / $0.50 / $0.125 / $0.20 / $0.01 at or under 100k; https://platform.claude.com/docs/en/about-claude/pricing). The datasheet publishes these as *_above_100k_tokens keys, which the cost engine previously dropped, so a long Haiku 5.5 prompt billed at the base rate (one fifth of the real cost). Each case sends a chat completion through anthropic, polls GET /api/logs/{x-request-id}, and asserts cost_breakdown.total_cost equals the cost derived from the response usage at the tier's published rates. The under-100k case pins the base tier; the over-100k case is red before the fix (logged cost is one fifth of expected).",
+      "item": [
+        {
+          "name": "Logged cost uses base rates at or under 100k prompt tokens - anthropic/claude-haiku-5-5",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: done.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'haiku 100k pricing tier (base)';",
+                  "var ABOVE_100K = false;",
+                  "var RATES = { input: 1e-7, output: 5e-7, cacheWrite5m: 1.25e-7, cacheWrite1h: 2e-7, cacheRead: 1e-8 };",
+                  "pm.test(LABEL + ': request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "var u = body.usage || {};",
+                  "var d = u.prompt_tokens_details || {};",
+                  "var read = d.cached_read_tokens || 0;",
+                  "var write = d.cached_write_tokens || 0;",
+                  "var write1h = (d.cached_write_token_details || {}).cached_write_tokens_1h || 0;",
+                  "var expected = (u.prompt_tokens - read - write) * RATES.input + read * RATES.cacheRead + (write - write1h) * RATES.cacheWrite5m + write1h * RATES.cacheWrite1h + u.completion_tokens * RATES.output;",
+                  "pm.test(LABEL + ': prompt lands in the tier under test', function () {",
+                  "  pm.expect(u.prompt_tokens, 'usage: ' + JSON.stringify(u)).to.be.a('number');",
+                  "  if (ABOVE_100K) { pm.expect(u.prompt_tokens, 'prompt must exceed 100k tokens (raise the line count in the pre-request script): ' + JSON.stringify(u)).to.be.above(100000); }",
+                  "  else { pm.expect(u.prompt_tokens, 'usage: ' + JSON.stringify(u)).to.be.within(1, 100000); }",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test(LABEL + ': x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var logHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET', header: logHeaders }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var cb = res.json().cost_breakdown;",
+                  "      pm.test(LABEL + ': logged cost matches the published Haiku 5.5 rates for this tier', function () {",
+                  "        pm.expect(cb, 'cost_breakdown: ' + res.text()).to.be.an('object');",
+                  "        pm.expect(cb.total_cost, 'expected ' + expected + ' for usage ' + JSON.stringify(u) + ', cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Logged cost uses above-100k rates for a prompt over 100k tokens - anthropic/claude-haiku-5-5",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"{{haikuLongPrompt}} Reply with the single word: done.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// About 13-15 tokens per line, so 10000 lines lands well over the 100k tier boundary.",
+                  "var lines = [];",
+                  "for (var i = 0; i < 10000; i++) { lines.push('Line ' + i + ': the quick brown fox jumps over the lazy dog.'); }",
+                  "pm.variables.set('haikuLongPrompt', lines.join(' '));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'haiku 100k pricing tier (above)';",
+                  "var ABOVE_100K = true;",
+                  "var RATES = { input: 5e-7, output: 2.5e-6, cacheWrite5m: 6.25e-7, cacheWrite1h: 1e-6, cacheRead: 5e-8 };",
+                  "pm.test(LABEL + ': request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "var u = body.usage || {};",
+                  "var d = u.prompt_tokens_details || {};",
+                  "var read = d.cached_read_tokens || 0;",
+                  "var write = d.cached_write_tokens || 0;",
+                  "var write1h = (d.cached_write_token_details || {}).cached_write_tokens_1h || 0;",
+                  "var expected = (u.prompt_tokens - read - write) * RATES.input + read * RATES.cacheRead + (write - write1h) * RATES.cacheWrite5m + write1h * RATES.cacheWrite1h + u.completion_tokens * RATES.output;",
+                  "pm.test(LABEL + ': prompt lands in the tier under test', function () {",
+                  "  pm.expect(u.prompt_tokens, 'usage: ' + JSON.stringify(u)).to.be.a('number');",
+                  "  if (ABOVE_100K) { pm.expect(u.prompt_tokens, 'prompt must exceed 100k tokens (raise the line count in the pre-request script): ' + JSON.stringify(u)).to.be.above(100000); }",
+                  "  else { pm.expect(u.prompt_tokens, 'usage: ' + JSON.stringify(u)).to.be.within(1, 100000); }",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test(LABEL + ': x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var logHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET', header: logHeaders }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var cb = res.json().cost_breakdown;",
+                  "      pm.test(LABEL + ': logged cost matches the published Haiku 5.5 rates for this tier', function () {",
+                  "        pm.expect(cb, 'cost_breakdown: ' + res.text()).to.be.an('object');",
+                  "        pm.expect(cb.total_cost, 'expected ' + expected + ' for usage ' + JSON.stringify(u) + ', cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
     }
   ]
 }

@@ -121035,6 +121035,14 @@
             "type": "number",
             "minimum": 0
           },
+          "input_cost_per_token_above_100k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_above_100k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
           "input_cost_per_token_above_200k_tokens": {
             "type": "number",
             "minimum": 0
@@ -121108,6 +121116,18 @@
             "minimum": 0
           },
           "cache_creation_input_token_cost_above_1hr_above_200k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_above_100k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_token_cost_above_100k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_above_1hr_above_100k_tokens": {
             "type": "number",
             "minimum": 0
           },
