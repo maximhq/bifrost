@@ -2,6 +2,7 @@ import { registerReservedMetadataPrefix } from "@/lib/registries/logs";
 import { describe, expect, it } from "vitest";
 import {
 	extractProviderErrorMessage,
+	findLastPendingClientCallIndex,
 	hasNoToolArguments,
 	isClientToolCallItem,
 	nextSessionLookupStart,
@@ -160,10 +161,51 @@ describe("isClientToolCallItem", () => {
 		// back as computer_call_output / local_shell_call_output next request.
 		expect(isClientToolCallItem("computer_call")).toBe(true);
 		expect(isClientToolCallItem("local_shell_call")).toBe(true);
+		expect(isClientToolCallItem("shell_call")).toBe(true);
+		expect(isClientToolCallItem("apply_patch_call")).toBe(true);
+		expect(isClientToolCallItem("shell_call_output")).toBe(false);
 		expect(isClientToolCallItem("computer_call_output")).toBe(false);
 		expect(isClientToolCallItem("web_search_call")).toBe(false);
 		expect(isClientToolCallItem("function_call_output")).toBe(false);
 		expect(isClientToolCallItem(undefined)).toBe(false);
+	});
+});
+
+describe("findLastPendingClientCallIndex", () => {
+	const input = { msg: { type: "message" as const, role: "user" as const }, fromOutput: false };
+
+	it("links under a local shell_call, whose result comes in the next request", () => {
+		const entries = [input, { msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(1);
+	});
+
+	it("links under an apply_patch_call", () => {
+		const entries = [input, { msg: { type: "apply_patch_call" as const, call_id: "call_ap" }, fromOutput: true }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(1);
+	});
+
+	it("picks the last pending call when the response made several", () => {
+		const entries = [
+			input,
+			{ msg: { type: "function_call" as const, call_id: "call_fn" }, fromOutput: true },
+			{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true },
+			{ msg: { type: "message" as const, role: "assistant" as const }, fromOutput: true },
+		];
+		expect(findLastPendingClientCallIndex(entries)).toBe(2);
+	});
+
+	it("skips a hosted shell_call whose output is already in the response", () => {
+		const entries = [
+			input,
+			{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true },
+			{ msg: { type: "shell_call_output" as const, call_id: "call_sh" }, fromOutput: true },
+		];
+		expect(findLastPendingClientCallIndex(entries)).toBe(-1);
+	});
+
+	it("ignores calls replayed in the input", () => {
+		const entries = [{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: false }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(-1);
 	});
 });
 

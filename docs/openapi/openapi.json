@@ -81782,7 +81782,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get complexity analyzer config",
-        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and Jev settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.",
+        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.",
         "tags": [
           "Routing"
         ],
@@ -81815,7 +81815,7 @@
                           ],
                           "properties": {
                             "classifier": {
-                              "const": "jev"
+                              "const": "decision"
                             }
                           }
                         },
@@ -81936,7 +81936,7 @@
                       "type": "string",
                       "enum": [
                         "semantic",
-                        "jev"
+                        "decision"
                       ],
                       "default": "semantic",
                       "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
@@ -82002,17 +82002,25 @@
                           "enum": [
                             "none",
                             "llm",
-                            "jev"
+                            "decision"
                           ],
-                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `decision` uses the configured decision model.\n"
                         }
                       }
                     },
-                    "jev": {
+                    "decision": {
                       "type": "object",
-                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
                       "additionalProperties": false,
                       "properties": {
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                        },
                         "previous_message_count": {
                           "type": "integer",
                           "minimum": 0,
@@ -82021,7 +82029,7 @@
                           "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
                         },
                         "timeout": {
-                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "description": "Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
                           "oneOf": [
                             {
                               "type": "string",
@@ -82035,7 +82043,7 @@
                         },
                         "criteria": {
                           "type": "object",
-                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
                           "additionalProperties": false,
                           "properties": {
                             "SIMPLE": {
@@ -82225,7 +82233,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update complexity analyzer config",
-        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. Jev can be selected as the primary classifier or semantic fallback and uses configured Typesafe provider credentials.",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials.",
         "tags": [
           "Routing"
         ],
@@ -82249,7 +82257,7 @@
                         ],
                         "properties": {
                           "classifier": {
-                            "const": "jev"
+                            "const": "decision"
                           }
                         }
                       },
@@ -82370,7 +82378,7 @@
                     "type": "string",
                     "enum": [
                       "semantic",
-                      "jev"
+                      "decision"
                     ],
                     "default": "semantic",
                     "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
@@ -82436,17 +82444,25 @@
                         "enum": [
                           "none",
                           "llm",
-                          "jev"
+                          "decision"
                         ],
-                        "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                        "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `decision` uses the configured decision model.\n"
                       }
                     }
                   },
-                  "jev": {
+                  "decision": {
                     "type": "object",
-                    "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                    "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
                     "additionalProperties": false,
                     "properties": {
+                      "provider": {
+                        "type": "string",
+                        "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                      },
+                      "model": {
+                        "type": "string",
+                        "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                      },
                       "previous_message_count": {
                         "type": "integer",
                         "minimum": 0,
@@ -82455,7 +82471,7 @@
                         "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
                       },
                       "timeout": {
-                        "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                        "description": "Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
                         "oneOf": [
                           {
                             "type": "string",
@@ -82469,7 +82485,7 @@
                       },
                       "criteria": {
                         "type": "object",
-                        "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                        "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
                         "additionalProperties": false,
                         "properties": {
                           "SIMPLE": {
@@ -82660,7 +82676,7 @@
                           ],
                           "properties": {
                             "classifier": {
-                              "const": "jev"
+                              "const": "decision"
                             }
                           }
                         },
@@ -82781,7 +82797,7 @@
                       "type": "string",
                       "enum": [
                         "semantic",
-                        "jev"
+                        "decision"
                       ],
                       "default": "semantic",
                       "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
@@ -82847,17 +82863,25 @@
                           "enum": [
                             "none",
                             "llm",
-                            "jev"
+                            "decision"
                           ],
-                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `decision` uses the configured decision model.\n"
                         }
                       }
                     },
-                    "jev": {
+                    "decision": {
                       "type": "object",
-                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
                       "additionalProperties": false,
                       "properties": {
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                        },
                         "previous_message_count": {
                           "type": "integer",
                           "minimum": 0,
@@ -82866,7 +82890,7 @@
                           "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
                         },
                         "timeout": {
-                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "description": "Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
                           "oneOf": [
                             {
                               "type": "string",
@@ -82880,7 +82904,7 @@
                         },
                         "criteria": {
                           "type": "object",
-                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
                           "additionalProperties": false,
                           "properties": {
                             "SIMPLE": {
@@ -83082,7 +83106,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Reset complexity analyzer config",
-        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, Jev settings, semantic and LLM configuration, and session settings are preserved.\n",
+        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, decision-model settings, semantic and LLM configuration, and session settings are preserved.\n",
         "tags": [
           "Routing"
         ],
@@ -83115,7 +83139,7 @@
                           ],
                           "properties": {
                             "classifier": {
-                              "const": "jev"
+                              "const": "decision"
                             }
                           }
                         },
@@ -83236,7 +83260,7 @@
                       "type": "string",
                       "enum": [
                         "semantic",
-                        "jev"
+                        "decision"
                       ],
                       "default": "semantic",
                       "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
@@ -83302,17 +83326,25 @@
                           "enum": [
                             "none",
                             "llm",
-                            "jev"
+                            "decision"
                           ],
-                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `decision` uses the configured decision model.\n"
                         }
                       }
                     },
-                    "jev": {
+                    "decision": {
                       "type": "object",
-                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
                       "additionalProperties": false,
                       "properties": {
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                        },
                         "previous_message_count": {
                           "type": "integer",
                           "minimum": 0,
@@ -83321,7 +83353,7 @@
                           "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
                         },
                         "timeout": {
-                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "description": "Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
                           "oneOf": [
                             {
                               "type": "string",
@@ -83335,7 +83367,7 @@
                         },
                         "criteria": {
                           "type": "object",
-                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
                           "additionalProperties": false,
                           "properties": {
                             "SIMPLE": {
@@ -83614,9 +83646,9 @@
                       "type": "string",
                       "description": "The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured."
                     },
-                    "jev_defaults": {
+                    "decision_defaults": {
                       "type": "object",
-                      "description": "The shipped Jev per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.",
+                      "description": "The shipped decision-model per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.",
                       "properties": {
                         "criteria": {
                           "type": "object",
@@ -83765,9 +83797,9 @@
                       "type": "string",
                       "description": "The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured."
                     },
-                    "jev_defaults": {
+                    "decision_defaults": {
                       "type": "object",
-                      "description": "The shipped Jev per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.",
+                      "description": "The shipped decision-model per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.",
                       "properties": {
                         "criteria": {
                           "type": "object",
@@ -84312,7 +84344,7 @@
         },
         "deprecated": true,
         "summary": "Get complexity analyzer config (deprecated path)",
-        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and Jev settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.\n",
+        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.\n",
         "tags": [
           "Routing"
         ],
@@ -84345,7 +84377,7 @@
                           ],
                           "properties": {
                             "classifier": {
-                              "const": "jev"
+                              "const": "decision"
                             }
                           }
                         },
@@ -84466,7 +84498,7 @@
                       "type": "string",
                       "enum": [
                         "semantic",
-                        "jev"
+                        "decision"
                       ],
                       "default": "semantic",
                       "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
@@ -84532,17 +84564,25 @@
                           "enum": [
                             "none",
                             "llm",
-                            "jev"
+                            "decision"
                           ],
-                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `decision` uses the configured decision model.\n"
                         }
                       }
                     },
-                    "jev": {
+                    "decision": {
                       "type": "object",
-                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
                       "additionalProperties": false,
                       "properties": {
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                        },
                         "previous_message_count": {
                           "type": "integer",
                           "minimum": 0,
@@ -84551,7 +84591,7 @@
                           "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
                         },
                         "timeout": {
-                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "description": "Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
                           "oneOf": [
                             {
                               "type": "string",
@@ -84565,7 +84605,7 @@
                         },
                         "criteria": {
                           "type": "object",
-                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
                           "additionalProperties": false,
                           "properties": {
                             "SIMPLE": {
@@ -84756,7 +84796,7 @@
         },
         "deprecated": true,
         "summary": "Update complexity analyzer config (deprecated path)",
-        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. Jev can be selected as the primary classifier or semantic fallback and uses configured Typesafe provider credentials. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.\n",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.\n",
         "tags": [
           "Routing"
         ],
@@ -84780,7 +84820,7 @@
                         ],
                         "properties": {
                           "classifier": {
-                            "const": "jev"
+                            "const": "decision"
                           }
                         }
                       },
@@ -84901,7 +84941,7 @@
                     "type": "string",
                     "enum": [
                       "semantic",
-                      "jev"
+                      "decision"
                     ],
                     "default": "semantic",
                     "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
@@ -84967,17 +85007,25 @@
                         "enum": [
                           "none",
                           "llm",
-                          "jev"
+                          "decision"
                         ],
-                        "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                        "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `decision` uses the configured decision model.\n"
                       }
                     }
                   },
-                  "jev": {
+                  "decision": {
                     "type": "object",
-                    "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                    "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
                     "additionalProperties": false,
                     "properties": {
+                      "provider": {
+                        "type": "string",
+                        "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                      },
+                      "model": {
+                        "type": "string",
+                        "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                      },
                       "previous_message_count": {
                         "type": "integer",
                         "minimum": 0,
@@ -84986,7 +85034,7 @@
                         "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
                       },
                       "timeout": {
-                        "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                        "description": "Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
                         "oneOf": [
                           {
                             "type": "string",
@@ -85000,7 +85048,7 @@
                       },
                       "criteria": {
                         "type": "object",
-                        "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                        "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
                         "additionalProperties": false,
                         "properties": {
                           "SIMPLE": {
@@ -85191,7 +85239,7 @@
                           ],
                           "properties": {
                             "classifier": {
-                              "const": "jev"
+                              "const": "decision"
                             }
                           }
                         },
@@ -85312,7 +85360,7 @@
                       "type": "string",
                       "enum": [
                         "semantic",
-                        "jev"
+                        "decision"
                       ],
                       "default": "semantic",
                       "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
@@ -85378,17 +85426,25 @@
                           "enum": [
                             "none",
                             "llm",
-                            "jev"
+                            "decision"
                           ],
-                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `decision` uses the configured decision model.\n"
                         }
                       }
                     },
-                    "jev": {
+                    "decision": {
                       "type": "object",
-                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
                       "additionalProperties": false,
                       "properties": {
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                        },
                         "previous_message_count": {
                           "type": "integer",
                           "minimum": 0,
@@ -85397,7 +85453,7 @@
                           "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
                         },
                         "timeout": {
-                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "description": "Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
                           "oneOf": [
                             {
                               "type": "string",
@@ -85411,7 +85467,7 @@
                         },
                         "criteria": {
                           "type": "object",
-                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
                           "additionalProperties": false,
                           "properties": {
                             "SIMPLE": {
@@ -85614,7 +85670,7 @@
         },
         "deprecated": true,
         "summary": "Reset complexity analyzer config (deprecated path)",
-        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, Jev settings, semantic and LLM configuration, and session settings are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.\n",
+        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, decision-model settings, semantic and LLM configuration, and session settings are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.\n",
         "tags": [
           "Routing"
         ],
@@ -85647,7 +85703,7 @@
                           ],
                           "properties": {
                             "classifier": {
-                              "const": "jev"
+                              "const": "decision"
                             }
                           }
                         },
@@ -85768,7 +85824,7 @@
                       "type": "string",
                       "enum": [
                         "semantic",
-                        "jev"
+                        "decision"
                       ],
                       "default": "semantic",
                       "description": "Primary complexity classifier; omitted configuration keeps the semantic default."
@@ -85834,17 +85890,25 @@
                           "enum": [
                             "none",
                             "llm",
-                            "jev"
+                            "decision"
                           ],
-                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `jev` uses the Typesafe decision API.\n"
+                          "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `decision` uses the configured decision model.\n"
                         }
                       }
                     },
-                    "jev": {
+                    "decision": {
                       "type": "object",
-                      "description": "Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.",
+                      "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
                       "additionalProperties": false,
                       "properties": {
+                        "provider": {
+                          "type": "string",
+                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                        },
                         "previous_message_count": {
                           "type": "integer",
                           "minimum": 0,
@@ -85853,7 +85917,7 @@
                           "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
                         },
                         "timeout": {
-                          "description": "Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                          "description": "Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
                           "oneOf": [
                             {
                               "type": "string",
@@ -85867,7 +85931,7 @@
                         },
                         "criteria": {
                           "type": "object",
-                          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                          "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
                           "additionalProperties": false,
                           "properties": {
                             "SIMPLE": {
@@ -86155,7 +86219,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, jev, llm, session, or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, decision, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -86831,7 +86895,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, jev, llm, session, or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, decision, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -106291,7 +106355,11 @@
           },
           "abstention": {
             "type": "string",
-            "enum": ["passed", "abstained", "unevaluated"],
+            "enum": [
+              "passed",
+              "abstained",
+              "unevaluated"
+            ],
             "description": "Laya only, when `min_confidence` is set. Whether the answer cleared the threshold"
           },
           "abstention_threshold": {
@@ -122296,17 +122364,17 @@
             ],
             "enum": [
               "semantic",
-              "jev",
+              "decision",
               "llm",
               "session",
               "skipped",
               null
             ],
-            "description": "How the effective complexity tier was determined. jev means Typesafe Jev supplied the tier; session means retained session state supplied it; skipped means classification was demanded but produced no tier."
+            "description": "How the effective complexity tier was determined. decision means the configured decision model supplied the tier; session means retained session state supplied it; skipped means classification was demanded but produced no tier."
           },
           "complexity_score": {
             "type": "number",
-            "description": "Similarity score of the nearest reference phrase behind the tier. Absent for Jev, LLM, session, and skipped decisions.",
+            "description": "Similarity score of the nearest reference phrase behind the tier. Absent for decision-model, LLM, session, and skipped decisions.",
             "nullable": true
           },
           "session_id": {

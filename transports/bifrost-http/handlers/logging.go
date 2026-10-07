@@ -1749,8 +1749,8 @@ func (h *LoggingHandler) applyCurrentRankingNames(ctx context.Context, result *l
 	ids := make([]string, 0, len(result.Rankings))
 	for _, row := range result.Rankings {
 		// The redacted lookups return every row for an empty id list, so only
-		// real entity ids are sent, never "" or the Unassigned bucket.
-		if row.ID != "" && row.ID != logstore.UnassignedDimensionID {
+		// real entity ids are sent, never "" or the Unassigned / Other buckets.
+		if row.ID != "" && row.ID != logstore.UnassignedDimensionID && row.ID != logstore.OtherDimensionID {
 			ids = append(ids, row.ID)
 		}
 	}
