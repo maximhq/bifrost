@@ -556,6 +556,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_compat_force_reasoning_only_models_to_responses_column"}, run: migrationAddCompatForceReasoningOnlyModelsToResponsesColumn},
 	{IDs: []string{"backfill_compat_force_reasoning_only_models_to_responses"}, run: migrationBackfillCompatForceReasoningOnlyModelsToResponses},
 	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
+	{IDs: []string{"add_agent_push_config_tenant_column"}, run: migrationAddAgentPushConfigTenantColumn},
 	{IDs: []string{"add_ignore_provider_cost_column"}, run: migrationAddIgnoreProviderCostColumn},
 }
 
@@ -1023,6 +1024,21 @@ func migrationAddAgentGatewayTables(ctx context.Context, db *gorm.DB, logger sch
 			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "A2AExternalClientURL")
 		},
 		Rollback: rollbackAgentGatewayTables,
+	})
+}
+
+// migrationAddAgentPushConfigTenantColumn preserves the downstream interface
+// tenant independently of the tenant selected for the upstream Agent interface.
+func migrationAddAgentPushConfigTenantColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_agent_push_config_tenant_column"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableAgentPushConfig{}, "tenant")
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the tenant column would permanently delete the only stored copy of each push configuration's tenant", migrationName)
+		},
 	})
 }
 

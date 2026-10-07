@@ -1025,30 +1025,20 @@ export function AgentLogDetailSheet({
 														{rowDate && isValid(rowDate) ? format(rowDate, "HH:mm:ss.SSS") : ""}
 													</span>
 													{isExpanded && eventDetail && (
-														<div className="bg-muted/60 inline-flex rounded-sm border p-0.5">
-															<Button
-																type="button"
-																variant="ghost"
-																className={cn(
-																	"h-7 rounded-sm px-2.5 text-xs",
-																	!showRaw && "bg-background text-foreground shadow-sm hover:bg-background",
-																)}
-																onClick={() => showRaw && toggleEventRaw(row.id)}
-															>
-																Formatted
-															</Button>
-															<Button
-																type="button"
-																variant="ghost"
-																className={cn(
-																	"h-7 rounded-sm px-2.5 text-xs",
-																	showRaw && "bg-background text-foreground shadow-sm hover:bg-background",
-																)}
-																onClick={() => !showRaw && toggleEventRaw(row.id)}
-															>
-																Raw JSON
-															</Button>
-														</div>
+														<Tabs
+															value={showRaw ? "raw" : "formatted"}
+															onValueChange={(next) => (next === "raw") !== showRaw && toggleEventRaw(row.id)}
+															className="shrink-0"
+														>
+															<TabsList aria-label="Event view" className="h-6 rounded-sm p-0.5">
+																<TabsTrigger value="formatted" className="rounded-[3px] px-2 text-[11px] leading-5">
+																	Formatted
+																</TabsTrigger>
+																<TabsTrigger value="raw" className="rounded-[3px] px-2 text-[11px] leading-5">
+																	Raw JSON
+																</TabsTrigger>
+															</TabsList>
+														</Tabs>
 													)}
 												</div>
 											</div>

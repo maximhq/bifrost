@@ -23,14 +23,27 @@ import (
 
 type pushTimingTracer struct {
 	schemas.Tracer
-	traces []*schemas.Trace
-	active map[string]*schemas.Trace
+	traces   []*schemas.Trace
+	active   map[string]*schemas.Trace
+	released []*schemas.Trace
 }
 
 func (t *pushTimingTracer) CreateTrace(_ string, requestID ...string) string {
 	id := requestID[0]
 	t.active[id] = &schemas.Trace{RequestID: id, InternalID: id}
 	return id
+}
+
+// EndTrace removes and returns an active trace without exporting it.
+func (t *pushTimingTracer) EndTrace(id string) *schemas.Trace {
+	trace := t.active[id]
+	delete(t.active, id)
+	return trace
+}
+
+// ReleaseTrace records traces released without export.
+func (t *pushTimingTracer) ReleaseTrace(trace *schemas.Trace) {
+	t.released = append(t.released, trace)
 }
 
 func (t *pushTimingTracer) StartSpanID(ctx context.Context, name string, kind schemas.SpanKind) (string, schemas.SpanHandle) {
@@ -88,12 +101,12 @@ func TestPushTimingLateTracerProvider(t *testing.T) {
 	m := &Manager{tracerProvider: func() schemas.Tracer { return current }}
 
 	ctx := gateContext(context.Background())
-	m.startPushTrace(ctx, "before-tracer")(nil)
+	m.startPushTrace(ctx, "before-tracer")(nil, true)
 	require.Empty(t, tracer.traces)
 
 	current = tracer
 	ctx = gateContext(context.Background())
-	m.startPushTrace(ctx, "after-tracer")(nil)
+	m.startPushTrace(ctx, "after-tracer")(nil, true)
 	require.Len(t, tracer.traces, 1)
 	require.Equal(t, "after-tracer", tracer.traces[0].RootSpan.Name)
 }
@@ -164,6 +177,7 @@ func TestPushTimingIngressAndIndependentAttempts(t *testing.T) {
 
 type pushMaintenanceStore struct {
 	*memoryPushStore
+	due []schemas.AgentPushDelivery
 	err error
 }
 
@@ -171,7 +185,7 @@ func (s *pushMaintenanceStore) ListDueAgentPushDeliveries(ctx context.Context, _
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	return nil, s.err
+	return s.due, s.err
 }
 
 func (s *pushMaintenanceStore) PruneAgentPushDeliveries(ctx context.Context, _ time.Time) error {
@@ -182,11 +196,14 @@ func (s *pushMaintenanceStore) PruneAgentPushDeliveries(ctx context.Context, _ t
 }
 
 func TestPushMaintenanceTraceClosure(t *testing.T) {
-	for _, mode := range []string{"success", "error", "cancelled"} {
+	for _, mode := range []string{"success", "non-empty", "error", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			store := &pushMaintenanceStore{memoryPushStore: newMemoryPushStore()}
+			if mode == "non-empty" {
+				store.due = []schemas.AgentPushDelivery{{ID: "delivery"}}
+			}
 			if mode == "error" {
 				store.err = errors.New("database unavailable")
 			}
@@ -197,8 +214,21 @@ func TestPushMaintenanceTraceClosure(t *testing.T) {
 			relay := newPushRelay(&Manager{ctx: ctx, pushStore: store, tracer: tracer})
 			relay.processDue()
 			relay.prune()
-			require.Len(t, tracer.traces, 2)
+			wantTraceCount := 2
+			if mode == "success" {
+				wantTraceCount = 1
+			}
+			require.Len(t, tracer.traces, wantTraceCount)
 			require.Empty(t, tracer.active)
+			if mode == "success" {
+				require.Len(t, tracer.released, 1)
+				require.Equal(t, "a2a.push.maintenance.list-due", tracer.released[0].RootSpan.Name)
+				trace := tracer.traces[0]
+				require.Equal(t, "a2a.push.db.prune", trace.Spans[1].Name)
+				require.Equal(t, schemas.SpanStatusOk, trace.RootSpan.Status)
+				return
+			}
+			require.Empty(t, tracer.released)
 			require.NotEqual(t, tracer.traces[0].InternalID, tracer.traces[1].InternalID)
 			for i, trace := range tracer.traces {
 				name := []string{"a2a.push.db.list-due", "a2a.push.db.prune"}[i]
@@ -208,7 +238,7 @@ func TestPushMaintenanceTraceClosure(t *testing.T) {
 				require.False(t, trace.Spans[1].EndTime.IsZero())
 				require.False(t, trace.RootSpan.EndTime.Before(trace.Spans[1].EndTime))
 				want := schemas.SpanStatusOk
-				if mode != "success" {
+				if mode == "error" || mode == "cancelled" {
 					want = schemas.SpanStatusError
 				}
 				require.Equal(t, want, trace.RootSpan.Status)
@@ -606,9 +636,37 @@ func TestMarkPushNotificationTransport(t *testing.T) {
 	require.Equal(t, pushNotificationTransport, ctx.Value(schemas.BifrostContextKeyA2AUpstreamTransport))
 }
 
+// TestListStoredPushConfigsPreservesTenant verifies management reads retain routing metadata while omitting secrets.
+func TestListStoredPushConfigsPreservesTenant(t *testing.T) {
+	manager, _, store, _ := pushGateway(t)
+	require.NoError(t, store.SaveAgentPushConfig(context.Background(), &schemas.AgentPushConfig{
+		AgentName:        "fixture",
+		TaskID:           "task-1",
+		ConfigID:         "cfg-1",
+		Tenant:           "downstream-tenant",
+		URL:              "https://client.example/callback",
+		Token:            schemas.NewSecretVar("notification-token"),
+		AuthScheme:       "Bearer",
+		AuthCredentials:  schemas.NewSecretVar("callback-credential"),
+		IngressTokenHash: "ingress-token-hash",
+	}))
+
+	configs, total, err := manager.ListStoredPushConfigs(context.Background(), schemas.AgentPushConfigQuery{})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), total)
+	require.Equal(t, []schemas.AgentPushConfigView{{
+		AgentName: "fixture",
+		TaskID:    "task-1",
+		ConfigID:  "cfg-1",
+		Tenant:    "downstream-tenant",
+		URL:       "https://client.example/callback",
+	}}, configs)
+}
+
 func TestCreateTaskPushConfigRewritesUpstreamAndStoresCallback(t *testing.T) {
 	_, handler, store, upstream := pushGateway(t)
 	result, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{
+		Tenant: "downstream-tenant",
 		TaskID: "task-1",
 		ID:     "cfg-1",
 		URL:    "http://client.example/callback",
@@ -624,8 +682,10 @@ func TestCreateTaskPushConfigRewritesUpstreamAndStoresCallback(t *testing.T) {
 	require.NotEmpty(t, created.Token)
 	require.NotEqual(t, "client-token", created.Token)
 	require.Nil(t, created.Auth)
+	require.Equal(t, "downstream-tenant", created.Tenant)
 
 	// The response is the client's own callback, with secrets write-only.
+	require.Equal(t, "downstream-tenant", result.Tenant)
 	require.Equal(t, "cfg-1", result.ID)
 	require.Equal(t, "http://client.example/callback", result.URL)
 	require.Empty(t, result.Token)
@@ -638,15 +698,18 @@ func TestCreateTaskPushConfigRewritesUpstreamAndStoresCallback(t *testing.T) {
 	require.Equal(t, hashPushIngressToken(created.Token), stored.IngressTokenHash)
 	require.Equal(t, "client-token", stored.Token.GetValue())
 	require.Equal(t, "client-credential", stored.AuthCredentials.GetValue())
+	require.Equal(t, "downstream-tenant", stored.Tenant)
 
 	// Reads are served from the gateway store and stay redacted.
 	got, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"})
 	require.NoError(t, err)
 	require.Empty(t, got.Token)
+	require.Equal(t, "downstream-tenant", got.Tenant)
 	require.Equal(t, "http://client.example/callback", got.URL)
 	listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{TaskID: "task-1"})
 	require.NoError(t, err)
 	require.Len(t, listed.Configs, 1)
+	require.Equal(t, "downstream-tenant", listed.Configs[0].Tenant)
 	require.Empty(t, listed.Configs[0].Token)
 
 	_, err = handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "missing"})
@@ -655,6 +718,20 @@ func TestCreateTaskPushConfigRewritesUpstreamAndStoresCallback(t *testing.T) {
 	// A callback that is not an absolute HTTP(S) URL is refused before any hop.
 	_, err = handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{TaskID: "task-1", URL: "ftp://client.example"})
 	require.ErrorIs(t, err, a2a.ErrInvalidParams)
+
+	for _, auth := range []*a2a.PushAuthInfo{
+		{Scheme: "Digest", Credentials: "secret"},
+		{Scheme: "Bearer"},
+		{Credentials: "secret"},
+	} {
+		_, err = handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{
+			TaskID: "task-1",
+			URL:    "https://client.example/callback",
+			Auth:   auth,
+		})
+		require.ErrorIs(t, err, a2a.ErrInvalidParams)
+	}
+	require.Len(t, upstream.created, 1, "invalid callback auth must fail before the upstream call")
 }
 
 func TestStreamingEmbeddedPushConfigKeepsInternalIngressOutOfPluginEnvelope(t *testing.T) {
@@ -745,9 +822,10 @@ func TestSendMessageRewritesEmbeddedPushConfigAndStoresCallback(t *testing.T) {
 	result, err := handler.SendMessage(context.Background(), &a2a.SendMessageRequest{
 		Message: &a2a.Message{ID: "m1", Role: a2a.MessageRoleUser, Parts: []*a2a.Part{a2a.NewTextPart("hi")}},
 		Config: &a2a.SendMessageConfig{PushConfig: &a2a.PushConfig{
-			URL:   "http://client.example/embedded",
-			Token: "client-token",
-			Auth:  &a2a.PushAuthInfo{Scheme: "Bearer", Credentials: "client-credential"},
+			Tenant: "downstream-tenant",
+			URL:    "http://client.example/embedded",
+			Token:  "client-token",
+			Auth:   &a2a.PushAuthInfo{Scheme: "Bearer", Credentials: "client-credential"},
 		}},
 	})
 	require.NoError(t, err)
@@ -758,6 +836,7 @@ func TestSendMessageRewritesEmbeddedPushConfigAndStoresCallback(t *testing.T) {
 	// The upstream saw only Bifrost's ingress with a minted token — never the
 	// client's callback or secrets.
 	require.NotNil(t, upstreamSaw)
+	require.Equal(t, "downstream-tenant", upstreamSaw.Tenant)
 	require.NotEmpty(t, upstreamSaw.ID)
 	require.Equal(t, "http://gateway/agents/a2a/fixture"+GatewayPushCallbackPathSuffix, upstreamSaw.URL)
 	require.NotEmpty(t, upstreamSaw.Token)
@@ -772,6 +851,7 @@ func TestSendMessageRewritesEmbeddedPushConfigAndStoresCallback(t *testing.T) {
 	stored := &storedList[0]
 	require.Equal(t, upstreamSaw.ID, stored.ConfigID)
 	require.Equal(t, "http://client.example/embedded", stored.URL)
+	require.Equal(t, "downstream-tenant", stored.Tenant)
 	require.Equal(t, hashPushIngressToken(upstreamSaw.Token), stored.IngressTokenHash)
 	require.Equal(t, "client-token", stored.Token.GetValue())
 	require.Equal(t, "client-credential", stored.AuthCredentials.GetValue())
@@ -780,6 +860,15 @@ func TestSendMessageRewritesEmbeddedPushConfigAndStoresCallback(t *testing.T) {
 	_, err = handler.SendMessage(context.Background(), &a2a.SendMessageRequest{
 		Message: &a2a.Message{ID: "m2", Role: a2a.MessageRoleUser, Parts: []*a2a.Part{a2a.NewTextPart("hi")}},
 		Config:  &a2a.SendMessageConfig{PushConfig: &a2a.PushConfig{URL: "ftp://client.example"}},
+	})
+	require.ErrorIs(t, err, a2a.ErrInvalidParams)
+
+	_, err = handler.SendMessage(context.Background(), &a2a.SendMessageRequest{
+		Message: &a2a.Message{ID: "m3", Role: a2a.MessageRoleUser, Parts: []*a2a.Part{a2a.NewTextPart("hi")}},
+		Config: &a2a.SendMessageConfig{PushConfig: &a2a.PushConfig{
+			URL:  "https://client.example/callback",
+			Auth: &a2a.PushAuthInfo{Scheme: "Digest", Credentials: "secret"},
+		}},
 	})
 	require.ErrorIs(t, err, a2a.ErrInvalidParams)
 }
@@ -1146,6 +1235,7 @@ func TestPushRelayDeliversWithClientCredentials(t *testing.T) {
 	headers := gotHeaders.Load().(http.Header)
 	require.Equal(t, "client-token", headers.Get(PushNotificationTokenHeader))
 	require.Equal(t, "Bearer client-credential", headers.Get("Authorization"))
+	require.Equal(t, "application/a2a+json", headers.Get("Content-Type"))
 	delivered := store.delivery(t, deliveryID)
 	require.Equal(t, 1, delivered.Attempts)
 	require.Empty(t, delivered.LastError)
