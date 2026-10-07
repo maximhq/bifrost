@@ -687,10 +687,7 @@ func anthropicNativeEffortFrom(ctx *schemas.BifrostContext) (anthropicNativeEffo
 // than a general change to this provider.
 type anthropicNativeRequestSurface struct {
 	// Thinking is set only for the closed preservable set; nil otherwise.
-	Thinking    *AnthropicThinking
-	Temperature *float64
-	TopP        *float64
-	TopK        *int
+	Thinking *AnthropicThinking
 	// MaxTokens is the caller's own max_tokens, kept only so the restore can
 	// tell whether a later pass LOWERED it (clampToModelOutputCeiling) -- the
 	// one case where the caller's budget_tokens has to be refitted rather than
@@ -777,15 +774,6 @@ func setAnthropicNativeRequestSurface(ctx *schemas.BifrostContext, req *Anthropi
 		surface.Thinking = &recorded
 	}
 	surface.MaxTokens = req.MaxTokens
-	if req.Temperature != nil {
-		surface.Temperature = schemas.Ptr(*req.Temperature)
-	}
-	if req.TopP != nil {
-		surface.TopP = schemas.Ptr(*req.TopP)
-	}
-	if req.TopK != nil {
-		surface.TopK = schemas.Ptr(*req.TopK)
-	}
 	// Deep copy: the projection's pointer fields alias the inbound request
 	// (MaxTokens is literally req.Thinking.BudgetTokens), which may be pooled
 	// and reused after conversion.
@@ -853,14 +841,6 @@ func eqPtr[T comparable](a, b *T) bool {
 	return *a == *b
 }
 
-// firstNonNil prefers the value the neutral request still carries over the one
-// recorded at ingress: present means current, absent means lost in transit.
-func firstNonNil[T any](current, recorded *T) *T {
-	if current != nil {
-		return current
-	}
-	return recorded
-}
 
 // anthropicNativeRequestSurfaceFrom recovers a recorded native Anthropic
 // Messages request surface. ok is false for every route that did not come in as
@@ -984,59 +964,25 @@ func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *Anth
 		}
 	}
 
-	if PreservesCallerRequestSurface(capModel) {
-		// Each scalar resolves independently, and the NEUTRAL request decides.
-		//
-		// Reading req alone is not enough to tell a drop from a change: this
-		// model is adaptive-only, so ToAnthropicResponsesRequest forwards none
-		// of the three (it skips temperature/top_p wholesale and deletes top_k),
-		// and req is therefore nil either way. A neutral parameter that still
-		// holds a value is current by definition, whoever put it there --
-		// forwarding it is what makes a deliberate rewrite reach the provider
-		// instead of being quietly replaced by the caller's original. Only an
-		// absent one is the loss the witness exists to recover (the built-in
-		// compat plugin drops Temperature / TopP for a model whose catalog row
-		// does not list them, and the egress is left with nothing to forward).
-		//
-		// All three are restored together, including temperature AND top_p: the
-		// raw/passthrough path forwards both, and the two paths answering the
-		// same body differently is the defect being fixed, not a rule to keep.
-		// A parameter the compat plugin dropped is excluded from the fallback:
-		// its absence is that plugin's decision, not a conversion loss. The
-		// neutral value is still honoured when one survives, since a present
-		// value is current by definition.
-		if req.Temperature == nil {
-			req.Temperature = neutral.Temperature
-			if req.Temperature == nil && !dropped["temperature"] {
-				req.Temperature = surface.Temperature
-			}
-		}
-		if req.TopP == nil {
-			req.TopP = neutral.TopP
-			if req.TopP == nil && !dropped["top_p"] {
-				req.TopP = surface.TopP
-			}
-		}
-		if req.TopK == nil {
-			req.TopK = firstNonNil(neutralTopK(neutral.ExtraParams), surface.TopK)
-		}
-	}
+	// Sampling is deliberately NOT restored, and the reason is worth keeping
+	// here: this family is adaptive-only, and ToAnthropicResponsesRequest skips
+	// temperature/top_p and deletes top_k for exactly that reason -- upstream
+	// records those as a 400 from the provider for the adaptive-only models,
+	// Sonnet 5.5 among them (DefaultAdaptiveOnlyThinking covers IsSonnet5Plus).
+	//
+	// The raw/passthrough path does forward all three, so the two paths answer
+	// the same body differently, and that divergence is real. But restoring the
+	// three here resolves it in the direction that can only ADD provider
+	// rejections to requests which work today, on an assumption about Sonnet
+	// 5.5's surface this change has never verified against a live provider. If
+	// the 400 is real the fix belongs on the passthrough side instead, which is
+	// a behaviour change for byte-faithful forwarding and the maintainers' call.
+	//
+	// thinking and output_config.effort are restored above on a different
+	// footing: between_tools is documented as Sonnet 5.5's lowest accepted
+	// setting, and effort is documented as independent of thinking.
 }
 
-// neutralTopK reads top_k off the neutral parameters, where it rides in
-// ExtraParams rather than as a typed field. A value that is absent -- or
-// present but not readable as an int, which the egress converter ignores just
-// the same -- reads as nil, so the caller's own value is what gets recovered.
-func neutralTopK(extraParams map[string]interface{}) *int {
-	if extraParams == nil {
-		return nil
-	}
-	topK, ok := schemas.SafeExtractIntPointer(extraParams["top_k"])
-	if !ok {
-		return nil
-	}
-	return topK
-}
 
 // SetResponsesStreamPassthrough marks this request's Anthropic reverse stream
 // conversion as running on the Claude Code passthrough path (raw upstream frames

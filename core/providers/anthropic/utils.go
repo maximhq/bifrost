@@ -1474,7 +1474,13 @@ func fitRawThinkingBudget(jsonBody []byte, maxTokens int) ([]byte, error) {
 	}
 	fitted, ok := fitThinkingBudget(nil, effort, maxTokens)
 	if !ok {
-		return jsonBody, nil
+		// The lowered max_tokens leaves no room for any budget, so there is no
+		// valid "enabled" object to send. Leaving the caller's budget in place
+		// forwards one the provider rejects -- and this is reached only when the
+		// clamp above actually LOWERED max_tokens, so the invalid pair is ours,
+		// not the caller's. Dropping thinking is what the typed restore does and
+		// what stripUnsupportedAnthropicFields does for the pre-adaptive family.
+		return providerUtils.DeleteJSONField(jsonBody, "thinking")
 	}
 	return providerUtils.SetJSONField(jsonBody, "thinking.budget_tokens", fitted)
 }

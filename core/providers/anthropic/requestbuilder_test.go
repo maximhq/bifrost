@@ -1809,142 +1809,8 @@ func TestEnabledBudgetThinkingIsForwardedVerbatim(t *testing.T) {
 	}
 }
 
-// temperature / top_p / top_k were dropped on the typed path and forwarded on
-// the raw path, so the same body got a silent 200 from one client and the
-// provider's own 400 from another. Both paths now forward the caller's values,
-// and the assertion is the FULL tuple on every request shape: the earlier
-// version of this test accepted top_p disappearing on the typed path whenever
-// temperature was also present, which is the divergence, not a rule to keep.
-// Upstream's "prefer temperature over top_p" rule is left exactly as it is for
-// every other model (see TestOtherModelsAreByteUnchanged); it does not apply
-// here because for this model the conversion forwards neither, and the
-// raw/passthrough path -- the standing control below -- sends both.
-//
-// Measured stock (claude-sonnet-5-5, typed): all three absent on every shape.
-func TestSamplingParametersReachBothPaths(t *testing.T) {
-	temp, topP, topK := 0.7, 0.9, 40
-	all := func(raw, streaming, count bool) surfaceProbe {
-		return surfaceProbe{model: "claude-sonnet-5-5", temp: &temp, topP: &topP, topK: &topK,
-			raw: raw, streaming: streaming, count: count}
-	}
-	for _, model := range sonnet55Spellings {
-		t.Run(model, func(t *testing.T) {
-			// The whole tuple, both paths, unary and streaming.
-			for _, raw := range []bool{false, true} {
-				for _, streaming := range []bool{false, true} {
-					p := all(raw, streaming, false)
-					p.model = model
-					assertWire(t, p, `thinking=- effort=- temperature=0.7 top_p=0.9 top_k=40`)
-				}
-			}
-			// count_tokens: upstream deletes temperature from the built body on
-			// BOTH paths for every model, because the endpoint does not take it.
-			// That is not this patch's loss, so it stays -- and it stays
-			// identically on both paths.
-			for _, raw := range []bool{false, true} {
-				p := all(raw, false, true)
-				p.model = model
-				assertWire(t, p, `thinking=- effort=- temperature=- top_p=0.9 top_k=40`)
-			}
-			// Each parameter alone also survives on both paths, so "the tuple
-			// arrives" is not satisfied by one field standing in for the others.
-			for _, raw := range []bool{false, true} {
-				assertWire(t, surfaceProbe{model: model, temp: &temp, raw: raw},
-					`thinking=- effort=- temperature=0.7 top_p=- top_k=-`)
-				assertWire(t, surfaceProbe{model: model, topP: &topP, raw: raw},
-					`thinking=- effort=- temperature=- top_p=0.9 top_k=-`)
-				assertWire(t, surfaceProbe{model: model, topK: &topK, raw: raw},
-					`thinking=- effort=- temperature=- top_p=- top_k=40`)
-			}
-		})
-	}
-}
 
-// The unit-level converter test above was green while the BUILT gateway still
-// lost temperature on the wire, because a request-normalizing layer between the
-// two conversions had already cleared it off the neutral parameters: reading
-// them back at egress cannot recover a value that is no longer there. The
-// caller's own scalars are therefore recorded at ingress, and this is the
-// regression that pins the loss point rather than the symptom.
-func TestNativeSamplingSurvivesIntermediateNormalization(t *testing.T) {
-	temp, topP, topK := 0.7, 0.9, 40
-	for _, drop := range []string{"named", "all"} {
-		t.Run(drop, func(t *testing.T) {
-			for _, streaming := range []bool{false, true} {
-				assertWire(t, surfaceProbe{
-					model: "claude-sonnet-5-5", temp: &temp, topP: &topP, topK: &topK,
-					streaming: streaming, dropNeutral: drop,
-				}, `thinking=- effort=- temperature=0.7 top_p=0.9 top_k=40`)
-			}
-			assertWire(t, surfaceProbe{
-				model: "claude-sonnet-5-5", temp: &temp, topP: &topP, topK: &topK,
-				count: true, dropNeutral: drop,
-			}, `thinking=- effort=- temperature=- top_p=0.9 top_k=40`)
-			// An older model keeps upstream's answer to the same normalization:
-			// what the layer dropped stays dropped, and top_k (which that layer
-			// never touches) still resolves exactly as upstream resolves it.
-			assertWire(t, surfaceProbe{
-				model: "claude-sonnet-4-6", temp: &temp, topP: &topP, topK: &topK,
-				dropNeutral: drop,
-			}, `thinking=- effort=- temperature=- top_p=- top_k=`+map[string]string{"named": "40", "all": "-"}[drop])
-		})
-	}
-}
 
-// A layer between the two conversions can DROP a parameter (the case above) or
-// deliberately CHANGE it. The two are different instructions and the egress has
-// to tell them apart: recovering a dropped value is the point of the witness,
-// but overwriting a value somebody deliberately set answers a request nobody
-// made -- and silently, since the caller's own value is a plausible one.
-//
-// The neutral request at egress is what settles it. A parameter still carrying
-// a value there is current by definition, whoever put it there; only an ABSENT
-// one is a loss for the witness to recover.
-func TestExplicitNeutralSamplingChangesWin(t *testing.T) {
-	temp, topP, topK := 0.7, 0.9, 40
-	caller := func(mutate func(*schemas.ResponsesParameters)) surfaceProbe {
-		return surfaceProbe{
-			model: "claude-sonnet-5-5", temp: &temp, topP: &topP, topK: &topK,
-			mutateNeutral: mutate,
-		}
-	}
-	cases := []struct {
-		name   string
-		mutate func(*schemas.ResponsesParameters)
-		want   string
-	}{
-		{
-			"a changed temperature is sent, not the caller's",
-			func(p *schemas.ResponsesParameters) { p.Temperature = schemas.Ptr(0.2) },
-			`thinking=- effort=- temperature=0.2 top_p=0.9 top_k=40`,
-		},
-		{
-			"a changed top_p is sent, not the caller's",
-			func(p *schemas.ResponsesParameters) { p.TopP = schemas.Ptr(0.5) },
-			`thinking=- effort=- temperature=0.7 top_p=0.5 top_k=40`,
-		},
-		{
-			"a changed top_k is sent, not the caller's",
-			func(p *schemas.ResponsesParameters) { p.ExtraParams["top_k"] = 10 },
-			`thinking=- effort=- temperature=0.7 top_p=0.9 top_k=10`,
-		},
-		{
-			// The mixed case is the one a per-field rule has to get right: one
-			// scalar changed, one cleared, one untouched, in a single pass.
-			"one changed, one cleared and one untouched resolve independently",
-			func(p *schemas.ResponsesParameters) {
-				p.Temperature = schemas.Ptr(0.2)
-				p.TopP = nil
-			},
-			`thinking=- effort=- temperature=0.2 top_p=0.9 top_k=40`,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			assertWire(t, caller(c.mutate), c.want)
-		})
-	}
-}
 
 // The same rule for the reasoning half. The witness restores thinking because
 // the neutral shape cannot carry a budget beside the caller's own thinking.type
@@ -1957,6 +1823,44 @@ func TestExplicitNeutralSamplingChangesWin(t *testing.T) {
 // touched this" from "somebody set it to something", because the projection of
 // a preserved thinking object is lossy by construction: Reasoning already
 // differs from the caller's own thinking before any plugin runs.
+// TestSamplingStaysStrippedForAdaptiveOnlyModels pins a deliberate NON-change,
+// which is the kind that quietly regresses without a test.
+//
+// Sonnet 5.5 is adaptive-only (DefaultAdaptiveOnlyThinking covers IsSonnet5Plus),
+// and ToAnthropicResponsesRequest drops temperature/top_p and deletes top_k for
+// that family because upstream records the provider answering 400 for them. The
+// restore in this change therefore leaves sampling alone: recovering the three
+// would resolve the typed/raw divergence in the direction that can only ADD
+// provider rejections to requests that work today.
+//
+// The raw path still forwards all three, so the divergence is real and visible
+// in TestSonnet55StockVersusPatchedSurface; it is not this change's to resolve.
+func TestSamplingStaysStrippedForAdaptiveOnlyModels(t *testing.T) {
+	temp, topP, topK := 0.7, 0.9, 40
+	for _, model := range sonnet55Spellings {
+		t.Run(model, func(t *testing.T) {
+			for _, streaming := range []bool{false, true} {
+				// Typed path: stripped, exactly as stock builds it.
+				assertWire(t, surfaceProbe{
+					model: model, temp: &temp, topP: &topP, topK: &topK, streaming: streaming,
+				}, wAbsent)
+				// Raw path: forwarded, also exactly as stock builds it.
+				assertWire(t, surfaceProbe{
+					model: model, temp: &temp, topP: &topP, topK: &topK, streaming: streaming, raw: true,
+				}, wSampleAll)
+			}
+		})
+	}
+
+	t.Run("thinking is still restored alongside stripped sampling", func(t *testing.T) {
+		// The two halves are independent: sampling stays stripped while the
+		// caller's thinking mode is still recovered.
+		assertWire(t, surfaceProbe{
+			model: "claude-sonnet-5-5", thinking: betweenTools(), temp: &temp, topP: &topP, topK: &topK,
+		}, `thinking={"type":"between_tools"} effort=- temperature=- top_p=- top_k=-`)
+	})
+}
+
 func TestExplicitNeutralReasoningChangesWin(t *testing.T) {
 	cases := []struct {
 		name string
@@ -2410,8 +2314,11 @@ func TestNoWitnessMeansNoRestore(t *testing.T) {
 // upstream omits the parameter, or a temperature the second caller never sent.
 func TestWitnessDoesNotLeakAcrossRequests(t *testing.T) {
 	temp := 0.7
+	// Sampling is stripped for this family either way (see
+	// TestSamplingStaysStrippedForAdaptiveOnlyModels); what must not leak is the
+	// thinking mode this caller sent.
 	assertWire(t, surfaceProbe{model: "claude-sonnet-5-5", thinking: enabledWithBudget(), temp: &temp},
-		`thinking={"type":"enabled","budget_tokens":4096} effort=- temperature=0.7 top_p=- top_k=-`)
+		wEnabled)
 	// Measured stock for this second shape, and the shape a leak would corrupt:
 	// Sonnet 5.5 is always-on, so an explicit "disabled" leaves thinking absent,
 	// and this caller sent no sampling scalars at all.
@@ -2661,10 +2568,14 @@ func TestSonnet55StockVersusPatchedSurface(t *testing.T) {
 
 		// -- sampling scalars ----------------------------------------------
 		{
+			// Unchanged by this patch: sampling stays stripped on the typed path,
+			// because this family is adaptive-only and upstream records the
+			// provider rejecting the three. The raw rows below show the
+			// divergence that remains, which this change does not resolve.
 			"sampling tuple typed",
 			sampling("claude-sonnet-5-5", false, false, ""),
 			absent + noBeta,
-			`thinking=- effort=- temperature=0.7 top_p=0.9 top_k=40` + noBeta, true,
+			absent + noBeta, false,
 		},
 		{
 			// count_tokens deletes temperature for every model on both paths.
@@ -2672,7 +2583,7 @@ func TestSonnet55StockVersusPatchedSurface(t *testing.T) {
 			"sampling tuple count",
 			sampling("claude-sonnet-5-5", false, true, ""),
 			absent + noBeta,
-			`thinking=- effort=- temperature=- top_p=0.9 top_k=40` + noBeta, true,
+			absent + noBeta, false,
 		},
 		{
 			// The loss point is the neutral hop, not the egress read: a
@@ -2681,7 +2592,7 @@ func TestSonnet55StockVersusPatchedSurface(t *testing.T) {
 			"sampling tuple typed after neutral normalization",
 			sampling("claude-sonnet-5-5", false, false, "named"),
 			absent + noBeta,
-			`thinking=- effort=- temperature=0.7 top_p=0.9 top_k=40` + noBeta, true,
+			absent + noBeta, false,
 		},
 		{
 			"sampling tuple raw",
@@ -2771,8 +2682,12 @@ func TestSonnet55StockVersusPatchedSurface(t *testing.T) {
 		}
 	}
 	// Pinned so a wholesale demotion of the table to controls is visible in
-	// review rather than a quietly green run.
-	if want := 13; fixes != want {
+	// review rather than a quietly green run. It went 13 -> 10 when the three
+	// typed sampling rows became controls: sampling is no longer restored for
+	// this family, because it is adaptive-only and upstream records the provider
+	// rejecting temperature/top_p/top_k for it. The raw sampling rows stay as
+	// controls showing the divergence this change deliberately leaves alone.
+	if want := 10; fixes != want {
 		t.Errorf("table declares %d fixes, want %d", fixes, want)
 	}
 }
@@ -3206,10 +3121,10 @@ func TestLargeDeepToolContextSurvivesThePreservedBuild(t *testing.T) {
 	}
 
 	// The preserved surface is asserted on the SAME body, so this is not two
-	// independent facts: the caller's thinking and sampling are forwarded WHILE
-	// the deep tool context is intact, which is the only combination a real
-	// agent request has.
-	if got, want := projectAnthropicWire(body), `thinking={"type":"enabled","budget_tokens":4096} effort=- temperature=0.7 top_p=0.9 top_k=40`; got != want {
+	// independent facts: the caller's thinking is forwarded WHILE the deep tool
+	// context is intact, which is the only combination a real agent request has.
+	// Sampling stays stripped for this family even though the caller sent it.
+	if got, want := projectAnthropicWire(body), wEnabled; got != want {
 		t.Errorf("preserved surface on the large request:\n got  %s\n want %s", got, want)
 	}
 }
@@ -3231,7 +3146,9 @@ func TestPreservedRestoreIsConfinedToTheCallerSurface(t *testing.T) {
 	}{
 		{"enabled+budget and sampling", enabledWithBudget(), true},
 		{"between_tools with display", &AnthropicThinking{Type: "between_tools", Display: schemas.Ptr("omitted")}, false},
-		{"sampling only", nil, true},
+		// No "sampling only" case: sampling is never restored for this family, so
+		// such a caller gets a byte-identical body and there is no difference to
+		// confine. TestSamplingStaysStrippedForAdaptiveOnlyModels pins that.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			preserved := buildLargeToolContext(t, "claude-sonnet-5-5", tc.thinking, tc.sampling, false)
@@ -3250,7 +3167,7 @@ func TestPreservedRestoreIsConfinedToTheCallerSurface(t *testing.T) {
 				}
 			}
 			if string(preserved) != string(shed) {
-				t.Errorf("the restore reached outside the preserved surface; bodies differ with the five fields removed\n preserved %d bytes\n shed      %d bytes",
+				t.Errorf("the restore reached outside the preserved surface; bodies differ with the surface fields removed\n preserved %d bytes\n shed      %d bytes",
 					len(preserved), len(shed))
 			}
 		})
@@ -3289,9 +3206,6 @@ func TestPreservedSurfaceFieldTypes(t *testing.T) {
 	}{
 		{"thinking.type", `"enabled"`, "String"},
 		{"thinking.budget_tokens", "4096", "Number"},
-		{"temperature", "0.7", "Number"},
-		{"top_p", "0.9", "Number"},
-		{"top_k", "40", "Number"},
 	} {
 		got := providerUtils.GetJSONField(body, want.path)
 		if !got.Exists() {
@@ -3335,39 +3249,18 @@ func TestPreservedSurfaceFieldTypes(t *testing.T) {
 // hold: it recovers what the CONVERSION could not carry, and leaves alone what a
 // layer removed on purpose.
 //
-// The built-in compat plugin drops temperature, top_p or reasoning when the
-// model catalog does not allowlist them, and publishes the list on the context.
-// Recovering those would hand the provider back the very parameter the plugin
-// removed to make the request servable -- the restore would be reintroducing a
-// 400. An anonymous layer that merely clears a value (dropNeutral, with nothing
-// published) is still treated as a loss, because nothing says otherwise.
+// The built-in compat plugin drops reasoning when the model catalog does not
+// allowlist it, and publishes the list on the context. Recovering it would hand
+// the provider back the very parameter the plugin removed to make the request
+// servable -- the restore would be reintroducing a 400. An anonymous layer that
+// merely clears a value is still treated as a loss, because nothing says
+// otherwise.
+//
+// Sampling needs no leg here: it is never restored for this family at all (see
+// TestSamplingStaysStrippedForAdaptiveOnlyModels), so a published temperature or
+// top_p drop cannot be undone by construction.
 func TestCompatPluginDropIsRespectedNotUndone(t *testing.T) {
 	const model = "claude-sonnet-5-5"
-	temp, topP := 0.7, 0.9
-
-	t.Run("a published temperature/top_p drop is not undone", func(t *testing.T) {
-		assertWire(t, surfaceProbe{
-			model: model, temp: &temp, topP: &topP,
-			dropNeutral:   "named",
-			compatDropped: []string{"temperature", "top_p"},
-		}, wAbsent)
-	})
-
-	t.Run("an unpublished clear is still recovered", func(t *testing.T) {
-		// Same drop, nothing published: this is the case the witness exists for.
-		assertWire(t, surfaceProbe{
-			model: model, temp: &temp, topP: &topP,
-			dropNeutral: "named",
-		}, `thinking=- effort=- temperature=0.7 top_p=0.9 top_k=-`)
-	})
-
-	t.Run("an unrelated published drop does not suppress sampling", func(t *testing.T) {
-		assertWire(t, surfaceProbe{
-			model: model, temp: &temp, topP: &topP,
-			dropNeutral:   "named",
-			compatDropped: []string{"seed", "service_tier"},
-		}, `thinking=- effort=- temperature=0.7 top_p=0.9 top_k=-`)
-	})
 
 	// The plugin both CLEARS the neutral reasoning and publishes the drop, so
 	// these legs do the same -- publishing alone would leave the converter a
@@ -3407,6 +3300,49 @@ func TestCompatPluginDropIsRespectedNotUndone(t *testing.T) {
 // The converse matters just as much: a budget that never fitted the caller's OWN
 // max_tokens is their request as written, and is forwarded verbatim for the
 // provider to answer for, rather than quietly rewritten.
+// TestClampedRawThinkingDropsAnUnfittableBudget is the raw-path half of the
+// refit, and it closes the hole this change's exemption opened.
+//
+// Stock rewrites "enabled" to adaptive for an adaptive-only model, which drops
+// the budget with it. PreservesCallerRequestSurface models are exempt from that
+// rewrite, so they can still be carrying "enabled" when the clamp lowers
+// max_tokens below any valid budget -- and fitRawThinkingBudget used to return
+// the body untouched there, forwarding a pair the provider rejects. The
+// invalidity is ours, not the caller's: the refit is only reached when the clamp
+// actually lowered max_tokens.
+func TestClampedRawThinkingDropsAnUnfittableBudget(t *testing.T) {
+	const model = "claude-sonnet-5-5"
+	// A ceiling at the minimum leaves no room for any budget >= 1024.
+	installMaxOutputRow(t, model, MinimumReasoningMaxTokens)
+
+	got := surfaceProbe{
+		model: model, raw: true,
+		thinking:  &AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(8192)},
+		maxTokens: 16000,
+	}.wire(t)
+	if strings.Contains(got, "budget_tokens") {
+		t.Fatalf("forwarded a budget the clamped max_tokens cannot cover: %s", got)
+	}
+	if strings.Contains(got, `"type":"enabled"`) {
+		t.Fatalf("kept an enabled thinking object with no valid budget: %s", got)
+	}
+
+	t.Run("a budget that still fits is refitted, not dropped", func(t *testing.T) {
+		installMaxOutputRow(t, model, 4096)
+		got := surfaceProbe{
+			model: model, raw: true,
+			thinking:  &AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(8192)},
+			maxTokens: 16000,
+		}.wire(t)
+		if !strings.Contains(got, `"type":"enabled"`) {
+			t.Fatalf("thinking should survive a refit that has room: %s", got)
+		}
+		if strings.Contains(got, `"budget_tokens":8192`) {
+			t.Fatalf("budget not refitted to the lowered ceiling: %s", got)
+		}
+	})
+}
+
 func TestClampedMaxTokensRefitsTheRestoredBudget(t *testing.T) {
 	const model = "claude-sonnet-5-5"
 
