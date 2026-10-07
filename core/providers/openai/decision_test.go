@@ -255,10 +255,10 @@ func TestDecisionNativeUpstreamError(t *testing.T) {
 	assert.Contains(t, bifrostErr.Error.Message, "not enabled")
 }
 
-// TestDecisionLeavesEveryOtherRequestUnsupported pins that only the ordered
-// form of a decisions model goes upstream. A map-shaped request, or an ordered
-// request for a chat model, is reported unsupported without any upstream call,
-// so core keeps emulating the former and rejects the latter.
+// TestDecisionLeavesEveryOtherRequestUnsupported pins that only a decisions
+// model goes upstream. A request for a chat model, in either form, is reported
+// unsupported without any upstream call, so core emulates a map-shaped one and
+// rejects an ordered one.
 func TestDecisionLeavesEveryOtherRequestUnsupported(t *testing.T) {
 	var upstreamCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -274,12 +274,12 @@ func TestDecisionLeavesEveryOtherRequestUnsupported(t *testing.T) {
 	chatModel := orderedDecisionRequest()
 	chatModel.Model = "gpt-4o"
 	mapShaped := &schemas.BifrostDecisionRequest{
-		Model:     "gpt-6-luna",
+		Model:     "gpt-4o",
 		State:     "hello",
 		Questions: map[string]schemas.DecisionQuestion{"q": {Kind: schemas.DecisionKindNoul}},
 	}
 
-	for name, request := range map[string]*schemas.BifrostDecisionRequest{"ordered request for a chat model": chatModel, "map-shaped request": mapShaped} {
+	for name, request := range map[string]*schemas.BifrostDecisionRequest{"ordered request for a chat model": chatModel, "map-shaped request for a chat model": mapShaped} {
 		t.Run(name, func(t *testing.T) {
 			response, bifrostErr := provider.Decision(ctx, key, request)
 			assert.Nil(t, response)
@@ -435,4 +435,170 @@ func TestDecisionNativeForwardsExtensionsButNotFallbacks(t *testing.T) {
 	assert.JSONEq(t, `{"mode":"strict"}`, string(sent["future_option"]))
 	assert.NotContains(t, sent, "fallbacks")
 	assert.Contains(t, sent, "questions")
+}
+
+// mapDecisionRequest builds a map-shaped request for a decisions model with
+// one question of each kind, including noul criteria, structured
+// instructions, and a structured choice description. The payload is synthetic.
+func mapDecisionRequest() *schemas.BifrostDecisionRequest {
+	return &schemas.BifrostDecisionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-6-luna",
+		State:    "I was double charged. Refund me today or I cancel.",
+		Questions: map[string]schemas.DecisionQuestion{
+			"urgency": {Kind: schemas.DecisionKindScore, Instructions: "How urgent?", Criteria: []interface{}{"can wait", "soon", "today"}},
+			"is_frustrated": {
+				Kind:         schemas.DecisionKindNoul,
+				Instructions: "Is the customer frustrated?",
+				Criteria:     map[string]interface{}{"true": "clearly upset", "false": "calm"},
+			},
+			"category": {
+				Kind:         schemas.DecisionKindChoice,
+				Instructions: map[string]interface{}{"question": "Ticket category", "rule": "pick one"},
+				Criteria:     map[string]interface{}{"bug": "defects", "billing": map[string]interface{}{"definition": "charges and refunds"}},
+			},
+		},
+	}
+}
+
+// mapDecisionUpstreamBody is a synthetic decisions reply to the converted
+// mapDecisionRequest, answering in the converted question order.
+const mapDecisionUpstreamBody = `{
+	"model": "gpt-6-luna",
+	"answers": [
+		{"type": "choice", "name": "category", "choice": "billing", "probabilities": [{"value": "billing", "probability": 0.98}, {"value": "bug", "probability": 0.02}], "confidence": 0.98},
+		{"type": "predicate", "name": "is_frustrated", "probability": 0.97},
+		{"type": "score", "name": "urgency", "score": 1.95, "probabilities": [{"value": 0, "label": "0", "probability": 0.01}, {"value": 1, "label": "1", "probability": 0.03}, {"value": 2, "label": "2", "probability": 0.96}], "confidence": 0.96}
+	],
+	"usage": {"input_tokens": 180, "output_tokens": 0, "total_tokens": 180}
+}`
+
+// TestDecisionMapFormServedNatively pins that a map-shaped request for a
+// decisions model is converted and sent to the decisions endpoint, not
+// emulated: questions sorted by name, noul criteria folded into a predicate's
+// instructions, structured text rendered as sorted JSON, and score levels
+// labelled by index. The ordered answers come back as the map answers, with
+// no ordered answers or native body left on the response.
+func TestDecisionMapFormServedNatively(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(mapDecisionUpstreamBody))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	response, bifrostErr := provider.Decision(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, mapDecisionRequest())
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "/v1/decisions", gotPath)
+	assert.JSONEq(t, `{
+		"model": "gpt-6-luna",
+		"input": "I was double charged. Refund me today or I cancel.",
+		"questions": [
+			{"type": "choice", "name": "category", "instructions": "{\"question\":\"Ticket category\",\"rule\":\"pick one\"}",
+			 "choices": [{"value": "billing", "description": "{\"definition\":\"charges and refunds\"}"}, {"value": "bug", "description": "defects"}]},
+			{"type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated? Meaning (answer: meaning): true=clearly upset, false=calm"},
+			{"type": "score", "name": "urgency", "instructions": "How urgent?",
+			 "levels": [{"label": "0", "description": "can wait"}, {"label": "1", "description": "soon"}, {"label": "2", "description": "today"}]}
+		]
+	}`, string(gotBody))
+
+	require.NotNil(t, response)
+	assert.Empty(t, response.OrderedAnswers, "a map-shaped request must not return ordered answers")
+	assert.Empty(t, response.NativeResponse, "the native body answers the ordered form, not the caller's map form")
+	require.Len(t, response.Answers, 3)
+	assert.Equal(t, schemas.DecisionAnswer{Kind: schemas.DecisionKindNoul, Value: 0.97}, response.Answers["is_frustrated"])
+	assert.Equal(t, schemas.DecisionAnswer{
+		Kind:          schemas.DecisionKindChoice,
+		Value:         "billing",
+		Confidence:    schemas.Ptr(0.98),
+		Probabilities: map[string]float64{"billing": 0.98, "bug": 0.02},
+	}, response.Answers["category"])
+	assert.Equal(t, schemas.DecisionAnswer{
+		Kind:          schemas.DecisionKindScore,
+		Value:         1.95,
+		Confidence:    schemas.Ptr(0.96),
+		Probabilities: map[string]float64{"0": 0.01, "1": 0.03, "2": 0.96},
+		Legend:        map[string]any{"0": "can wait", "1": "soon", "2": "today"},
+	}, response.Answers["urgency"])
+	require.NotNil(t, response.Usage)
+	assert.Equal(t, 180, response.Usage.PromptTokens)
+}
+
+// TestDecisionMapFormIgnoresRawBodyAndRefusesExtensions pins the two inputs a
+// map-shaped request must never forward as is: its raw body, which is the map
+// form, is replaced by the converted request; and native extensions asked to
+// pass through are refused with a 400 before any upstream call.
+func TestDecisionMapFormIgnoresRawBodyAndRefusesExtensions(t *testing.T) {
+	var upstreamCalls int
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(mapDecisionUpstreamBody))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testNoopLogger{})
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+
+	t.Run("raw body is not forwarded", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		request := mapDecisionRequest()
+		request.RawRequestBody = []byte(`{"model":"gpt-6-luna","state":"x","questions":{"q":{"kind":"noul"}}}`)
+
+		_, bifrostErr := provider.Decision(ctx, key, request)
+		require.Nil(t, bifrostErr)
+		assert.NotContains(t, string(gotBody), `"state"`)
+		assert.Contains(t, string(gotBody), `"input"`)
+	})
+
+	t.Run("extensions are refused", func(t *testing.T) {
+		upstreamCalls = 0
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		request := mapDecisionRequest()
+		request.ExtraParams = map[string]interface{}{"images": json.RawMessage(`["data:image/png;base64,AAAA"]`)}
+
+		response, bifrostErr := provider.Decision(ctx, key, request)
+		assert.Nil(t, response)
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		assert.Contains(t, bifrostErr.Error.Message, "images")
+		assert.Zero(t, upstreamCalls)
+	})
+}
+
+// TestDecisionMapFormRefusalFails pins that a refused question fails a
+// map-shaped request instead of returning a map with that answer missing,
+// since every requested map question must be answered.
+func TestDecisionMapFormRefusalFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"gpt-6-luna","answers":[
+			{"type":"choice","name":"category","choice":"billing","probabilities":[{"value":"billing","probability":1}],"confidence":1},
+			{"type":"refusal","name":"is_frustrated"},
+			{"type":"score","name":"urgency","score":2,"probabilities":[{"value":2,"label":"2","probability":1}],"confidence":1}
+		],"usage":{"input_tokens":120,"output_tokens":7,"total_tokens":127}}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	response, bifrostErr := provider.Decision(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, mapDecisionRequest())
+	assert.Nil(t, response)
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "declined to answer question \"is_frustrated\"")
+	require.NotNil(t, bifrostErr.ExtraFields.BilledUsage, "a paid reply that fails conversion must still be billed")
+	assert.Equal(t, 120, bifrostErr.ExtraFields.BilledUsage.PromptTokens)
+	assert.Equal(t, 127, bifrostErr.ExtraFields.BilledUsage.TotalTokens)
 }

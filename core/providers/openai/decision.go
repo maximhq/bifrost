@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -138,8 +140,10 @@ func (response *OpenAIDecisionResponse) ToBifrostDecisionResponse() *schemas.Bif
 	}
 }
 
-// HandleOpenAIDecisionRequest sends an ordered decision request to OpenAI's
-// decisions endpoint and converts the reply.
+// HandleOpenAIDecisionRequest sends a decision request to OpenAI's decisions
+// endpoint and converts the reply. An ordered-form request is sent as is; a
+// map-form request is converted to the ordered form and its answers back (see
+// handleOpenAIMapDecisionRequest).
 func HandleOpenAIDecisionRequest(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
@@ -152,6 +156,10 @@ func HandleOpenAIDecisionRequest(
 	sendBackRawResponse bool,
 	logger schemas.Logger,
 ) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	if request.UsesMapForm() {
+		return handleOpenAIMapDecisionRequest(ctx, client, url, request, key, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse, logger)
+	}
+
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -242,4 +250,73 @@ func HandleOpenAIDecisionRequest(
 		bifrostResponse.NativeResponse = json.RawMessage(compact.Bytes())
 	}
 	return bifrostResponse, nil
+}
+
+// handleOpenAIMapDecisionRequest serves a map-form decision request (State
+// plus the Questions map) natively: it is converted to the ordered form, sent
+// through HandleOpenAIDecisionRequest, and the ordered answers are converted
+// back to the map answers the caller asked for. The caller's raw body is the
+// map form, which this endpoint cannot read, so raw-body passthrough is turned
+// off for the attempt, as core does for converted fallbacks. Native extensions
+// a map-form caller asked to forward belong to that form's own endpoint, so
+// they are refused rather than sent where they mean nothing.
+func handleOpenAIMapDecisionRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostDecisionRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); passthrough && len(request.ExtraParams) > 0 {
+		names := make([]string, 0, len(request.ExtraParams))
+		for name := range request.ExtraParams {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("decision request extensions (%s) cannot be forwarded to %s's decisions endpoint", strings.Join(names, ", "), providerName))
+	}
+
+	input, questions, err := providerUtils.DecisionMapToOrdered(request)
+	if err != nil {
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			return nil, badRequest
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
+	}
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	ordered := &schemas.BifrostDecisionRequest{
+		Provider:         request.Provider,
+		Model:            request.Model,
+		Input:            input,
+		OrderedQuestions: questions,
+		Fallbacks:        request.Fallbacks,
+	}
+
+	response, bifrostErr := HandleOpenAIDecisionRequest(ctx, client, url, ordered, key, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse, logger)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	answers, err := providerUtils.DecisionOrderedAnswersToMap(response.OrderedAnswers, request.Questions)
+	if err != nil {
+		failure := providerUtils.NewBifrostOperationError(err.Error(), nil)
+		// OpenAI already answered and billed this call, so a reply that cannot be
+		// converted must still carry its usage for billing and cost records.
+		if response.Usage != nil {
+			billed := *response.Usage
+			failure.ExtraFields.BilledUsage = &billed
+		}
+		return nil, failure
+	}
+	response.Answers = answers
+	response.OrderedAnswers = nil
+	// The native body answers the ordered form; map-form routes rebuild their
+	// own shape from Answers instead.
+	response.NativeResponse = nil
+	return response, nil
 }

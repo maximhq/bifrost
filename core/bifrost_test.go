@@ -4234,6 +4234,51 @@ func TestOrderedDecisionFallbacksAreGuardedPerAttempt(t *testing.T) {
 	})
 }
 
+// TestMapDecisionRequestIsServedNativelyForDecisionsModels pins the dispatch
+// for a map-shaped request on OpenAI: a decisions model is served by the
+// decisions endpoint and answered in the map form, while a chat model still
+// goes through emulation on the Responses endpoint. The payload is synthetic.
+func TestMapDecisionRequestIsServedNativelyForDecisionsModels(t *testing.T) {
+	mapRequest := func(model string) *schemas.BifrostDecisionRequest {
+		return &schemas.BifrostDecisionRequest{
+			Provider:  schemas.OpenAI,
+			Model:     model,
+			State:     "I was charged twice for my order.",
+			Questions: map[string]schemas.DecisionQuestion{"is_frustrated": {Kind: schemas.DecisionKindNoul, Instructions: "Is the customer frustrated?"}},
+		}
+	}
+
+	t.Run("decisions model is served natively", func(t *testing.T) {
+		client, seenPaths := newOrderedDecisionClient(t, schemas.OpenAI)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		resp, bifrostErr := client.DecisionRequest(ctx, mapRequest("gpt-6-luna"))
+		if bifrostErr != nil {
+			t.Fatalf("map-shaped request for a decisions model must be served natively, got %v", bifrostErr)
+		}
+		answer, ok := resp.Answers["is_frustrated"]
+		if !ok || answer.Kind != schemas.DecisionKindNoul || answer.Value != 0.97 {
+			t.Fatalf("expected the noul answer 0.97 in the map form, got %+v", resp.Answers)
+		}
+		if len(resp.OrderedAnswers) != 0 {
+			t.Errorf("a map-shaped request must not return ordered answers, got %+v", resp.OrderedAnswers)
+		}
+		if got := seenPaths(); !reflect.DeepEqual(got, []string{"/v1/decisions"}) {
+			t.Errorf("upstream saw %v, want only /v1/decisions", got)
+		}
+	})
+
+	t.Run("chat model is still emulated", func(t *testing.T) {
+		client, seenPaths := newOrderedDecisionClient(t, schemas.OpenAI)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		_, _ = client.DecisionRequest(ctx, mapRequest("gpt-4o"))
+		if got := seenPaths(); !reflect.DeepEqual(got, []string{"/v1/responses"}) {
+			t.Errorf("upstream saw %v, want only the emulation's /v1/responses", got)
+		}
+	})
+}
+
 // TestFallbackWithUnknownPinnedKeyIsSkipped covers a pin that names no key in the provider's pool: the attempt is skipped, not load-balanced.
 func TestFallbackWithUnknownPinnedKeyIsSkipped(t *testing.T) {
 	primary := httptest.NewServer(sseHandler(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
