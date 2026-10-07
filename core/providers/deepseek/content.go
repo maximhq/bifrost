@@ -57,15 +57,35 @@ func rejectUnsupportedResponsesContent(request *schemas.BifrostResponsesRequest)
 			return newUnsupportedDocumentError()
 		}
 		// A replayed web_fetch result carries its page as a web_fetch_document,
-		// not as a file content block, and the Anthropic egress renders it as a
-		// document block (convertBifrostWebFetchCallToAnthropicBlocks defaults an
-		// untyped document to type "document"). Reading only content blocks would
-		// let that reach DeepSeek as exactly the shape this guard refuses.
-		if wf := message.ResponsesToolMessage.ResponsesWebFetchCall; wf != nil && wf.Document != nil {
+		// not as a file content block, so reading only content blocks would let
+		// it reach DeepSeek as exactly the shape this guard refuses. What the
+		// egress actually emits decides: convertBifrostWebFetchCallToAnthropicBlocks
+		// passes the document's own type through and defaults only an EMPTY one
+		// to "document", so a document declaring another type -- "text", say --
+		// becomes a text block DeepSeek accepts, and refusing it would cost the
+		// caller a request the provider would have served.
+		if wf := message.ResponsesToolMessage.ResponsesWebFetchCall; wf != nil && wf.Document != nil &&
+			emittedWebFetchDocumentBlockType(wf.Document) == webFetchDocumentBlockType {
 			return newUnsupportedDocumentError()
 		}
 	}
 	return nil
+}
+
+// webFetchDocumentBlockType is the Anthropic content-block type a web-fetch
+// document lands on when it declares none, mirroring the egress converter's own
+// default. Kept as a literal rather than imported so this guard stays a pure
+// type-discriminator read with no dependency on the Anthropic package.
+const webFetchDocumentBlockType = "document"
+
+// emittedWebFetchDocumentBlockType reports the block type the Anthropic egress
+// will give this web-fetch document: its own type, or "document" when it
+// declares none. The guard asks what gets EMITTED, not what the field is called.
+func emittedWebFetchDocumentBlockType(doc *schemas.ResponsesWebFetchDocument) string {
+	if doc == nil || doc.Type == "" {
+		return webFetchDocumentBlockType
+	}
+	return doc.Type
 }
 
 // hasResponsesFileBlock reports whether any block is a file (document) block,
