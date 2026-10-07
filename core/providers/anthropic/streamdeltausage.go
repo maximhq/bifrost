@@ -157,15 +157,36 @@ func openAnthropicStreamDeltaPromptUsageLedger(ctx *schemas.BifrostContext) *ant
 	anthropicStreamDeltaPromptUsageLedgers.Store(id, ledger)
 	ctx.SetValue(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage, id)
 
-	// Release is tied to DELIVERY, not to a context lifetime: a caller holding
-	// NewBifrostContext(context.Background(), NoDeadline) never cancels, so
-	// waiting on ctx.Done() would keep the entry -- and a goroutine -- for the
-	// life of the process. The release points are instead the two ways a stream
-	// ends: the egress closes the ledger once it has rendered the terminal frame
-	// (the last frame that can need a reading), and the reader's truncation path
-	// closes it when the body ended before a terminal frame was produced. A
-	// retry's own open() replaces and drops whatever the previous attempt left.
+	// Release has to happen where the readings stop being READ, which is the
+	// consumer: the egress closes the ledger once it has rendered the terminal
+	// frame, the last frame that can need a reading. Releasing anywhere on the
+	// producer side is wrong, and wrong in the direction that reintroduces the
+	// defect -- the reader hands chunks over a buffered channel, so earlier
+	// message_delta frames can still be queued unconverted when it returns, and
+	// dropping their readings renders exactly the prompt zeros this file removes.
+	//
+	// A stream that never reaches a terminal frame (truncated body, cancelled
+	// request, client gone) therefore has no consumer-side release, so the
+	// remaining entries are swept here, when the next stream opens, by the one
+	// signal that reliably outlives delivery: the owning request being finished.
+	// That costs a scan of a map holding one entry per in-flight stream, and no
+	// goroutine.
+	sweepFinishedAnthropicStreamDeltaPromptUsageLedgers()
 	return ledger
+}
+
+// sweepFinishedAnthropicStreamDeltaPromptUsageLedgers drops the readings of any
+// request that has finished. A context that is Done can have no frame left to
+// render, so its readings cannot still be needed; one that is not Done is left
+// alone however old it looks, because a slow stream is not a finished one.
+func sweepFinishedAnthropicStreamDeltaPromptUsageLedgers() {
+	anthropicStreamDeltaPromptUsageLedgers.Range(func(key, value any) bool {
+		ledger, _ := value.(*anthropicStreamDeltaPromptUsageLedger)
+		if ledger == nil || ledger.owner == nil || ledger.owner.Err() != nil {
+			anthropicStreamDeltaPromptUsageLedgers.Delete(key)
+		}
+		return true
+	})
 }
 
 // closeAnthropicStreamDeltaPromptUsageLedger releases the readings this

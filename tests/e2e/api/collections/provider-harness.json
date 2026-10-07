@@ -221558,6 +221558,12 @@
                   "  lines.forEach(function (l, i) {",
                   "    var frame = JSON.parse(l.replace(/^data:\\s*/, ''));",
                   "    pm.expect(frame.delta, 'message_delta #' + i + ' has no delta object; the Anthropic API documents it as REQUIRED and strict clients (the official SDKs, Claude Code) abandon the turn without it: ' + l.slice(0, 300)).to.be.an('object');",
+                  "    // delta:{} would satisfy the check above while still omitting the two",
+                  "    // fields the clients read unguarded, so assert the KEYS are present.",
+                  "    // Either may be null (Anthropic's own streaming example sends",
+                  "    // stop_sequence as null), so presence is the contract, not a value.",
+                  "    pm.expect(frame.delta, 'message_delta #' + i + ' delta omits stop_reason, which the supported clients read unguarded: ' + l.slice(0, 300)).to.have.property('stop_reason');",
+                  "    pm.expect(frame.delta, 'message_delta #' + i + ' delta omits stop_sequence, which the frame declares as required and nullable: ' + l.slice(0, 300)).to.have.property('stop_sequence');",
                   "  });",
                   "});"
                 ]
@@ -221664,6 +221670,12 @@
                   "  lines.forEach(function (l, i) {",
                   "    var frame = JSON.parse(l.replace(/^data:\\s*/, ''));",
                   "    pm.expect(frame.delta, 'message_delta #' + i + ' has no delta object; the Anthropic API documents it as REQUIRED and strict clients (the official SDKs, Claude Code) abandon the turn without it: ' + l.slice(0, 300)).to.be.an('object');",
+                  "    // delta:{} would satisfy the check above while still omitting the two",
+                  "    // fields the clients read unguarded, so assert the KEYS are present.",
+                  "    // Either may be null (Anthropic's own streaming example sends",
+                  "    // stop_sequence as null), so presence is the contract, not a value.",
+                  "    pm.expect(frame.delta, 'message_delta #' + i + ' delta omits stop_reason, which the supported clients read unguarded: ' + l.slice(0, 300)).to.have.property('stop_reason');",
+                  "    pm.expect(frame.delta, 'message_delta #' + i + ' delta omits stop_sequence, which the frame declares as required and nullable: ' + l.slice(0, 300)).to.have.property('stop_sequence');",
                   "  });",
                   "});"
                 ]

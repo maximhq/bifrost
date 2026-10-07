@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -1255,6 +1256,44 @@ func TestPromptUsageLedgerIsReleasedOnDelivery(t *testing.T) {
 		}
 		if loadAnthropicStreamDeltaPromptUsageLedger(id) != nil {
 			t.Fatal("the readings outlived the terminal frame: the store would grow without bound")
+		}
+	})
+
+	t.Run("a truncated stream's queued frames still find their readings", func(t *testing.T) {
+		// The reader returns before the consumer has converted what it queued, so
+		// nothing on the producer side may release: a reading dropped here renders
+		// exactly the prompt zeros this correction removes.
+		parent, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+		ledger := openAnthropicStreamDeltaPromptUsageLedger(ctx)
+		id, _ := ctx.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(string)
+		ledger.record(0, anthropicPromptCounterInputTokens)
+
+		// Stream ends with no terminal frame; a queued chunk is converted after.
+		usage := &AnthropicUsage{InputTokens: 100, OutputTokens: 25}
+		applyAnthropicStreamDeltaPromptUsage(ctx, 0, usage)
+		if usage.absentPromptCounters == 0 {
+			t.Fatal("a queued frame lost its reading: the prompt count would render as zero")
+		}
+		if loadAnthropicStreamDeltaPromptUsageLedger(id) == nil {
+			t.Fatal("the readings must survive a stream that produced no terminal frame")
+		}
+
+		// Once the request itself is finished they cannot be needed, and the next
+		// stream to open sweeps them. BifrostContext observes a parent's
+		// cancellation on its own goroutine, so wait for that to land rather than
+		// racing it.
+		cancel()
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatal("the request context never observed its parent's cancellation")
+		}
+		openAnthropicStreamDeltaPromptUsageLedger(schemas.NewBifrostContext(t.Context(), schemas.NoDeadline))
+		if loadAnthropicStreamDeltaPromptUsageLedger(id) != nil {
+			t.Fatal("a finished request's readings were not swept: the store would grow without bound")
 		}
 	})
 
