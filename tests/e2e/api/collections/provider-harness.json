@@ -138314,6 +138314,112 @@
       ]
     },
     {
+      "name": "58. Alibaba qwen3.8-max reasoning_effort xhigh top tier (PR #6054)",
+      "description": "PR #6054: qwen3.8-max on the Model Studio OpenAI-compatible mount natively accepts reasoning_effort none/minimal/low/medium/high/xhigh and 400'd \"max\" until ~2026-08-22 (vendor error: 'reasoning_effort' must be one of...). The gateway originally published the ladder [low, medium, high, max], so both a requested \"xhigh\" and \"max\" hit the wire as \"max\". The ladder now tops out at xhigh: xhigh forwards verbatim and max clamps down to xhigh via the shared effort normalizer (chat + responses paths). Chat completions do not reliably echo the effort, so the cases pin the absence of the vendor enum 400 and, when the vendor does echo, that it shows xhigh.",
+      "item": [
+        {
+          "name": "alibaba/qwen3.8-max /v1/chat/completions reasoning_effort=xhigh forwarded as the top tier (2xx, no enum 400) - PR #6054",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"alibaba/qwen3.8-max\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning_effort\": \"xhigh\",\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('qwen3.8-max xhigh: 2xx (a 400 means the effort value was mangled before the wire)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('qwen3.8-max xhigh: no vendor reasoning_effort enum 400', function () {",
+                  "  pm.expect(pm.response.text().indexOf(\"'reasoning_effort' must be one of\"), 'vendor rejected the effort: ' + pm.response.text()).to.eql(-1);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var r = pm.response.json();",
+                  "pm.test('qwen3.8-max xhigh: echo consistent with xhigh when present', function () {",
+                  "  if (r.reasoning_effort) { pm.expect(r.reasoning_effort, 'echo: ' + pm.response.text()).to.eql('xhigh'); }",
+                  "  if (r.reasoning && r.reasoning.effort) { pm.expect(r.reasoning.effort, 'echo: ' + pm.response.text()).to.eql('xhigh'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "alibaba/qwen3.8-max /v1/chat/completions reasoning_effort=max clamped to xhigh on the wire (2xx) - PR #6054",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"alibaba/qwen3.8-max\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning_effort\": \"max\",\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('qwen3.8-max max: 2xx (a 400 means the effort value was mangled before the wire)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('qwen3.8-max max: no vendor reasoning_effort enum 400', function () {",
+                  "  pm.expect(pm.response.text().indexOf(\"'reasoning_effort' must be one of\"), 'vendor rejected the effort: ' + pm.response.text()).to.eql(-1);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var r = pm.response.json();",
+                  "pm.test('qwen3.8-max max: echo consistent with xhigh when present', function () {",
+                  "  if (r.reasoning_effort) { pm.expect(r.reasoning_effort, 'echo: ' + pm.response.text()).to.eql('xhigh'); }",
+                  "  if (r.reasoning && r.reasoning.effort) { pm.expect(r.reasoning.effort, 'echo: ' + pm.response.text()).to.eql('xhigh'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "58. Typed embedding envelopes and SDK alias (PR #6335)",
       "item": [
         {
@@ -203872,6 +203978,251 @@
                   "  pm.expect(raw, 'no response.completed: ' + raw.slice(0, 800)).to.include('response.completed');",
                   "  pm.expect(raw.indexOf('\"type\":\"error\"'), 'stream carried an error event: ' + raw.slice(0, 800)).to.equal(-1);",
                   "  pm.expect(raw.indexOf('logprobs\\': expected an array'), 'upstream rejected logprobs: ' + raw.slice(0, 800)).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "59. DeepSeek Anthropic-mount reasoning effort passthrough",
+      "description": "DeepSeek's Anthropic-compatible mount (key alias deepseek-v4-flash-anthropic, use_anthropic_endpoints: true) takes reasoning effort ONLY via output_config.effort; thinking.budget_tokens is documented-ignored (https://api-docs.deepseek.com/guides/anthropic_api: thinking 'Supported (budget_tokens is ignored)', output_config 'Only effort is supported'; https://api-docs.deepseek.com/guides/thinking_mode: low/high/max honored, medium/xhigh mapped to high server-side, thinking on by default). Bifrost's Anthropic converter used to treat DeepSeek as a budget_tokens-only model: every effort request left the gateway as thinking:{type:enabled,budget_tokens:<effort ratio of max_tokens>} with no effort field - silently ignored upstream, so every call ran at DeepSeek's default effort while dashboards reported the requested one (same class of bug as LiteLLM#35645). These cases pin the OUTBOUND payload via x-bf-send-back-raw-request (deterministic - asserting on thinking length is underpowered even at n=3): output_config.effort must reach the wire and no budget_tokens may be synthesized from the effort. Effort-only is the canonical shape: DeepSeek defaults thinking on, so the thinking field stays absent. An explicitly supplied thinking type is normalized to enabled without a budget (Claude-only types never reach the mount). Cases 1-2 pin the max and low tiers verbatim on the unified route; case 3 pins the Anthropic drop-in dialect (output_config.effort in the request body) still succeeds end-to-end.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic reasoning_effort max reaches wire as output_config.effort (no synthesized budget_tokens)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: hi\"\n    }\n  ],\n  \"reasoning_effort\": \"max\",\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek anthropic effort max: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('deepseek anthropic effort max: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var oc = rr.output_config || {};",
+                  "var ocs = JSON.stringify(oc);",
+                  "var think = rr.thinking;",
+                  "var thinks = JSON.stringify(think);",
+                  "pm.test('deepseek anthropic effort max: output_config.effort \"max\" reaches the wire', function () {",
+                  "  pm.expect(oc.effort, 'output_config: ' + ocs + ' - full raw_request: ' + JSON.stringify(rr)).to.eql('max');",
+                  "});",
+                  "pm.test('deepseek anthropic mount: no synthesized thinking.budget_tokens (DeepSeek documents budget_tokens as ignored)', function () {",
+                  "  pm.expect(think === undefined || think === null, 'thinking: ' + thinks + ' - full raw_request: ' + JSON.stringify(rr)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic reasoning_effort low forwarded verbatim (documented DeepSeek tier)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: hi\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek anthropic effort low: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('deepseek anthropic effort low: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var oc = rr.output_config || {};",
+                  "var ocs = JSON.stringify(oc);",
+                  "var think = rr.thinking;",
+                  "var thinks = JSON.stringify(think);",
+                  "pm.test('deepseek anthropic effort low: output_config.effort \"low\" reaches the wire', function () {",
+                  "  pm.expect(oc.effort, 'output_config: ' + ocs + ' - full raw_request: ' + JSON.stringify(rr)).to.eql('low');",
+                  "});",
+                  "pm.test('deepseek anthropic mount: no synthesized thinking.budget_tokens (DeepSeek documents budget_tokens as ignored)', function () {",
+                  "  pm.expect(think === undefined || think === null, 'thinking: ' + thinks + ' - full raw_request: ' + JSON.stringify(rr)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic anthropic drop-in output_config.effort max succeeds end-to-end",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"max_tokens\": 512,\n  \"output_config\": {\n    \"effort\": \"max\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek anthropic drop-in effort max: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var blocks = body.content || [];",
+                  "var text = '';",
+                  "for (var i = 0; i < blocks.length; i++) {",
+                  "  if (blocks[i].type === 'text' && blocks[i].text) { text += blocks[i].text; }",
+                  "}",
+                  "pm.test('deepseek anthropic drop-in effort max: text block non-empty', function () {",
+                  "  pm.expect(text, 'no text block: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-flash-anthropic reasoning_effort max on non-v4 model name reaches wire as output_config.effort",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: hi\"\n    }\n  ],\n  \"reasoning_effort\": \"max\",\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek non-v4 model effort max: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('deepseek non-v4 model effort max: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var oc = rr.output_config || {};",
+                  "pm.test('deepseek non-v4 model name: output_config.effort reaches the wire (mount aliases it to deepseek-v4-flash upstream)', function () {",
+                  "  pm.expect(oc.effort, 'output_config: ' + JSON.stringify(oc) + ' - full raw_request: ' + JSON.stringify(rr)).to.eql('max');",
+                  "});",
+                  "pm.test('deepseek non-v4 model name: no synthesized thinking.budget_tokens', function () {",
+                  "  pm.expect(rr.thinking === undefined || rr.thinking === null, 'thinking: ' + JSON.stringify(rr.thinking) + ' - full raw_request: ' + JSON.stringify(rr)).to.be.true;",
                   "});"
                 ]
               }

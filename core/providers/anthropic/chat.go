@@ -758,7 +758,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				anthropicReq.Thinking = BetweenToolsThinking(caps, reasoningParams.Effort)
 				if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" &&
 					caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
-					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
+					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
 				}
 			} else if reasoningParams.MaxTokens != nil {
 				if caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
@@ -784,23 +784,56 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						Type:         "enabled",
 						BudgetTokens: schemas.Ptr(budgetTokens),
 					}
+					// Vendor extension mounts keep a co-present effort instead
+					// of discarding it. z.ai accepts thinking.budget_tokens and
+					// output_config.effort together (the ZCode-proven shape);
+					// Model Studio rejects the pair ("'reasoning_effort' and
+					// 'thinking_budget' cannot be set simultaneously") and
+					// engages thinking itself from the effort value, so the
+					// effort wins there and the thinking field is dropped
+					// (verified live 2026-08-23).
+					if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" &&
+						SupportsProviderEffort(bifrostReq.Provider, capModel) {
+						setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
+						if bifrostReq.Provider == schemas.Alibaba {
+							anthropicReq.Thinking = nil
+						}
+					}
 				}
 			} else if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" {
 				effort := MapBifrostEffortToAnthropic(*reasoningParams.Effort)
 				if caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model())) {
 					// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
-					setEffortOnOutputConfig(anthropicReq, effort)
-				} else if SupportsNativeEffort(caps) {
-					// Opus 4.5: native effort + budget_tokens thinking
-					setEffortOnOutputConfig(anthropicReq, effort)
-					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
-					if err != nil {
-						return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
-					}
-					anthropicReq.Thinking = &AnthropicThinking{
-						Type:         "enabled",
-						BudgetTokens: schemas.Ptr(budgetTokens),
+					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, effort)
+				} else if SupportsNativeEffort(caps) || SupportsProviderEffort(bifrostReq.Provider, capModel) {
+					// Opus 4.5: native effort + budget_tokens thinking.
+					// z.ai (GLM-5.2+) takes the same shape — the mount maps the
+					// effort value server-side. Alibaba and DeepSeek forward the
+					// effort alone: Model Studio rejects effort + thinking_budget
+					// together and engages thinking itself from the effort value
+					// (verified live 2026-08-23); DeepSeek ignores budget_tokens
+					// outright, so no budget is synthesized — thinking stays absent by
+					// default, and is normalized to enabled when a caller supplies a type.
+					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, effort)
+					if bifrostReq.Provider == schemas.DeepSeek {
+						// DeepSeek takes effort only via output_config.effort and documents
+						// budget_tokens as ignored, so never synthesize a budget: thinking is
+						// on by default (effort-only requests carry no thinking field), and an
+						// explicitly supplied thinking type is normalized to enabled without
+						// one.
+						if reasoningParams.Type != nil {
+							anthropicReq.Thinking = &AnthropicThinking{Type: "enabled"}
+						}
+					} else if !forwardsEffortWithoutThinkingBudget(bifrostReq.Provider) {
+						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
+						if err != nil {
+							return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
+						}
+						anthropicReq.Thinking = &AnthropicThinking{
+							Type:         "enabled",
+							BudgetTokens: schemas.Ptr(budgetTokens),
+						}
 					}
 				} else {
 					// Older models: budget_tokens only
@@ -817,7 +850,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				// Fable/Mythos reject thinking:{type:"disabled"} with a 400 —
 				// adaptive thinking is always on and cannot be disabled. Omit
 				// the thinking param entirely for that family; all other models
-				// take the explicit disabled path.
+				// take the explicit disabled path. (Forced-thinking GLM models
+				// get rewritten to enabled downstream in
+				// stripUnsupportedAnthropicFields.)
 				anthropicReq.Thinking = &AnthropicThinking{
 					Type: "disabled",
 				}

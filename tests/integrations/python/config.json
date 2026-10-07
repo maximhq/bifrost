@@ -554,6 +554,10 @@
             "deepseek-v4-pro-anthropic": {
               "model_id": "deepseek-v4-pro",
               "use_anthropic_endpoints": true
+            },
+            "deepseek-flash-anthropic": {
+              "model_id": "deepseek-flash",
+              "use_anthropic_endpoints": true
             }
           }
         }
