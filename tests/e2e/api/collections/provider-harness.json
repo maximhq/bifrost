@@ -206622,6 +206622,250 @@
           ]
         }
       ]
+    },
+    {
+      "name": "189. Anthropic egress reports stop_reason tool_use for translated tool-call turns (#4065 / PR #7919) (stop-reason-tool-use)",
+      "description": "Pins that a tool-call turn served by a non-Anthropic provider through /anthropic/v1/messages reports stop_reason \"tool_use\", in streaming and non-streaming responses, and that the streaming message_delta sends stop_sequence null instead of \"\".\n\nBug (#4065): Anthropic SDK clients dispatch tools on stop_reason == \"tool_use\". Gemini reports finishReason STOP on function-call turns, so the Responses converter sets an explicit \"stop\" and the Anthropic egress only inferred tool_use when the stop reason was nil (end_turn, stream and non-stream). OpenAI-shaped Responses providers (OpenAI, Azure OpenAI - the #4065 repro is azure/gpt-4o streaming) send no stop reason on response.completed, and the streaming handler in toAnthropicResponsesStreamEvents (core/providers/anthropic/responses.go) defaulted to end_turn without looking for tool calls. The same message_delta serialized stop_sequence as \"\".\n\nFix: anthropicStopReasonForToolUse (core/providers/anthropic/utils.go) promotes end_turn to tool_use when the turn opened a tool_use block (tracked per stream in enforceStreamBlockTypes) or its output carries a function_call; any other reason (max_tokens, refusal, pause_turn) is kept.\n\nCases: Gemini non-streaming, Gemini streaming, Azure OpenAI streaming (the issue repro), OpenAI streaming. tool_choice forces the get_weather call so every run is a tool-call turn. Red before the fix (stop_reason end_turn, stream stop_sequence \"\"), green after.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash /anthropic/v1/messages non-streaming forced tool call reports stop_reason tool_use - #4065",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini via anthropic ingress: non-streaming tool-call turn reports stop_reason tool_use - #4065', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  var blocks = j.content || [];",
+                  "  var toolUse = blocks.filter(function (b) { return b && b.type === 'tool_use'; });",
+                  "  pm.expect(toolUse.length, 'forced tool_choice must produce a tool_use block: ' + raw.slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(toolUse[0].name, 'tool_use block must call get_weather: ' + raw.slice(0, 400)).to.equal('get_weather');",
+                  "  pm.expect(j.stop_reason, 'a tool-call turn must report stop_reason tool_use, not end_turn: ' + raw.slice(0, 400)).to.equal('tool_use');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"max_tokens\":256,\"tool_choice\":{\"type\":\"tool\",\"name\":\"get_weather\"},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the get_weather tool.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash /anthropic/v1/messages streaming forced tool call message_delta reports stop_reason tool_use and stop_sequence null - #4065",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini via anthropic ingress: streaming tool-call turn ends with message_delta stop_reason tool_use, stop_sequence null - #4065', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var frames = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    try { frames.push(JSON.parse(t.slice(5).trim())); } catch (e) { /* non-JSON keepalive */ }",
+                  "  });",
+                  "  pm.expect(frames.length, 'expected SSE data frames: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "  var toolStarts = frames.filter(function (f) { return f.type === 'content_block_start' && f.content_block && f.content_block.type === 'tool_use'; });",
+                  "  pm.expect(toolStarts.length, 'forced tool_choice must open a tool_use content block: ' + raw.slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(toolStarts[0].content_block.name, 'tool_use block must call get_weather').to.equal('get_weather');",
+                  "  var deltas = frames.filter(function (f) { return f.type === 'message_delta'; });",
+                  "  pm.expect(deltas.length, 'stream must emit a terminal message_delta: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var d = deltas[deltas.length - 1].delta || {};",
+                  "  pm.expect(d.stop_reason, 'message_delta on a tool-call turn must report stop_reason tool_use, not end_turn: ' + JSON.stringify(d)).to.equal('tool_use');",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(d, 'stop_sequence'), 'message_delta must carry stop_sequence: ' + JSON.stringify(d)).to.equal(true);",
+                  "  pm.expect(d.stop_sequence, 'no stop sequence matched, so stop_sequence must be null, not \"\": ' + JSON.stringify(d)).to.equal(null);",
+                  "  pm.expect(frames[frames.length - 1].type, 'stream must end on message_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"max_tokens\":256,\"stream\":true,\"tool_choice\":{\"type\":\"tool\",\"name\":\"get_weather\"},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the get_weather tool.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure/gpt-4o-mini /anthropic/v1/messages streaming forced tool call message_delta reports stop_reason tool_use and stop_sequence null - #4065",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('azure openai via anthropic ingress: streaming tool-call turn ends with message_delta stop_reason tool_use, stop_sequence null - #4065', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var frames = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    try { frames.push(JSON.parse(t.slice(5).trim())); } catch (e) { /* non-JSON keepalive */ }",
+                  "  });",
+                  "  pm.expect(frames.length, 'expected SSE data frames: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "  var toolStarts = frames.filter(function (f) { return f.type === 'content_block_start' && f.content_block && f.content_block.type === 'tool_use'; });",
+                  "  pm.expect(toolStarts.length, 'forced tool_choice must open a tool_use content block: ' + raw.slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(toolStarts[0].content_block.name, 'tool_use block must call get_weather').to.equal('get_weather');",
+                  "  var deltas = frames.filter(function (f) { return f.type === 'message_delta'; });",
+                  "  pm.expect(deltas.length, 'stream must emit a terminal message_delta: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var d = deltas[deltas.length - 1].delta || {};",
+                  "  pm.expect(d.stop_reason, 'message_delta on a tool-call turn must report stop_reason tool_use, not end_turn: ' + JSON.stringify(d)).to.equal('tool_use');",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(d, 'stop_sequence'), 'message_delta must carry stop_sequence: ' + JSON.stringify(d)).to.equal(true);",
+                  "  pm.expect(d.stop_sequence, 'no stop sequence matched, so stop_sequence must be null, not \"\": ' + JSON.stringify(d)).to.equal(null);",
+                  "  pm.expect(frames[frames.length - 1].type, 'stream must end on message_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/gpt-4o-mini\",\"max_tokens\":256,\"stream\":true,\"tool_choice\":{\"type\":\"tool\",\"name\":\"get_weather\"},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the get_weather tool.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /anthropic/v1/messages streaming forced tool call message_delta reports stop_reason tool_use and stop_sequence null - #4065",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai via anthropic ingress: streaming tool-call turn ends with message_delta stop_reason tool_use, stop_sequence null - #4065', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var frames = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    try { frames.push(JSON.parse(t.slice(5).trim())); } catch (e) { /* non-JSON keepalive */ }",
+                  "  });",
+                  "  pm.expect(frames.length, 'expected SSE data frames: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "  var toolStarts = frames.filter(function (f) { return f.type === 'content_block_start' && f.content_block && f.content_block.type === 'tool_use'; });",
+                  "  pm.expect(toolStarts.length, 'forced tool_choice must open a tool_use content block: ' + raw.slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(toolStarts[0].content_block.name, 'tool_use block must call get_weather').to.equal('get_weather');",
+                  "  var deltas = frames.filter(function (f) { return f.type === 'message_delta'; });",
+                  "  pm.expect(deltas.length, 'stream must emit a terminal message_delta: ' + raw.slice(-600)).to.be.above(0);",
+                  "  var d = deltas[deltas.length - 1].delta || {};",
+                  "  pm.expect(d.stop_reason, 'message_delta on a tool-call turn must report stop_reason tool_use, not end_turn: ' + JSON.stringify(d)).to.equal('tool_use');",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(d, 'stop_sequence'), 'message_delta must carry stop_sequence: ' + JSON.stringify(d)).to.equal(true);",
+                  "  pm.expect(d.stop_sequence, 'no stop sequence matched, so stop_sequence must be null, not \"\": ' + JSON.stringify(d)).to.equal(null);",
+                  "  pm.expect(frames[frames.length - 1].type, 'stream must end on message_stop').to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":256,\"stream\":true,\"tool_choice\":{\"type\":\"tool\",\"name\":\"get_weather\"},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the get_weather tool.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

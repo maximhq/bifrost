@@ -3689,6 +3689,88 @@ func anthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponse
 	return ""
 }
 
+// anthropicStopReasonForToolUse reports tool_use for a natural stop (end_turn) on a
+// turn that called a client tool. Translated upstreams such as Gemini (finishReason
+// STOP) and OpenAI-shaped Responses providers report a plain stop on tool-call
+// turns, while Anthropic clients dispatch tools on stop_reason == "tool_use". Any
+// other reason (max_tokens, refusal, pause_turn, ...) is returned unchanged.
+func anthropicStopReasonForToolUse(reason AnthropicStopReason, hasToolUse bool) AnthropicStopReason {
+	if hasToolUse && reason == AnthropicStopReasonEndTurn {
+		return AnthropicStopReasonToolUse
+	}
+	return reason
+}
+
+// unstreamedToolUseEvents renders the client tool calls in a completed Responses
+// output that were never streamed as tool_use blocks (start, input_json deltas,
+// stop), so every call the turn made reaches the client before the message_delta
+// that reports tool_use. Calls already streamed are matched by tool_use ID and
+// skipped. If a streamed tool_use block carried no ID nothing can be matched, so
+// nothing is synthesized rather than risk sending a call twice.
+func unstreamedToolUseEvents(state *anthropicToResponsesStreamState, output []schemas.ResponsesMessage) []*AnthropicStreamEvent {
+	if state.streamedToolUseWithoutID {
+		return nil
+	}
+	var events []*AnthropicStreamEvent
+	for i := range output {
+		item := &output[i]
+		if item.Type == nil || item.ResponsesToolMessage == nil || isReasoningItem(item) {
+			continue
+		}
+		// A function call becomes one tool_use block; a computer call one per batched
+		// action (convertBifrostComputerCallToAnthropicToolUse), each with its own ID.
+		type pendingBlock struct {
+			block AnthropicContentBlock
+			input string
+		}
+		var pending []pendingBlock
+		switch *item.Type {
+		case schemas.ResponsesMessageTypeFunctionCall:
+			block := AnthropicContentBlock{
+				Type:        AnthropicContentBlockTypeToolUse,
+				ID:          providerUtils.SanitizeAnthropicToolUseIDPtr(item.ResponsesToolMessage.CallID),
+				Name:        item.ResponsesToolMessage.Name,
+				ToolsetName: item.ResponsesToolMessage.ToolsetName,
+			}
+			input := ""
+			if item.ResponsesToolMessage.Arguments != nil {
+				input = *item.ResponsesToolMessage.Arguments
+				// Same sanitization the streamed output_item.done path applies.
+				if item.ResponsesToolMessage.Name != nil && *item.ResponsesToolMessage.Name == "WebSearch" {
+					input = sanitizeWebSearchArguments(input)
+				}
+			}
+			pending = append(pending, pendingBlock{block: block, input: input})
+		case schemas.ResponsesMessageTypeComputerCall:
+			for _, block := range convertBifrostComputerCallToAnthropicToolUse(item) {
+				pending = append(pending, pendingBlock{block: block, input: string(block.Input)})
+			}
+		}
+		for _, p := range pending {
+			block := p.block
+			if block.ID != nil && state.streamedToolUseIDs[*block.ID] {
+				continue
+			}
+			// Like a streamed block, open with empty input and deliver it as deltas.
+			block.Input = json.RawMessage("{}")
+			idx := state.allocBlockIndex("")
+			events = append(events, &AnthropicStreamEvent{
+				Type:         AnthropicStreamEventTypeContentBlockStart,
+				Index:        idx,
+				ContentBlock: &block,
+			})
+			if p.input != "" {
+				events = append(events, generateSyntheticInputJSONDeltas(p.input, idx)...)
+			}
+			events = append(events, &AnthropicStreamEvent{
+				Type:  AnthropicStreamEventTypeContentBlockStop,
+				Index: idx,
+			})
+		}
+	}
+	return events
+}
+
 // ConvertToAnthropicImageBlock converts a Bifrost image block to Anthropic format
 // Uses the same pattern as the original buildAnthropicImageSourceMap function
 func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicContentBlock {
