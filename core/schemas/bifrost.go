@@ -1112,9 +1112,11 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 // to be configured. Its fields must hold literal values; env. and vault. references are
 // rejected. A key without an ID is reported in routing info as "request-scoped".
 //
-// Call it from PreRequestHook to set the credential for the whole request, or from
-// PreLLMHook to set it for the attempt about to run, for example to give two fallbacks to
-// the same provider different credentials.
+// Call it from PreRequestHook to set the credential for the whole request. PreLLMHook can
+// change it for the attempt about to run, for example to give two fallbacks to the same
+// provider different credentials. A request that leaves PreRequestHook without any
+// request-scoped configuration resolves its provider before PreLLMHook as usual, so a
+// provider that is not configured in Bifrost must be given its configuration there.
 func (br *BifrostRequest) UpdateProviderKey(provider ModelProvider, key Key) error {
 	if key.hasSecretReference() {
 		return errors.New("request-scoped key must hold literal values, not env. or vault. references")

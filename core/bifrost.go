@@ -6205,11 +6205,18 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	provider, model, _ := req.GetRequestFields()
-	// Only the lock-free queue lookup happens before the pre-hooks: a PreLLMHook may still
-	// give this attempt request-scoped configuration, which needs no queue. A provider
-	// without a queue yet is resolved after the hooks.
+	// A request carrying request-scoped configuration only looks up an existing queue here:
+	// its PreLLMHook may configure this attempt, which then needs no queue, so a provider
+	// without one is resolved after the hooks. Any other request resolves its queue now.
 	var pq *ProviderQueue
-	if val, ok := bifrost.requestQueues.Load(provider); ok {
+	if len(req.ProviderOverrides) == 0 {
+		var err error
+		if pq, err = bifrost.getProviderQueue(provider); err != nil {
+			bifrostErr := newBifrostError(err)
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			return nil, bifrostErr
+		}
+	} else if val, ok := bifrost.requestQueues.Load(provider); ok {
 		pq = val.(*ProviderQueue)
 	}
 
@@ -6296,9 +6303,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 
 	override := preReq.ProviderOverrideFor(provider)
 	if override == nil && pq == nil {
-		// No queue existed before the pre-hooks and none of them configured the attempt per
-		// request: look the provider up now, which creates its queue. A failure is delivered
-		// like a worker error, so the post-hooks see it.
+		// A request carrying request-scoped configuration found no queue before the pre-hooks,
+		// and they did not configure this attempt: look the provider up now, which creates
+		// its queue. A failure is delivered like a worker error, so the post-hooks see it.
 		var err error
 		if pq, err = bifrost.getProviderQueue(provider); err != nil {
 			bifrost.sendWorkerError(msg, *newBifrostError(err))
@@ -6510,11 +6517,18 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 // firstTokenTimeout is this attempt's TTFT deadline; 0 disables it.
 func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, firstTokenTimeout time.Duration) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	provider, model, _ := req.GetRequestFields()
-	// Only the lock-free queue lookup happens before the pre-hooks: a PreLLMHook may still
-	// give this attempt request-scoped configuration, which needs no queue. A provider
-	// without a queue yet is resolved after the hooks.
+	// A request carrying request-scoped configuration only looks up an existing queue here:
+	// its PreLLMHook may configure this attempt, which then needs no queue, so a provider
+	// without one is resolved after the hooks. Any other request resolves its queue now.
 	var pq *ProviderQueue
-	if val, ok := bifrost.requestQueues.Load(provider); ok {
+	if len(req.ProviderOverrides) == 0 {
+		var err error
+		if pq, err = bifrost.getProviderQueue(provider); err != nil {
+			bifrostErr := newBifrostError(err)
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			return nil, bifrostErr
+		}
+	} else if val, ok := bifrost.requestQueues.Load(provider); ok {
 		pq = val.(*ProviderQueue)
 	}
 
@@ -6708,9 +6722,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 
 	override := preReq.ProviderOverrideFor(provider)
 	if override == nil && pq == nil {
-		// No queue existed before the pre-hooks and none of them configured the attempt per
-		// request: look the provider up now, which creates its queue. A failure is delivered
-		// like a worker error, so the post-hooks see it.
+		// A request carrying request-scoped configuration found no queue before the pre-hooks,
+		// and they did not configure this attempt: look the provider up now, which creates
+		// its queue. A failure is delivered like a worker error, so the post-hooks see it.
 		var err error
 		if pq, err = bifrost.getProviderQueue(provider); err != nil {
 			bifrost.sendWorkerError(msg, *newBifrostError(err))

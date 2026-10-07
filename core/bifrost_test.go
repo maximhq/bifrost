@@ -5358,9 +5358,10 @@ func TestRequestScopedConfiguration_ReleasesOverride(t *testing.T) {
 }
 
 // TestRequestScopedConfiguration_PerAttemptCredentials sets credentials from PreLLMHook per
-// attempt: two attempts against the same provider type use different keys and endpoints, a
-// fallback to another provider uses its own, and a fallback to an unconfigured provider without
-// request-scoped configuration fails closed without reaching anything.
+// attempt of a request that PreRequestHook gave request-scoped configuration: two attempts
+// against the same provider type use different keys and endpoints, a fallback to another
+// provider uses its own, and a fallback to an unconfigured provider without request-scoped
+// configuration fails closed without reaching anything.
 func TestRequestScopedConfiguration_PerAttemptCredentials(t *testing.T) {
 	type seen struct {
 		mu   sync.Mutex
@@ -5391,7 +5392,9 @@ func TestRequestScopedConfiguration_PerAttemptCredentials(t *testing.T) {
 			`"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
 	})
 
-	plugin := &requestScopedTestPlugin{attempt: func(fallbackIndex int, req *schemas.BifrostRequest) {
+	plugin := &requestScopedTestPlugin{configure: func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+		mustConfigureOpenAI(t, req, "sk-request", serverA.URL)
+	}, attempt: func(fallbackIndex int, req *schemas.BifrostRequest) {
 		switch fallbackIndex {
 		case 0:
 			mustConfigureOpenAI(t, req, "sk-a", serverA.URL)
@@ -5759,5 +5762,43 @@ func TestRequestScopedConfiguration_BatchCreateChecksProviderFirst(t *testing.T)
 	}
 	if got := calls(); len(got) != 0 {
 		t.Errorf("upstream was reached: %+v", got)
+	}
+}
+
+// TestRequestScopedConfiguration_UnconfiguredProviderWithoutOverrides pins that a request carrying
+// no request-scoped configuration resolves its provider before PreLLMHook, as it always has: an
+// unconfigured provider fails there, without running the LLM hooks, even if PreLLMHook would
+// have configured the attempt.
+func TestRequestScopedConfiguration_UnconfiguredProviderWithoutOverrides(t *testing.T) {
+	server, calls := requestScopedTestServer(t)
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			plugin := &requestScopedTestPlugin{attempt: func(_ int, req *schemas.BifrostRequest) {
+				mustConfigureOpenAI(t, req, "sk-too-late", server.URL)
+			}}
+			client := newRequestScopedTestClient(t, NewMockAccount(), plugin, nil)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				var ch chan *schemas.BifrostStreamChunk
+				if ch, bifrostErr = client.ChatCompletionStreamRequest(ctx, requestScopedChat(schemas.OpenAI, "m")); ch != nil {
+					t.Fatalf("got a stream, want an error: %v", drainStream(ch))
+				}
+			} else {
+				_, bifrostErr = client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m"))
+			}
+			if !strings.Contains(requestScopedErrorText(bifrostErr), "failed to get config for provider openai") {
+				t.Fatalf("error = %v, want the provider lookup failure", bifrostErr)
+			}
+			if bifrostErr.ExtraFields.Provider != schemas.OpenAI {
+				t.Errorf("error reports provider %q, want openai", bifrostErr.ExtraFields.Provider)
+			}
+			if pre, post := plugin.preLLMCalls.Load(), plugin.postLLMCalls.Load(); pre != 0 || post != 0 {
+				t.Errorf("LLM hooks ran (%d pre, %d post), want none before the lookup failure", pre, post)
+			}
+			if got := calls(); len(got) != 0 {
+				t.Errorf("upstream was reached: %+v", got)
+			}
+		})
 	}
 }
