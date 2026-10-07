@@ -3626,11 +3626,15 @@ func anthropicStopReasonForToolUse(reason AnthropicStopReason, hasToolUse bool) 
 }
 
 // unstreamedToolUseEvents renders the client tool calls in a completed Responses
-// output as tool_use blocks (start, input_json deltas, stop). The terminal path uses
-// it when no tool_use block was streamed, so a turn whose calls arrive only on
-// response.completed still hands the client a block to dispatch before the
-// message_delta that reports tool_use.
+// output that were never streamed as tool_use blocks (start, input_json deltas,
+// stop), so every call the turn made reaches the client before the message_delta
+// that reports tool_use. Calls already streamed are matched by tool_use ID and
+// skipped. If a streamed tool_use block carried no ID nothing can be matched, so
+// nothing is synthesized rather than risk sending a call twice.
 func unstreamedToolUseEvents(state *anthropicToResponsesStreamState, output []schemas.ResponsesMessage) []*AnthropicStreamEvent {
+	if state.streamedToolUseWithoutID {
+		return nil
+	}
 	var events []*AnthropicStreamEvent
 	for i := range output {
 		item := &output[i]
@@ -3649,6 +3653,10 @@ func unstreamedToolUseEvents(state *anthropicToResponsesStreamState, output []sc
 			}
 			if item.ResponsesToolMessage.Arguments != nil {
 				input = *item.ResponsesToolMessage.Arguments
+				// Same sanitization the streamed output_item.done path applies.
+				if item.ResponsesToolMessage.Name != nil && *item.ResponsesToolMessage.Name == "WebSearch" {
+					input = sanitizeWebSearchArguments(input)
+				}
 			}
 		case schemas.ResponsesMessageTypeComputerCall:
 			block = convertBifrostComputerCallToAnthropicToolUse(item)
@@ -3657,6 +3665,9 @@ func unstreamedToolUseEvents(state *anthropicToResponsesStreamState, output []sc
 			}
 		}
 		if block == nil {
+			continue
+		}
+		if block.ID != nil && state.streamedToolUseIDs[*block.ID] {
 			continue
 		}
 		// Like a streamed block, open with empty input and deliver it as deltas.

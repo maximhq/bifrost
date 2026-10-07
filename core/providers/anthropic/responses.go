@@ -263,6 +263,12 @@ type anthropicToResponsesStreamState struct {
 	// natural stop on tool-call turns, so the terminal message_delta consults this
 	// to report tool_use instead of end_turn, matching the non-streaming converter.
 	sawToolUse bool
+	// streamedToolUseIDs holds the IDs of the tool_use blocks already sent, so the
+	// terminal path delivers only the completed-output calls missing from the stream.
+	// streamedToolUseWithoutID marks a streamed tool_use block that carried no ID;
+	// such a block can't be matched, so the terminal path then synthesizes nothing.
+	streamedToolUseIDs       map[string]bool
+	streamedToolUseWithoutID bool
 }
 
 // emittedTextProgress records one Anthropic text block's wire-visible prefix.
@@ -306,6 +312,18 @@ func (s *anthropicToResponsesStreamState) recordEmittedTextEvents(events []*Anth
 		}
 		s.recordEmittedText(*event.Index, *event.Delta.Text)
 	}
+}
+
+// recordStreamedToolUse notes a tool_use block sent on the stream, by ID.
+func (s *anthropicToResponsesStreamState) recordStreamedToolUse(id *string) {
+	if id == nil || *id == "" {
+		s.streamedToolUseWithoutID = true
+		return
+	}
+	if s.streamedToolUseIDs == nil {
+		s.streamedToolUseIDs = make(map[string]bool)
+	}
+	s.streamedToolUseIDs[*id] = true
 }
 
 // missingTerminalText returns the append-only suffix not present in prior
@@ -2968,6 +2986,7 @@ func enforceStreamBlockTypes(state *anthropicToResponsesStreamState, events []*A
 				state.setBlockType(index, event.ContentBlock.Type)
 				if event.ContentBlock.Type == AnthropicContentBlockTypeToolUse {
 					state.sawToolUse = true
+					state.recordStreamedToolUse(event.ContentBlock.ID)
 				}
 			}
 		case AnthropicStreamEventTypeContentBlockDelta:
@@ -3923,11 +3942,10 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		// Convert usage from Bifrost to Anthropic
 		if bifrostResp.Response != nil {
 			// Tool calls that reach us only on response.completed were never streamed as
-			// blocks; deliver them now, or a tool_use stop would have nothing to dispatch.
-			if !hasToolUse {
-				toolUseEvents = unstreamedToolUseEvents(streamState, bifrostResp.Response.Output)
-				hasToolUse = len(toolUseEvents) > 0
-			}
+			// blocks; deliver the missing ones now, or a tool_use stop would have nothing
+			// to dispatch for them. Calls already streamed are matched by ID and skipped.
+			toolUseEvents = unstreamedToolUseEvents(streamState, bifrostResp.Response.Output)
+			hasToolUse = hasToolUse || len(toolUseEvents) > 0
 			anthropicContentDeltaEvent.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
 			if bifrostResp.Response.StopReason != nil {
 				reason, stopSequence := anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason), bifrostResp.Response.StopSequence)

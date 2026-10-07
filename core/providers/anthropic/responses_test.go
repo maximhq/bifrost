@@ -1411,6 +1411,15 @@ func stopReasonTestFunctionCall() schemas.ResponsesMessage {
 	}
 }
 
+// stopReasonTestSecondFunctionCall is a second client function call (call_2) with the
+// same arguments as stopReasonTestFunctionCall, for turns carrying two calls.
+func stopReasonTestSecondFunctionCall() schemas.ResponsesMessage {
+	call := stopReasonTestFunctionCall()
+	call.ID = schemas.Ptr("call_2")
+	call.ResponsesToolMessage.CallID = schemas.Ptr("call_2")
+	return call
+}
+
 // stopReasonTestText returns an assistant text output message with no tool call.
 func stopReasonTestText() schemas.ResponsesMessage {
 	return schemas.ResponsesMessage{
@@ -1551,6 +1560,14 @@ func TestToAnthropicResponsesStreamResponse_ToolCallTurnReportsToolUse(t *testin
 			wantBlocks: 1,
 		},
 		{
+			name:       "one streamed call plus a second only in completed output delivers both",
+			provider:   schemas.OpenAI,
+			streamTool: true,
+			output:     []schemas.ResponsesMessage{stopReasonTestFunctionCall(), stopReasonTestSecondFunctionCall()},
+			want:       AnthropicStopReasonToolUse,
+			wantBlocks: 2,
+		},
+		{
 			name:       "text-only turn stays end_turn",
 			provider:   schemas.Gemini,
 			stopReason: schemas.Ptr("stop"),
@@ -1655,6 +1672,42 @@ func TestToAnthropicResponsesStreamResponse_ToolCallTurnReportsToolUse(t *testin
 				t.Errorf("stop_reason = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestToAnthropicResponsesStreamResponse_CompletedOnlyWebSearchIsSanitized checks that
+// a WebSearch call delivered only on response.completed gets the same domain-filter
+// sanitization as one streamed through output_item.done: Anthropic accepts
+// allowed_domains or blocked_domains, never both.
+func TestToAnthropicResponsesStreamResponse_CompletedOnlyWebSearchIsSanitized(t *testing.T) {
+	t.Parallel()
+
+	call := stopReasonTestFunctionCall()
+	call.ResponsesToolMessage.Name = schemas.Ptr("WebSearch")
+	call.ResponsesToolMessage.Arguments = schemas.Ptr(`{"query":"bifrost","allowed_domains":["example.com"],"blocked_domains":["spam.example"]}`)
+	frames := []*schemas.BifrostResponsesStreamResponse{{
+		Type: schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{
+			ID:     schemas.Ptr("resp_1"),
+			Output: []schemas.ResponsesMessage{call},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI},
+	}}
+
+	input := ""
+	for _, event := range driveAnthropicEgress(t, frames) {
+		if event != nil && event.Type == AnthropicStreamEventTypeContentBlockDelta && event.Delta != nil && event.Delta.PartialJSON != nil {
+			input += *event.Delta.PartialJSON
+		}
+	}
+	if input == "" {
+		t.Fatal("expected the completed-only WebSearch call to be delivered as input_json deltas")
+	}
+	if strings.Contains(input, "blocked_domains") {
+		t.Errorf("WebSearch input = %s, want blocked_domains removed when allowed_domains is set", input)
+	}
+	if !strings.Contains(input, "allowed_domains") {
+		t.Errorf("WebSearch input = %s, want allowed_domains kept", input)
 	}
 }
 
