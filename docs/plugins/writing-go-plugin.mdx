@@ -773,6 +773,45 @@ func PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) er
 **Errors are non-blocking.** Returning a non-nil error from `PreRequestHook` logs a warning but does NOT fail the request — the pipeline continues with the next plugin. The core validates `req.Provider` after all `PreRequestHook` plugins have run; an unresolved provider returns a 400 to the caller.
 </Info>
 
+#### Recipe: request-scoped provider configuration
+
+Plugins that do dynamic user lookup and set provider/model configuration at runtime can also supply the credential and endpoint for a request, so the provider needs no static configuration in Bifrost. Set them on the request from `PreRequestHook`:
+
+```go
+func PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	cfg, err := lookupProviderConfig(ctx) // your own store
+	if err != nil {
+		return err
+	}
+	req.SetProvider(schemas.OpenAI)
+	req.SetModel(cfg.Model)
+	if err := req.UpdateProviderKey(schemas.OpenAI, schemas.Key{
+		ID:    cfg.KeyID, // reported in routing info; "request-scoped" when empty
+		Value: schemas.SecretVar{Val: cfg.APIKey},
+	}); err != nil {
+		return err
+	}
+	if cfg.BaseURL != "" {
+		return req.UpdateProviderBaseURL(schemas.OpenAI, cfg.BaseURL)
+	}
+	return nil
+}
+```
+
+| Method | Effect |
+|---|---|
+| `UpdateProviderKey(provider, key)` | The key used for every attempt against `provider`. It is used as given, never looked up in or added to configured keys, and must hold literal values (`env.` and `vault.` references are rejected). |
+| `UpdateProviderBaseURL(provider, url)` | Replaces `network_config.base_url` for the provider, in the same form (for Gemini, include `/v1beta`). Must be `http` or `https` with a host and no user info, query or fragment. |
+| `UpdateProviderAllowPrivateNetwork(provider, allow)` | Lets these attempts reach RFC 1918 and loopback addresses. |
+| `ProviderOverrideFor(provider)` | Returns the configuration the request carries for `provider`, or `nil`. |
+
+How it behaves:
+
+- **Per provider, per attempt.** Configuration is keyed by provider, so a fallback to another provider uses its own and a credential never reaches a different provider. Every attempt against a configured provider uses it, the primary and fallbacks alike. To vary it per attempt, for example two fallbacks to the same provider with different keys or endpoints, call the same methods from `PreLLMHook`, which runs before every attempt (`BifrostContextKeyFallbackIndex` tells you which).
+- **Nothing is registered.** The attempt runs in the calling goroutine on a shared provider instance per provider type, created on first use with default network settings and never added to the provider list, given a queue or persisted. At most 1,000 such attempts per provider type and private-network setting run at once; further attempts wait, or are dropped when `DropExcessRequests` is set. Key selection, the account's keys and config, and session affinity are not consulted. A plugin that sets configuration only in `PreLLMHook` should set `BifrostContextKeySessionAffinity` to `false`.
+- **Destinations are checked when Bifrost connects.** Link-local addresses are always refused; RFC 1918 and loopback addresses need `UpdateProviderAllowPrivateNetwork`. Validate user-supplied URLs in your plugin as you would `base_url`.
+- **Unsupported configuration fails the attempt** instead of falling back to configured keys or environment credentials. Supported providers: OpenAI, Anthropic, Gemini, Cohere, Cerebras, Groq, Mistral, Nebius, OpenRouter, Parasail, Perplexity, xAI, Replicate, Hugging Face, Ollama and SGL (key and optional base URL), vLLM (URL on the key), Azure (API key and `azure_key_config.endpoint`; no service principal, no batch results) and Bedrock (API key, or access key and secret key, with `bedrock_key_config.region`; no role assumption or endpoint overrides; files and batches need the access key and secret key). Other providers, and the WebSocket and realtime endpoints, do not take request-scoped configuration.
+
 #### `PreLLMHook(...)`
 
 Called before each provider request. Use this to:
