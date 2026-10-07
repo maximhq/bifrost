@@ -771,6 +771,7 @@ func extractRealtimeInputHistory(input []schemas.ResponsesMessage) []schemas.Cha
 			schemas.ResponsesMessageTypeCustomToolCallOutput,
 			schemas.ResponsesMessageTypeLocalShellCallOutput,
 			schemas.ResponsesMessageTypeShellCallOutput,
+			schemas.ResponsesMessageTypeApplyPatchCallOutput,
 			schemas.ResponsesMessageTypeComputerCallOutput:
 			content := extractRealtimeToolOutputContent(item.ResponsesToolMessage)
 			if content == "" {
