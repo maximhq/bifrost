@@ -117,6 +117,67 @@ func anthropicRefuseThreadContinue(ctx *fasthttp.RequestCtx, bifrostCtx *schemas
 	return true, nil
 }
 
+// validateAnthropicMessageRequest enforces the parts of the Messages API contract
+// that the Responses conversion would otherwise paper over: a non-positive
+// max_tokens is dropped and replaced by the model's full output budget, an empty
+// messages array surfaces as an untyped server error, and unknown roles are
+// coerced downstream. max_tokens is only checked when the client sent it, since
+// omitting it is accepted and defaulted on egress. rawBody is used solely to
+// detect that presence (the parsed field is a plain int, so absent and 0 collide).
+func validateAnthropicMessageRequest(req *anthropic.AnthropicMessageRequest, rawBody []byte) *schemas.BifrostError {
+	if maxTokens := gjson.GetBytes(rawBody, "max_tokens"); maxTokens.Exists() && maxTokens.Type != gjson.Null && req.MaxTokens < 1 {
+		return newAnthropicInvalidRequestError("max_tokens: Input should be greater than or equal to 1")
+	}
+	if len(req.Messages) == 0 {
+		return newAnthropicInvalidRequestError("messages: at least one message is required")
+	}
+	for i, msg := range req.Messages {
+		switch msg.Role {
+		case anthropic.AnthropicMessageRoleUser, anthropic.AnthropicMessageRoleAssistant, anthropic.AnthropicMessageRoleSystem:
+			// role "system" is a mid-conversation system message, handled on egress.
+		default:
+			return newAnthropicInvalidRequestError(fmt.Sprintf("messages.%d.role: Input should be 'user' or 'assistant'", i))
+		}
+	}
+	return nil
+}
+
+// newAnthropicInvalidRequestError builds the 400 invalid_request_error that
+// validateAnthropicMessageRequest returns, so it renders in Anthropic's error shape.
+func newAnthropicInvalidRequestError(message string) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     schemas.Ptr(fasthttp.StatusBadRequest),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr("invalid_request_error"),
+			Message: message,
+		},
+	}
+}
+
+// anthropicMessagesShortCircuit rejects malformed /v1/messages requests with a
+// 400 invalid_request_error before they reach the Bifrost flow, then applies the
+// stateless thread handling. Large-payload requests are never parsed, so their
+// (empty) parsed struct is not validated; count_tokens has no max_tokens and is
+// guarded the same way as in anthropicRefuseThreadContinue.
+func anthropicMessagesShortCircuit(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error) {
+	anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest)
+	isLargePayload, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+	if ok && !isLargePayload && !strings.HasSuffix(string(ctx.Path()), "/count_tokens") {
+		if bifrostErr := validateAnthropicMessageRequest(anthropicReq, ctx.Request.Body()); bifrostErr != nil {
+			payload, err := sonic.Marshal(anthropic.ToAnthropicChatCompletionError(bifrostErr))
+			if err != nil {
+				return true, err
+			}
+			ctx.SetStatusCode(*bifrostErr.StatusCode)
+			ctx.SetContentType("application/json")
+			ctx.SetBody(payload)
+			return true, nil
+		}
+	}
+	return anthropicRefuseThreadContinue(ctx, bifrostCtx, req)
+}
+
 // createAnthropicMessagesRouteConfig creates a route configuration for the `/v1/messages` endpoint.
 func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger) []RouteConfig {
 	var routes []RouteConfig
@@ -242,7 +303,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				},
 			},
 			PreCallback:  checkAnthropicPassthrough,
-			ShortCircuit: anthropicRefuseThreadContinue,
+			ShortCircuit: anthropicMessagesShortCircuit,
 		})
 	}
 	return routes

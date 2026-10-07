@@ -1050,6 +1050,84 @@ func TestAnthropicRefuseThreadContinue_EdgeCases(t *testing.T) {
 	}
 }
 
+// TestAnthropicMessagesShortCircuit_Validation verifies that malformed
+// /v1/messages requests are rejected with a 400 invalid_request_error instead of
+// being defaulted (max_tokens), surfacing as an untyped server error (empty
+// messages), or having their role coerced downstream.
+func TestAnthropicMessagesShortCircuit_Validation(t *testing.T) {
+	cases := []struct {
+		name         string
+		path         string
+		body         string
+		largePayload bool
+		wantMessage  string // empty means the request must pass through
+	}{
+		{name: "valid_request", body: `{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`},
+		{name: "max_tokens_omitted_is_allowed", body: `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`},
+		{name: "max_tokens_null_is_treated_as_omitted", body: `{"model":"claude-sonnet-4-5","max_tokens":null,"messages":[{"role":"user","content":"hi"}]}`},
+		{name: "max_tokens_one_is_allowed", body: `{"model":"claude-sonnet-4-5","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`},
+		{name: "max_tokens_zero_rejected", body: `{"model":"claude-sonnet-4-5","max_tokens":0,"messages":[{"role":"user","content":"hi"}]}`, wantMessage: "max_tokens: Input should be greater than or equal to 1"},
+		{name: "max_tokens_negative_rejected", body: `{"model":"claude-sonnet-4-5","max_tokens":-5,"messages":[{"role":"user","content":"hi"}]}`, wantMessage: "max_tokens: Input should be greater than or equal to 1"},
+		{name: "empty_messages_rejected", body: `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[]}`, wantMessage: "messages: at least one message is required"},
+		{name: "missing_messages_rejected", body: `{"model":"claude-sonnet-4-5","max_tokens":16}`, wantMessage: "messages: at least one message is required"},
+		{name: "empty_messages_with_system_rejected", body: `{"model":"claude-sonnet-4-5","max_tokens":16,"system":"be brief","messages":[]}`, wantMessage: "messages: at least one message is required"},
+		{name: "unknown_role_rejected", body: `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"hi"},{"role":"tool","content":"x"}]}`, wantMessage: "messages.1.role: Input should be 'user' or 'assistant'"},
+		{name: "developer_role_rejected", body: `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"developer","content":"x"}]}`, wantMessage: "messages.0.role: Input should be 'user' or 'assistant'"},
+		{name: "mid_conversation_system_role_allowed", body: `{"model":"claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"system","content":"be brief"},{"role":"user","content":"again"}]}`},
+		{name: "large_payload_not_validated", body: `{"model":"claude-sonnet-4-5","max_tokens":0,"messages":[]}`, largePayload: true},
+		{name: "count_tokens_path_not_validated", path: "/anthropic/v1/messages/count_tokens", body: `{"model":"claude-sonnet-4-5","max_tokens":0,"messages":[]}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := tc.path
+			if path == "" {
+				path = "/anthropic/v1/messages"
+			}
+			reqCtx := &fasthttp.RequestCtx{}
+			reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+			reqCtx.Request.SetRequestURI(path)
+			reqCtx.Request.SetBodyString(tc.body)
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			req := &anthropic.AnthropicMessageRequest{}
+			if tc.largePayload {
+				// Large-payload mode skips body parsing; the struct stays empty.
+				bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+			} else if err := sonic.Unmarshal([]byte(tc.body), req); err != nil {
+				t.Fatalf("failed to parse request body: %v", err)
+			}
+
+			handled, err := anthropicMessagesShortCircuit(reqCtx, bifrostCtx, req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantMessage == "" {
+				if handled {
+					t.Fatalf("expected request to pass through, got %d: %s", reqCtx.Response.StatusCode(), reqCtx.Response.Body())
+				}
+				return
+			}
+			if !handled {
+				t.Fatalf("expected request to be rejected with %q", tc.wantMessage)
+			}
+			if got := reqCtx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+				t.Errorf("expected 400, got %d", got)
+			}
+			body := reqCtx.Response.Body()
+			if got := gjson.GetBytes(body, "type").String(); got != "error" {
+				t.Errorf("expected top-level type error, got %q", got)
+			}
+			if got := gjson.GetBytes(body, "error.type").String(); got != "invalid_request_error" {
+				t.Errorf("expected error.type invalid_request_error, got %q", got)
+			}
+			if got := gjson.GetBytes(body, "error.message").String(); got != tc.wantMessage {
+				t.Errorf("expected message %q, got %q", tc.wantMessage, got)
+			}
+		})
+	}
+}
+
 // TestAnthropicRawTransformsBillingHeaderAlignment is a guardrail redaction
 // regression for synthetic Claude Code requests. Native target IDs must follow
 // normalized text rows while preserving the original billing metadata in raw JSON.

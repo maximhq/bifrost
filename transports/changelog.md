@@ -25,6 +25,7 @@
 
 ## 🐞 Fixed
 
+- **Anthropic Messages Request Validation** - `/v1/messages` now rejects `max_tokens` below 1, an empty `messages` array and unknown message roles with a 400 `invalid_request_error`, where `max_tokens: 0` used to run with the model's full output budget [@jimseiwert](https://github.com/jimseiwert)
 - **Claude Tool-Call Argument Streaming on Bedrock and Vertex** - Claude tool arguments now stream incrementally, so a long Write call no longer arrives as one burst after minutes of silence and Claude Code no longer aborts with "Stream idle timeout". `eager_input_streaming` defaults on for custom tools that leave it unset (every Claude model on Vertex; Sonnet 4.6, Sonnet 5+, Opus 4.7+ and Fable on Bedrock). An explicit `false` is kept. Converse carries `fine-grained-tool-streaming-2025-05-14` in `additionalModelRequestFields` (#8009)
 - **Tool-Result Cache Markers for gpt-5.6+** - Anthropic `cache_control` markers on tool results (as Claude Code sends them) now become `prompt_cache_breakpoint` on both Chat Completions and Responses for gpt-5.6+ on OpenAI, Azure, Bedrock and Bedrock Mantle, so caching keeps advancing past the first tool turn. Responses also marks `input_image` and `input_file` parts. At most four breakpoints are kept, the latest ones (#8012)
 - **Handler Panic Recovery** - A panic in a request handler now returns a `500` and logs a server-side stack trace instead of crashing the process (#7866)
