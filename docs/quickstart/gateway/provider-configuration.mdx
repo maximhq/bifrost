@@ -1165,6 +1165,79 @@ You can override this per request using the `x-bf-store-raw-request-response` he
 
 </Note>
 
+### Provider Metadata and Tags
+
+Label providers with **tags** (for example `prod`, `eu`, `approved-for-pii`) and key/value **metadata** (for example `owner`, `region`, `cost_center`) to record who owns a provider, where it runs, and what it is approved for. Labels do not change how requests are routed; they are returned by the providers API and can be used to filter it.
+
+- **Tags**: up to 50, each 1-64 characters of letters, digits, `.`, `_` and `-`. Tags are trimmed, de-duplicated and sorted when saved, and are case-sensitive.
+- **Metadata**: up to 50 entries; keys are 1-256 characters of letters, digits, `.`, `_` and `-`; values are strings of up to 512 characters. Metadata is not secret, so do not store credentials in it.
+
+<Tabs group="provider-labels">
+
+<Tab title="Using Web UI">
+
+1. Navigate to **"Model Providers"** → **{Provider}** → **"Edit Provider Config"** → **"Metadata & Tags"**
+2. Add tags (press Enter or comma after each) and metadata entries
+3. Click **"Save Metadata & Tags"**
+
+The providers list shows each provider's tags, and the **"Filter by tags"** control above it keeps only providers carrying every selected tag.
+
+</Tab>
+
+<Tab title="Using API">
+
+```bash
+# Set labels on an existing provider. PUT replaces network_config and
+# concurrency_and_buffer_size, so send their current values. Omit metadata or
+# tags to keep them; send {} or [] (or null) to clear them.
+curl --location --request PUT 'http://localhost:8080/api/providers/openai' \
+--header 'Content-Type: application/json' \
+--data '{
+    "network_config": {"default_request_timeout_in_seconds": 300},
+    "concurrency_and_buffer_size": {"concurrency": 1000, "buffer_size": 5000},
+    "metadata": {"owner": "platform-team", "region": "eu-west-1"},
+    "tags": ["prod", "eu", "approved-for-pii"]
+}'
+
+# List providers carrying every listed tag, and with a given metadata value
+curl 'http://localhost:8080/api/providers?tags=prod,approved-for-pii'
+curl 'http://localhost:8080/api/providers?metadata_owner=platform-team&metadata_region=eu-west-1'
+```
+
+`metadata_<key>=<value>` filters are AND-ed, as are the tags in `tags=`. An invalid filter key or tag returns `400`.
+
+</Tab>
+
+<Tab title="Using config.json">
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "metadata": {
+        "owner": "platform-team",
+        "region": "eu-west-1"
+      },
+      "tags": ["prod", "eu", "approved-for-pii"]
+    }
+  }
+}
+```
+
+Providers without labels keep their existing config hash, so adding this feature does not register as config drift on upgrade.
+
+</Tab>
+
+</Tabs>
+
 ### Passthrough Extra Parameters
 
 Enable passthrough mode for extra parameters. When enabled, any parameters in the `extra_params` field (or provider-specific extra parameter fields) will be merged directly into the request sent to the provider, bypassing Bifrost's parameter filtering.

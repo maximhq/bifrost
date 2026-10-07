@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ProviderSelector } from "@/components/ui/providerSelector";
+import { TagInput } from "@/components/ui/tagInput";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useDebouncedValue } from "@/hooks/useDebounce";
@@ -11,9 +12,10 @@ import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { ModelDetails, useGetModelDetailsQuery, useGetProvidersQuery } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
+import { tagError } from "@/lib/utils/metadataTags";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Edit, Search } from "lucide-react";
-import { useQueryStates } from "nuqs";
+import { parseAsArrayOf, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import AttributeSheet from "./attributeSheet";
 import OverriddenPrice from "./overriddenPrice";
@@ -30,6 +32,40 @@ const toTestIdPart = (value: string) =>
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-|-$/g, "");
+
+function TagsCell({ tags }: { tags?: string[] }) {
+	if (!tags || tags.length === 0) return <span className="text-muted-foreground text-sm">—</span>;
+	const shown = tags.slice(0, 2);
+	const rest = tags.slice(2);
+	return (
+		<div className="flex flex-wrap gap-1">
+			{shown.map((tag) => (
+				<Badge key={tag} variant="outline" className="max-w-full truncate font-normal">
+					{tag}
+				</Badge>
+			))}
+			{rest.length > 0 && (
+				<TooltipProvider>
+					<Tooltip>
+						{/* A button, not the Badge's span, so keyboard users can focus it to open the tooltip. */}
+						<TooltipTrigger asChild>
+							<button
+								type="button"
+								className="focus-visible:ring-ring inline-flex rounded-md outline-none focus-visible:ring-2"
+								aria-label={`${rest.length} more tags: ${rest.join(", ")}`}
+							>
+								<Badge variant="outline" className="font-normal">
+									+{rest.length}
+								</Badge>
+							</button>
+						</TooltipTrigger>
+						<TooltipContent>{rest.join(", ")}</TooltipContent>
+					</Tooltip>
+				</TooltipProvider>
+			)}
+		</div>
+	);
+}
 
 function DescriptionCell({ description }: { description?: string }) {
 	if (!description) return <span className="text-muted-foreground text-sm">—</span>;
@@ -62,10 +98,14 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 		{
 			search: parseAsSafeString.withDefault(""),
 			provider: parseAsSafeString.withDefault(""),
+			tags: parseAsArrayOf(parseAsString).withDefault([]),
 		},
 		{ history: "replace" },
 	);
-	const { search, provider: providerFilter } = urlState;
+	const { search, provider: providerFilter, tags: tagFilterInput } = urlState;
+	// A tag the server would refuse is left out of the query rather than failing the whole listing.
+	const tagFilter = useMemo(() => tagFilterInput.filter((tag) => !tagError(tag)), [tagFilterInput]);
+	const tagFilterKey = tagFilter.join(",");
 
 	const [offset, setOffset] = useState(0);
 	const [editing, setEditing] = useState<ModelDetails | null>(null);
@@ -77,7 +117,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 	// Reset to first page when filters change
 	useEffect(() => {
 		setOffset(0);
-	}, [debouncedSearch, providerFilter]);
+	}, [debouncedSearch, providerFilter, tagFilterKey]);
 
 	const { data: providersData } = useGetProvidersQuery(undefined, { skip: !hasAccess });
 	const { data, isLoading, error, refetch } = useGetModelDetailsQuery(
@@ -87,6 +127,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 			limit: PAGE_SIZE,
 			offset,
 			unfiltered: true,
+			tags: tagFilter.length > 0 ? tagFilter : undefined,
 		},
 		{ skip: !hasAccess },
 	);
@@ -153,6 +194,14 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 						value={providerFilter || ALL_PROVIDERS_VALUE}
 						onChange={(v: string) => setUrlState({ provider: v === ALL_PROVIDERS_VALUE ? null : v })}
 					/>
+					<TagInput
+						aria-label="Filter by tags"
+						placeholder="Filter by tags..."
+						className="w-full sm:w-[260px]"
+						value={tagFilterInput}
+						onValueChange={(values) => setUrlState({ tags: values.length > 0 ? values : null })}
+						data-testid="model-catalog-tags-filter"
+					/>
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border" data-testid="model-catalog-attributes-table">
@@ -161,6 +210,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 							<TableRow className="hover:bg-transparent">
 								<TableHead className="w-[116px] font-medium">Provider</TableHead>
 								<TableHead className="font-medium">Model</TableHead>
+								<TableHead className="w-[150px] font-medium">Tags</TableHead>
 								<TableHead className="w-[104px] px-2 text-right font-medium">Input</TableHead>
 								<TableHead className="w-[104px] px-2 text-right font-medium">Output</TableHead>
 								<TableHead className="w-[112px] px-2 text-right font-medium">Cache Write</TableHead>
@@ -173,9 +223,9 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 						<TableBody>
 							{models.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={9} className="h-24 text-center">
+									<TableCell colSpan={10} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">
-											{!debouncedSearch && !providerFilter ? "No models loaded yet." : "No matching models."}
+											{!debouncedSearch && !providerFilter && tagFilter.length === 0 ? "No models loaded yet." : "No matching models."}
 										</span>
 									</TableCell>
 								</TableRow>
@@ -196,6 +246,9 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 											</TableCell>
 											<TableCell className="truncate py-3 font-mono text-sm" title={m.name}>
 												{m.name}
+											</TableCell>
+											<TableCell className="py-3" data-testid={`model-catalog-tags-${testKey}`}>
+												<TagsCell tags={m.tags} />
 											</TableCell>
 											<TableCell className="px-2 py-3 text-right font-mono text-sm">
 												<OverriddenPrice

@@ -73,3 +73,40 @@ func TestApplyProviderConfigUpdates_PresentBlocksAreReplaced(t *testing.T) {
 	assert.Nil(t, config.PromptCache.TTL, "replacement is not a field-level merge")
 	assert.NotNil(t, config.ProxyConfig, "the blocks this request did not mention are untouched")
 }
+
+// Labels follow the nested-block rule: omitted keeps them, a supplied map or list replaces
+// them as a whole, and {} / [] / null clears them.
+func TestApplyProviderConfigUpdates_Labels(t *testing.T) {
+	saved := func() configstore.ProviderConfig {
+		return configstore.ProviderConfig{Metadata: map[string]string{"owner": "team-a"}, Tags: []string{"prod"}}
+	}
+	cases := []struct {
+		name         string
+		body         string
+		wantMetadata map[string]string
+		wantTags     []string
+	}{
+		{name: "omitted", body: `{"network_config":{}}`, wantMetadata: map[string]string{"owner": "team-a"}, wantTags: []string{"prod"}},
+		{name: "replaced", body: `{"metadata":{"region":"eu"},"tags":["staging"]}`, wantMetadata: map[string]string{"region": "eu"}, wantTags: []string{"staging"}},
+		{name: "only tags carried", body: `{"tags":["staging"]}`, wantMetadata: map[string]string{"owner": "team-a"}, wantTags: []string{"staging"}},
+		{name: "cleared with empty values", body: `{"metadata":{},"tags":[]}`},
+		{name: "cleared with null", body: `{"metadata":null,"tags":null}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := saved()
+			payload, fields := decodeUpdate(t, tc.body)
+			applyProviderConfigUpdates(&config, payload, fields)
+			if tc.wantMetadata == nil {
+				assert.Empty(t, config.Metadata)
+			} else {
+				assert.Equal(t, tc.wantMetadata, config.Metadata)
+			}
+			if tc.wantTags == nil {
+				assert.Empty(t, config.Tags)
+			} else {
+				assert.Equal(t, tc.wantTags, config.Tags)
+			}
+		})
+	}
+}

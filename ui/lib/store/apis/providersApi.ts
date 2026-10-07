@@ -10,6 +10,7 @@ import {
 	UpdateProviderKeyRequest,
 } from "@/lib/types/config";
 import { DBKey, PricingOverrideMatchType, PricingOverridePatch, PricingOverrideScopeKind } from "@/lib/types/governance";
+import { tagsQueryParam } from "@/lib/utils/metadataTags";
 import { baseApi } from "./baseApi";
 
 function sortProviders(a: ModelProvider, b: ModelProvider) {
@@ -26,6 +27,7 @@ export interface ModelResponse {
 	is_deprecated?: boolean;
 	accessible_by_keys?: string[];
 	additional_attributes?: Record<string, string>;
+	tags?: string[];
 }
 
 export interface ListModelsResponse {
@@ -49,6 +51,8 @@ export interface ModelDetails {
 	architecture?: unknown;
 	additional_attributes?: Record<string, string>;
 	accessible_by_keys?: string[];
+	// Operator-assigned tags (PUT /api/models/tags); omitted when the model has none.
+	tags?: string[];
 	// Post-override value of each displayed cost, present only for the fields
 	// the applied override actually changes — render those struck through.
 	overridden_pricing?: ModelOverriddenPricing;
@@ -98,6 +102,14 @@ export interface ModelPricingAttributesEntry {
 	model: string;
 	provider: string;
 	additional_attributes?: Record<string, string>;
+}
+
+// ModelTagsEntry is the body element for PUT /api/models/tags. Tags replace the model's
+// tags as a whole; an empty list clears them. Any model name of a configured provider works.
+export interface ModelTagsEntry {
+	provider: string;
+	model: string;
+	tags: string[];
 }
 
 export interface GetModelsRequest {
@@ -496,12 +508,16 @@ export const providersApi = baseApi.injectEndpoints({
 				limit?: number;
 				offset?: number;
 				unfiltered?: boolean;
+				// Only models carrying every listed tag.
+				tags?: string[];
 			}
 		>({
-			query: ({ query, provider, limit, offset, unfiltered }) => {
+			query: ({ query, provider, limit, offset, unfiltered, tags }) => {
 				const params = new URLSearchParams();
 				if (query) params.append("query", query);
 				if (provider) params.append("provider", provider);
+				const tagsParam = tagsQueryParam(tags);
+				if (tagsParam) params.append("tags", tagsParam);
 				if (limit !== undefined) params.append("limit", String(limit));
 				if (offset !== undefined && offset > 0) params.append("offset", String(offset));
 				if (unfiltered !== undefined) params.append("unfiltered", String(unfiltered));
@@ -518,6 +534,16 @@ export const providersApi = baseApi.injectEndpoints({
 		upsertModelCatalogEntries: builder.mutation<void, ModelPricingAttributesEntry[]>({
 			query: (entries) => ({
 				url: "/models/catalog",
+				method: "PUT",
+				body: entries,
+			}),
+			invalidatesTags: ["Models"],
+		}),
+
+		// Replace the tags of a batch of models.
+		setModelTags: builder.mutation<void, ModelTagsEntry[]>({
+			query: (entries) => ({
+				url: "/models/tags",
 				method: "PUT",
 				body: entries,
 			}),
@@ -553,4 +579,5 @@ export const {
 	useGetModelDetailsQuery,
 	useLazyGetModelDetailsQuery,
 	useUpsertModelCatalogEntriesMutation,
+	useSetModelTagsMutation,
 } = providersApi;

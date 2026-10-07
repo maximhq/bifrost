@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { TagInput } from "@/components/ui/tagInput";
 import { Textarea } from "@/components/ui/textarea";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName, RequestTypeLabels } from "@/lib/constants/logs";
@@ -12,10 +13,12 @@ import {
 	ModelDetails,
 	ModelPricingOverrideSummary,
 	useGetCoreConfigQuery,
+	useSetModelTagsMutation,
 	useUpsertModelCatalogEntriesMutation,
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { PeakHoursSchedule, PricingOverrideScopeKind } from "@/lib/types/governance";
+import { normalizeTags } from "@/lib/utils/metadataTags";
 import { formatCharacterPriceFull, formatTokenPriceFull } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
@@ -140,7 +143,17 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 	const hasUpdateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 
-	const [upsertEntries, { isLoading }] = useUpsertModelCatalogEntriesMutation();
+	const [upsertEntries, { isLoading: isSavingAttributes }] = useUpsertModelCatalogEntriesMutation();
+	const [setModelTags, { isLoading: isSavingTags }] = useSetModelTagsMutation();
+	const isLoading = isSavingAttributes || isSavingTags;
+
+	// Tags live in their own store (not on the pricing row), so any model can carry them.
+	// The saved tags are the baseline for tagsDirty. They move forward once a save writes them,
+	// so a retry after a failed attributes write does not send the same tags again.
+	const [initialTags, setInitialTags] = useState<string[]>(() => model.tags ?? []);
+	const [tags, setTags] = useState<string[]>(initialTags);
+	const tagsCheck = normalizeTags(tags);
+	const tagsDirty = JSON.stringify(tagsCheck.error ? tags : tagsCheck.tags) !== JSON.stringify(initialTags);
 
 	const initialDescription = model.additional_attributes?.description ?? "";
 	const [description, setDescription] = useState(initialDescription);
@@ -159,7 +172,8 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 	const [extraRows, setExtraRows] = useState<AttributeRow[]>(initialRows);
 
 	const rowsDirty = JSON.stringify(stripIds(extraRows)) !== initialRowsKey;
-	const isDirty = description !== initialDescription || rowsDirty;
+	const attributesDirty = description !== initialDescription || rowsDirty;
+	const isDirty = attributesDirty || tagsDirty;
 	const pricingSourceUrl = getPricingSourceUrl(bifrostConfig?.framework_config?.pricing_url, model.name);
 	const canOpenPricingSource = isLinkableSource(pricingSourceUrl);
 
@@ -176,6 +190,11 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 	const handleSubmit = async () => {
 		if (!hasUpdateAccess) {
 			toast.error("You don't have permission to perform this action");
+			return;
+		}
+
+		if (tagsCheck.error) {
+			toast.error(tagsCheck.error);
 			return;
 		}
 
@@ -204,17 +223,34 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 		if (desc !== "") attributes.description = desc;
 		for (const r of cleaned) attributes[r.key] = r.value;
 
+		// The two stores are written one after the other, so the tags can be saved while the
+		// attributes write fails. Track that so the error says the tags were kept instead of
+		// reporting the whole save as failed.
+		let tagsSaved = false;
 		try {
-			await upsertEntries([
-				{
-					model: model.name,
-					provider: model.provider,
-					additional_attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
-				},
-			]).unwrap();
+			// Each store is written only when it changed: attributes need an existing pricing row,
+			// so a tags-only edit must not touch them (it would fail for models outside the datasheet).
+			if (tagsDirty) {
+				await setModelTags([{ provider: model.provider, model: model.name, tags: tagsCheck.tags }]).unwrap();
+				tagsSaved = true;
+				setInitialTags(tagsCheck.tags);
+			}
+			if (attributesDirty) {
+				await upsertEntries([
+					{
+						model: model.name,
+						provider: model.provider,
+						additional_attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
+					},
+				]).unwrap();
+			}
 			toast.success("Attributes saved");
 			handleClose();
 		} catch (err) {
+			if (tagsSaved) {
+				toast.error(`Tags saved, but the attributes were not: ${getErrorMessage(err)}`);
+				return;
+			}
 			toast.error(getErrorMessage(err));
 		}
 	};
@@ -234,8 +270,8 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 				<SheetHeader className="flex flex-col items-start p-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>Edit Model Attributes</SheetTitle>
 					<SheetDescription>
-						Update the description and other attributes for this model. These attributes are stored on the pricing row and preserved across
-						the pricing sync.
+						Update the tags, description and other attributes for this model. Description and attributes are stored on the pricing row and
+						preserved across the pricing sync; tags are stored separately and work for any model.
 					</SheetDescription>
 				</SheetHeader>
 
@@ -389,6 +425,33 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 
 						<DottedSeparator />
 
+						{/* Tags */}
+						<div>
+							<Label htmlFor="model-catalog-tags-input" className="text-sm font-medium">
+								Tags
+							</Label>
+							<TagInput
+								id="model-catalog-tags-input"
+								className="mt-2"
+								value={tags}
+								onValueChange={setTags}
+								placeholder="e.g., prod, approved-for-pii"
+								data-testid="model-catalog-tags-input"
+							/>
+							{tagsCheck.error ? (
+								<p className="text-destructive mt-1 text-xs" data-testid="model-catalog-tags-error">
+									{tagsCheck.error}
+								</p>
+							) : (
+								<p className="text-muted-foreground mt-1 text-xs">
+									Labels for routing, ownership and compliance, returned on /v1/models and filterable with tags=. Letters, digits,
+									&quot;.&quot;, &quot;_&quot; and &quot;-&quot; (up to 64 characters).
+								</p>
+							)}
+						</div>
+
+						<DottedSeparator />
+
 						{/* Description */}
 						<div>
 							<Label className="text-sm font-medium">Description</Label>
@@ -460,7 +523,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 							<Button
 								type="button"
 								onClick={handleSubmit}
-								disabled={isLoading || !isDirty || !hasUpdateAccess}
+								disabled={isLoading || !isDirty || !hasUpdateAccess || !!tagsCheck.error}
 								data-testid="model-catalog-attribute-submit"
 							>
 								{isLoading ? "Saving..." : "Save Changes"}
