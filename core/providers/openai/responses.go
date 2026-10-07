@@ -533,6 +533,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	var hoistedTools []schemas.ResponsesTool
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
+	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
+		return t.Type == schemas.ResponsesToolTypeComputer
+	})
 	for _, message := range bifrostReq.Input {
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
@@ -630,6 +633,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// requests without it. Blocks converted from non-OpenAI surfaces (Anthropic,
 		// Gemini, Cohere, chat bridge) never carry one, so default missing values to "auto".
 		message = defaultImageDetail(message)
+
+		if replayComputerActions {
+			message = computerCallActionAsActions(message)
+		}
 
 		if replayAssistantTextAsInput {
 			message = assistantOutputTextAsInputText(message)
@@ -839,27 +846,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				}
 				messages = append(messages, message)
 			}
-		} else if message.ResponsesToolMessage != nil &&
-			message.ResponsesToolMessage.Action != nil &&
-			message.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
-			action := message.ResponsesToolMessage.Action.ResponsesComputerToolCallAction
-			if action.Type == "zoom" || action.Region != nil {
-				// Copy action and modify
-				newAction := *action
-				newAction.Region = nil
-				if newAction.Type == "zoom" {
-					newAction.Type = "screenshot"
-				}
-
-				actionStructCopy := *message.ResponsesToolMessage.Action
-				actionStructCopy.ResponsesComputerToolCallAction = &newAction
-
-				toolMsgCopy := *message.ResponsesToolMessage
-				toolMsgCopy.Action = &actionStructCopy
-
-				message.ResponsesToolMessage = &toolMsgCopy
-			}
-
+		} else if message.ResponsesToolMessage != nil {
+			message.ResponsesToolMessage = openAIComputerToolMessage(message.ResponsesToolMessage)
 			messages = append(messages, message)
 		} else {
 			messages = append(messages, message)
@@ -1195,6 +1183,82 @@ func isMantleGPTOSSResponses(ctx *schemas.BifrostContext, provider schemas.Model
 // assistantOutputTextAsInputText retags a replayed assistant message's output_text blocks
 // as input_text. Mantle /v1 strips id, status and annotations from assistant items before
 // validating, so output_text history matches no input variant and the turn fails (#7074).
+// openAIComputerAction replaces what OpenAI's computer actions lack: zoom becomes a
+// screenshot and the region goes. It reports whether anything changed.
+func openAIComputerAction(action schemas.ResponsesComputerToolCallAction) (schemas.ResponsesComputerToolCallAction, bool) {
+	if action.Type != "zoom" && action.Region == nil {
+		return action, false
+	}
+	action.Region = nil
+	if action.Type == "zoom" {
+		action.Type = "screenshot"
+	}
+	return action, true
+}
+
+// openAIComputerToolMessage applies openAIComputerAction to a computer call's action and to
+// every entry of its actions list, copying before it changes anything.
+func openAIComputerToolMessage(toolMsg *schemas.ResponsesToolMessage) *schemas.ResponsesToolMessage {
+	var out *schemas.ResponsesToolMessage
+	own := func() *schemas.ResponsesToolMessage {
+		if out == nil {
+			c := *toolMsg
+			out = &c
+		}
+		return out
+	}
+	if toolMsg.Action != nil && toolMsg.Action.ResponsesComputerToolCallAction != nil {
+		if action, changed := openAIComputerAction(*toolMsg.Action.ResponsesComputerToolCallAction); changed {
+			actionStruct := *toolMsg.Action
+			actionStruct.ResponsesComputerToolCallAction = &action
+			own().Action = &actionStruct
+		}
+	}
+	if toolMsg.ResponsesComputerToolCall != nil {
+		var actions []schemas.ResponsesComputerToolCallAction
+		for i, entry := range toolMsg.ResponsesComputerToolCall.Actions {
+			if cleaned, changed := openAIComputerAction(entry); changed {
+				if actions == nil {
+					actions = slices.Clone(toolMsg.ResponsesComputerToolCall.Actions)
+				}
+				actions[i] = cleaned
+			}
+		}
+		if actions != nil {
+			call := *toolMsg.ResponsesComputerToolCall
+			call.Actions = actions
+			own().ResponsesComputerToolCall = &call
+		}
+	}
+	if out == nil {
+		return toolMsg
+	}
+	return out
+}
+
+// computerCallActionAsActions replays a computer_call's single action as its actions list.
+// The GA computer tool rejects action, alone or beside actions, on OpenAI, Azure and Bedrock.
+func computerCallActionAsActions(message schemas.ResponsesMessage) schemas.ResponsesMessage {
+	if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeComputerCall || message.ResponsesToolMessage == nil {
+		return message
+	}
+	toolMsg := *message.ResponsesToolMessage
+	if toolMsg.Action == nil || toolMsg.Action.ResponsesComputerToolCallAction == nil {
+		return message
+	}
+	call := schemas.ResponsesComputerToolCall{}
+	if toolMsg.ResponsesComputerToolCall != nil {
+		call = *toolMsg.ResponsesComputerToolCall
+	}
+	if len(call.Actions) == 0 {
+		call.Actions = []schemas.ResponsesComputerToolCallAction{*toolMsg.Action.ResponsesComputerToolCallAction}
+	}
+	toolMsg.ResponsesComputerToolCall = &call
+	toolMsg.Action = nil
+	message.ResponsesToolMessage = &toolMsg
+	return message
+}
+
 func assistantOutputTextAsInputText(message schemas.ResponsesMessage) schemas.ResponsesMessage {
 	if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleAssistant ||
 		message.Content == nil || len(message.Content.ContentBlocks) == 0 {

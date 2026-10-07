@@ -4185,7 +4185,6 @@ func TestToOpenAIResponsesRequest_SanitizesGeminiShapedHarnessBodies(t *testing.
 	}
 }
 
-
 // TestFilterUnsupportedToolsKeepsShell locks the shell tool into the OpenAI
 // allow list. Before this it was dropped before the request left Bifrost, so the
 // model never saw the tool it was asked to use.
@@ -4400,6 +4399,122 @@ func TestNamespaceAllowedCallersStripped(t *testing.T) {
 // TestFilterUnsupportedToolsDropsShellOnBedrockMantle pins the drop. Mantle serves no
 // model that accepts the shell tool - its own error enumerates the types it takes and
 // omits shell - so forwarding it is always a 400.
+// The GA computer tool rejects a computer_call that carries action, alone or beside actions
+// ("must include exactly one of action or actions" on OpenAI and Azure, "use actions instead"
+// on Bedrock), so history replays the action as actions; computer_use_preview is left alone.
+func TestComputerCallHistoryActionsForGAComputerTool(t *testing.T) {
+	click := schemas.ResponsesComputerToolCallAction{Type: "click", X: schemas.Ptr(100), Y: schemas.Ptr(200), Button: schemas.Ptr("left")}
+	call := func(withActions bool) schemas.ResponsesMessage {
+		tm := &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Action: &schemas.ResponsesToolMessageActionStruct{ResponsesComputerToolCallAction: &click},
+		}
+		if withActions {
+			tm.ResponsesComputerToolCall = &schemas.ResponsesComputerToolCall{Actions: []schemas.ResponsesComputerToolCallAction{click}}
+		}
+		return schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCall), Status: schemas.Ptr("completed"), ResponsesToolMessage: tm}
+	}
+	wireCall := func(t *testing.T, tool schemas.ResponsesTool, msg schemas.ResponsesMessage) map[string]any {
+		req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-6-sol",
+			Input:    []schemas.ResponsesMessage{msg},
+			Params:   &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{tool}},
+		})
+		wire, err := sonic.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var payload struct {
+			Input []map[string]any `json:"input"`
+		}
+		if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 1 {
+			t.Fatalf("decode %s: %v", wire, err)
+		}
+		return payload.Input[0]
+	}
+	computer := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputer}
+
+	for name, msg := range map[string]schemas.ResponsesMessage{
+		"single action":         call(false),
+		"action beside actions": call(true),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := wireCall(t, computer, msg)
+			if _, ok := got["action"]; ok {
+				t.Fatalf("action must not reach the GA computer tool: %v", got)
+			}
+			actions, _ := got["actions"].([]any)
+			if len(actions) != 1 || actions[0].(map[string]any)["type"] != "click" {
+				t.Fatalf("want the click as the only action, got %v", got)
+			}
+		})
+	}
+
+	t.Run("computer_use_preview keeps action", func(t *testing.T) {
+		preview := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputerUsePreview,
+			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768, Environment: "browser"}}
+		got := wireCall(t, preview, call(false))
+		if _, ok := got["action"]; !ok {
+			t.Fatalf("computer_use_preview history must keep action: %v", got)
+		}
+		if _, ok := got["actions"]; ok {
+			t.Fatalf("computer_use_preview history must not gain actions: %v", got)
+		}
+	})
+
+	// Anthropic's zoom has no OpenAI action, so every replayed entry becomes a screenshot
+	// and loses its region, whichever tool the request declares.
+	zoomCall := func() schemas.ResponsesMessage {
+		zoom := schemas.ResponsesComputerToolCallAction{Type: "zoom", Region: []int{0, 0, 512, 384}}
+		tm := &schemas.ResponsesToolMessage{
+			CallID:                    schemas.Ptr("call_zoom"),
+			Action:                    &schemas.ResponsesToolMessageActionStruct{ResponsesComputerToolCallAction: &zoom},
+			ResponsesComputerToolCall: &schemas.ResponsesComputerToolCall{Actions: []schemas.ResponsesComputerToolCallAction{zoom}},
+		}
+		return schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCall), Status: schemas.Ptr("completed"), ResponsesToolMessage: tm}
+	}
+	assertScreenshot := func(t *testing.T, field string, v any) {
+		a, _ := v.(map[string]any)
+		if a == nil || a["type"] != "screenshot" || a["region"] != nil {
+			t.Fatalf("%s = %v, want a screenshot with no region", field, v)
+		}
+	}
+
+	t.Run("zoom history on the GA tool", func(t *testing.T) {
+		got := wireCall(t, computer, zoomCall())
+		actions, _ := got["actions"].([]any)
+		if len(actions) != 1 {
+			t.Fatalf("want one action, got %v", got)
+		}
+		assertScreenshot(t, "actions[0]", actions[0])
+	})
+
+	t.Run("zoom history on computer_use_preview", func(t *testing.T) {
+		preview := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputerUsePreview,
+			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768, Environment: "browser"}}
+		msg := zoomCall()
+		got := wireCall(t, preview, msg)
+		assertScreenshot(t, "action", got["action"])
+		actions, _ := got["actions"].([]any)
+		if len(actions) != 1 {
+			t.Fatalf("want one action, got %v", got)
+		}
+		assertScreenshot(t, "actions[0]", actions[0])
+		if msg.ResponsesToolMessage.ResponsesComputerToolCall.Actions[0].Type != "zoom" || msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Type != "zoom" {
+			t.Fatalf("the caller's zoom was rewritten in place: %+v", msg.ResponsesToolMessage)
+		}
+	})
+
+	t.Run("caller input is not mutated", func(t *testing.T) {
+		msg := call(false)
+		wireCall(t, computer, msg)
+		if msg.ResponsesToolMessage.Action == nil || msg.ResponsesToolMessage.ResponsesComputerToolCall != nil {
+			t.Fatalf("the caller's message was changed: %+v", msg.ResponsesToolMessage)
+		}
+	})
+}
+
 func TestFilterUnsupportedToolsDropsShellOnBedrockMantle(t *testing.T) {
 	shellTool := schemas.ResponsesTool{
 		Type: schemas.ResponsesToolTypeShell,

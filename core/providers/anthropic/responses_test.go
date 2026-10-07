@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -2035,6 +2036,313 @@ func TestConvertBifrostToolOutputFailureWithoutOutputText(t *testing.T) {
 			}
 		})
 	}
+}
+
+// computerCallHistoryRequest builds an OpenAI-shaped history with one computer_call and its screenshot output.
+func computerCallHistoryRequest(t *testing.T, computerCall string) *AnthropicMessageRequest {
+	t.Helper()
+	body := `{"provider":"anthropic","model":"claude-sonnet-4-6","input":[
+		{"type":"message","role":"user","content":"click then type"},
+		` + computerCall + `,
+		{"type":"computer_call_output","call_id":"call_1","output":{"type":"computer_screenshot","image_url":"data:image/png;base64,iVBORw0KGgo="}}],
+		"params":{"tools":[{"type":"computer_use_preview","display_width":1280,"display_height":800,"environment":"browser"}]}}`
+	var req schemas.BifrostResponsesRequest
+	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	out, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &req)
+	if err != nil {
+		t.Fatalf("convert failed: %v", err)
+	}
+	if len(out.Messages) != 3 {
+		t.Fatalf("expected user, assistant, user messages, got %d", len(out.Messages))
+	}
+	return out
+}
+
+// A batched computer_call becomes one tool_use per action, and the single
+// screenshot output gains a filler result for each earlier action.
+func TestToAnthropicResponsesRequest_ComputerCallActionsSplit(t *testing.T) {
+	out := computerCallHistoryRequest(t, `{"type":"computer_call","id":"cu_1","call_id":"call_1","status":"completed",
+		"actions":[{"type":"click","button":"left","x":100,"y":200},{"type":"type","text":"hi"}]}`)
+
+	calls := out.Messages[1].Content.ContentBlocks
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 tool_use blocks, got %d", len(calls))
+	}
+	wantCalls := []struct{ id, input string }{
+		{"call_1_0", `{"action":"left_click","coordinate":[100,200]}`},
+		{"call_1", `{"action":"type","text":"hi"}`},
+	}
+	for i, want := range wantCalls {
+		if calls[i].ID == nil || *calls[i].ID != want.id {
+			t.Fatalf("tool_use %d: expected id %q, got %v", i, want.id, calls[i].ID)
+		}
+		if string(calls[i].Input) != want.input {
+			t.Fatalf("tool_use %d: expected input %s, got %s", i, want.input, calls[i].Input)
+		}
+	}
+
+	results := out.Messages[2].Content.ContentBlocks
+	if len(results) != 2 {
+		t.Fatalf("expected 2 tool_result blocks, got %d", len(results))
+	}
+	if *results[0].ToolUseID != "call_1_0" || results[0].Content == nil || results[0].Content.ContentStr == nil {
+		t.Fatalf("expected a text filler result for call_1_0, got %+v", results[0])
+	}
+	if *results[1].ToolUseID != "call_1" || results[1].Content == nil || len(results[1].Content.ContentBlocks) != 1 ||
+		results[1].Content.ContentBlocks[0].Type != AnthropicContentBlockTypeImage {
+		t.Fatalf("expected the screenshot on call_1, got %+v", results[1])
+	}
+}
+
+// A computer_call with the single action field keeps one tool_use under the call id.
+func TestToAnthropicResponsesRequest_ComputerCallSingleAction(t *testing.T) {
+	out := computerCallHistoryRequest(t, `{"type":"computer_call","id":"cu_1","call_id":"call_1","status":"completed",
+		"action":{"type":"click","button":"left","x":100,"y":200}}`)
+
+	calls := out.Messages[1].Content.ContentBlocks
+	if len(calls) != 1 || calls[0].ID == nil || *calls[0].ID != "call_1" {
+		t.Fatalf("expected one tool_use with id call_1, got %+v", calls)
+	}
+	if string(calls[0].Input) != `{"action":"left_click","coordinate":[100,200]}` {
+		t.Fatalf("unexpected input %s", calls[0].Input)
+	}
+	results := out.Messages[2].Content.ContentBlocks
+	if len(results) != 1 || *results[0].ToolUseID != "call_1" {
+		t.Fatalf("expected one tool_result for call_1, got %+v", results)
+	}
+}
+
+// assertComputerCallActions checks a computer_call carries its action in both action and actions.
+func assertComputerCallActions(t *testing.T, item schemas.ResponsesMessage) {
+	t.Helper()
+	if item.Type == nil || *item.Type != schemas.ResponsesMessageTypeComputerCall {
+		t.Fatalf("expected computer_call, got %v", item.Type)
+	}
+	data, err := sonic.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	for _, want := range []string{
+		`"action":{"type":"click","x":100,"y":200,"button":"left"}`,
+		`"actions":[{"type":"click","x":100,"y":200,"button":"left"}]`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("expected %s in %s", want, data)
+		}
+	}
+}
+
+// A Claude computer tool_use reaches the client with both action and actions.
+func TestToBifrostResponsesResponse_ComputerCallActions(t *testing.T) {
+	var resp AnthropicMessageResponse
+	if err := sonic.Unmarshal([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","stop_reason":"tool_use",
+		"content":[{"type":"tool_use","id":"toolu_1","name":"computer","input":{"action":"left_click","coordinate":[100,200]}}],
+		"usage":{"input_tokens":1,"output_tokens":1}}`), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	out := resp.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	if len(out.Output) != 1 {
+		t.Fatalf("expected one output item, got %d", len(out.Output))
+	}
+	assertComputerCallActions(t, out.Output[0])
+}
+
+// The streaming computer_call output_item.done carries both action and actions.
+func TestToBifrostResponsesStream_ComputerCallActions(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+
+	var done *schemas.ResponsesMessage
+	for seq, raw := range []string{
+		`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"computer","input":{}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"action\":\"left_click\","}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"coordinate\":[100,200]}"}}`,
+		`{"type":"content_block_stop","index":0}`,
+	} {
+		var chunk AnthropicStreamEvent
+		if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+			t.Fatalf("unmarshal event: %v", err)
+		}
+		responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, seq, state)
+		if bErr != nil {
+			t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+		}
+		for _, r := range responses {
+			if r.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && r.Item != nil {
+				done = r.Item
+			}
+		}
+	}
+	if done == nil {
+		t.Fatal("expected an output_item.done for the computer_call")
+	}
+	assertComputerCallActions(t, *done)
+}
+
+// OpenAI rejects a replayed computer_call whose id does not begin with "cu", so the
+// item minted for an assistant computer tool_use must not reuse the function call prefix.
+func TestAnthropicComputerToolUseReplaysWithComputerCallID(t *testing.T) {
+	msgs := []AnthropicMessage{
+		{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: schemas.Ptr("Take a screenshot.")}},
+		{Role: AnthropicMessageRoleAssistant, Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{{
+			Type: AnthropicContentBlockTypeToolUse, ID: schemas.Ptr("call_turn2"), Name: schemas.Ptr("computer"), Input: json.RawMessage(`{"action":"screenshot"}`),
+		}}}},
+	}
+	for _, grouped := range []bool{true, false} {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		var call *schemas.ResponsesMessage
+		out := convertAnthropicMessagesToBifrostMessages(ctx, msgs, nil, false, grouped, false)
+		cancel()
+		for i := range out {
+			if out[i].Type != nil && *out[i].Type == schemas.ResponsesMessageTypeComputerCall {
+				call = &out[i]
+			}
+		}
+		if call == nil || call.ID == nil || !strings.HasPrefix(*call.ID, "cu_") {
+			t.Fatalf("grouped=%v: want a computer_call with a cu_ id, got %+v", grouped, call)
+		}
+	}
+}
+
+// A computer_call's actions only arrive on output_item.done, often as actions with no
+// action (OpenAI), so each action must stream as a complete tool_use block, matching the
+// non-streaming conversion.
+func TestToAnthropicResponsesStream_ComputerCallActions(t *testing.T) {
+	type block struct {
+		index int
+		id    string
+		input string
+	}
+	collect := func(t *testing.T, ctx *schemas.BifrostContext, events []*schemas.BifrostResponsesStreamResponse) []block {
+		var blocks []block
+		open := map[int]*block{}
+		for _, ev := range events {
+			for _, out := range ToAnthropicResponsesStreamResponse(ctx, ev) {
+				switch out.Type {
+				case AnthropicStreamEventTypeContentBlockStart:
+					if out.ContentBlock == nil || out.ContentBlock.Type != AnthropicContentBlockTypeToolUse {
+						continue
+					}
+					b := &block{index: *out.Index}
+					if out.ContentBlock.ID != nil {
+						b.id = *out.ContentBlock.ID
+					}
+					open[*out.Index] = b
+				case AnthropicStreamEventTypeContentBlockDelta:
+					if b := open[*out.Index]; b != nil && out.Delta != nil && out.Delta.PartialJSON != nil {
+						b.input += *out.Delta.PartialJSON
+					}
+				case AnthropicStreamEventTypeContentBlockStop:
+					if b := open[*out.Index]; b != nil {
+						blocks = append(blocks, *b)
+						delete(open, *out.Index)
+					}
+				}
+			}
+		}
+		if len(open) != 0 {
+			t.Fatalf("tool_use blocks left open: %+v", open)
+		}
+		return blocks
+	}
+	computerCall := func(status string, actions ...schemas.ResponsesComputerToolCallAction) *schemas.ResponsesMessage {
+		return &schemas.ResponsesMessage{
+			ID:     schemas.Ptr("cu_1"),
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeComputerCall),
+			Status: schemas.Ptr(status),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                    schemas.Ptr("call_1"),
+				ResponsesComputerToolCall: &schemas.ResponsesComputerToolCall{Actions: actions},
+			},
+		}
+	}
+	stream := func(prefix []*schemas.BifrostResponsesStreamResponse, done *schemas.ResponsesMessage) []*schemas.BifrostResponsesStreamResponse {
+		oi := len(prefix)
+		return append(prefix,
+			&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(oi), Item: computerCall("in_progress")},
+			&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: schemas.Ptr(oi), Item: done},
+		)
+	}
+	actionOf := func(t *testing.T, input string) string {
+		var m map[string]any
+		if err := sonic.Unmarshal([]byte(input), &m); err != nil {
+			t.Fatalf("tool_use input %q is not JSON: %v", input, err)
+		}
+		a, _ := m["action"].(string)
+		return a
+	}
+	newCtx := func() *schemas.BifrostContext { return schemas.NewBifrostContext(context.Background(), time.Time{}) }
+
+	t.Run("single action sent only as actions", func(t *testing.T) {
+		blocks := collect(t, newCtx(), stream(nil, computerCall("completed", schemas.ResponsesComputerToolCallAction{Type: "screenshot"})))
+		if len(blocks) != 1 || blocks[0].id != "call_1" || actionOf(t, blocks[0].input) != "screenshot" {
+			t.Fatalf("want one screenshot tool_use with the call id, got %+v", blocks)
+		}
+	})
+
+	t.Run("batched actions become one block each", func(t *testing.T) {
+		blocks := collect(t, newCtx(), stream(nil, computerCall("completed",
+			schemas.ResponsesComputerToolCallAction{Type: "click", X: schemas.Ptr(100), Y: schemas.Ptr(200), Button: schemas.Ptr("left")},
+			schemas.ResponsesComputerToolCallAction{Type: "type", Text: schemas.Ptr("hello")},
+		)))
+		if len(blocks) != 2 {
+			t.Fatalf("want two tool_use blocks, got %+v", blocks)
+		}
+		if blocks[0].id != "call_1_0" || blocks[1].id != "call_1" {
+			t.Fatalf("ids = %q, %q; want call_1_0, call_1 (the last keeps the call id)", blocks[0].id, blocks[1].id)
+		}
+		if actionOf(t, blocks[0].input) != "left_click" || actionOf(t, blocks[1].input) != "type" {
+			t.Fatalf("inputs = %s, %s", blocks[0].input, blocks[1].input)
+		}
+		if blocks[1].index != blocks[0].index+1 {
+			t.Fatalf("indices = %d, %d; want consecutive", blocks[0].index, blocks[1].index)
+		}
+	})
+
+	t.Run("a preceding text block keeps its index", func(t *testing.T) {
+		ctx := newCtx()
+		text := []*schemas.BifrostResponsesStreamResponse{
+			{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(0), Item: &schemas.ResponsesMessage{
+				ID: schemas.Ptr("msg_1"), Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant)}},
+			{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: schemas.Ptr(0), Item: &schemas.ResponsesMessage{
+				ID: schemas.Ptr("msg_1"), Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant)}},
+		}
+		blocks := collect(t, ctx, stream(text, computerCall("completed", schemas.ResponsesComputerToolCallAction{Type: "screenshot"})))
+		if len(blocks) != 1 || blocks[0].index != 1 {
+			t.Fatalf("want the tool_use at index 1 after the text block, got %+v", blocks)
+		}
+	})
+
+	t.Run("Claude computer stream round-trips", func(t *testing.T) {
+		ctx := newCtx()
+		state := AcquireAnthropicResponsesStreamState()
+		defer ReleaseAnthropicResponsesStreamState(state)
+		var neutral []*schemas.BifrostResponsesStreamResponse
+		for seq, raw := range []string{
+			`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"computer","input":{}}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"action\":\"left_click\",\"coordinate\":[100,200]}"}}`,
+			`{"type":"content_block_stop","index":0}`,
+		} {
+			var chunk AnthropicStreamEvent
+			if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+				t.Fatalf("unmarshal event: %v", err)
+			}
+			responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, seq, state)
+			if bErr != nil {
+				t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+			}
+			neutral = append(neutral, responses...)
+		}
+		blocks := collect(t, ctx, neutral)
+		if len(blocks) != 1 || blocks[0].id != "toolu_1" || actionOf(t, blocks[0].input) != "left_click" {
+			t.Fatalf("want the left_click tool_use back unchanged, got %+v", blocks)
+		}
+	})
 }
 
 // The fallback must not disturb the existing paths: real output text still wins, and an
