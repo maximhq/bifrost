@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1047,3 +1048,50 @@ func (p *rawDemandStub) GetName() string                                  { retu
 func (p *rawDemandStub) Inject(_ context.Context, _ *schemas.Trace) error { return nil }
 func (p *rawDemandStub) Cleanup() error                                   { return nil }
 func (p *rawDemandStub) ConsumesRawPayloads() bool                        { return p.wants }
+
+// A failed request whose provider is set to ignore_provider_cost must not fall
+// back to the provider-reported BilledUsage.Cost when the catalog cannot price
+// the model: that figure is exactly what the operator chose to discard (e.g.
+// Cortecs credits read as dollars).
+func TestPopulateLLMResponseAttributes_ErrorPathHonorsIgnoreProviderCost(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ignore   bool
+		wantCost bool
+	}{
+		{name: "provider cost trusted", ignore: false, wantCost: true},
+		{name: "provider cost ignored", ignore: true, wantCost: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog.SetIgnoreProviderCost("cortecs", tc.ignore)
+			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, nil)
+
+			_, ctx := newHandleTestCtx(tracer)
+			_, handle := tracer.StartSpanID(ctx, "llm", schemas.SpanKindLLMCall)
+			span := tracer.SpanFromHandle(handle)
+			require.NotNil(t, span)
+			span.LLM = &schemas.LLMSpanData{RequestType: schemas.ChatCompletionRequest}
+
+			bifrostErr := &schemas.BifrostError{}
+			bifrostErr.ExtraFields.Provider = "cortecs"
+			bifrostErr.ExtraFields.OriginalModelRequested = "unpriced-model"
+			bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionRequest
+			bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+				PromptTokens: 100,
+				TotalTokens:  100,
+				Cost:         &schemas.BifrostCost{TotalCost: 1067},
+			}
+
+			tracer.PopulateLLMResponseAttributes(schemas.NewBifrostContext(ctx, time.Now()), handle, nil, bifrostErr)
+
+			got, ok := span.GetAttribute(schemas.AttrUsageCost)
+			if tc.wantCost {
+				require.True(t, ok, "trusted provider cost should be recorded")
+				require.Equal(t, 1067.0, got)
+			} else {
+				require.False(t, ok, "ignored provider cost leaked into the trace: %v", got)
+			}
+		})
+	}
+}
