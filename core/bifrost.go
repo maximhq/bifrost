@@ -6661,8 +6661,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 // is itself dead). executeRequestWithRetries detects this via errors.Is and, when the pool
 // died of account-level failures within the configured retry budget, surfaces it as a
 // synthetic 502 upstream_credentials_exhausted rather than bubbling the raw 401/403 which
-// would falsely suggest the *caller's* Bifrost API key is bad. Any other error from the
-// keyProvider (custom selector failure, etc.) is propagated unchanged.
+// would falsely suggest the *caller's* Bifrost API key is bad. A key the caller brought itself
+// (x-bf-direct-key) keeps the provider's own error, since that key is the caller's. Any other
+// error from the keyProvider (custom selector failure, etc.) is propagated unchanged.
 var errAllKeysDead = errors.New("all configured keys returned permanent per-key errors")
 
 // errAllKeysFiltered is returned by a keyProvider closure when healthy (non-dead) keys exist but
@@ -6957,11 +6958,14 @@ func executeRequestWithRetries[T any](
 					// 404, and a region block must come back as the provider sent it.
 					// Otherwise every key died of an account-level failure, and within the
 					// configured budget that collapses into the synthetic 502, since the
-					// raw 401 would falsely blame the caller's own key.
+					// raw 401 would falsely blame the caller's own key. A key the caller
+					// brought (x-bf-direct-key) is the exception: there the provider's
+					// refusal is about the caller's own key, and it stands whatever the budget.
 					if lastModelOrRegionError != nil {
 						return zero, lastModelOrRegionError
 					}
-					if grantedAttempt && bifrostError != nil {
+					_, callerKey := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+					if (grantedAttempt || callerKey) && bifrostError != nil {
 						return zero, bifrostError
 					}
 					statusCode := 502

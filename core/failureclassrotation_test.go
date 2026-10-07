@@ -324,6 +324,48 @@ func TestExecuteRequestWithRetries_PermanentFailureBeyondBudgetKeepsUpstreamErro
 	})
 }
 
+// A key the caller brought (x-bf-direct-key) is the caller's own, so the provider refusing it is
+// the answer whatever max_retries is. Collapsing it into 502 upstream_credentials_exhausted would
+// tell the caller the gateway's keys ran out, and invite a retry with the same bad key. A single
+// configured key, pinned, still collapses within the budget, since that credential is not the
+// caller's.
+func TestExecuteRequestWithRetries_DirectKeyRefusalIsTheCallersError(t *testing.T) {
+	run := func(t *testing.T, retries int, direct bool) (*schemas.BifrostError, int) {
+		t.Helper()
+		ctx := rotationTestContext()
+		if direct {
+			ctx.SetValue(schemas.BifrostContextKeyDirectKey, rotationKeyA)
+		}
+		calls := 0
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			calls++
+			return "", providerError(401, "invalid_request_error", "invalid_api_key", "Incorrect API key provided")
+		}
+		fixed := func(_, deadKeyIDs map[string]bool) (schemas.Key, error) {
+			if deadKeyIDs[rotationKeyA.ID] {
+				return schemas.Key{}, errAllKeysDead
+			}
+			return rotationKeyA, nil
+		}
+		_, err := executeRequestWithRetries(ctx, createTestConfig(retries, 0, 0), handler, fixed,
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
+		return err, calls
+	}
+
+	for _, retries := range []int{0, 1, 3} {
+		err, calls := run(t, retries, true)
+		if err == nil || err.StatusCode == nil || *err.StatusCode != 401 || err.ExtraFields.ErrorType == schemas.ErrorTypeProviderCredentialsExhausted {
+			t.Errorf("max_retries %d: want the provider's 401 for the caller's own key, got %v", retries, err)
+		}
+		if calls != 1 {
+			t.Errorf("max_retries %d: %d upstream calls, want 1: there is no other key to reach", retries, calls)
+		}
+	}
+	if err, _ := run(t, 1, false); err == nil || err.StatusCode == nil || *err.StatusCode != 502 || err.ExtraFields.ErrorType != schemas.ErrorTypeProviderCredentialsExhausted {
+		t.Errorf("a pinned configured key within the budget: want 502 upstream_credentials_exhausted, got %v", err)
+	}
+}
+
 // OpenAI reports an exhausted balance as a 429 with code insufficient_quota. That is a
 // billing fact about the account, not a rate limit: the key is dead for the request, the
 // next key is tried without backoff, and the trail says billing, not rate limit.
