@@ -29,6 +29,9 @@ type VirtualKeyQueryParams struct {
 	ExcludeAccessProfileManagedVirtual bool   // When true, exclude VKs managed through enterprise access profiles
 	ExcludeAssignedVirtualKeys         bool   // When true, exclude VKs that already have any user assignment
 	ForUserAssignment                  bool   // When true, exclude VKs assigned to any entity (team, customer, access profile, or user) — intended for user-assignment pickers
+	// MetadataFilters narrows to keys whose metadata has every listed key set to exactly the given
+	// value (AND). Keys failing tables.IsValidVirtualKeyMetadataKey match nothing.
+	MetadataFilters map[string]string
 }
 
 // ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
