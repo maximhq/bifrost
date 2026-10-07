@@ -34,11 +34,12 @@ func (s testHandlerStore) GetKVStore() *kvstore.Store                           
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return schemas.WhiteList{}
 }
-func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
-func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
-func (s testHandlerStore) ShouldAllowDirectKeys() bool                { return s.allowDirectKeys }
-func (s testHandlerStore) GetMCPExternalServerURL() string            { return "" }
-func (s testHandlerStore) GetMCPExternalClientURL() string            { return "" }
+func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
+func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
+func (s testHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
+func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
+func (s testHandlerStore) GetMCPExternalServerURL() string                 { return "" }
+func (s testHandlerStore) GetMCPExternalClientURL() string                 { return "" }
 
 func TestParseSessionIDFromBaggage(t *testing.T) {
 	tests := []struct {
