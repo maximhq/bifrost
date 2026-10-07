@@ -1179,6 +1179,9 @@ false
 {{- if .Values.storage.logsStore.objectStorageExcludeFields }}
 {{- $_ := set (index $config "logs_store") "object_storage_exclude_fields" .Values.storage.logsStore.objectStorageExcludeFields }}
 {{- end }}
+{{- if .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
+{{- $_ := set (index $config "logs_store") "object_storage_exclude_request_types" .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
+{{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}
 {{- if and .Values.vectorStore.enabled (ne .Values.vectorStore.type "none") }}

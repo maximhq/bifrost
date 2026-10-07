@@ -12,6 +12,7 @@ export const buildProviderUpdatePayload = (provider: ModelProvider, updates: Par
 		send_back_raw_request: updates.send_back_raw_request ?? provider.send_back_raw_request,
 		send_back_raw_response: updates.send_back_raw_response ?? provider.send_back_raw_response,
 		store_raw_request_response: updates.store_raw_request_response ?? provider.store_raw_request_response,
+		ignore_provider_cost: updates.ignore_provider_cost ?? provider.ignore_provider_cost,
 		custom_provider_config: updates.custom_provider_config ?? provider.custom_provider_config,
 		openai_config: updates.openai_config ?? provider.openai_config,
 		prompt_cache: updates.prompt_cache ?? provider.prompt_cache,

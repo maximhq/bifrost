@@ -93,6 +93,25 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *P
 	return mc.datasheet.CalculateCost(result, (*datasheet.LookupScopes)(scopes))
 }
 
+// SetIgnoreProviderCost toggles whether the provider's self-reported usage.cost
+// is ignored, so the request is priced from the catalog and pricing overrides.
+func (mc *ModelCatalog) SetIgnoreProviderCost(provider schemas.ModelProvider, ignore bool) {
+	mc.datasheet.SetIgnoreProviderCost(provider, ignore)
+}
+
+// ReplaceIgnoreProviderCost resets the set of providers whose reported cost is ignored.
+func (mc *ModelCatalog) ReplaceIgnoreProviderCost(providers []schemas.ModelProvider) {
+	mc.datasheet.ReplaceIgnoreProviderCost(providers)
+}
+
+// IsProviderCostIgnored reports whether the provider's self-reported cost is ignored.
+func (mc *ModelCatalog) IsProviderCostIgnored(provider schemas.ModelProvider) bool {
+	if mc == nil {
+		return false
+	}
+	return mc.datasheet.IsProviderCostIgnored(provider)
+}
+
 // CalculateCostBreakdown computes the per-category cost breakdown (input /
 // output / cache) for a Bifrost response. Returns nil when there is no cost to
 // record. TotalCost equals what CalculateCost returns for the same response.

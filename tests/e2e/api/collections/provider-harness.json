@@ -206624,11 +206624,85 @@
       ]
     },
     {
-      "name": "182. vLLM assistant reasoning replay (#6238) (vllm-reasoning-replay)",
+      "name": "182. Opaque provider cost stays out of the input split in logs (opaque-provider-cost)",
+      "description": "Gateway regression for PR #8055. OpenRouter's /v1/decisions response carries its billed cost as an opaque usage.cost with only total_cost set. The logging plugin stores that total in the cost column, and the log row's cost_breakdown used to attribute the whole total to input_cost, so the log detail view showed the provider's total as an input cost. The case runs a decision through openrouter, then polls GET /api/logs/{x-request-id} and asserts cost_breakdown.total_cost equals the response's usage.cost.total_cost while input_cost and output_cost stay empty (pre-fix: input_cost equals the total).",
+      "item": [
+        {
+          "name": "Log cost_breakdown keeps an opaque provider total out of input_cost - openrouter/typesafe/jev-1.13",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('opaque provider cost: decision succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "var providerTotal = body.usage && body.usage.cost && body.usage.cost.total_cost;",
+                  "pm.test('opaque provider cost: response carries an opaque OpenRouter total', function () {",
+                  "  pm.expect(providerTotal, 'usage: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "  pm.expect(body.usage.cost.input_cost || 0, 'usage.cost: ' + JSON.stringify(body.usage.cost)).to.eql(0);",
+                  "  pm.expect(body.usage.cost.output_cost || 0, 'usage.cost: ' + JSON.stringify(body.usage.cost)).to.eql(0);",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('opaque provider cost: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var cb = j.cost_breakdown;",
+                  "      pm.test('opaque provider cost: log total is the provider total', function () {",
+                  "        pm.expect(cb, 'cost_breakdown: ' + JSON.stringify(j.cost_breakdown)).to.be.an('object');",
+                  "        pm.expect(cb.total_cost, 'cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(providerTotal, providerTotal * 1e-6);",
+                  "      });",
+                  "      pm.test('opaque provider cost: total is not reported as input cost', function () {",
+                  "        pm.expect(cb.input_cost || 0, 'cost_breakdown: ' + JSON.stringify(cb)).to.eql(0);",
+                  "        pm.expect(cb.output_cost || 0, 'cost_breakdown: ' + JSON.stringify(cb)).to.eql(0);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('opaque provider cost: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/typesafe/jev-1.13\",\n  \"state\": \"Customer message: I was double charged last month and want a refund.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "183. vLLM assistant reasoning replay (#6238) (vllm-reasoning-replay)",
       "description": "Native typed Chat Completions must send assistant reasoning as reasoning, not reasoning_content, to the built-in vLLM OpenAI-compatible endpoint. These unary and SSE cases assert the captured outbound body, so even a server that accepts both spellings cannot mask the regression. Requires a configured vllm key/model Qwen/Qwen3-0.6B (or a matching alias) with use_anthropic_endpoints=false. The generic harness profile does not configure a vLLM server; configure it before running PROVIDER=vllm FEATURE=vllm-reasoning-replay. Raw-body and large-payload passthrough are separate paths and are covered by local mock tests.",
       "item": [
         {
-          "name": "182.1 vllm/Qwen/Qwen3-0.6B assistant reasoning replay unary - vllm-reasoning-replay - #6238",
+          "name": "183.1 vllm/Qwen/Qwen3-0.6B assistant reasoning replay unary - vllm-reasoning-replay - #6238",
           "event": [
             {
               "listen": "test",
@@ -206694,7 +206768,7 @@
           }
         },
         {
-          "name": "182.2 vllm/Qwen/Qwen3-0.6B assistant reasoning replay stream - vllm-reasoning-replay - #6238",
+          "name": "183.2 vllm/Qwen/Qwen3-0.6B assistant reasoning replay stream - vllm-reasoning-replay - #6238",
           "event": [
             {
               "listen": "test",

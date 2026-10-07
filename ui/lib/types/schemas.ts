@@ -930,6 +930,7 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
 
@@ -947,6 +948,7 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
 });
 
@@ -965,6 +967,7 @@ export const addProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
@@ -979,6 +982,7 @@ export const updateProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
@@ -1105,6 +1109,13 @@ export const debuggingFormSchema = z.object({
 });
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
+
+// Pricing tab (provider-reported cost handling)
+export const pricingFormSchema = z.object({
+	ignore_provider_cost: z.boolean(),
+});
+
+export type PricingFormSchema = z.infer<typeof pricingFormSchema>;
 
 // Beta Headers tab
 export const betaHeadersFormSchema = z.object({
