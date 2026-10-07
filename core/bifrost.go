@@ -5758,6 +5758,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	// A key the caller pinned brings the provider that has it to the front of the chain.
+	bifrost.resolveCallerKeyPin(ctx, requested, req)
 	// The session has the last word on the chain the hooks produced.
 	bifrost.resolveSessionRoute(ctx, requested, req)
 	bifrost.endCoreSpan(setupSpan)
@@ -5927,6 +5929,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	// A key the caller pinned brings the provider that has it to the front of the chain.
+	bifrost.resolveCallerKeyPin(ctx, requested, req)
 	// The session has the last word on the chain the hooks produced.
 	bifrost.resolveSessionRoute(ctx, requested, req)
 	// "miscellaneous" phase: pre-dispatch glue (field re-read + validation) on no other
