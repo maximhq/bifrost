@@ -4553,6 +4553,29 @@ func TestCalculateCostForUsage_MatchesCalculateCost(t *testing.T) {
 	assert.Equal(t, respCost, usageCost, "bare-usage cost must equal full-response cost")
 }
 
+func TestCalculateCostForOpenAIDecisionsProviderOverride(t *testing.T) {
+	s := testStoreWithPricing(nil)
+	providerID := "openai-decisions"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "openai-decisions-pricing",
+		ScopeKind:        string(ScopeKindProvider),
+		ProviderID:       &providerID,
+		MatchType:        string(MatchTypeExact),
+		Pattern:          "gpt-6-luna",
+		RequestTypes:     []schemas.RequestType{schemas.DecisionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.0000001,"output_cost_per_token":0}`,
+	}}))
+
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 5, TotalTokens: 1005}
+	scopes := &LookupScopes{Provider: providerID}
+	breakdown := s.CalculateCostBreakdownForUsage(usage, schemas.ModelProvider(providerID), "gpt-6-luna", schemas.DecisionRequest, scopes)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.0001, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, 0.0001, breakdown.InputCost, 1e-12)
+	assert.Zero(t, breakdown.OutputCost)
+	assert.InDelta(t, 0.0001, s.CalculateCostForUsage(usage, schemas.ModelProvider(providerID), "gpt-6-luna", schemas.DecisionRequest, scopes), 1e-12)
+}
+
 // TestCalculateCostBreakdownForUsage_CarriesSplit verifies the breakdown variant
 // returns the same total as the scalar path and carries the input/output split
 // so bare-usage billing can denormalize per category.
