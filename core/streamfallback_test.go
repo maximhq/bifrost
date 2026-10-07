@@ -1172,3 +1172,92 @@ func TestStreamTTFTLeavesTimelyOrUnconfiguredPrimaryAlone(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Provider response headers once every fallback failed
+// ---------------------------------------------------------------------------
+
+// notFoundUpstream answers every request with a 404 in its provider's error shape, tagged with an
+// X-Upstream header naming the provider, so a test can tell whose headers survived.
+func notFoundUpstream(provider, body string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Upstream", provider)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(body))
+	}
+}
+
+// providerHeader reads one forwarded provider response header off ctx, matching its name in any case.
+func providerHeader(ctx *schemas.BifrostContext, name string) string {
+	headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
+}
+
+// When the primary and every fallback fail, the primary's error is returned, so the provider
+// response headers left on the context for the transport to forward must be the primary's too.
+// They used to be the last fallback's: an OpenAI error went out with Anthropic's request-id.
+func TestExhaustedFallbacksKeepThePrimaryProviderHeaders(t *testing.T) {
+	openAI404 := notFoundUpstream("openai", `{"error":{"message":"The model does not exist","type":"invalid_request_error","code":"model_not_found"}}`)
+	anthropic404 := notFoundUpstream("anthropic", `{"type":"error","error":{"type":"not_found_error","message":"model: claude-missing"}}`)
+	fallback := schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-missing"}
+
+	t.Run("non-streaming", func(t *testing.T) {
+		client := newTTFTTestClient(t, openAI404, anthropic404)
+		ctx := ttftContext(0)
+		_, bifrostErr := client.ChatCompletionRequest(ctx, ttftChatRequest(fallback))
+		if bifrostErr == nil {
+			t.Fatal("expected the primary's error once every fallback failed")
+		}
+		if got := providerHeader(ctx, "X-Upstream"); got != "openai" {
+			t.Fatalf("forwarded provider headers belong to %q, want the primary's (openai) with the primary's error", got)
+		}
+	})
+	t.Run("streaming", func(t *testing.T) {
+		client := newTTFTTestClient(t, openAI404, anthropic404)
+		ctx := ttftContext(0)
+		_, bifrostErr := client.ChatCompletionStreamRequest(ctx, ttftChatRequest(fallback))
+		if bifrostErr == nil {
+			t.Fatal("expected the primary's error once every fallback failed")
+		}
+		if got := providerHeader(ctx, "X-Upstream"); got != "openai" {
+			t.Fatalf("forwarded provider headers belong to %q, want the primary's (openai) with the primary's error", got)
+		}
+	})
+
+	// A primary that never answered had no headers, so none go out with its error, not the last
+	// fallback's: they would describe a provider the error did not come from.
+	dropsConnection := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+	})
+	t.Run("non-streaming, primary sent no headers", func(t *testing.T) {
+		client := newTTFTTestClient(t, dropsConnection, anthropic404)
+		ctx := ttftContext(0)
+		_, bifrostErr := client.ChatCompletionRequest(ctx, ttftChatRequest(fallback))
+		if bifrostErr == nil {
+			t.Fatal("expected the primary's error once every fallback failed")
+		}
+		if headers := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders); headers != nil {
+			t.Fatalf("provider headers %v were left on the context with the primary's error, want none", headers)
+		}
+	})
+	t.Run("streaming, primary sent no headers", func(t *testing.T) {
+		client := newTTFTTestClient(t, dropsConnection, anthropic404)
+		ctx := ttftContext(0)
+		_, bifrostErr := client.ChatCompletionStreamRequest(ctx, ttftChatRequest(fallback))
+		if bifrostErr == nil {
+			t.Fatal("expected the primary's error once every fallback failed")
+		}
+		if headers := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders); headers != nil {
+			t.Fatalf("provider headers %v were left on the context with the primary's error, want none", headers)
+		}
+	})
+}

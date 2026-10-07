@@ -207760,6 +207760,109 @@
           }
         }
       ]
+    },
+    {
+      "name": "171. An exhausted fallback chain returns the primary's error with the primary's headers (exhausted-fallback-headers)",
+      "description": "When the primary and every fallback fail, core returns the primary's error. Each fallback attempt replaced the provider response headers on the request context with its own, so the primary's OpenAI error went out with the Anthropic fallback's request-id, organization, workspace and rate-limit headers. Core now restores the primary attempt's headers before returning its error.\n\nBoth rows send a missing OpenAI model with a missing Anthropic model as the fallback, so each attempt is a free 404: (1) on /v1/chat/completions and (2) on the /openai drop-in. Run with FEATURE=\"exhausted-fallback-headers\".",
+      "item": [
+        {
+          "name": "[EXPECT-404] openai gpt with a failing anthropic fallback: the primary error keeps its own headers on /v1 - exhausted-fallback-headers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the primary error is returned once the fallback also failed', function () {",
+                  "  pm.expect(pm.response.code, text).to.eql(404);",
+                  "  pm.expect(text, 'expected OpenAI\\u2019s model_not_found').to.include('gpt-harness-missing-model');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routed identity').to.eql('openai');",
+                  "});",
+                  "pm.test('no header the fallback provider sent rides along with the primary error', function () {",
+                  "  ['anthropic-organization-id', 'anthropic-workspace-id', 'anthropic-ratelimit-requests-limit'].forEach(function (h) {",
+                  "    pm.expect(pm.response.headers.get(h), h + ' comes from the Anthropic fallback, not the OpenAI error it is sent with').to.equal(undefined);",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-harness-missing-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3,\n  \"fallbacks\": [\n    \"anthropic/claude-harness-missing-model\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai gpt with a failing anthropic fallback: the primary error keeps its own headers on /openai - exhausted-fallback-headers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the primary error is returned once the fallback also failed', function () {",
+                  "  pm.expect(pm.response.code, text).to.eql(404);",
+                  "  pm.expect(text, 'expected OpenAI\\u2019s model_not_found').to.include('gpt-harness-missing-model');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routed identity').to.eql('openai');",
+                  "});",
+                  "pm.test('no header the fallback provider sent rides along with the primary error', function () {",
+                  "  ['anthropic-organization-id', 'anthropic-workspace-id', 'anthropic-ratelimit-requests-limit'].forEach(function (h) {",
+                  "    pm.expect(pm.response.headers.get(h), h + ' comes from the Anthropic fallback, not the OpenAI error it is sent with').to.equal(undefined);",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-harness-missing-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3,\n  \"fallbacks\": [\n    \"anthropic/claude-harness-missing-model\"\n  ]\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }
