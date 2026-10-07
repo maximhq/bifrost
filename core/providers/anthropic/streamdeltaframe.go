@@ -61,6 +61,12 @@ type anthropicStreamDeltaWire AnthropicStreamDelta
 // reason to report. `stop_sequence` needs no such handling: its tag already
 // carries no omitempty, because `message_delta` has always needed it present.
 //
+// The flag itself (AnthropicStreamDelta.requireStopFields) asks for the two
+// MESSAGE-level stop fields to be rendered explicitly -- stop_reason as a JSON
+// null when unset -- because a streaming message_delta frame's delta object
+// declares both as required and nullable, and the supported clients read
+// delta.stop_reason unguarded. It is unexported and set at one call site.
+//
 // The default (zero) flag reproduces stock bytes exactly, and so does a flagged
 // object that does have a stop reason -- the rendering only ever ADDS the key
 // the protocol requires, never changes or removes one.

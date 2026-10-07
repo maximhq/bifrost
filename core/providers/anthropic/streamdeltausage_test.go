@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -1201,17 +1200,20 @@ func TestLiveStreamHandlerOpensAFreshLedgerPerStream(t *testing.T) {
 	}
 }
 
-// TestPromptUsageLedgerIsReleasedWithTheRequest pins the lifetime half of
-// AGENTS.md's rule. The readings scale with the stream, so they live in a
-// top-level store and the context carries only the ID -- which means they now
-// have to be released explicitly, and the release point is load-bearing in both
-// directions. Too early and the terminal frame, which is marshalled from the
-// chunk channel after the reader goroutine has returned, renders with the
-// evidence already gone; never, and the store grows for the process's lifetime.
-func TestPromptUsageLedgerIsReleasedWithTheRequest(t *testing.T) {
-	t.Run("a finished request leaves nothing behind", func(t *testing.T) {
-		parent, cancel := context.WithCancel(context.Background())
-		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+// TestPromptUsageLedgerIsReleasedOnDelivery pins the lifetime half of
+// AGENTS.md's rule, and the release point is load-bearing in both directions.
+//
+// Too early and the terminal message_delta -- marshalled from the chunk channel
+// after the reader goroutine has returned -- renders with the evidence already
+// gone. Never, and the store grows for the life of the process: a caller holding
+// NewBifrostContext(context.Background(), NoDeadline) never cancels, so a
+// context lifetime is not a release signal at all. Delivery is: the egress
+// releases once it has rendered the terminal frame, and a retry's own open()
+// drops whatever the previous attempt left.
+func TestPromptUsageLedgerIsReleasedOnDelivery(t *testing.T) {
+	t.Run("rendering the terminal frame releases the readings", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
 		ledger := openAnthropicStreamDeltaPromptUsageLedger(ctx)
 		if ledger == nil {
 			t.Fatal("expected a ledger")
@@ -1221,17 +1223,38 @@ func TestPromptUsageLedgerIsReleasedWithTheRequest(t *testing.T) {
 			t.Fatal("expected the context to carry the ledger ID")
 		}
 		ledger.record(0, anthropicPromptCounterInputTokens)
+
+		// A non-terminal frame keeps them: later chunks still need the readings.
+		ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+			Type:           "message_delta",
+			SequenceNumber: 0,
+			Response: &schemas.BifrostResponsesResponse{
+				Usage: &schemas.ResponsesResponseUsage{InputTokens: 100, OutputTokens: 25},
+			},
+		})
 		if loadAnthropicStreamDeltaPromptUsageLedger(id) == nil {
-			t.Fatal("the ledger must be resolvable while the request runs")
+			t.Fatal("a mid-stream frame must not release the readings")
 		}
 
-		cancel()
-		deadline := time.Now().Add(2 * time.Second)
-		for loadAnthropicStreamDeltaPromptUsageLedger(id) != nil {
-			if time.Now().After(deadline) {
-				t.Fatal("the ledger outlived its request: the store would grow without bound")
+		// The terminal frame is the last one that can need a reading.
+		events := ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			SequenceNumber: 1,
+			Response: &schemas.BifrostResponsesResponse{
+				Usage: &schemas.ResponsesResponseUsage{InputTokens: 100, OutputTokens: 25},
+			},
+		})
+		var sawStop bool
+		for _, event := range events {
+			if event != nil && event.Type == AnthropicStreamEventTypeMessageStop {
+				sawStop = true
 			}
-			time.Sleep(time.Millisecond)
+		}
+		if !sawStop {
+			t.Fatalf("precondition: the terminal response must render a message_stop, got %d events", len(events))
+		}
+		if loadAnthropicStreamDeltaPromptUsageLedger(id) != nil {
+			t.Fatal("the readings outlived the terminal frame: the store would grow without bound")
 		}
 	})
 
@@ -1249,7 +1272,6 @@ func TestPromptUsageLedgerIsReleasedWithTheRequest(t *testing.T) {
 		if loadAnthropicStreamDeltaPromptUsageLedger(firstID) != nil {
 			t.Fatal("the replaced attempt's readings must be dropped from the store")
 		}
-		// And the retry's chunk 4 is unrecorded, not inherited.
 		if _, ok := second.lookup(4); ok {
 			t.Fatal("a retry's chunk 4 must not read the previous attempt's reading")
 		}

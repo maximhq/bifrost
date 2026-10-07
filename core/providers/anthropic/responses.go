@@ -2978,6 +2978,16 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 	state := getOrCreateAnthropicToResponsesStreamState(ctx)
 	events = enforceStreamBlockTypes(state, events)
 	state.recordEmittedTextEvents(events)
+	// The terminal frame is the last one that can carry usage worth reshaping, so
+	// the prompt-usage readings are released once it has been rendered -- here,
+	// rather than when the reader goroutine returned, because this frame is
+	// marshalled from the chunk channel after that goroutine has already exited.
+	for _, event := range events {
+		if event != nil && event.Type == AnthropicStreamEventTypeMessageStop {
+			closeAnthropicStreamDeltaPromptUsageLedger(ctx)
+			break
+		}
+	}
 	return events
 }
 

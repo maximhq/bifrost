@@ -157,19 +157,14 @@ func openAnthropicStreamDeltaPromptUsageLedger(ctx *schemas.BifrostContext) *ant
 	anthropicStreamDeltaPromptUsageLedgers.Store(id, ledger)
 	ctx.SetValue(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage, id)
 
-	// The readings are released when the REQUEST ends, not when the reader
-	// goroutine returns: the terminal frame is marshalled from the chunk channel
-	// after that goroutine has exited, so releasing there renders the one frame
-	// this evidence exists to correct with the readings already gone (the
-	// end-to-end tests in this package catch exactly that). The request context
-	// is the lifetime the readings had while they sat on it, which is the
-	// lifetime they still need now that only the handle does.
-	if done := ctx.Done(); done != nil {
-		go func() {
-			<-done
-			anthropicStreamDeltaPromptUsageLedgers.Delete(id)
-		}()
-	}
+	// Release is tied to DELIVERY, not to a context lifetime: a caller holding
+	// NewBifrostContext(context.Background(), NoDeadline) never cancels, so
+	// waiting on ctx.Done() would keep the entry -- and a goroutine -- for the
+	// life of the process. The release points are instead the two ways a stream
+	// ends: the egress closes the ledger once it has rendered the terminal frame
+	// (the last frame that can need a reading), and the reader's truncation path
+	// closes it when the body ended before a terminal frame was produced. A
+	// retry's own open() replaces and drops whatever the previous attempt left.
 	return ledger
 }
 
@@ -320,6 +315,12 @@ type anthropicUsageWire AnthropicUsage
 // Bifrost builds for a non-streaming response, a count_tokens result, a
 // message_start frame or a synthesized terminal frame carries the complete
 // accumulated figures and renders unchanged.
+//
+// The flag itself (AnthropicUsage.absentPromptCounters) names the prompt-side
+// counters this object must render as ABSENT rather than as zero, because the
+// upstream event it describes reported none. It is unexported and set only by
+// the streaming message_delta egress, from the raw field-presence evidence
+// recorded at the upstream SSE boundary.
 func (u AnthropicUsage) MarshalJSON() ([]byte, error) {
 	data, err := sonic.Marshal(anthropicUsageWire(u))
 	if err != nil {
