@@ -27,7 +27,7 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Ver
 		return nil, providerUtils.InvalidRequestErrorf("embedding input is not provided")
 	}
 
-	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams("vertex text"); err != nil {
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
@@ -36,7 +36,7 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Ver
 		var sb strings.Builder
 		for _, part := range item.Content {
 			if part.Type != schemas.EmbeddingContentPartTypeText || part.Text == nil {
-				return nil, providerUtils.InvalidRequestErrorf("vertex text embedding only supports text parts; got %q", part.Type)
+				return nil, providerUtils.InvalidRequestErrorf("this model only supports text parts; got %q", part.Type)
 			}
 			if sb.Len() > 0 {
 				sb.WriteByte('\n')
@@ -76,10 +76,10 @@ func ToVertexGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 	}
 
 	if len(bifrostReq.Input) > 1 {
-		return nil, providerUtils.InvalidRequestErrorf("vertex gemini embedding does not support batch inputs (multiple contents); use a single content entry")
+		return nil, providerUtils.InvalidRequestErrorf("this model does not support batch embedding inputs (multiple contents); use a single content entry")
 	}
 
-	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams("vertex gemini"); err != nil {
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
@@ -137,10 +137,10 @@ func ToVertexMultimodalEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequ
 	}
 
 	if len(bifrostReq.Input) > 1 {
-		return nil, providerUtils.InvalidRequestErrorf("vertex multimodalembedding@001 supports only 1 instance per request; got %d contents", len(bifrostReq.Input))
+		return nil, providerUtils.InvalidRequestErrorf("this model supports only 1 instance per request; got %d contents", len(bifrostReq.Input))
 	}
 
-	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams("vertex multimodalembedding@001"); err != nil {
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
@@ -161,7 +161,7 @@ func ToVertexMultimodalEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequ
 				return nil, providerUtils.InvalidRequestErrorf("image part has no payload")
 			}
 			if instance.Image != nil {
-				return nil, providerUtils.InvalidRequestErrorf("vertex multimodalembedding@001 supports at most one image per content entry")
+				return nil, providerUtils.InvalidRequestErrorf("this model supports at most one image per content entry")
 			}
 			img := &VertexMultimodalImageInput{}
 			if part.Image.Data != nil {
@@ -169,7 +169,7 @@ func ToVertexMultimodalEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequ
 				img.BytesBase64Encoded = &b64
 			} else if part.Image.URL != nil {
 				if !strings.HasPrefix(*part.Image.URL, "gs://") {
-					return nil, providerUtils.InvalidRequestErrorf("vertex multimodal embedding requires a GCS URI (gs://) for image URL input")
+					return nil, providerUtils.InvalidRequestErrorf("this model requires a GCS URI (gs://) for image URL input")
 				}
 				img.GCSUri = part.Image.URL
 			} else {
@@ -181,7 +181,7 @@ func ToVertexMultimodalEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequ
 				return nil, providerUtils.InvalidRequestErrorf("video part has no payload")
 			}
 			if instance.Video != nil {
-				return nil, providerUtils.InvalidRequestErrorf("vertex multimodalembedding@001 supports at most one video per content entry")
+				return nil, providerUtils.InvalidRequestErrorf("this model supports at most one video per content entry")
 			}
 			vid := &VertexMultimodalVideoInput{}
 			if part.Video.Data != nil {
@@ -189,7 +189,7 @@ func ToVertexMultimodalEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequ
 				vid.BytesBase64Encoded = &b64
 			} else if part.Video.URL != nil {
 				if !strings.HasPrefix(*part.Video.URL, "gs://") {
-					return nil, providerUtils.InvalidRequestErrorf("vertex multimodal embedding requires a GCS URI (gs://) for video URL input")
+					return nil, providerUtils.InvalidRequestErrorf("this model requires a GCS URI (gs://) for video URL input")
 				}
 				vid.GCSUri = part.Video.URL
 			} else {
@@ -204,7 +204,7 @@ func ToVertexMultimodalEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequ
 			}
 			instance.Video = vid
 		default:
-			return nil, providerUtils.InvalidRequestErrorf("vertex multimodalembedding@001 does not support %q parts", part.Type)
+			return nil, providerUtils.InvalidRequestErrorf("this model does not support %q parts", part.Type)
 		}
 	}
 	if textBuilder.Len() > 0 {

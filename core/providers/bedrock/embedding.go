@@ -88,7 +88,7 @@ func titanImagePayload(media *schemas.EmbeddingMediaPart) (string, error) {
 		return "", providerUtils.InvalidRequestErrorf("image part carries neither data nor url")
 	}
 	if media.Data == nil {
-		return "", providerUtils.InvalidRequestErrorf("amazon Titan multimodal embedding models require inline base64 image data, not a url")
+		return "", providerUtils.InvalidRequestErrorf("this model requires inline base64 image data, not a url")
 	}
 	data := *media.Data
 	if strings.HasPrefix(data, "data:") {
@@ -113,10 +113,10 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 	}
 
 	if len(bifrostReq.Input) != 1 {
-		return nil, providerUtils.InvalidRequestErrorf("amazon Titan embedding models support exactly one content item per request; got %d", len(bifrostReq.Input))
+		return nil, providerUtils.InvalidRequestErrorf("this model supports exactly one content item per request; got %d", len(bifrostReq.Input))
 	}
 
-	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams("amazon Titan"); err != nil {
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
@@ -136,7 +136,7 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 			sb.WriteString(*part.Text)
 		case schemas.EmbeddingContentPartTypeImage:
 			if inputImage != nil {
-				return nil, providerUtils.InvalidRequestErrorf("amazon Titan embedding models accept at most one image per request")
+				return nil, providerUtils.InvalidRequestErrorf("this model accepts at most one image per request")
 			}
 			encoded, err := titanImagePayload(part.Image)
 			if err != nil {
@@ -144,7 +144,7 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 			}
 			inputImage = &encoded
 		default:
-			return nil, providerUtils.InvalidRequestErrorf("amazon Titan embedding models do not support %q parts", part.Type)
+			return nil, providerUtils.InvalidRequestErrorf("this model does not support %q parts", part.Type)
 		}
 	}
 
@@ -270,7 +270,7 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 		return nil, providerUtils.InvalidRequestErrorf("no input provided for Cohere embedding")
 	}
 
-	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams("bedrock cohere"); err != nil {
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
@@ -305,7 +305,7 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 						ImageURL: &BedrockCohereEmbeddingImageURL{URL: *url},
 					})
 				default:
-					return nil, providerUtils.InvalidRequestErrorf("bedrock cohere embeddings support only text and image parts, got %q", part.Type)
+					return nil, providerUtils.InvalidRequestErrorf("this model supports only text and image parts, got %q", part.Type)
 				}
 			}
 			inputs = append(inputs, BedrockCohereEmbeddingInput{Content: blocks})
@@ -428,7 +428,7 @@ var novaEmbeddingFormatHints = map[schemas.EmbeddingContentPartType]string{
 func novaEmbeddingFormat(partType schemas.EmbeddingContentPartType, mimeType, rawURL string) (string, error) {
 	table := novaEmbeddingFormats[partType]
 	if table == nil {
-		return "", providerUtils.InvalidRequestErrorf("amazon Nova embedding models do not support %q parts", partType)
+		return "", providerUtils.InvalidRequestErrorf("this model does not support %q parts", partType)
 	}
 	if mimeType != "" {
 		if parsed, _, err := mime.ParseMediaType(mimeType); err == nil {
@@ -447,7 +447,7 @@ func novaEmbeddingFormat(partType schemas.EmbeddingContentPartType, mimeType, ra
 			return format, nil
 		}
 	}
-	return "", providerUtils.InvalidRequestErrorf("cannot determine the %s format for amazon Nova: pass mime_type as one of %s", partType, novaEmbeddingFormatHints[partType])
+	return "", providerUtils.InvalidRequestErrorf("cannot determine the %s format for this model: pass mime_type as one of %s", partType, novaEmbeddingFormatHints[partType])
 }
 
 // novaEmbeddingMediaPart converts one media part into Nova's format and source pair.
@@ -493,7 +493,7 @@ func novaEmbeddingMediaPart(partType schemas.EmbeddingContentPartType, media *sc
 		if strings.HasPrefix(url, "s3://") {
 			return "", empty, providerUtils.InvalidRequestErrorf("invalid s3:// %s reference %q: expected s3://bucket/key", partType, url)
 		}
-		return "", empty, providerUtils.InvalidRequestErrorf("amazon Nova embedding models read media from s3:// or inline base64 only, so %q cannot be used; send the %s inline or presign it into S3", url, partType)
+		return "", empty, providerUtils.InvalidRequestErrorf("this model reads media from s3:// or inline base64 only, so %q cannot be used; send the %s inline or presign it into S3", url, partType)
 	}
 	format, err := novaEmbeddingFormat(partType, mimeType, url)
 	if err != nil {
@@ -516,10 +516,10 @@ func ToBedrockNovaEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) 
 	}
 
 	if len(bifrostReq.Input) != 1 {
-		return nil, providerUtils.InvalidRequestErrorf("amazon Nova embedding models support exactly one content item per request; got %d", len(bifrostReq.Input))
+		return nil, providerUtils.InvalidRequestErrorf("this model supports exactly one content item per request; got %d", len(bifrostReq.Input))
 	}
 
-	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams("amazon Nova"); err != nil {
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
@@ -588,7 +588,7 @@ func ToBedrockNovaEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) 
 			}
 			modalities++
 		default:
-			return nil, providerUtils.InvalidRequestErrorf("amazon Nova embedding models do not support %q parts", part.Type)
+			return nil, providerUtils.InvalidRequestErrorf("this model does not support %q parts", part.Type)
 		}
 	}
 
@@ -596,7 +596,7 @@ func ToBedrockNovaEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) 
 		return nil, providerUtils.InvalidRequestErrorf("no input provided for Nova embedding")
 	}
 	if modalities > 1 {
-		return nil, providerUtils.InvalidRequestErrorf("amazon Nova embedding models embed one modality per request: text, image, audio or video, not a combination")
+		return nil, providerUtils.InvalidRequestErrorf("this model embeds one modality per request: text, image, audio or video, not a combination")
 	}
 
 	if hasText {

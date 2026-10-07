@@ -3367,3 +3367,7 @@ func resultNeedsGeminiNormalization(result gjson.Result) bool {
 	}
 	return needs
 }
+
+func ptrEqual[T comparable](a, b *T) bool {
+	return a == b || (a != nil && b != nil && *a == *b)
+}
