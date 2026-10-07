@@ -1,7 +1,9 @@
 package anthropic
 
 import (
+	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -120,19 +122,80 @@ type anthropicStreamDeltaPromptUsageLedger struct {
 	absent map[int]anthropicPromptCounterBit
 }
 
+// anthropicStreamDeltaPromptUsageLedgers is the top-level store the readings
+// live in, keyed by the ledger ID the context carries.
+//
+// AGENTS.md's hard rule: per-request state that scales with stream content must
+// live in a top-level manager keyed by request, never on BifrostContext, which
+// holds small handles only. The readings grow one entry per message_delta the
+// upstream sends, so they belong here; the context keeps the ID string alone,
+// exactly as framework/streaming.Accumulator keeps only its accumulator ID.
+var anthropicStreamDeltaPromptUsageLedgers sync.Map // ledgerID string -> *anthropicStreamDeltaPromptUsageLedger
+
+// anthropicStreamDeltaPromptUsageLedgerSeq names ledgers uniquely. The ID is an
+// opaque handle, not a request identifier: a retry or fallback attempt opens a
+// fresh one for the same request, and keying on the request alone would make the
+// two attempts share readings taken against different chunk numbering.
+var anthropicStreamDeltaPromptUsageLedgerSeq atomic.Uint64
+
 // openAnthropicStreamDeltaPromptUsageLedger installs a FRESH ledger for the
 // stream about to be read, replacing any the same request accumulated earlier.
 // Chunk numbering restarts on every attempt, so a fallback or retry attempt's
-// chunk 4 must never read the previous attempt's reading for chunk 4.
+// chunk 4 must never read the previous attempt's reading for chunk 4. The
+// replaced entry is dropped from the store, so an attempt's readings do not
+// outlive the attempt.
 func openAnthropicStreamDeltaPromptUsageLedger(ctx *schemas.BifrostContext) *anthropicStreamDeltaPromptUsageLedger {
 	if ctx == nil {
 		return nil
 	}
+	closeAnthropicStreamDeltaPromptUsageLedger(ctx)
 	ledger := &anthropicStreamDeltaPromptUsageLedger{
 		owner:  ctx.Root(),
 		absent: make(map[int]anthropicPromptCounterBit, 1),
 	}
-	ctx.SetValue(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage, ledger)
+	id := "anthropic-stream-delta-prompt-usage-" + strconv.FormatUint(anthropicStreamDeltaPromptUsageLedgerSeq.Add(1), 10)
+	anthropicStreamDeltaPromptUsageLedgers.Store(id, ledger)
+	ctx.SetValue(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage, id)
+
+	// The readings are released when the REQUEST ends, not when the reader
+	// goroutine returns: the terminal frame is marshalled from the chunk channel
+	// after that goroutine has exited, so releasing there renders the one frame
+	// this evidence exists to correct with the readings already gone (the
+	// end-to-end tests in this package catch exactly that). The request context
+	// is the lifetime the readings had while they sat on it, which is the
+	// lifetime they still need now that only the handle does.
+	if done := ctx.Done(); done != nil {
+		go func() {
+			<-done
+			anthropicStreamDeltaPromptUsageLedgers.Delete(id)
+		}()
+	}
+	return ledger
+}
+
+// closeAnthropicStreamDeltaPromptUsageLedger releases the readings this
+// context's own request opened. A ledger read THROUGH from a parent is left
+// alone: it belongs to the parent's stream, which is still running.
+func closeAnthropicStreamDeltaPromptUsageLedger(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	id, _ := ctx.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(string)
+	if id == "" {
+		return
+	}
+	if ledger := loadAnthropicStreamDeltaPromptUsageLedger(id); ledger == nil || ledger.owner != ctx.Root() {
+		return
+	}
+	anthropicStreamDeltaPromptUsageLedgers.Delete(id)
+}
+
+func loadAnthropicStreamDeltaPromptUsageLedger(id string) *anthropicStreamDeltaPromptUsageLedger {
+	entry, ok := anthropicStreamDeltaPromptUsageLedgers.Load(id)
+	if !ok {
+		return nil
+	}
+	ledger, _ := entry.(*anthropicStreamDeltaPromptUsageLedger)
 	return ledger
 }
 
@@ -143,7 +206,11 @@ func ownedAnthropicStreamDeltaPromptUsageLedger(ctx *schemas.BifrostContext) *an
 	if ctx == nil {
 		return nil
 	}
-	ledger, _ := ctx.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(*anthropicStreamDeltaPromptUsageLedger)
+	id, _ := ctx.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(string)
+	if id == "" {
+		return nil
+	}
+	ledger := loadAnthropicStreamDeltaPromptUsageLedger(id)
 	if ledger == nil || ledger.owner == nil || ledger.owner != ctx.Root() {
 		return nil
 	}
