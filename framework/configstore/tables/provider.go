@@ -42,6 +42,13 @@ type TableProvider struct {
 	OpenAIConfig         *schemas.OpenAIConfig         `gorm:"-" json:"openai_config,omitempty"`
 	PromptCache          *schemas.PromptCacheConfig    `gorm:"-" json:"prompt_cache,omitempty"`
 
+	// Metadata is free-form key/value data the operator attaches to the provider (owner, region,
+	// cost center, ...). Validated by ValidateMetadata; an empty map is stored as NULL.
+	Metadata map[string]string `gorm:"type:text;serializer:json" json:"metadata,omitempty"`
+	// Tags are free-form labels ("prod", "approved-for-pii"), normalized by NormalizeTags
+	// (trimmed, de-duplicated, sorted). An empty list is stored as NULL.
+	Tags []string `gorm:"type:text;serializer:json" json:"tags,omitempty"`
+
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
 
@@ -120,6 +127,18 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 	} else {
 		p.PromptCacheJSON = ""
 	}
+	if err := ValidateMetadata(p.Metadata, nil); err != nil {
+		return err
+	}
+	// One representation for "no metadata" and "no tags": NULL.
+	if len(p.Metadata) == 0 {
+		p.Metadata = nil
+	}
+	tags, err := NormalizeTags(p.Tags)
+	if err != nil {
+		return err
+	}
+	p.Tags = tags
 	// Validate governance fields
 	if p.BudgetID != nil && strings.TrimSpace(*p.BudgetID) == "" {
 		return fmt.Errorf("budget_id cannot be an empty string")
