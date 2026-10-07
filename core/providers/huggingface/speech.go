@@ -63,37 +63,37 @@ func ToHuggingFaceSpeechRequest(request *schemas.BifrostSpeechRequest) (*Hugging
 				delete(request.Params.ExtraParams, "num_beam_groups")
 				genParams.NumBeamGroups = v
 			}
-			if val, ok := request.Params.ExtraParams["penalty_alpha"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(request.Params.ExtraParams["penalty_alpha"]); ok {
 				delete(request.Params.ExtraParams, "penalty_alpha")
-				genParams.PenaltyAlpha = &val
+				genParams.PenaltyAlpha = v
 			}
-			if val, ok := request.Params.ExtraParams["temperature"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(request.Params.ExtraParams["temperature"]); ok {
 				delete(request.Params.ExtraParams, "temperature")
-				genParams.Temperature = &val
+				genParams.Temperature = v
 			}
 			if v, ok := schemas.SafeExtractIntPointer(request.Params.ExtraParams["top_k"]); ok {
 				delete(request.Params.ExtraParams, "top_k")
 				genParams.TopK = v
 			}
-			if val, ok := request.Params.ExtraParams["top_p"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(request.Params.ExtraParams["top_p"]); ok {
 				delete(request.Params.ExtraParams, "top_p")
-				genParams.TopP = &val
+				genParams.TopP = v
 			}
-			if val, ok := request.Params.ExtraParams["typical_p"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(request.Params.ExtraParams["typical_p"]); ok {
 				delete(request.Params.ExtraParams, "typical_p")
-				genParams.TypicalP = &val
+				genParams.TypicalP = v
 			}
 			if val, ok := request.Params.ExtraParams["use_cache"].(bool); ok {
 				delete(request.Params.ExtraParams, "use_cache")
 				genParams.UseCache = &val
 			}
-			if val, ok := request.Params.ExtraParams["epsilon_cutoff"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(request.Params.ExtraParams["epsilon_cutoff"]); ok {
 				delete(request.Params.ExtraParams, "epsilon_cutoff")
-				genParams.EpsilonCutoff = &val
+				genParams.EpsilonCutoff = v
 			}
-			if val, ok := request.Params.ExtraParams["eta_cutoff"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(request.Params.ExtraParams["eta_cutoff"]); ok {
 				delete(request.Params.ExtraParams, "eta_cutoff")
-				genParams.EtaCutoff = &val
+				genParams.EtaCutoff = v
 			}
 
 			// Handle early_stopping (can be bool or string "never")

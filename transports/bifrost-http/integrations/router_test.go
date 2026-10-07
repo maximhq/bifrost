@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -17,6 +18,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -233,6 +235,25 @@ func TestExtraParamsRequiresPassthroughHeader(t *testing.T) {
 		assert.Equal(t, "1", gc["guardrailVersion"])
 		assert.Equal(t, "disabled", gc["trace"])
 	})
+}
+
+// TestDecodeWrappedExtraParamsPreservesNumbers pins that extra_params numbers
+// reach the provider as the caller wrote them: integers above 2^53 stay exact
+// and decimals are not re-rendered through float64.
+func TestDecodeWrappedExtraParamsPreservesNumbers(t *testing.T) {
+	rawBody := []byte(`{"model":"openai/gpt-4o","messages":[],` +
+		`"extra_params":{"seed":9007199254740993,"ratio":0.10,"nested":{"id":18446744073709551615}}}`)
+
+	extraParams := decodeWrappedExtraParams(rawBody)
+	assert.Equal(t, json.Number("9007199254740993"), extraParams["seed"])
+	assert.Equal(t, json.Number("0.10"), extraParams["ratio"])
+
+	wire, err := providerUtils.MergeExtraParamsIntoJSON([]byte(`{"model":"gpt-4o"}`), extraParams)
+	require.NoError(t, err)
+	assert.Equal(t, `{"model":"gpt-4o","nested":{"id":18446744073709551615},"ratio":0.10,"seed":9007199254740993}`, string(wire))
+
+	assert.Nil(t, decodeWrappedExtraParams(nil))
+	assert.Nil(t, decodeWrappedExtraParams([]byte(`{"model":"openai/gpt-4o"}`)))
 }
 
 func TestExtraParamsPassthrough_NestedStructures(t *testing.T) {

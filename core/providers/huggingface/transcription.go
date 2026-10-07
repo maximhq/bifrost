@@ -77,37 +77,37 @@ func ToHuggingFaceTranscriptionRequest(request *schemas.BifrostTranscriptionRequ
 				delete(extra, "num_beam_groups")
 				genParams.NumBeamGroups = v
 			}
-			if val, ok := extra["penalty_alpha"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(extra["penalty_alpha"]); ok {
 				delete(extra, "penalty_alpha")
-				genParams.PenaltyAlpha = &val
+				genParams.PenaltyAlpha = v
 			}
-			if val, ok := extra["temperature"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(extra["temperature"]); ok {
 				delete(extra, "temperature")
-				genParams.Temperature = &val
+				genParams.Temperature = v
 			}
 			if v, ok := schemas.SafeExtractIntPointer(extra["top_k"]); ok {
 				delete(extra, "top_k")
 				genParams.TopK = v
 			}
-			if val, ok := extra["top_p"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(extra["top_p"]); ok {
 				delete(extra, "top_p")
-				genParams.TopP = &val
+				genParams.TopP = v
 			}
-			if val, ok := extra["typical_p"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(extra["typical_p"]); ok {
 				delete(extra, "typical_p")
-				genParams.TypicalP = &val
+				genParams.TypicalP = v
 			}
 			if val, ok := extra["use_cache"].(bool); ok {
 				delete(extra, "use_cache")
 				genParams.UseCache = &val
 			}
-			if val, ok := extra["epsilon_cutoff"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(extra["epsilon_cutoff"]); ok {
 				delete(extra, "epsilon_cutoff")
-				genParams.EpsilonCutoff = &val
+				genParams.EpsilonCutoff = v
 			}
-			if val, ok := extra["eta_cutoff"].(float64); ok {
+			if v, ok := schemas.SafeExtractFloat64Pointer(extra["eta_cutoff"]); ok {
 				delete(extra, "eta_cutoff")
-				genParams.EtaCutoff = &val
+				genParams.EtaCutoff = v
 			}
 
 			// Handle early_stopping (can be bool or string "never")

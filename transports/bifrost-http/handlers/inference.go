@@ -5,7 +5,6 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -122,36 +121,57 @@ var textParamsKnownFields = map[string]bool{
 	"user":              true,
 }
 
-// Known fields for CompletionRequest
+// Known fields for ChatRequest: every schemas.ChatParameters field plus the
+// input-only reasoning_* spellings. A typed field missing here would also be
+// copied into ExtraParams, where it shadows the typed value on the wire.
 var chatParamsKnownFields = map[string]bool{
 	"model":                  true,
 	"messages":               true,
 	"fallbacks":              true,
 	"stream":                 true,
+	"audio":                  true,
 	"frequency_penalty":      true,
 	"logit_bias":             true,
 	"logprobs":               true,
 	"max_completion_tokens":  true,
 	"metadata":               true,
 	"modalities":             true,
+	"n":                      true,
 	"parallel_tool_calls":    true,
+	"prediction":             true,
 	"presence_penalty":       true,
 	"prompt_cache_key":       true,
+	"prompt_cache_options":   true,
 	"prompt_cache_retention": true,
 	"reasoning":              true,
+	"reasoning_display":      true,
 	"reasoning_effort":       true,
 	"reasoning_max_tokens":   true,
 	"response_format":        true,
 	"safety_identifier":      true,
+	"seed":                   true,
 	"service_tier":           true,
+	"stop":                   true,
 	"stream_options":         true,
 	"store":                  true,
 	"temperature":            true,
 	"tool_choice":            true,
 	"tools":                  true,
+	"top_logprobs":           true,
+	"top_p":                  true,
 	"truncation":             true,
 	"user":                   true,
 	"verbosity":              true,
+	"web_search_options":     true,
+
+	"top_k":              true,
+	"speed":              true,
+	"inference_geo":      true,
+	"mcp_servers":        true,
+	"container":          true,
+	"cache_control":      true,
+	"task_budget":        true,
+	"context_management": true,
 
 	"include_server_side_tool_invocations": true,
 }
@@ -670,20 +690,25 @@ func effectiveStream(bodyStream *bool) bool {
 	return false
 }
 
-// extractExtraParams processes unknown fields from JSON data into ExtraParams
+// extraParamsJSON decodes extra parameter values with numbers as json.Number, so
+// integers beyond 2^53 (seeds, ids) and decimal literals reach the provider exactly
+// as the caller sent them instead of being rounded through float64.
+var extraParamsJSON = sonic.Config{UseNumber: true}.Froze()
+
+// extractExtraParams processes unknown fields from JSON data into ExtraParams.
+// Top-level values are scanned without copying, so known fields (messages, input)
+// cost no allocation here; only the unknown values are decoded.
 func extractExtraParams(data []byte, knownFields map[string]bool) (map[string]any, error) {
-	// Parse JSON to extract unknown fields
-	var rawData map[string]json.RawMessage
+	var rawData map[string]sonic.NoCopyRawMessage
 	if err := sonic.Unmarshal(data, &rawData); err != nil {
 		return nil, err
 	}
 
-	// Extract unknown fields
 	extraParams := make(map[string]any)
 	for key, value := range rawData {
 		if !knownFields[key] {
 			var v any
-			if err := sonic.Unmarshal(value, &v); err != nil {
+			if err := extraParamsJSON.Unmarshal(value, &v); err != nil {
 				continue // Skip fields that can't be unmarshaled
 			}
 			extraParams[key] = v
@@ -1021,11 +1046,8 @@ func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 		if maxTokensVal, exists := base.ExtraParams["max_tokens"]; exists {
 			delete(base.ExtraParams, "max_tokens")
 			if req.ChatParameters.MaxCompletionTokens == nil {
-				if maxTokensFloat, ok := maxTokensVal.(float64); ok {
-					maxTokens := int(maxTokensFloat)
-					req.ChatParameters.MaxCompletionTokens = &maxTokens
-				} else if maxTokensInt, ok := maxTokensVal.(int); ok {
-					req.ChatParameters.MaxCompletionTokens = &maxTokensInt
+				if maxTokens, ok := schemas.SafeExtractIntPointer(maxTokensVal); ok {
+					req.MaxCompletionTokens = maxTokens
 				}
 			}
 		}

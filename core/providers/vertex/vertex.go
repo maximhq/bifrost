@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"mime/multipart"
@@ -3781,13 +3782,15 @@ func (provider *VertexProvider) gcsFileUploadResumable(
 	req.SetBody(metaJSON)
 
 	// content_length is optional but helps GCS validate the upload size. Depending
-	// on the transport it may arrive as a JSON number (float64) or a form-field
-	// string, so accept both numeric and string forms.
+	// on the transport it may arrive as a JSON number (float64 or json.Number) or a
+	// form-field string, so accept both numeric and string forms.
 	if request.ExtraParams != nil {
 		var contentLength int64
 		switch cl := request.ExtraParams["content_length"].(type) {
 		case float64:
 			contentLength = int64(cl)
+		case json.Number:
+			contentLength, _ = cl.Int64()
 		case int:
 			contentLength = int64(cl)
 		case int64:

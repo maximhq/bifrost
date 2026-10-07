@@ -1336,6 +1336,28 @@ func TestMergeExtraParamsIntoJSON_DeepMerge(t *testing.T) {
 	}
 }
 
+// TestMergeExtraParamsIntoJSON_JSONNumberVerbatim pins that json.Number extra
+// params (how the HTTP transport decodes them) reach the wire as the caller's
+// literal: integers above 2^53 stay exact and decimals are not re-rendered,
+// both for new keys and when deep-merged into an existing object.
+func TestMergeExtraParamsIntoJSON_JSONNumberVerbatim(t *testing.T) {
+	jsonBody := []byte(`{"model":"m","options":{"a":1}}`)
+	extraParams := map[string]interface{}{
+		"seed":    json.Number("9007199254740993"),
+		"ratio":   json.Number("0.10"),
+		"options": map[string]interface{}{"b": json.Number("18446744073709551615")},
+	}
+
+	result, err := MergeExtraParamsIntoJSON(jsonBody, extraParams)
+	if err != nil {
+		t.Fatalf("MergeExtraParamsIntoJSON() error: %v", err)
+	}
+	want := `{"model":"m","options":{"a":1,"b":18446744073709551615},"ratio":0.10,"seed":9007199254740993}`
+	if string(result) != want {
+		t.Fatalf("result = %s, want %s", result, want)
+	}
+}
+
 func TestMergeExtraParamsIntoJSON_EmptyExtraParams(t *testing.T) {
 	jsonBody := []byte(`{"a": 1, "b": 2}`)
 	result, err := MergeExtraParamsIntoJSON(jsonBody, map[string]interface{}{})

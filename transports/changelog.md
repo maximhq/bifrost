@@ -21,6 +21,7 @@
 
 ## 🐞 Fixed
 
+- **Exact Numbers in Extra Params** - Unknown request fields and `extra_params` are decoded with numbers kept as written, so integers above 2^53 (seeds, ids) and decimal literals reach the provider exactly instead of being rounded through float64. Every typed chat parameter (`seed`, `n`, `stop`, `top_p`, `top_logprobs`, `audio`, `prediction`, `web_search_options`, `top_k`, `speed` and the other Anthropic knobs) is now a known field, so it is no longer also copied into extra params where it shadowed the typed value on the wire. Extracting extra params no longer copies known fields such as `messages`
 - **GenAI SSE Heartbeats** - GenAI streams delimit heartbeat comments so Google SDK clients preserve the following event (thanks [@dani29](https://github.com/dani29)!) (#6240)
 - **Path Normalization Auth Bypass** - Fixed a path normalization flaw that allowed auth to be bypassed (#5763)
 - **Minimal Reasoning Effort on GPT-5 Models** - `reasoning_effort: "minimal"` is preserved for GPT-5-family OpenAI models instead of being downgraded to `low` (thanks [@jitokim](https://github.com/jitokim)!) (#6046)

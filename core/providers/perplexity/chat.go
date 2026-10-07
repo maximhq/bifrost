@@ -22,6 +22,7 @@ func ToPerplexityChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *
 		perplexityReq.MaxTokens = bifrostReq.Params.MaxCompletionTokens
 		perplexityReq.Temperature = bifrostReq.Params.Temperature
 		perplexityReq.TopP = bifrostReq.Params.TopP
+		perplexityReq.TopK = bifrostReq.Params.TopK
 		perplexityReq.PresencePenalty = bifrostReq.Params.PresencePenalty
 		perplexityReq.FrequencyPenalty = bifrostReq.Params.FrequencyPenalty
 		perplexityReq.ResponseFormat = bifrostReq.Params.ResponseFormat
@@ -105,7 +106,9 @@ func ToPerplexityChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *
 
 			if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
 				delete(perplexityReq.ExtraParams, "top_k")
-				perplexityReq.TopK = topK
+				if perplexityReq.TopK == nil {
+					perplexityReq.TopK = topK
+				}
 			}
 
 			if stream, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["stream"]); ok {

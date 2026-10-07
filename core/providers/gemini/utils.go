@@ -1409,8 +1409,11 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			config.ResponseMIMEType = "application/json"
 		}
 	}
+	if params.TopK != nil {
+		config.TopK = params.TopK
+	}
 	if params.ExtraParams != nil {
-		if topK, ok := params.ExtraParams["top_k"]; ok {
+		if topK, ok := params.ExtraParams["top_k"]; ok && config.TopK == nil {
 			if val, success := schemas.SafeExtractInt(topK); success {
 				config.TopK = schemas.Ptr(val)
 			}

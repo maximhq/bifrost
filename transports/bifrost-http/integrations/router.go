@@ -81,6 +81,25 @@ type StreamingRequest interface {
 	IsStreamingRequested() bool
 }
 
+// extraParamsJSON decodes the extra_params object with numbers as json.Number, so
+// integers beyond 2^53 and decimal literals reach the provider exactly as sent.
+var extraParamsJSON = sonic.Config{UseNumber: true}.Froze()
+
+// decodeWrappedExtraParams returns the "extra_params" object of a request body,
+// or nil when the body has none or does not decode.
+func decodeWrappedExtraParams(rawBody []byte) map[string]interface{} {
+	if len(rawBody) == 0 {
+		return nil
+	}
+	var wrapper struct {
+		ExtraParams map[string]interface{} `json:"extra_params"`
+	}
+	if err := extraParamsJSON.Unmarshal(rawBody, &wrapper); err != nil {
+		return nil
+	}
+	return wrapper.ExtraParams
+}
+
 // RequestWithSettableExtraParams is implemented by request types that accept
 // provider-specific extra parameters via the extra_params JSON key. The
 // integration router extracts extra_params from the raw request body and
@@ -760,13 +779,8 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 					if rawBody == nil {
 						rawBody = ctx.Request.Body()
 					}
-					if len(rawBody) > 0 {
-						var wrapper struct {
-							ExtraParams map[string]interface{} `json:"extra_params"`
-						}
-						if err := sonic.Unmarshal(rawBody, &wrapper); err == nil && len(wrapper.ExtraParams) > 0 {
-							rws.SetExtraParams(wrapper.ExtraParams)
-						}
+					if extraParams := decodeWrappedExtraParams(rawBody); len(extraParams) > 0 {
+						rws.SetExtraParams(extraParams)
 					}
 				}
 			}

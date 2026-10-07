@@ -483,6 +483,29 @@ func TestToPerplexityChatCompletionRequest_NewFields(t *testing.T) {
 		}
 	})
 
+	t.Run("typed top_k is mapped and wins over ExtraParams", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostChatRequest{
+			Model: "sonar-pro",
+			Input: []schemas.ChatMessage{
+				{Role: "user", Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")}},
+			},
+			Params: &schemas.ChatParameters{TopK: schemas.Ptr(40)},
+		}
+		result := perplexity.ToPerplexityChatCompletionRequest(bifrostReq)
+		if result.TopK == nil || *result.TopK != 40 {
+			t.Fatalf("expected top_k 40 from the typed parameter, got %v", result.TopK)
+		}
+
+		bifrostReq.Params.ExtraParams = map[string]interface{}{"top_k": 7}
+		result = perplexity.ToPerplexityChatCompletionRequest(bifrostReq)
+		if result.TopK == nil || *result.TopK != 40 {
+			t.Fatalf("expected the typed top_k to win, got %v", result.TopK)
+		}
+		if _, ok := result.ExtraParams["top_k"]; ok {
+			t.Fatal("the ExtraParams top_k copy must not reach the wire next to the typed value")
+		}
+	})
+
 	t.Run("perplexity-specific fields from ExtraParams", func(t *testing.T) {
 		bifrostReq := &schemas.BifrostChatRequest{
 			Model: "sonar-pro",
