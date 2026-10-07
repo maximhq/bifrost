@@ -3899,6 +3899,38 @@ func TestValidateRoutingFallbacks(t *testing.T) {
 	}
 }
 
+// TestValidateRoutingTargetsWeights pins the target weight rule the API, config.schema.json
+// (exclusiveMinimum 0) and the dashboard form all state: every weight is greater than 0 and the
+// weights sum to 1. The API alone used to accept a zero weight, a target that is never drawn.
+func TestValidateRoutingTargetsWeights(t *testing.T) {
+	openai, anthropic := "openai", "anthropic"
+	target := func(provider string, weight float64) RoutingTarget {
+		return RoutingTarget{Provider: &provider, Weight: weight}
+	}
+	tests := []struct {
+		name    string
+		targets []RoutingTarget
+		wantErr string
+	}{
+		{name: "one target at 1", targets: []RoutingTarget{target(openai, 1)}},
+		{name: "two targets summing to 1", targets: []RoutingTarget{target(openai, 0.7), target(anthropic, 0.3)}},
+		{name: "a zero weight beside a full one", targets: []RoutingTarget{target(openai, 1), target(anthropic, 0)}, wantErr: "greater than 0"},
+		{name: "a negative weight", targets: []RoutingTarget{target(openai, 1.5), target(anthropic, -0.5)}, wantErr: "greater than 0"},
+		{name: "weights not summing to 1", targets: []RoutingTarget{target(openai, 0.5)}, wantErr: "sum to 1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRoutingTargets(tt.targets)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 // --- customer calendar_aligned handler tests ---
 
 type mockCustomerStore struct {
@@ -5044,6 +5076,72 @@ func TestUpdateVirtualKey_PutWithoutKeyIDsPreservesKeyAssociations(t *testing.T)
 	require.False(t, got4.AllowAllKeys)
 	require.Len(t, got4.Keys, 1)
 	require.Equal(t, "key-a", got4.Keys[0].KeyID)
+}
+
+// TestVirtualKeyProviderConfigWeight_RejectsNegative pins that no virtual key write path stores a
+// negative provider-config weight. Load balancing draws a provider by its share of the summed
+// weights, and a negative weight pulls the sum below the draw, so the pick fell through to the
+// first configured provider whatever the weights said. A null weight opts the provider out of load
+// balancing and zero is a weight that is never drawn; both stay accepted.
+func TestVirtualKeyProviderConfigWeight_RejectsNegative(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	ctx := context.Background()
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+
+	create := func(t *testing.T, name, weight string) *fasthttp.RequestCtx {
+		t.Helper()
+		c := newTestRequestCtx(fmt.Sprintf(`{"name":%q,"provider_configs":[{"provider":"openai","allowed_models":["*"],"weight":%s}]}`, name, weight))
+		handler.createVirtualKey(c)
+		return c
+	}
+	for _, tc := range []struct {
+		weight     string
+		wantStatus int
+	}{
+		{"-1", fasthttp.StatusBadRequest},
+		{"0", fasthttp.StatusOK},
+		{"0.5", fasthttp.StatusOK},
+		{"null", fasthttp.StatusOK},
+	} {
+		c := create(t, "vk-weight-"+tc.weight, tc.weight)
+		require.Equal(t, tc.wantStatus, c.Response.StatusCode(), "create with weight %s: resp=%s", tc.weight, c.Response.Body())
+		if tc.wantStatus == fasthttp.StatusBadRequest {
+			require.Contains(t, string(c.Response.Body()), "weight", "the error must name the weight")
+		}
+	}
+
+	c := create(t, "vk-weight-update", "1")
+	require.Equal(t, fasthttp.StatusOK, c.Response.StatusCode(), "create resp=%s", c.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID              string `json:"id"`
+			ProviderConfigs []struct {
+				ID uint `json:"id"`
+			} `json:"provider_configs"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(c.Response.Body(), &created))
+	require.Len(t, created.VirtualKey.ProviderConfigs, 1)
+	pcID := created.VirtualKey.ProviderConfigs[0].ID
+
+	for name, body := range map[string]string{
+		"an existing config to a negative weight": fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":-0.5}]}`, pcID),
+		"a new config with a negative weight":     fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":1},{"provider":"openai","allowed_models":["*"],"weight":-1}]}`, pcID),
+	} {
+		put := newTestRequestCtx(body)
+		put.SetUserValue("vk_id", created.VirtualKey.ID)
+		handler.updateVirtualKey(put)
+		require.Equal(t, fasthttp.StatusBadRequest, put.Response.StatusCode(), "update %s: resp=%s", name, put.Response.Body())
+		require.Contains(t, string(put.Response.Body()), "weight", "update %s: the error must name the weight", name)
+	}
+
+	stored, err := store.GetVirtualKey(ctx, created.VirtualKey.ID)
+	require.NoError(t, err)
+	require.Len(t, stored.ProviderConfigs, 1, "a rejected update must not add a provider config")
+	require.NotNil(t, stored.ProviderConfigs[0].Weight)
+	require.Equal(t, 1.0, *stored.ProviderConfigs[0].Weight, "a rejected update must not change the stored weight")
 }
 
 // expiryCleanupTestStore backs the cleanup job tests with in-memory keys and

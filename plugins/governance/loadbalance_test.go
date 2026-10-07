@@ -174,6 +174,26 @@ func TestLoadBalanceProvider_UnweightedProviderIsNotSelected(t *testing.T) {
 	assert.Equal(t, "llama-3.1-8b-instant", got)
 }
 
+// A negative weight counts as zero. It used to pull the summed weight below the draw, so no
+// candidate matched and the pick fell through to the first configured provider every time, which
+// is the opposite of what the weights ask for. The API rejects one, but config.json and older rows
+// can still carry it.
+func TestLoadBalanceProvider_NegativeWeightIsNeverSelected(t *testing.T) {
+	negative := buildProviderConfig("openai", []string{"*"})
+	negative.Weight = schemas.Ptr(-5.0)
+	weighted := buildProviderConfig("groq", []string{"*"})
+	weighted.Weight = schemas.Ptr(1.0)
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-lb", "LB VK",
+		[]configstoreTables.TableVirtualKeyProviderConfig{negative, weighted})
+	p := newLoadBalanceTestPlugin(t, vk)
+
+	for range 50 {
+		got, err := loadBalance(t, p, lbCtx(), "llama-3.1-8b-instant")
+		require.NoError(t, err)
+		require.Equal(t, "groq/llama-3.1-8b-instant", got)
+	}
+}
+
 // Two configs for one provider stay two candidates: there is no unique constraint on
 // (key, provider), and collapsing them would silently change which weights are in play.
 func TestLoadBalanceProvider_DuplicateProviderConfigsBothCount(t *testing.T) {
