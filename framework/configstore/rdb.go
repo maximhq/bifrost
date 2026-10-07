@@ -3920,18 +3920,24 @@ func VirtualKeySearchConditions(db *gorm.DB, search string) *gorm.DB {
 	return db.Where("LOWER(governance_virtual_keys.name) LIKE ?", term).
 		Or("governance_virtual_keys.team_id IN (?)", teamIDs).
 		Or("governance_virtual_keys.customer_id IN (?)", customerIDs).
-		Or("LOWER(governance_virtual_keys.metadata) LIKE ?", virtualKeyMetadataSearchTerm(search))
+		Or(`LOWER(governance_virtual_keys.metadata) LIKE ? ESCAPE '\'`, virtualKeyMetadataSearchTerm(search))
 }
 
-// virtualKeyMetadataSearchTerm is the LIKE pattern for searching the stored metadata JSON. The
-// column holds encoding/json output, which escapes &, <, > (and " and \) inside values, so the
-// raw term would miss a value such as "AT&T". The term is encoded the same way before matching.
+// virtualKeyMetadataLikeEscaper escapes LIKE metacharacters for an ESCAPE '\' clause.
+var virtualKeyMetadataLikeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// virtualKeyMetadataSearchTerm is the LIKE pattern for searching the stored metadata JSON, used
+// with ESCAPE '\'. The column holds encoding/json output, which escapes &, <, > (and " and \)
+// inside values, so the raw term would miss a value such as "AT&T": the term is encoded the same
+// way first. Those encodings contain backslashes, which PostgreSQL's LIKE treats as its default
+// escape character, so the backslashes (and any % or _ the user typed) are escaped explicitly and
+// match literally on every dialect.
 func virtualKeyMetadataSearchTerm(search string) string {
-	encoded, err := json.Marshal(search)
-	if err != nil {
-		return VirtualKeySearchTerm(search)
+	term := strings.ToLower(search)
+	if encoded, err := json.Marshal(term); err == nil {
+		term = strings.TrimSuffix(strings.TrimPrefix(string(encoded), `"`), `"`)
 	}
-	return VirtualKeySearchTerm(strings.TrimSuffix(strings.TrimPrefix(string(encoded), `"`), `"`))
+	return "%" + virtualKeyMetadataLikeEscaper.Replace(term) + "%"
 }
 
 // applyVirtualKeyMetadataFilters narrows q to keys whose metadata carries every
