@@ -1957,3 +1957,72 @@ func (h *HybridLogStore) CountWarpMessages(ctx context.Context, conversationIDs 
 func (h *HybridLogStore) SumWarpMessageUsage(ctx context.Context, conversationIDs []string) (map[string]WarpUsageTotals, error) {
 	return h.inner.SumWarpMessageUsage(ctx, conversationIDs)
 }
+
+// Warp topic methods - delegated directly. Topics, assignments and the
+// unmatched pool are small rows with no payload to offload, and the log
+// columns ListLogsForWarpTopics reads are the ones that stay in the database.
+
+// UpsertWarpTopics writes topics whole.
+func (h *HybridLogStore) UpsertWarpTopics(ctx context.Context, topics []WarpTopic) error {
+	return h.inner.UpsertWarpTopics(ctx, topics)
+}
+
+// ListWarpTopics returns the selected topics, oldest first.
+func (h *HybridLogStore) ListWarpTopics(ctx context.Context, filter WarpTopicFilter) ([]WarpTopic, error) {
+	return h.inner.ListWarpTopics(ctx, filter)
+}
+
+// UpsertWarpTopicAssignments writes one row per request.
+func (h *HybridLogStore) UpsertWarpTopicAssignments(ctx context.Context, assignments []WarpTopicAssignment) error {
+	return h.inner.UpsertWarpTopicAssignments(ctx, assignments)
+}
+
+// SummarizeWarpTopicAssignments adds up the selected assignments per topic.
+func (h *HybridLogStore) SummarizeWarpTopicAssignments(ctx context.Context, filter WarpTopicAssignmentFilter) ([]WarpTopicUsage, error) {
+	return h.inner.SummarizeWarpTopicAssignments(ctx, filter)
+}
+
+// ListWarpTopicAssignments returns the selected assignments newest first.
+func (h *HybridLogStore) ListWarpTopicAssignments(ctx context.Context, filter WarpTopicAssignmentFilter, limit int) ([]WarpTopicAssignment, error) {
+	return h.inner.ListWarpTopicAssignments(ctx, filter, limit)
+}
+
+// DeleteWarpTopicAssignmentsBatch deletes expired assignments in batches.
+func (h *HybridLogStore) DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return h.inner.DeleteWarpTopicAssignmentsBatch(ctx, cutoff, batchSize)
+}
+
+// AddWarpTopicUnmatched puts requests in the unmatched pool.
+func (h *HybridLogStore) AddWarpTopicUnmatched(ctx context.Context, rows []WarpTopicUnmatched) error {
+	return h.inner.AddWarpTopicUnmatched(ctx, rows)
+}
+
+// ListWarpTopicUnmatched returns the pool for one embedding model.
+func (h *HybridLogStore) ListWarpTopicUnmatched(ctx context.Context, embeddingSignature string, limit int) ([]WarpTopicUnmatched, error) {
+	return h.inner.ListWarpTopicUnmatched(ctx, embeddingSignature, limit)
+}
+
+// CountWarpTopicUnmatched reports the pool's size for one embedding model.
+func (h *HybridLogStore) CountWarpTopicUnmatched(ctx context.Context, embeddingSignature string) (int64, error) {
+	return h.inner.CountWarpTopicUnmatched(ctx, embeddingSignature)
+}
+
+// DeleteWarpTopicUnmatched removes requests from the pool.
+func (h *HybridLogStore) DeleteWarpTopicUnmatched(ctx context.Context, logIDs []string) error {
+	return h.inner.DeleteWarpTopicUnmatched(ctx, logIDs)
+}
+
+// PruneWarpTopicUnmatched bounds the pool by age and by count.
+func (h *HybridLogStore) PruneWarpTopicUnmatched(ctx context.Context, olderThan time.Time, keep int) (int64, error) {
+	return h.inner.PruneWarpTopicUnmatched(ctx, olderThan, keep)
+}
+
+// DeleteWarpTopicUnmatchedBatch deletes expired pool rows in batches.
+func (h *HybridLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return h.inner.DeleteWarpTopicUnmatchedBatch(ctx, cutoff, batchSize)
+}
+
+// ListLogsForWarpTopics returns the assignment columns of the given logs.
+func (h *HybridLogStore) ListLogsForWarpTopics(ctx context.Context, logIDs []string, from, to time.Time) ([]WarpTopicAssignment, error) {
+	return h.inner.ListLogsForWarpTopics(ctx, logIDs, from, to)
+}
