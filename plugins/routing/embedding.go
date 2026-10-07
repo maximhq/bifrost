@@ -248,7 +248,7 @@ func requestEmbeddingTimeout(semantic *complexity.SemanticConfig) time.Duration 
 // contexts (never a *schemas.BifrostContext), so they are naturally excluded —
 // boot/warmup embedding cost is never stamped or attributed to any request.
 // Classification runs in PreRequestHook, once per top-level request before
-// provider fallback attempts, so a configured LLM or Jev fallback appends its
+// provider fallback attempts, so a configured LLM or decision-model fallback appends its
 // usage alongside this call rather than replacing it.
 func recordRoutingEmbedUsage(ctx context.Context, semantic *complexity.SemanticConfig, inputTokens int) {
 	bfCtx, ok := ctx.(*schemas.BifrostContext)
@@ -297,15 +297,13 @@ func recordRoutingLLMUsage(ctx context.Context, llm *complexity.LLMConfig, input
 	})
 }
 
-// recordRoutingDecisionUsage appends Jev's decision usage to the triggering
-// request. Jev classification is always included in request cost and budgets.
-func recordRoutingDecisionUsage(ctx context.Context, model string, usage *schemas.BifrostLLMUsage) {
+// recordRoutingDecisionUsage appends the decision model's usage to the triggering
+// request under the provider and model that served it. Decision-model
+// classification is always included in request cost and budgets.
+func recordRoutingDecisionUsage(ctx context.Context, provider schemas.ModelProvider, model string, usage *schemas.BifrostLLMUsage) {
 	bfCtx, ok := ctx.(*schemas.BifrostContext)
 	if !ok {
 		return
-	}
-	if model == "" {
-		model = jevComplexityModel
 	}
 	inputTokens, outputTokens := 0, 0
 	if usage != nil {
@@ -316,11 +314,11 @@ func recordRoutingDecisionUsage(ctx context.Context, model string, usage *schema
 			outputTokens = usage.CompletionTokens
 		}
 	}
-	provider := string(schemas.Typesafe)
+	providerUsed := string(provider)
 	requestType := schemas.DecisionRequest
 	schemas.AppendRoutingCallOnContext(bfCtx, schemas.BifrostRoutingCall{
 		RequestType:        requestType,
-		ProviderUsed:       &provider,
+		ProviderUsed:       &providerUsed,
 		ModelUsed:          &model,
 		InputTokens:        &inputTokens,
 		OutputTokens:       &outputTokens,
