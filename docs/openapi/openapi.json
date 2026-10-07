@@ -47724,7 +47724,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List virtual keys",
-        "description": "Returns a list of all virtual keys with their configurations.\n",
+        "description": "Returns a list of all virtual keys with their configurations.\n\n**Metadata filters:** add one `metadata_<key>=<value>` query parameter per metadata\nkey to match, where `<key>` is the metadata key itself (for example\n`?metadata_cost_center=cc-42&metadata_environment=prod`). Only virtual keys whose\nmetadata has every given key set to exactly the given value are returned. A key that\nis not 1-256 characters of letters, digits, '.', '_' and '-' is rejected with a 400.\nThese parameters have dynamic names, so they are described here rather than declared\nas individual parameters.\n",
         "tags": [
           "Governance"
         ],
@@ -47759,7 +47759,7 @@
           {
             "name": "search",
             "in": "query",
-            "description": "Case-insensitive search across the virtual key name, its team name, and its customer name. Enterprise additionally matches the name and email of the user the key is assigned to.",
+            "description": "Case-insensitive search across the virtual key name, its team name, its customer name, and its metadata keys and values. Enterprise additionally matches the name and email of the user the key is assigned to.",
             "schema": {
               "type": "string"
             }
@@ -118139,6 +118139,18 @@
           "description": {
             "type": "string"
           },
+          "metadata": {
+            "type": "object",
+            "description": "Custom key/value metadata attached to the key (for example cost_center, project, owner, environment). Omitted when the key has none.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
           "is_active": {
             "type": "boolean"
           },
@@ -118619,6 +118631,28 @@
           "description": {
             "type": "string"
           },
+          "metadata": {
+            "type": "object",
+            "description": "Custom key/value metadata for cost attribution (for example cost_center, project, owner, environment). Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$",
+              "not": {
+                "anyOf": [
+                  {
+                    "const": "isAsyncRequest"
+                  },
+                  {
+                    "pattern": "^bifrost_alb_"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
           "provider_configs": {
             "type": "array",
             "description": "Provider configurations. When allow_all_providers is omitted or false, an empty list allows no providers (deny-by-default); when true, providers without a config are allowed with all models and keys.",
@@ -118770,6 +118804,28 @@
           },
           "description": {
             "type": "string"
+          },
+          "metadata": {
+            "type": ["object", "null"],
+            "description": "Replaces the key's metadata as a whole. Omit (or send null) to leave it unchanged; send {} to clear it. Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$",
+              "not": {
+                "anyOf": [
+                  {
+                    "const": "isAsyncRequest"
+                  },
+                  {
+                    "pattern": "^bifrost_alb_"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
           },
           "provider_configs": {
             "type": "array",
