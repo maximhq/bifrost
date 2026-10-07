@@ -5805,3 +5805,305 @@ func TestRequestScopedConfiguration_UnconfiguredProviderWithoutOverrides(t *test
 		})
 	}
 }
+
+// shutdownOrderPlugin gives every request request-scoped configuration and records, in order,
+// each PostLLMHook and Cleanup call.
+type shutdownOrderPlugin struct {
+	requestScopedTestPlugin
+
+	eventsMu sync.Mutex
+	events   []string
+}
+
+func (p *shutdownOrderPlugin) record(event string) {
+	p.eventsMu.Lock()
+	p.events = append(p.events, event)
+	p.eventsMu.Unlock()
+}
+func (p *shutdownOrderPlugin) Cleanup() error {
+	p.record("cleanup")
+	return nil
+}
+func (p *shutdownOrderPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.record("post")
+	return p.requestScopedTestPlugin.PostLLMHook(ctx, resp, bifrostErr)
+}
+
+// assertNoHookAfterCleanup fails when Cleanup did not run or a PostLLMHook ran after it.
+func (p *shutdownOrderPlugin) assertNoHookAfterCleanup(t *testing.T) {
+	t.Helper()
+	p.eventsMu.Lock()
+	defer p.eventsMu.Unlock()
+	cleanup := slices.Index(p.events, "cleanup")
+	if cleanup < 0 {
+		t.Fatalf("plugin Cleanup did not run: events %v", p.events)
+	}
+	if slices.Contains(p.events[cleanup:], "post") {
+		t.Fatalf("PostLLMHook ran after plugin Cleanup: events %v", p.events)
+	}
+}
+
+// gatedScopedServer is an OpenAI chat endpoint that holds every request while it is closed.
+// arrived receives once per request as it comes in.
+type gatedScopedServer struct {
+	*httptest.Server
+	arrived chan struct{}
+	calls   atomic.Int64
+
+	mu      sync.Mutex
+	release chan struct{} // closed while the gate is open
+}
+
+func newGatedScopedServer(t *testing.T) *gatedScopedServer {
+	t.Helper()
+	s := &gatedScopedServer{arrived: make(chan struct{}, 16)}
+	s.close()
+	chatStream := sseHandler(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		s.calls.Add(1)
+		s.arrived <- struct{}{}
+		s.mu.Lock()
+		release := s.release
+		s.mu.Unlock()
+		<-release
+		if strings.Contains(string(body), `"stream":true`) {
+			chatStream(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"c1","object":"chat.completion","created":1,"model":"m",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	// Without keep-alives no connection goroutine outlives a request.
+	s.Config.SetKeepAlivesEnabled(false)
+	// Registered after the server, so it runs first: Close waits for held handlers.
+	t.Cleanup(s.Close)
+	t.Cleanup(s.open)
+	return s
+}
+
+// open lets every held and future request through.
+func (s *gatedScopedServer) open() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-s.release:
+	default:
+		close(s.release)
+	}
+}
+
+// close holds every request that arrives from now on.
+func (s *gatedScopedServer) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.release == nil {
+		s.release = make(chan struct{})
+		return
+	}
+	select {
+	case <-s.release:
+		s.release = make(chan struct{})
+	default:
+	}
+}
+
+// TestRequestScopedConfiguration_Shutdown pins that Shutdown drains request-scoped attempts
+// before it cleans up plugins: an attempt in flight finishes, PostLLMHook included, a waiter
+// for a slot and an attempt that arrives once shutdown has begun fail with the shutdown error
+// without reaching the provider, and a stream nobody reads does not hold Shutdown up.
+func TestRequestScopedConfiguration_Shutdown(t *testing.T) {
+	const shutdownErr = "provider is shutting down"
+	tests := []struct {
+		name     string
+		upstream int64 // calls the provider must receive
+		// handedBack is set when the attempt hands a stream back before Shutdown: as on the
+		// queued path, its chunks run the post-hooks as they are read, so they may follow
+		// Cleanup.
+		handedBack bool
+		run        func(t *testing.T, client *Bifrost, plugin *shutdownOrderPlugin, server *gatedScopedServer)
+	}{
+		{
+			name:     "in-flight attempt finishes before cleanup",
+			upstream: 1,
+			run: func(t *testing.T, client *Bifrost, _ *shutdownOrderPlugin, server *gatedScopedServer) {
+				result := make(chan *schemas.BifrostError, 1)
+				go func() {
+					_, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), requestScopedChat(schemas.OpenAI, "m"))
+					result <- err
+				}()
+				<-server.arrived
+				shutdown := make(chan struct{})
+				go func() {
+					client.Shutdown()
+					close(shutdown)
+				}()
+				select {
+				case <-shutdown:
+					t.Error("Shutdown returned while a request-scoped attempt was in flight")
+				case <-time.After(100 * time.Millisecond):
+				}
+				server.open()
+				if err := <-result; err != nil {
+					t.Errorf("in-flight attempt: %s", err.GetErrorString())
+				}
+				<-shutdown
+			},
+		},
+		{
+			name: "slot waiter gets the shutdown error",
+			run: func(t *testing.T, client *Bifrost, plugin *shutdownOrderPlugin, server *gatedScopedServer) {
+				instance, err := client.getRequestScopedProvider(requestScopedClass{provider: schemas.OpenAI, allowPrivateNetwork: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for range cap(instance.slots) {
+					instance.slots <- struct{}{}
+				}
+				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				result := make(chan *schemas.BifrostError, 1)
+				go func() {
+					_, err := client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m"))
+					result <- err
+				}()
+				for plugin.preLLMCalls.Load() == 0 {
+					time.Sleep(time.Millisecond)
+				}
+				// Let the attempt reach the slot wait.
+				time.Sleep(20 * time.Millisecond)
+				client.Shutdown()
+				if err := <-result; !strings.Contains(requestScopedErrorText(err), shutdownErr) {
+					t.Errorf("error = %q, want %q", requestScopedErrorText(err), shutdownErr)
+				}
+			},
+		},
+		{
+			name: "attempt after shutdown is rejected",
+			run: func(t *testing.T, client *Bifrost, _ *shutdownOrderPlugin, _ *gatedScopedServer) {
+				client.Shutdown()
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if _, err := client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m")); !strings.Contains(requestScopedErrorText(err), shutdownErr) {
+					t.Errorf("error = %q, want %q", requestScopedErrorText(err), shutdownErr)
+				}
+				stream, err := client.ChatCompletionStreamRequest(ctx, requestScopedChat(schemas.OpenAI, "m"))
+				if stream != nil {
+					t.Fatalf("got a stream, want an error: %v", drainStream(stream))
+				}
+				if !strings.Contains(requestScopedErrorText(err), shutdownErr) {
+					t.Errorf("stream error = %q, want %q", requestScopedErrorText(err), shutdownErr)
+				}
+			},
+		},
+		{
+			name:       "unread stream does not hold shutdown",
+			upstream:   1,
+			handedBack: true,
+			run: func(t *testing.T, client *Bifrost, _ *shutdownOrderPlugin, server *gatedScopedServer) {
+				server.open()
+				stream, err := client.ChatCompletionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), requestScopedChat(schemas.OpenAI, "m"))
+				if err != nil {
+					t.Fatalf("stream request: %s", err.GetErrorString())
+				}
+				shutdown := make(chan struct{})
+				go func() {
+					client.Shutdown()
+					close(shutdown)
+				}()
+				select {
+				case <-shutdown:
+				case <-time.After(5 * time.Second):
+					t.Error("Shutdown waited on a stream that was handed back")
+				}
+				drainStream(stream)
+				<-shutdown
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newGatedScopedServer(t)
+			plugin := &shutdownOrderPlugin{}
+			plugin.configure = func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+				mustConfigureOpenAI(t, req, "sk-scoped", server.URL)
+			}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    NewMockAccount(),
+				LLMPlugins: []schemas.LLMPlugin{plugin},
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			tt.run(t, client, plugin, server)
+			if !tt.handedBack {
+				plugin.assertNoHookAfterCleanup(t)
+			}
+			if n := server.calls.Load(); n != tt.upstream {
+				t.Errorf("upstream calls = %d, want %d", n, tt.upstream)
+			}
+		})
+	}
+}
+
+// TestRequestScopedConfiguration_ShutdownNoGoroutineLeak pins that draining request-scoped
+// attempts at shutdown leaves no goroutine behind: an attempt in flight and one waiting for a
+// slot both end with Shutdown.
+func TestRequestScopedConfiguration_ShutdownNoGoroutineLeak(t *testing.T) {
+	server := newGatedScopedServer(t)
+	plugin := &shutdownOrderPlugin{}
+	plugin.configure = func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+		mustConfigureOpenAI(t, req, "sk-scoped", server.URL)
+	}
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    NewMockAccount(),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	instance, err := client.getRequestScopedProvider(requestScopedClass{provider: schemas.OpenAI, allowPrivateNetwork: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Warm up outside the measurement: the first request starts the HTTP client's own
+	// long-lived goroutines.
+	server.open()
+	if _, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), requestScopedChat(schemas.OpenAI, "m")); err != nil {
+		t.Fatalf("warm-up: %s", err.GetErrorString())
+	}
+	<-server.arrived
+	server.close()
+
+	memtest.AssertNoGoroutineLeak(t, func() {
+		results := make(chan *schemas.BifrostError, 2)
+		request := func() {
+			_, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), requestScopedChat(schemas.OpenAI, "m"))
+			results <- err
+		}
+		// One attempt holds the only free slot at the provider; the next waits for a slot.
+		for range cap(instance.slots) - 1 {
+			instance.slots <- struct{}{}
+		}
+		go request()
+		<-server.arrived
+		go request()
+		for plugin.preLLMCalls.Load() < 3 {
+			time.Sleep(time.Millisecond)
+		}
+		shutdown := make(chan struct{})
+		go func() {
+			client.Shutdown()
+			close(shutdown)
+		}()
+		server.open()
+		for range 2 {
+			<-results
+		}
+		<-shutdown
+	})
+}
