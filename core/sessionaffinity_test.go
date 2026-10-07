@@ -1410,12 +1410,21 @@ func TestObserveSessionOutcomeReportsServedRouteAndKey(t *testing.T) {
 		t.Fatalf("failed outcome: %+v", failed)
 	}
 
+	// A direct key that served is the caller's own, not one of the pool's, so no key is reported
+	// for it: a key binding naming it could never be followed.
+	direct := sessionCtx("s")
+	direct.SetValue(schemas.BifrostContextKeySelectedKeyID, "header-provided")
+	client.observeSessionOutcome(direct, requested, &schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4o"}, false, true, nil)
+	if got := fake.outcomes[2]; got.Served == nil || got.KeyID != "" || !got.DirectKey || got.Fallback {
+		t.Fatalf("direct key outcome: %+v, want the route served and no key", got)
+	}
+
 	// A request that takes no part is not reported.
 	off := sessionCtx("s")
 	off.SetValue(schemas.BifrostContextKeySessionAffinity, false)
 	client.observeSessionOutcome(off, requested, &schemas.Route{Provider: schemas.Azure, Model: "gpt-4o"}, false, false, nil)
 	client.observeSessionOutcome(sessionCtx(""), requested, &schemas.Route{Provider: schemas.Azure, Model: "gpt-4o"}, false, false, nil)
-	if len(fake.outcomes) != 2 {
+	if len(fake.outcomes) != 3 {
 		t.Fatalf("a request that takes no part was reported: %d outcomes", len(fake.outcomes))
 	}
 }
@@ -1556,6 +1565,66 @@ func TestSessionAffinityKeepsADirectKeyOffTheFallbackThatServed(t *testing.T) {
 				t.Fatalf("openai saw %v, want the caller's key on each turn's first attempt %v", openaiSaw, want)
 			}
 		})
+	}
+}
+
+// TestSessionAffinityBindsNoKeyForADirectKeyThatServed pins the bug where a direct key that served
+// bound the session's key to its id. The key is the caller's own and never in the pool, so the next
+// request of the session that picked from the pool found the binding ineligible, deleted it and
+// said in its trail that the key the session last used was no longer eligible.
+func TestSessionAffinityBindsNoKeyForADirectKeyThatServed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, upstream.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	kv := newMockKVStore()
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		KVStore:    kv,
+		LLMPlugins: []schemas.LLMPlugin{&bareModelRouter{primary: schemas.OpenAI}},
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	send := func(ctx *schemas.BifrostContext) {
+		t.Helper()
+		_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Model: "gpt-4o-mini",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("request failed: %v", bifrostErr.Error.Message)
+		}
+	}
+
+	// The caller's own key serves the session's first request.
+	withDirectKey := sessionCtx("s")
+	withDirectKey.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "header-provided", Name: "header-provided", Value: *schemas.NewSecretVar("sk-caller"), Weight: 1})
+	send(withDirectKey)
+	if entry := kv.data[SessionStateKey(sessionCtx("s"), SessionStateKindRoute, "", "gpt-4o-mini")]; entry.value != "openai/gpt-4o-mini" {
+		t.Fatalf("route binding after the direct key served: %+v, want openai/gpt-4o-mini", entry)
+	}
+	if entry, bound := kv.data[SessionStateKey(sessionCtx("s"), SessionStateKindKey, string(schemas.OpenAI), "gpt-4o-mini")]; bound {
+		t.Fatalf("the session's key was bound to %q, the caller's own key, which the pool never holds", entry.value)
+	}
+
+	// The next request picks from the pool with nothing stale to clear.
+	pooled := sessionCtx("s")
+	send(pooled)
+	if trailMentions(pooled, "no longer eligible") {
+		t.Fatalf("the pooled request found a key binding it could not follow: %v", pooled.GetRoutingEngineLogs())
 	}
 }
 
