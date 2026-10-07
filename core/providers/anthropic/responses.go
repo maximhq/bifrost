@@ -8395,13 +8395,22 @@ func convertBifrostCodeExecCallToAnthropicBlocks(msg *schemas.ResponsesMessage) 
 	}
 
 	// 2. inner result-content object.
-	stdout := cec.Stdout
-	if stdout == nil && ci != nil {
-		// OpenAI-origin: fold the first logs output back into stdout.
+	stdout, stderr, returnCode := cec.Stdout, cec.Stderr, cec.ReturnCode
+	if stdout == nil && stderr == nil && ci != nil {
+		// OpenAI- or Gemini-origin: fold the first logs output back in. A failed call
+		// carries its outcome on the status, so its logs are the error output.
+		failed := msg.Status != nil && *msg.Status == "failed"
 		for _, o := range ci.Outputs {
 			if o.ResponsesCodeInterpreterOutputLogs != nil {
 				logs := o.ResponsesCodeInterpreterOutputLogs.Logs
-				stdout = &logs
+				if failed {
+					stderr = &logs
+					if returnCode == nil {
+						returnCode = schemas.Ptr(1)
+					}
+				} else {
+					stdout = &logs
+				}
 				break
 			}
 		}
@@ -8409,8 +8418,8 @@ func convertBifrostCodeExecCallToAnthropicBlocks(msg *schemas.ResponsesMessage) 
 	inner := AnthropicContentBlock{
 		Type:            AnthropicContentBlockType(cec.ResultType),
 		Stdout:          stdout,
-		Stderr:          cec.Stderr,
-		ReturnCode:      cec.ReturnCode,
+		Stderr:          stderr,
+		ReturnCode:      returnCode,
 		EncryptedStdout: cec.EncryptedStdout,
 		FileType:        cec.FileType,
 		StartLine:       cec.StartLine,
