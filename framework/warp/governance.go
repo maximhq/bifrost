@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -303,6 +304,9 @@ func describeVirtualKey(vk *tables.TableVirtualKey) map[string]any {
 	}
 	if vk.DisableContentLogging != nil {
 		out["disable_content_logging"] = *vk.DisableContentLogging
+	}
+	if len(vk.Metadata) > 0 {
+		out["metadata"] = maps.Clone(vk.Metadata)
 	}
 	if vk.IsAccessProfileManaged {
 		out["access_profile_managed"] = true

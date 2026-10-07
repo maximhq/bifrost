@@ -2,12 +2,25 @@ package handlers
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -117,4 +130,197 @@ func TestModelRetrieveTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestListModels_TagsFilterAndPagination pins tags on GET /v1/models: every model carries its
+// gateway-assigned tags (anything an upstream body says is ignored), tags=a,b keeps only models
+// carrying every tag, pagination is cut after the filter, and the tags parameter is not
+// forwarded to the provider.
+func TestListModels_TagsFilterAndPagination(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	var upstreamMu sync.Mutex
+	var upstreamQueries []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamMu.Lock()
+		upstreamQueries = append(upstreamQueries, r.URL.RawQuery)
+		upstreamMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[
+			{"id":"gpt-4o","object":"model","owned_by":"openai"},
+			{"id":"gpt-4o-mini","object":"model","owned_by":"openai","tags":["from-upstream"]},
+			{"id":"gpt-5.1","object":"model","owned_by":"openai"},
+			{"id":"o3","object":"model","owned_by":"openai"}]}`))
+	}))
+	defer upstream.Close()
+
+	store := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{},
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {
+				Keys:          []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1}},
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 5},
+			},
+		},
+	}
+	catalog := modelcatalog.NewTestCatalogWithConfigStore(&modelTagsConfigStore{tags: map[string]map[string][]string{
+		"openai": {"gpt-4o": {"eu", "prod"}, "gpt-5.1": {"prod"}, "o3": {"eu", "prod"}},
+	}})
+	require.NoError(t, catalog.ReloadModelTags(context.Background()))
+	store.ModelCatalog = catalog
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: lib.NewBaseAccount(store), Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	h := &CompletionHandler{client: client, config: store}
+
+	list := func(query string) (*schemas.BifrostListModelsResponse, int) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI("/v1/models?" + query)
+		h.listModels(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			return nil, ctx.Response.StatusCode()
+		}
+		var resp schemas.BifrostListModelsResponse
+		require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &resp))
+		return &resp, fasthttp.StatusOK
+	}
+	ids := func(resp *schemas.BifrostListModelsResponse) []string {
+		out := make([]string, 0, len(resp.Data))
+		for _, m := range resp.Data {
+			out = append(out, m.ID)
+		}
+		return out
+	}
+
+	resp, status := list("provider=openai")
+	require.Equal(t, fasthttp.StatusOK, status)
+	tagsByID := map[string][]string{}
+	for _, m := range resp.Data {
+		tagsByID[m.ID] = m.Tags
+	}
+	assert.Equal(t, []string{"eu", "prod"}, tagsByID["openai/gpt-4o"])
+	assert.Nil(t, tagsByID["openai/gpt-4o-mini"], "tags from an upstream body must not leak through")
+
+	resp, status = list("provider=openai&tags=prod,eu")
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.ElementsMatch(t, []string{"openai/gpt-4o", "openai/o3"}, ids(resp))
+
+	page1, status := list("provider=openai&tags=prod&page_size=2")
+	require.Equal(t, fasthttp.StatusOK, status)
+	require.Len(t, page1.Data, 2, "a page is cut from the filtered list")
+	require.NotEmpty(t, page1.NextPageToken)
+	page2, status := list("provider=openai&tags=prod&page_size=2&page_token=" + url.QueryEscape(page1.NextPageToken))
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Len(t, page2.Data, 1)
+	assert.Empty(t, page2.NextPageToken)
+	assert.ElementsMatch(t, []string{"openai/gpt-4o", "openai/gpt-5.1", "openai/o3"}, append(ids(page1), ids(page2)...))
+
+	upstreamMu.Lock()
+	defer upstreamMu.Unlock()
+	require.NotEmpty(t, upstreamQueries)
+	for _, q := range upstreamQueries {
+		assert.NotContains(t, q, "tags", "the tags filter must not be forwarded upstream")
+	}
+
+	_, status = list("provider=openai&tags=a%20b")
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
+}
+
+// TestListAllProviderModelPages pins the page walk behind a tag-filtered single-provider
+// listing: it asks for schemas.DefaultPageSize pages, follows NextPageToken until it is empty,
+// drops a repeated page from a provider that ignores page tokens, and fails on a page error.
+func TestListAllProviderModelPages(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	pages := map[string]*schemas.BifrostListModelsResponse{
+		"":   {Data: []schemas.Model{{ID: "p/a"}, {ID: "p/b"}}, NextPageToken: "t1"},
+		"t1": {Data: []schemas.Model{{ID: "p/c"}}, NextPageToken: "t2"},
+		"t2": {Data: []schemas.Model{{ID: "p/d"}}},
+	}
+	var seen []*schemas.BifrostListModelsRequest
+	paged := func(_ *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+		copied := *req
+		seen = append(seen, &copied)
+		page := *pages[req.PageToken]
+		return &page, nil
+	}
+	resp, bifrostErr := listAllProviderModelPages(ctx, paged, &schemas.BifrostListModelsRequest{Provider: "p", PageSize: 2, PageToken: "client-token"})
+	require.Nil(t, bifrostErr)
+	ids := make([]string, 0, len(resp.Data))
+	for _, m := range resp.Data {
+		ids = append(ids, m.ID)
+	}
+	assert.Equal(t, []string{"p/a", "p/b", "p/c", "p/d"}, ids)
+	assert.Empty(t, resp.NextPageToken)
+	require.Len(t, seen, 3)
+	assert.Equal(t, schemas.DefaultPageSize, seen[0].PageSize)
+	assert.Equal(t, "", seen[0].PageToken, "the client's own page token must not be sent upstream")
+
+	// A provider that ignores the page token returns the first page again with the same token.
+	ignoring := func(_ *schemas.BifrostContext, _ *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+		return &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "g/a"}}, NextPageToken: "same"}, nil
+	}
+	resp, bifrostErr = listAllProviderModelPages(ctx, ignoring, &schemas.BifrostListModelsRequest{Provider: "g"})
+	require.Nil(t, bifrostErr)
+	assert.Len(t, resp.Data, 1, "a repeated page must not duplicate models")
+
+	calls := 0
+	failing := func(_ *schemas.BifrostContext, _ *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+		calls++
+		if calls == 2 {
+			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream down"}}
+		}
+		return &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "f/a"}}, NextPageToken: "next"}, nil
+	}
+	_, bifrostErr = listAllProviderModelPages(ctx, failing, &schemas.BifrostListModelsRequest{Provider: "f"})
+	require.NotNil(t, bifrostErr, "a failed page must fail the listing")
+
+	// A provider with more pages than the walk follows must not come back as a complete list:
+	// tagged models past the cap would be missing with nothing to say so.
+	n := 0
+	endless := func(_ *schemas.BifrostContext, _ *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+		n++
+		return &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: fmt.Sprintf("e/m%d", n)}}, NextPageToken: fmt.Sprintf("t%d", n)}, nil
+	}
+	resp, bifrostErr = listAllProviderModelPages(ctx, endless, &schemas.BifrostListModelsRequest{Provider: "e"})
+	require.NotNil(t, bifrostErr, "a walk cut off by the page cap must fail")
+	assert.Nil(t, resp)
+	assert.Contains(t, bifrostErr.Error.Message, fmt.Sprintf("%d pages", schemas.MaxPaginationRequests))
+}
+
+// largeResponseCloseTracker records whether the handler released a streamed large-response body.
+type largeResponseCloseTracker struct {
+	io.Reader
+	closed bool
+}
+
+func (r *largeResponseCloseTracker) Close() error { r.closed = true; return nil }
+
+// TestRejectTagFilteredLargeResponse pins that a tag-filtered listing which came back in
+// large-response mode (streamed straight through, never parsed) is refused with a 400 and its
+// stream released, instead of sending the whole unfiltered list as if it were filtered.
+func TestRejectTagFilteredLargeResponse(t *testing.T) {
+	SetLogger(&mockLogger{})
+	newCtx := func(large bool) (*schemas.BifrostContext, *largeResponseCloseTracker) {
+		bctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		reader := &largeResponseCloseTracker{Reader: strings.NewReader(`{"data":[]}`)}
+		if large {
+			bctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
+			bctx.SetValue(schemas.BifrostContextKeyLargeResponseReader, io.ReadCloser(reader))
+		}
+		return bctx, reader
+	}
+
+	bctx, reader := newCtx(true)
+	ctx := &fasthttp.RequestCtx{}
+	require.True(t, rejectTagFilteredLargeResponse(ctx, bctx, []string{"prod"}))
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.Contains(t, string(ctx.Response.Body()), "tags filter")
+	assert.True(t, reader.closed, "the unused stream must be released")
+
+	bctx, _ = newCtx(true)
+	assert.False(t, rejectTagFilteredLargeResponse(&fasthttp.RequestCtx{}, bctx, nil), "an unfiltered listing may stream")
+	bctx, _ = newCtx(false)
+	assert.False(t, rejectTagFilteredLargeResponse(&fasthttp.RequestCtx{}, bctx, []string{"prod"}), "a parsed listing is filtered normally")
 }

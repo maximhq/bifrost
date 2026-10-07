@@ -1,6 +1,7 @@
 package modelcatalog
 
 import (
+	"context"
 	"math"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
 	"github.com/maximhq/bifrost/framework/modelcatalog/live"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func modelInfoCatalog(t *testing.T) *ModelCatalog {
@@ -135,6 +138,25 @@ func TestGetModelInfoUnknownModel(t *testing.T) {
 	if got := mc.GetModelInfo(schemas.Anthropic, ""); got != nil {
 		t.Errorf("GetModelInfo for empty model = %v, want nil", got)
 	}
+}
+
+// TestGetModelInfoIncludesTags pins that GetModelInfo carries a model's tags, including for a
+// tagged model that has no datasheet entry, while an unknown untagged model stays nil.
+func TestGetModelInfoIncludesTags(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	mc.configStore = &fakeModelTagsStore{tags: map[string]map[string][]string{"anthropic": {"claude-opus-5": {"prod"}}}}
+	require.NoError(t, mc.ReloadModelTags(context.Background()))
+	info := mc.GetModelInfo(schemas.Anthropic, "claude-opus-5")
+	require.NotNil(t, info)
+	assert.Equal(t, []string{"prod"}, info.Tags)
+
+	// A tagged model outside the datasheet still reports its tags; an untagged one stays nil.
+	mc.configStore = &fakeModelTagsStore{tags: map[string]map[string][]string{"openai": {"my-finetune": {"internal"}}}}
+	require.NoError(t, mc.ReloadModelTags(context.Background()))
+	info = mc.GetModelInfo(schemas.OpenAI, "my-finetune")
+	require.NotNil(t, info, "a tagged model without a datasheet entry must still be returned")
+	assert.Equal(t, &schemas.Model{ID: "my-finetune", Tags: []string{"internal"}}, info)
+	assert.Nil(t, mc.GetModelInfo(schemas.OpenAI, "unknown-untagged-model"))
 }
 
 // The catalog backfills what a provider's list-models response omitted; it must

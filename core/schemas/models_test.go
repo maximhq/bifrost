@@ -240,3 +240,13 @@ func TestApplyPagination_StableListingUnchanged(t *testing.T) {
 	l := pageModels("a", "b", "c", "d", "e")
 	assert.Equal(t, []string{"a", "b", "c", "d", "e"}, collectAllPages(2, l, l, l))
 }
+
+// Tags are omitted when a model has none, so listings without tagged models are unchanged.
+func TestModelTagsJSON(t *testing.T) {
+	untagged, err := json.Marshal(Model{ID: "openai/gpt-5.1"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(untagged), "tags", "an untagged model must omit tags")
+	tagged, err := json.Marshal(Model{ID: "openai/gpt-5.1", Tags: []string{"eu", "prod"}})
+	require.NoError(t, err)
+	assert.Contains(t, string(tagged), `"tags":["eu","prod"]`)
+}

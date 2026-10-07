@@ -319,6 +319,92 @@ def test_virtual_key_request_contract_is_current():
 
 
 
+def test_provider_labels_contract():
+    """Provider metadata and tags: the update request accepts null for both (null clears them),
+    and the list endpoint documents its metadata_<key> filters in the description instead of
+    declaring a literal `metadata_<key>` query parameter, which a client would send verbatim.
+    Request tag patterns accept surrounding whitespace (the handler trims before validating, as
+    config.schema.json does), while the response keeps the strict pattern of the stored form."""
+    import json
+
+    source = load(HERE / "schemas" / "management" / "providers.yaml")
+    bundle_doc = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    bundle = bundle_doc["components"]["schemas"]
+    problems = []
+
+    for where, schema in (
+        ("schemas/management/providers.yaml", source["UpdateProviderRequest"]),
+        ("openapi.json", bundle["UpdateProviderRequest"]),
+    ):
+        for field, base in (("metadata", "object"), ("tags", "array")):
+            types = schema["properties"][field].get("type")
+            types = types if isinstance(types, list) else [types]
+            if sorted(types) != sorted([base, "null"]):
+                problems.append(f"{where} UpdateProviderRequest.{field}: type {types}, want [{base}, null]")
+
+    trimmed_tag = r"^\s*[a-zA-Z0-9._-]{1,64}\s*$"
+    stored_tag = r"^[a-zA-Z0-9._-]{1,64}$"
+
+    def tags_schema(doc_schemas, name):
+        tags = doc_schemas[name]["properties"]["tags"]
+        if "$ref" in tags:
+            tags = doc_schemas[tags["$ref"].split("/")[-1]]
+        return tags
+
+    for where, schemas in (("schemas/management/providers.yaml", source), ("openapi.json", bundle)):
+        for name, want in (
+            ("AddProviderRequest", trimmed_tag),
+            ("UpdateProviderRequest", trimmed_tag),
+            ("ProviderResponse", stored_tag),
+        ):
+            got = tags_schema(schemas, name).get("items", {}).get("pattern")
+            if got != want:
+                problems.append(f"{where} {name}.tags item pattern {got!r}, want {want!r}")
+
+    source_list = load(PATHS_DIR / "providers.yaml")["providers"]["get"]
+    bundle_list = bundle_doc["paths"]["/api/providers"]["get"]
+    for where, operation in (("paths/management/providers.yaml", source_list), ("openapi.json", bundle_list)):
+        names = [p.get("name", "") for p in operation.get("parameters", [])]
+        if any("<" in name for name in names):
+            problems.append(f"{where} listProviders: templated query parameter name in {names}")
+        if "metadata_<key>" not in operation.get("description", ""):
+            problems.append(f"{where} listProviders: description does not document metadata_<key> filters")
+
+    assert not problems, "Provider labels contract drift:\n    " + "\n    ".join(problems)
+
+
+def test_model_tags_contract():
+    """PUT /api/models/tags: every error response carries a BifrostError body (the handler sends
+    one for 404 and 503 too), and batch items are closed objects so a misspelled field such as
+    `tag` is rejected instead of silently clearing the model's tags. Item tags accept surrounding
+    whitespace (the handler trims them), and the model name carries no maxLength: the handler's
+    255 limit counts UTF-8 bytes, which maxLength (characters) cannot express."""
+    import json
+
+    source_op = load(PATHS_DIR / "providers.yaml")["models-tags"]["put"]
+    source_entry = load(HERE / "schemas" / "management" / "providers.yaml")["ModelTagsEntry"]
+    bundle_op = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))["paths"]["/api/models/tags"]["put"]
+    problems = []
+    for where, op in (("paths/management/providers.yaml", source_op), ("openapi.json", bundle_op)):
+        for status in ("404", "503"):
+            if "application/json" not in op["responses"][status].get("content", {}):
+                problems.append(f"{where} setModelTags {status}: no application/json error body")
+    bundle_entry = bundle_op["requestBody"]["content"]["application/json"]["schema"]["items"]
+    for where, entry in (("schemas/management/providers.yaml", source_entry), ("openapi.json", bundle_entry)):
+        if entry.get("additionalProperties") is not False:
+            problems.append(f"{where} ModelTagsEntry: additionalProperties is not false")
+        if "maxLength" in entry["properties"]["model"]:
+            problems.append(f"{where} ModelTagsEntry.model: maxLength counts characters, the limit is 255 bytes")
+    source_tags = source_entry["properties"]["tags"]
+    if "$ref" in source_tags:
+        source_tags = load(HERE / "schemas" / "management" / "providers.yaml")[source_tags["$ref"].split("/")[-1]]
+    for where, tags in (("schemas/management/providers.yaml", source_tags), ("openapi.json", bundle_entry["properties"]["tags"])):
+        pattern = tags.get("items", {}).get("pattern")
+        if pattern != r"^\s*[a-zA-Z0-9._-]{1,64}\s*$":
+            problems.append(f"{where} ModelTagsEntry.tags item pattern {pattern!r} rejects surrounding whitespace")
+    assert not problems, "Model tags contract drift:\n    " + "\n    ".join(problems)
+
+
 def test_warp_credential_contract_is_current():
     """Warp's settings API carries `api_key_id`, a reference to a configured provider key.
     There is no write-only `api_key` and no `api_key_set` presence flag, so no redaction
@@ -787,6 +873,8 @@ check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws
 check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
+check("provider labels contract: nullable update, no templated filter param", test_provider_labels_contract)
+check("model tags contract: error bodies, closed batch items", test_model_tags_contract)
 check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
 check("warp config input models its embedding contract", test_warp_config_input_models_the_embedding_contract)
 check("warp chat response contract matches the agent", test_warp_chat_response_contract_is_current)
