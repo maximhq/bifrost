@@ -7580,55 +7580,120 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}
 		}
 
-		// "worker-setup" overhead phase: the dequeue field re-read, per-attempt
-		// base-provider resolution, and raw-capture flag computation (~a dozen ctx writes)
-		// the worker does between dequeue and key acquisition. No early exits in this
-		// block, so a single span pair is safe; closed just before key acquisition below.
-		workerSetupSpan := bifrost.startCoreSpan(req.Context, "worker-setup")
-		_, model, _ := req.BifrostRequest.GetRequestFields()
+		bifrost.processChannelMessage(provider, config, req, deliveryTimer)
+	}
 
-		var result *schemas.BifrostResponse
-		var stream chan *schemas.BifrostStreamChunk
-		var bifrostError *schemas.BifrostError
-		var err error
+	// bifrost.logger.Debug("worker for provider %s exiting...", provider.GetProviderKey())
+}
 
-		// Determine the base provider type for key requirement checks
-		baseProvider := provider.GetProviderKey()
-		if cfg := config.CustomProviderConfig; cfg != nil && cfg.BaseProviderType != "" {
-			baseProvider = cfg.BaseProviderType
-		}
-		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
-		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
-		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
-		// Re-stamped per attempt so a fallback cannot inherit the previous provider's opt-in.
-		if config.CustomProviderConfig != nil && config.CustomProviderConfig.DoesNotSendDoneMarker {
-			req.Context.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+// processChannelMessage executes one request message against provider: it builds the
+// key pool, runs the request with retries and delivers the result or error on the
+// message's channels. requestWorker calls it for every message it dequeues.
+// deliveryTimer bounds the streaming handoff; it is reset and stopped around each use.
+func (bifrost *Bifrost) processChannelMessage(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, deliveryTimer *time.Timer) {
+	// "worker-setup" overhead phase: the dequeue field re-read, per-attempt
+	// base-provider resolution, and raw-capture flag computation (~a dozen ctx writes)
+	// the worker does between dequeue and key acquisition. No early exits in this
+	// block, so a single span pair is safe; closed just before key acquisition below.
+	workerSetupSpan := bifrost.startCoreSpan(req.Context, "worker-setup")
+	_, model, _ := req.BifrostRequest.GetRequestFields()
+
+	var result *schemas.BifrostResponse
+	var stream chan *schemas.BifrostStreamChunk
+	var bifrostError *schemas.BifrostError
+	var err error
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := provider.GetProviderKey()
+	if cfg := config.CustomProviderConfig; cfg != nil && cfg.BaseProviderType != "" {
+		baseProvider = cfg.BaseProviderType
+	}
+	req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
+	// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
+	req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
+	// Re-stamped per attempt so a fallback cannot inherit the previous provider's opt-in.
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.DoesNotSendDoneMarker {
+		req.Context.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	} else {
+		req.Context.ClearValue(schemas.BifrostContextKeyDoesNotSendDoneMarker)
+	}
+	// Same set-or-clear discipline: wait_for_usage must never leak onto a fallback provider
+	// that did not declare it, or that provider's stream would hold past finish_reason.
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.WaitForUsage {
+		req.Context.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
+	} else {
+		req.Context.ClearValue(schemas.BifrostContextKeyWaitForUsage)
+	}
+
+	bifrost.endCoreSpan(workerSetupSpan)
+
+	var keys []schemas.Key
+	// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
+	// It is nil when no key is required (e.g. providerRequiresKey=false) or for multi-key
+	// batch/file/container operations that manage their own key lists.
+	var keyProvider func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error)
+
+	if providerRequiresKey(config.CustomProviderConfig) {
+		// ListModels needs all enabled/supported keys so providers can aggregate
+		// and report per-key statuses (KeyStatuses).
+		if req.RequestType == schemas.ListModelsRequest {
+			keys, err = bifrost.getAllSupportedKeys(req.Context, provider.GetProviderKey(), baseProvider)
+			if err != nil {
+				bifrost.logger.Debug("error getting supported keys for list models: %v", err)
+				bifrost.sendWorkerError(req, schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Message: err.Error(),
+						Error:   err,
+					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						Provider:               provider.GetProviderKey(),
+						RequestType:            req.RequestType,
+						OriginalModelRequested: model,
+						ResolvedModelUsed:      model,
+					},
+				})
+				return
+			}
+			// Scope to a single key when ListModelsRequest.KeyID is set, so
+			// callers (the catalog composer) can cache per-key without an
+			// extra round-trip and without the provider aggregating across
+			// every configured key.
+			if lmr := req.BifrostRequest.ListModelsRequest; lmr != nil && lmr.KeyID != nil {
+				target := *lmr.KeyID
+				keys = filterKeysByID(keys, target)
+				if len(keys) == 0 {
+					bifrost.sendWorkerError(req, schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: fmt.Sprintf("no key found with id %q for provider %s", target, provider.GetProviderKey()),
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							Provider:               provider.GetProviderKey(),
+							RequestType:            req.RequestType,
+							OriginalModelRequested: model,
+							ResolvedModelUsed:      model,
+						},
+					})
+					return
+				}
+			}
 		} else {
-			req.Context.ClearValue(schemas.BifrostContextKeyDoesNotSendDoneMarker)
-		}
-		// Same set-or-clear discipline: wait_for_usage must never leak onto a fallback provider
-		// that did not declare it, or that provider's stream would hold past finish_reason.
-		if config.CustomProviderConfig != nil && config.CustomProviderConfig.WaitForUsage {
-			req.Context.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
-		} else {
-			req.Context.ClearValue(schemas.BifrostContextKeyWaitForUsage)
-		}
+			// Determine if this is a multi-key batch/file/container operation
+			// BatchCreate, FileUpload, ContainerCreate, ContainerFileCreate use single key; other batch/file/container ops use multiple keys
+			isMultiKeyBatchOp := isBatchRequestType(req.RequestType) && req.RequestType != schemas.BatchCreateRequest
+			isMultiKeyFileOp := isFileRequestType(req.RequestType) && req.RequestType != schemas.FileUploadRequest
+			isMultiKeyContainerOp := isContainerRequestType(req.RequestType) && req.RequestType != schemas.ContainerCreateRequest && req.RequestType != schemas.ContainerFileCreateRequest
+			isMultiKeyCachedContentOp := isCachedContentRequestType(req.RequestType) && req.RequestType != schemas.CachedContentCreateRequest
 
-		bifrost.endCoreSpan(workerSetupSpan)
-
-		var keys []schemas.Key
-		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
-		// It is nil when no key is required (e.g. providerRequiresKey=false) or for multi-key
-		// batch/file/container operations that manage their own key lists.
-		var keyProvider func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error)
-
-		if providerRequiresKey(config.CustomProviderConfig) {
-			// ListModels needs all enabled/supported keys so providers can aggregate
-			// and report per-key statuses (KeyStatuses).
-			if req.RequestType == schemas.ListModelsRequest {
-				keys, err = bifrost.getAllSupportedKeys(req.Context, provider.GetProviderKey(), baseProvider)
+			if isMultiKeyBatchOp || isMultiKeyFileOp || isMultiKeyContainerOp || isMultiKeyCachedContentOp {
+				var modelPtr *string
+				if model != "" {
+					modelPtr = &model
+				}
+				keys, err = bifrost.getKeysForBatchAndFileOps(req.Context, provider.GetProviderKey(), baseProvider, modelPtr, isMultiKeyBatchOp)
 				if err != nil {
-					bifrost.logger.Debug("error getting supported keys for list models: %v", err)
+					bifrost.logger.Debug("error getting keys for batch/file operation: %v", err)
 					bifrost.sendWorkerError(req, schemas.BifrostError{
 						IsBifrostError: false,
 						Error: &schemas.ErrorField{
@@ -7642,123 +7707,88 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 							ResolvedModelUsed:      model,
 						},
 					})
-					continue
-				}
-				// Scope to a single key when ListModelsRequest.KeyID is set, so
-				// callers (the catalog composer) can cache per-key without an
-				// extra round-trip and without the provider aggregating across
-				// every configured key.
-				if lmr := req.BifrostRequest.ListModelsRequest; lmr != nil && lmr.KeyID != nil {
-					target := *lmr.KeyID
-					keys = filterKeysByID(keys, target)
-					if len(keys) == 0 {
-						bifrost.sendWorkerError(req, schemas.BifrostError{
-							IsBifrostError: false,
-							Error: &schemas.ErrorField{
-								Message: fmt.Sprintf("no key found with id %q for provider %s", target, provider.GetProviderKey()),
-							},
-							ExtraFields: schemas.BifrostErrorExtraFields{
-								Provider:               provider.GetProviderKey(),
-								RequestType:            req.RequestType,
-								OriginalModelRequested: model,
-								ResolvedModelUsed:      model,
-							},
-						})
-						continue
-					}
+					return
 				}
 			} else {
-				// Determine if this is a multi-key batch/file/container operation
-				// BatchCreate, FileUpload, ContainerCreate, ContainerFileCreate use single key; other batch/file/container ops use multiple keys
-				isMultiKeyBatchOp := isBatchRequestType(req.RequestType) && req.RequestType != schemas.BatchCreateRequest
-				isMultiKeyFileOp := isFileRequestType(req.RequestType) && req.RequestType != schemas.FileUploadRequest
-				isMultiKeyContainerOp := isContainerRequestType(req.RequestType) && req.RequestType != schemas.ContainerCreateRequest && req.RequestType != schemas.ContainerFileCreateRequest
-				isMultiKeyCachedContentOp := isCachedContentRequestType(req.RequestType) && req.RequestType != schemas.CachedContentCreateRequest
+				// Build the key pool for this request. Selection and rotation are deferred to
+				// executeRequestWithRetries via keyProvider so that each retry attempt can use
+				// a different key (on rate-limit errors) without re-running the full filtering.
+				// "key-pool" overhead phase: building the candidate key pool (filtering,
+				// governance/alias resolution) is worker-side work; the per-attempt pick
+				// is the separate "key.selection" span.
+				keyPoolSpan := bifrost.startCoreSpan(req.Context, "key-pool")
+				supportedKeys, canRotate, keyPoolErr := bifrost.selectKeyFromProviderForModelWithPool(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
+				bifrost.endCoreSpan(keyPoolSpan)
+				if keyPoolErr != nil {
+					bifrost.logger.Debug("error building key pool for model %s: %v", model, keyPoolErr)
+					bifrost.sendWorkerError(req, schemas.BifrostError{
+						IsBifrostError: false,
+						Type:           schemas.Ptr(schemas.NoKeySupportsModel),
+						StatusCode:     schemas.Ptr(400),
+						Error: &schemas.ErrorField{
+							Message: keyPoolErr.Error(),
+							Error:   keyPoolErr,
+							Type:    schemas.Ptr(schemas.NoKeySupportsModel),
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							Provider:               provider.GetProviderKey(),
+							RequestType:            req.RequestType,
+							OriginalModelRequested: model,
+							ResolvedModelUsed:      model,
+							ErrorType:              schemas.ErrorTypeCallerModelNotAvailable,
+						},
+					})
+					return
+				}
 
-				if isMultiKeyBatchOp || isMultiKeyFileOp || isMultiKeyContainerOp || isMultiKeyCachedContentOp {
-					var modelPtr *string
-					if model != "" {
-						modelPtr = &model
-					}
-					keys, err = bifrost.getKeysForBatchAndFileOps(req.Context, provider.GetProviderKey(), baseProvider, modelPtr, isMultiKeyBatchOp)
-					if err != nil {
-						bifrost.logger.Debug("error getting keys for batch/file operation: %v", err)
-						bifrost.sendWorkerError(req, schemas.BifrostError{
-							IsBifrostError: false,
-							Error: &schemas.ErrorField{
-								Message: err.Error(),
-								Error:   err,
-							},
-							ExtraFields: schemas.BifrostErrorExtraFields{
-								Provider:               provider.GetProviderKey(),
-								RequestType:            req.RequestType,
-								OriginalModelRequested: model,
-								ResolvedModelUsed:      model,
-							},
-						})
-						continue
+				if len(supportedKeys) == 0 {
+					// SkipKeySelection path — keyProvider stays nil, zero Key is used.
+				} else if !canRotate {
+					// Fixed key (explicit ID/name, session stickiness): always
+					// return the same key — *unless* it has been marked permanently
+					// dead this request, in which case surface errAllKeysDead so the
+					// caller emits 502 upstream_credentials_exhausted instead of
+					// burning the remaining retries on the same bad credential.
+					fixedKey := supportedKeys[0]
+					keyProvider = func(_, deadKeyIDs map[string]bool) (schemas.Key, error) {
+						if deadKeyIDs[fixedKey.ID] {
+							return schemas.Key{}, errAllKeysDead
+						}
+						return fixedKey, nil
 					}
 				} else {
-					// Build the key pool for this request. Selection and rotation are deferred to
-					// executeRequestWithRetries via keyProvider so that each retry attempt can use
-					// a different key (on rate-limit errors) without re-running the full filtering.
-					// "key-pool" overhead phase: building the candidate key pool (filtering,
-					// governance/alias resolution) is worker-side work; the per-attempt pick
-					// is the separate "key.selection" span.
-					keyPoolSpan := bifrost.startCoreSpan(req.Context, "key-pool")
-					supportedKeys, canRotate, keyPoolErr := bifrost.selectKeyFromProviderForModelWithPool(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
-					bifrost.endCoreSpan(keyPoolSpan)
-					if keyPoolErr != nil {
-						bifrost.logger.Debug("error building key pool for model %s: %v", model, keyPoolErr)
-						bifrost.sendWorkerError(req, schemas.BifrostError{
-							IsBifrostError: false,
-							Type:           schemas.Ptr(schemas.NoKeySupportsModel),
-							StatusCode:     schemas.Ptr(400),
-							Error: &schemas.ErrorField{
-								Message: keyPoolErr.Error(),
-								Error:   keyPoolErr,
-								Type:    schemas.Ptr(schemas.NoKeySupportsModel),
-							},
-							ExtraFields: schemas.BifrostErrorExtraFields{
-								Provider:               provider.GetProviderKey(),
-								RequestType:            req.RequestType,
-								OriginalModelRequested: model,
-								ResolvedModelUsed:      model,
-								ErrorType:              schemas.ErrorTypeCallerModelNotAvailable,
-							},
-						})
-						continue
-					}
-
-					if len(supportedKeys) == 0 {
-						// SkipKeySelection path — keyProvider stays nil, zero Key is used.
-					} else if !canRotate {
-						// Fixed key (explicit ID/name, session stickiness): always
-						// return the same key — *unless* it has been marked permanently
-						// dead this request, in which case surface errAllKeysDead so the
-						// caller emits 502 upstream_credentials_exhausted instead of
-						// burning the remaining retries on the same bad credential.
-						fixedKey := supportedKeys[0]
-						keyProvider = func(_, deadKeyIDs map[string]bool) (schemas.Key, error) {
-							if deadKeyIDs[fixedKey.ID] {
-								return schemas.Key{}, errAllKeysDead
+					// Rotating pool: weighted selection with per-cycle exclusion.
+					// Captures supportedKeys, bifrost.keySelector, provider/model by value.
+					pool := supportedKeys
+					provKey := provider.GetProviderKey()
+					mdl := model
+					keyProvider = func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+						available := make([]schemas.Key, 0, len(pool))
+						for _, k := range pool {
+							if deadKeyIDs[k.ID] || usedKeyIDs[k.ID] {
+								continue
 							}
-							return fixedKey, nil
+							available = append(available, k)
 						}
-					} else {
-						// Rotating pool: weighted selection with per-cycle exclusion.
-						// Captures supportedKeys, bifrost.keySelector, provider/model by value.
-						pool := supportedKeys
-						provKey := provider.GetProviderKey()
-						mdl := model
-						keyProvider = func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
-							available := make([]schemas.Key, 0, len(pool))
-							for _, k := range pool {
-								if deadKeyIDs[k.ID] || usedKeyIDs[k.ID] {
-									continue
-								}
-								available = append(available, k)
+						if bifrost.keyPoolFilter != nil {
+							if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
+								bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
+							} else {
+								available = filtered
 							}
+						}
+						if len(available) == 0 {
+							// No non-dead keys remain in this cycle. If every key has been
+							// marked permanently dead, give up — retrying won't help.
+							// Otherwise reset usedKeyIDs and start a fresh weighted round
+							// across the still-live (non-dead) keys; a previously
+							// rate-limited key may have free quota by now.
+							for _, k := range pool {
+								if !deadKeyIDs[k.ID] {
+									available = append(available, k)
+								}
+							}
+							liveCount := len(available) // non-dead keys before the filter runs
 							if bifrost.keyPoolFilter != nil {
 								if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
 									bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
@@ -7767,319 +7797,297 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 								}
 							}
 							if len(available) == 0 {
-								// No non-dead keys remain in this cycle. If every key has been
-								// marked permanently dead, give up — retrying won't help.
-								// Otherwise reset usedKeyIDs and start a fresh weighted round
-								// across the still-live (non-dead) keys; a previously
-								// rate-limited key may have free quota by now.
-								for _, k := range pool {
-									if !deadKeyIDs[k.ID] {
-										available = append(available, k)
-									}
+								if liveCount > 0 {
+									return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysFiltered, provKey)
 								}
-								liveCount := len(available) // non-dead keys before the filter runs
-								if bifrost.keyPoolFilter != nil {
-									if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
-										bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
-									} else {
-										available = filtered
-									}
-								}
-								if len(available) == 0 {
-									if liveCount > 0 {
-										return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysFiltered, provKey)
-									}
-									return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysDead, provKey)
-								}
-								for id := range usedKeyIDs {
-									delete(usedKeyIDs, id)
-								}
+								return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysDead, provKey)
 							}
-							return bifrost.keySelector(req.Context, available, provKey, mdl)
+							for id := range usedKeyIDs {
+								delete(usedKeyIDs, id)
+							}
 						}
+						return bifrost.keySelector(req.Context, available, provKey, mdl)
 					}
 				}
-			}
-		}
-
-		originalModelRequested := model
-		// resolvedModel is set inside the handler closures below on every attempt so that each
-		// key's own alias mapping is applied. The outer var holds the LAST attempt's value and is
-		// read single-threaded by the worker after retries finish (e.g. the error-fallback at
-		// line 5653). Streaming postHookRunner must NOT capture this var by reference — it
-		// snapshots its own attemptResolvedModel inside the per-attempt closure.
-		var resolvedModel string
-		// attemptRoutingInfo holds the LAST attempt's RoutingInfo. Same single-writer/
-		// single-reader contract as resolvedModel — assigned inside the per-attempt
-		// closure, read after retries finish by the post-retry populate below.
-		// Streaming postHookRunner must NOT capture by reference — it snapshots its
-		// own copy inside the per-attempt closure.
-		// Pre-seeded with the provider/model the orchestrator already knows so that
-		// retries that fail before the per-attempt closure ever runs (e.g. key
-		// selection error) still produce a populated RoutingInfo on the error —
-		// otherwise the post-retry populate at line ~6221 would clobber RoutingInfo
-		// to a zero value, leaving new consumers without provider/model context.
-		attemptRoutingInfo := schemas.RoutingInfo{
-			Provider: provider.GetProviderKey(),
-			Model:    originalModelRequested,
-		}
-		// The per-attempt closures overwrite this with BuildRoutingInfo, which already
-		// carries the caller's requested route. The pre-seed only survives when every
-		// retry fails before a closure runs, so stamp the requested route here too or
-		// those errors would be the only responses without it. Not BuildRoutingInfo
-		// itself: it also reads BifrostContextKeyResolvedAlias, which at this point on a
-		// fallback still holds the previous attempt's alias (clearCtxForFallback keeps
-		// it), and would pin the primary's alias onto the fallback's error.
-		attemptRoutingInfo.ApplyRequestRouting(req.Context)
-		// lastAttemptFinalizer captures the LAST attempt's postHookSpanFinalizer for the
-		// worker-level error fallback below. Single-threaded write (assigned by the retry
-		// loop's per-attempt closure) and single-threaded read (after retries finish), so
-		// no synchronization needed. Earlier attempts' finalizers fire via their provider
-		// goroutines' defers — passed via the postHookSpanFinalizer parameter directly to
-		// handleProviderStreamRequest, never via the shared req.Context.
-		var lastAttemptFinalizer func(context.Context)
-
-		// Execute request with retries. For streaming, the plugin pipeline,
-		// postHookRunner, and finalizer are allocated per-attempt inside the
-		// request handler closure. If they were request-scoped, a retry
-		// triggered by CheckFirstStreamChunkForError could run against a
-		// pipeline the previous attempt's provider goroutine has already
-		// returned to the pool via its deferred finalizer.
-		if IsStreamRequestType(req.RequestType) {
-			stream, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-				// Arm this attempt's TTFT deadline before the provider dials: it
-				// covers the header wait and the first output chunk. The retry loop
-				// disarms and clears it once the first-chunk check settles.
-				if abort := providerUtils.NewAttemptAbort(req.firstTokenTimeout); abort != nil {
-					req.Context.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, abort)
-				}
-				if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
-					resolvedModel = aliasConfig.ModelID
-					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: originalModelRequested, Config: aliasConfig})
-				} else {
-					resolvedModel = originalModelRequested
-					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
-				}
-				req.SetModel(resolvedModel)
-				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
-				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
-				// Disable it too when this attempt's provider has no native structured outputs.
-				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
-				applyRawCaptureSignals(req.Context, config)
-				applyProviderProxySignal(req.Context, config)
-				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
-				// alias while this attempt's provider goroutine is still emitting chunks.
-				attemptResolvedModel := resolvedModel
-				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
-				// Layer fallback identity here — the reliable write point. The orchestrator's
-				// post-hand-off ctx write (handleStreamRequest) races the streaming response's
-				// async per-chunk post-hooks, so set IsFallback/Primary on the per-attempt
-				// RoutingInfo instead. This flows into BOTH the header snapshot below and the
-				// per-chunk RoutingInfo (perAttemptRoutingInfo), so headers and SSE body agree.
-				// fallback index > 0 ⟺ this attempt is a fallback; Primary comes from the
-				// previous attempt's snapshot (the primary, or the carried-through primary on a
-				// later fallback — clearCtxForFallback keeps BifrostContextKeyRoutingInfo).
-				if fi, _ := req.Context.Value(schemas.BifrostContextKeyFallbackIndex).(int); fi > 0 {
-					attemptRoutingInfo.IsFallback = true
-					if prev, ok := req.Context.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
-						if prev.IsFallback && prev.PrimaryProvider != nil {
-							attemptRoutingInfo.PrimaryProvider = prev.PrimaryProvider
-							attemptRoutingInfo.PrimaryModel = prev.PrimaryModel
-						} else if prev.Provider != "" {
-							pp := prev.Provider
-							pm := prev.Model
-							attemptRoutingInfo.PrimaryProvider = &pp
-							attemptRoutingInfo.PrimaryModel = &pm
-						}
-					}
-				}
-				// Stash for the transport: streams carry RoutingInfo only on chunks, but
-				// response headers must be written before the first chunk arrives. Each
-				// retry overwrites, so the winning attempt's snapshot survives.
-				req.Context.SetValue(schemas.BifrostContextKeyRoutingInfo, attemptRoutingInfo)
-				// Per-attempt snapshot for the async postHookRunner closure (it must
-				// not capture the outer var by reference — a later retry would race).
-				perAttemptRoutingInfo := attemptRoutingInfo
-				// Snapshot RequestType before the closure. After tryStreamRequest receives
-				// the stream channel it releases the *ChannelMessage back to the pool;
-				// a concurrent request can then reuse it and overwrite RequestType.
-				// Reading req.RequestType inside the closure would observe the new request's type.
-				attemptRequestType := req.RequestType
-				pipeline := bifrost.getPluginPipeline()
-				postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-					// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
-					// can read requestType/provider/model from the chunk or error.
-					// Uses the per-attempt snapshot — capturing the outer resolvedModel by
-					// reference would let a later retry's alias bleed into this attempt's chunks.
-					if result != nil {
-						result.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
-						result.PopulateRoutingInfo(perAttemptRoutingInfo)
-					}
-					if err != nil {
-						err.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
-						err.PopulateRoutingInfo(perAttemptRoutingInfo)
-					}
-					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
-					if IsFinalChunk(ctx) {
-						drainAndAttachPluginLogs(ctx)
-					}
-					if bifrostErr != nil {
-						bifrostErr.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
-						bifrostErr.PopulateRoutingInfo(perAttemptRoutingInfo)
-						return nil, bifrostErr
-					} else if resp != nil {
-						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
-						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
-					}
-					return resp, nil
-				}
-				// Store a finalizer callback to create aggregated post-hook spans at stream end.
-				// Wrapped in sync.Once so the normal end-of-stream invocation and a deferred
-				// safety-net invocation (e.g. from a provider goroutine's panic path) cannot
-				// double-release the pipeline.
-				var finalizerOnce sync.Once
-				postHookSpanFinalizer := func(ctx context.Context) {
-					finalizerOnce.Do(func() {
-						pipeline.FinalizeStreamingPostHookSpans(ctx)
-						bifrost.releasePluginPipeline(pipeline)
-					})
-				}
-				lastAttemptFinalizer = postHookSpanFinalizer
-				streamCh, streamErr := bifrost.handleProviderStreamRequest(provider, config, req, k, postHookRunner, postHookSpanFinalizer)
-				// If stream setup failed before any provider goroutine started,
-				// no deferred finalizer will run — release the pipeline directly
-				// so a retry doesn't inherit a leaked pool entry.
-				if streamErr != nil && streamCh == nil {
-					finalizerOnce.Do(func() {
-						bifrost.releasePluginPipeline(pipeline)
-					})
-				}
-				return streamCh, streamErr
-			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
-		} else {
-			result, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
-					resolvedModel = aliasConfig.ModelID
-					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: originalModelRequested, Config: aliasConfig})
-				} else {
-					resolvedModel = originalModelRequested
-					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
-				}
-				req.SetModel(resolvedModel)
-				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
-				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
-				// Disable it too when this attempt's provider has no native structured outputs.
-				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
-				applyRawCaptureSignals(req.Context, config)
-				applyProviderProxySignal(req.Context, config)
-				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
-				return bifrost.handleProviderRequest(provider, config, req, k, keys)
-			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
-		}
-
-		// For streaming with an error, route release through the LAST attempt's
-		// finalizer (wrapped in sync.Once) so we don't double-Put into the pool
-		// or race the provider goroutine's deferred FinalizeStreamingPostHookSpans
-		// call. lastAttemptFinalizer is set inside the per-attempt closure on every
-		// iteration; after retries finish, it holds the LAST attempt's finalizer.
-		// Earlier attempts' finalizers have already fired via their provider
-		// goroutines' defers (passed via the postHookSpanFinalizer parameter
-		// directly to handleProviderStreamRequest). For streaming without error,
-		// the finalizer is invoked by completeDeferredSpan / the provider
-		// goroutine's defer.
-		if IsStreamRequestType(req.RequestType) && bifrostError != nil {
-			if lastAttemptFinalizer != nil {
-				lastAttemptFinalizer(req.Context)
-			}
-		}
-
-		if bifrostError != nil {
-			// Time the field population as "miscellaneous", then stamp sentAt just before
-			// the send so "worker-handoff" measures only the goroutine hop, not this work.
-			miscSpan := bifrost.startCoreSpan(req.Context, "miscellaneous")
-			bifrostError.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
-			bifrostError.PopulateRoutingInfo(attemptRoutingInfo)
-			bifrost.endCoreSpan(miscSpan)
-			req.sentAt = time.Now()
-
-			if IsStreamRequestType(req.RequestType) {
-				// Streaming takes no part in the claim; its caller keeps a ctx escape
-				// and may already have released the message back to the pool, so the
-				// guarded send stays. Teardown bills via the provider goroutine.
-				deliveryTimer.Reset(5 * time.Second)
-				select {
-				case req.Err <- *bifrostError:
-					// Error sent successfully
-				case <-req.Context.Done():
-					// Client no longer listening, log and continue
-					bifrost.logger.Debug("Client context cancelled while sending error response")
-				case <-deliveryTimer.C:
-					// Timeout to prevent indefinite blocking
-					bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
-				}
-				deliveryTimer.Stop()
-			} else if !req.claimDelivery() {
-				// tryRequest abandoned the handoff on ctx.Done: it will never read
-				// req.Err and does not touch the message again, so this side owns both
-				// the value and the message. The claim is what makes this deterministic:
-				// a buffered send and ctx.Done() are both ready once the caller is gone
-				// and select picks uniformly among ready cases (#6972). The provider
-				// already produced this error (possibly after processing input tokens).
-				bifrost.logger.Debug("Client context cancelled before error handoff")
-				bifrost.billAbandonedTerminal(req, nil, bifrostError)
-				bifrost.releaseChannelMessage(req)
-			} else {
-				// Claimed: the caller is committed to receiving and req.Err is a cap-1
-				// channel drained on acquire, so this never blocks. No ctx.Done arm:
-				// with a done context both arms are ready, select flips a coin, and a
-				// discarded value strands the committed caller forever (#7308).
-				req.Err <- *bifrostError
-			}
-		} else {
-			// Time the field population as "miscellaneous", then stamp sentAt just before
-			// the send so "worker-handoff" measures only the goroutine hop, not this work.
-			miscSpan := bifrost.startCoreSpan(req.Context, "miscellaneous")
-			if result != nil {
-				result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
-				result.PopulateRoutingInfo(attemptRoutingInfo)
-			}
-			bifrost.endCoreSpan(miscSpan)
-			req.sentAt = time.Now()
-			if IsStreamRequestType(req.RequestType) {
-				// Send stream with context awareness to prevent deadlock
-				deliveryTimer.Reset(5 * time.Second)
-				select {
-				case req.ResponseStream <- stream:
-					// Stream sent successfully
-				case <-req.Context.Done():
-					// Client no longer listening, log and continue
-					bifrost.logger.Debug("Client context cancelled while sending stream response")
-					drainAbandonedStream(stream)
-				case <-deliveryTimer.C:
-					// Timeout to prevent indefinite blocking
-					bifrost.logger.Warn("Timeout while sending stream response, client may have disconnected")
-					drainAbandonedStream(stream)
-				}
-				deliveryTimer.Stop()
-			} else if !req.claimDelivery() {
-				// tryRequest abandoned the handoff on ctx.Done: it will never read
-				// req.Response (see the error path above for why the claim, not a
-				// select, decides this, #6972). The provider already produced this
-				// result and consumed tokens; bill it and release the message.
-				bifrost.logger.Debug("Client context cancelled before response handoff")
-				bifrost.billAbandonedTerminal(req, result, nil)
-				bifrost.releaseChannelMessage(req)
-			} else {
-				// Claimed: the caller is committed to receiving and req.Response is a
-				// cap-1 channel drained on acquire, so this never blocks. No ctx.Done
-				// arm: with a done context both arms are ready, select flips a coin, and
-				// a discarded value strands the committed caller forever (#7308).
-				req.Response <- result
 			}
 		}
 	}
 
-	// bifrost.logger.Debug("worker for provider %s exiting...", provider.GetProviderKey())
+	originalModelRequested := model
+	// resolvedModel is set inside the handler closures below on every attempt so that each
+	// key's own alias mapping is applied. The outer var holds the LAST attempt's value and is
+	// read single-threaded by the worker after retries finish (e.g. the error-fallback at
+	// line 5653). Streaming postHookRunner must NOT capture this var by reference — it
+	// snapshots its own attemptResolvedModel inside the per-attempt closure.
+	var resolvedModel string
+	// attemptRoutingInfo holds the LAST attempt's RoutingInfo. Same single-writer/
+	// single-reader contract as resolvedModel — assigned inside the per-attempt
+	// closure, read after retries finish by the post-retry populate below.
+	// Streaming postHookRunner must NOT capture by reference — it snapshots its
+	// own copy inside the per-attempt closure.
+	// Pre-seeded with the provider/model the orchestrator already knows so that
+	// retries that fail before the per-attempt closure ever runs (e.g. key
+	// selection error) still produce a populated RoutingInfo on the error —
+	// otherwise the post-retry populate at line ~6221 would clobber RoutingInfo
+	// to a zero value, leaving new consumers without provider/model context.
+	attemptRoutingInfo := schemas.RoutingInfo{
+		Provider: provider.GetProviderKey(),
+		Model:    originalModelRequested,
+	}
+	// The per-attempt closures overwrite this with BuildRoutingInfo, which already
+	// carries the caller's requested route. The pre-seed only survives when every
+	// retry fails before a closure runs, so stamp the requested route here too or
+	// those errors would be the only responses without it. Not BuildRoutingInfo
+	// itself: it also reads BifrostContextKeyResolvedAlias, which at this point on a
+	// fallback still holds the previous attempt's alias (clearCtxForFallback keeps
+	// it), and would pin the primary's alias onto the fallback's error.
+	attemptRoutingInfo.ApplyRequestRouting(req.Context)
+	// lastAttemptFinalizer captures the LAST attempt's postHookSpanFinalizer for the
+	// worker-level error fallback below. Single-threaded write (assigned by the retry
+	// loop's per-attempt closure) and single-threaded read (after retries finish), so
+	// no synchronization needed. Earlier attempts' finalizers fire via their provider
+	// goroutines' defers — passed via the postHookSpanFinalizer parameter directly to
+	// handleProviderStreamRequest, never via the shared req.Context.
+	var lastAttemptFinalizer func(context.Context)
+
+	// Execute request with retries. For streaming, the plugin pipeline,
+	// postHookRunner, and finalizer are allocated per-attempt inside the
+	// request handler closure. If they were request-scoped, a retry
+	// triggered by CheckFirstStreamChunkForError could run against a
+	// pipeline the previous attempt's provider goroutine has already
+	// returned to the pool via its deferred finalizer.
+	if IsStreamRequestType(req.RequestType) {
+		stream, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			// Arm this attempt's TTFT deadline before the provider dials: it
+			// covers the header wait and the first output chunk. The retry loop
+			// disarms and clears it once the first-chunk check settles.
+			if abort := providerUtils.NewAttemptAbort(req.firstTokenTimeout); abort != nil {
+				req.Context.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, abort)
+			}
+			if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
+				resolvedModel = aliasConfig.ModelID
+				req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: originalModelRequested, Config: aliasConfig})
+			} else {
+				resolvedModel = originalModelRequested
+				req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
+			}
+			req.SetModel(resolvedModel)
+			// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
+			clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+			// Disable it too when this attempt's provider has no native structured outputs.
+			clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
+			applyRawCaptureSignals(req.Context, config)
+			applyProviderProxySignal(req.Context, config)
+			// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
+			// alias while this attempt's provider goroutine is still emitting chunks.
+			attemptResolvedModel := resolvedModel
+			attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+			// Layer fallback identity here — the reliable write point. The orchestrator's
+			// post-hand-off ctx write (handleStreamRequest) races the streaming response's
+			// async per-chunk post-hooks, so set IsFallback/Primary on the per-attempt
+			// RoutingInfo instead. This flows into BOTH the header snapshot below and the
+			// per-chunk RoutingInfo (perAttemptRoutingInfo), so headers and SSE body agree.
+			// fallback index > 0 ⟺ this attempt is a fallback; Primary comes from the
+			// previous attempt's snapshot (the primary, or the carried-through primary on a
+			// later fallback — clearCtxForFallback keeps BifrostContextKeyRoutingInfo).
+			if fi, _ := req.Context.Value(schemas.BifrostContextKeyFallbackIndex).(int); fi > 0 {
+				attemptRoutingInfo.IsFallback = true
+				if prev, ok := req.Context.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
+					if prev.IsFallback && prev.PrimaryProvider != nil {
+						attemptRoutingInfo.PrimaryProvider = prev.PrimaryProvider
+						attemptRoutingInfo.PrimaryModel = prev.PrimaryModel
+					} else if prev.Provider != "" {
+						pp := prev.Provider
+						pm := prev.Model
+						attemptRoutingInfo.PrimaryProvider = &pp
+						attemptRoutingInfo.PrimaryModel = &pm
+					}
+				}
+			}
+			// Stash for the transport: streams carry RoutingInfo only on chunks, but
+			// response headers must be written before the first chunk arrives. Each
+			// retry overwrites, so the winning attempt's snapshot survives.
+			req.Context.SetValue(schemas.BifrostContextKeyRoutingInfo, attemptRoutingInfo)
+			// Per-attempt snapshot for the async postHookRunner closure (it must
+			// not capture the outer var by reference — a later retry would race).
+			perAttemptRoutingInfo := attemptRoutingInfo
+			// Snapshot RequestType before the closure. After tryStreamRequest receives
+			// the stream channel it releases the *ChannelMessage back to the pool;
+			// a concurrent request can then reuse it and overwrite RequestType.
+			// Reading req.RequestType inside the closure would observe the new request's type.
+			attemptRequestType := req.RequestType
+			pipeline := bifrost.getPluginPipeline()
+			postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
+				// can read requestType/provider/model from the chunk or error.
+				// Uses the per-attempt snapshot — capturing the outer resolvedModel by
+				// reference would let a later retry's alias bleed into this attempt's chunks.
+				if result != nil {
+					result.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+					result.PopulateRoutingInfo(perAttemptRoutingInfo)
+				}
+				if err != nil {
+					err.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+					err.PopulateRoutingInfo(perAttemptRoutingInfo)
+				}
+				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
+				if IsFinalChunk(ctx) {
+					drainAndAttachPluginLogs(ctx)
+				}
+				if bifrostErr != nil {
+					bifrostErr.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+					bifrostErr.PopulateRoutingInfo(perAttemptRoutingInfo)
+					return nil, bifrostErr
+				} else if resp != nil {
+					resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
+					resp.PopulateRoutingInfo(perAttemptRoutingInfo)
+				}
+				return resp, nil
+			}
+			// Store a finalizer callback to create aggregated post-hook spans at stream end.
+			// Wrapped in sync.Once so the normal end-of-stream invocation and a deferred
+			// safety-net invocation (e.g. from a provider goroutine's panic path) cannot
+			// double-release the pipeline.
+			var finalizerOnce sync.Once
+			postHookSpanFinalizer := func(ctx context.Context) {
+				finalizerOnce.Do(func() {
+					pipeline.FinalizeStreamingPostHookSpans(ctx)
+					bifrost.releasePluginPipeline(pipeline)
+				})
+			}
+			lastAttemptFinalizer = postHookSpanFinalizer
+			streamCh, streamErr := bifrost.handleProviderStreamRequest(provider, config, req, k, postHookRunner, postHookSpanFinalizer)
+			// If stream setup failed before any provider goroutine started,
+			// no deferred finalizer will run — release the pipeline directly
+			// so a retry doesn't inherit a leaked pool entry.
+			if streamErr != nil && streamCh == nil {
+				finalizerOnce.Do(func() {
+					bifrost.releasePluginPipeline(pipeline)
+				})
+			}
+			return streamCh, streamErr
+		}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
+	} else {
+		result, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
+				resolvedModel = aliasConfig.ModelID
+				req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: originalModelRequested, Config: aliasConfig})
+			} else {
+				resolvedModel = originalModelRequested
+				req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
+			}
+			req.SetModel(resolvedModel)
+			// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
+			clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+			// Disable it too when this attempt's provider has no native structured outputs.
+			clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
+			applyRawCaptureSignals(req.Context, config)
+			applyProviderProxySignal(req.Context, config)
+			attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+			return bifrost.handleProviderRequest(provider, config, req, k, keys)
+		}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
+	}
+
+	// For streaming with an error, route release through the LAST attempt's
+	// finalizer (wrapped in sync.Once) so we don't double-Put into the pool
+	// or race the provider goroutine's deferred FinalizeStreamingPostHookSpans
+	// call. lastAttemptFinalizer is set inside the per-attempt closure on every
+	// iteration; after retries finish, it holds the LAST attempt's finalizer.
+	// Earlier attempts' finalizers have already fired via their provider
+	// goroutines' defers (passed via the postHookSpanFinalizer parameter
+	// directly to handleProviderStreamRequest). For streaming without error,
+	// the finalizer is invoked by completeDeferredSpan / the provider
+	// goroutine's defer.
+	if IsStreamRequestType(req.RequestType) && bifrostError != nil {
+		if lastAttemptFinalizer != nil {
+			lastAttemptFinalizer(req.Context)
+		}
+	}
+
+	if bifrostError != nil {
+		// Time the field population as "miscellaneous", then stamp sentAt just before
+		// the send so "worker-handoff" measures only the goroutine hop, not this work.
+		miscSpan := bifrost.startCoreSpan(req.Context, "miscellaneous")
+		bifrostError.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
+		bifrostError.PopulateRoutingInfo(attemptRoutingInfo)
+		bifrost.endCoreSpan(miscSpan)
+		req.sentAt = time.Now()
+
+		if IsStreamRequestType(req.RequestType) {
+			// Streaming takes no part in the claim; its caller keeps a ctx escape
+			// and may already have released the message back to the pool, so the
+			// guarded send stays. Teardown bills via the provider goroutine.
+			deliveryTimer.Reset(5 * time.Second)
+			select {
+			case req.Err <- *bifrostError:
+				// Error sent successfully
+			case <-req.Context.Done():
+				// Client no longer listening, log and continue
+				bifrost.logger.Debug("Client context cancelled while sending error response")
+			case <-deliveryTimer.C:
+				// Timeout to prevent indefinite blocking
+				bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
+			}
+			deliveryTimer.Stop()
+		} else if !req.claimDelivery() {
+			// tryRequest abandoned the handoff on ctx.Done: it will never read
+			// req.Err and does not touch the message again, so this side owns both
+			// the value and the message. The claim is what makes this deterministic:
+			// a buffered send and ctx.Done() are both ready once the caller is gone
+			// and select picks uniformly among ready cases (#6972). The provider
+			// already produced this error (possibly after processing input tokens).
+			bifrost.logger.Debug("Client context cancelled before error handoff")
+			bifrost.billAbandonedTerminal(req, nil, bifrostError)
+			bifrost.releaseChannelMessage(req)
+		} else {
+			// Claimed: the caller is committed to receiving and req.Err is a cap-1
+			// channel drained on acquire, so this never blocks. No ctx.Done arm:
+			// with a done context both arms are ready, select flips a coin, and a
+			// discarded value strands the committed caller forever (#7308).
+			req.Err <- *bifrostError
+		}
+	} else {
+		// Time the field population as "miscellaneous", then stamp sentAt just before
+		// the send so "worker-handoff" measures only the goroutine hop, not this work.
+		miscSpan := bifrost.startCoreSpan(req.Context, "miscellaneous")
+		if result != nil {
+			result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
+			result.PopulateRoutingInfo(attemptRoutingInfo)
+		}
+		bifrost.endCoreSpan(miscSpan)
+		req.sentAt = time.Now()
+		if IsStreamRequestType(req.RequestType) {
+			// Send stream with context awareness to prevent deadlock
+			deliveryTimer.Reset(5 * time.Second)
+			select {
+			case req.ResponseStream <- stream:
+				// Stream sent successfully
+			case <-req.Context.Done():
+				// Client no longer listening, log and continue
+				bifrost.logger.Debug("Client context cancelled while sending stream response")
+				drainAbandonedStream(stream)
+			case <-deliveryTimer.C:
+				// Timeout to prevent indefinite blocking
+				bifrost.logger.Warn("Timeout while sending stream response, client may have disconnected")
+				drainAbandonedStream(stream)
+			}
+			deliveryTimer.Stop()
+		} else if !req.claimDelivery() {
+			// tryRequest abandoned the handoff on ctx.Done: it will never read
+			// req.Response (see the error path above for why the claim, not a
+			// select, decides this, #6972). The provider already produced this
+			// result and consumed tokens; bill it and release the message.
+			bifrost.logger.Debug("Client context cancelled before response handoff")
+			bifrost.billAbandonedTerminal(req, result, nil)
+			bifrost.releaseChannelMessage(req)
+		} else {
+			// Claimed: the caller is committed to receiving and req.Response is a
+			// cap-1 channel drained on acquire, so this never blocks. No ctx.Done
+			// arm: with a done context both arms are ready, select flips a coin, and
+			// a discarded value strands the committed caller forever (#7308).
+			req.Response <- result
+		}
+	}
 }
 
 // sendWorkerError hands an error the worker produced without a provider call
