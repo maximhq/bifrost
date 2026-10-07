@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -2796,6 +2797,193 @@ func TestUpdateClientConfigPreservesMetadata(t *testing.T) {
 	metadata, err := store.GetClientMetadata(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, true, metadata["onboarding_dismissed"])
+}
+
+// setupClientConfigSQLiteTestStore uses the production WAL and busy-timeout
+// settings, with a separate connection for an unrelated model-catalog writer.
+func setupClientConfigSQLiteTestStore(t *testing.T) (*RDBConfigStore, *gorm.DB) {
+	t.Helper()
+	path := filepath.ToSlash(filepath.Join(t.TempDir(), "config.db"))
+	open := func(busyTimeout int) *gorm.DB {
+		db, err := gorm.Open(sqlite.Open(fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=%d&_foreign_keys=1", path, busyTimeout)), &gorm.Config{
+			Logger: logger.Default.LogMode(logger.Silent),
+		})
+		require.NoError(t, err)
+		sqlDB, err := db.DB()
+		require.NoError(t, err)
+		sqlDB.SetMaxOpenConns(1)
+		t.Cleanup(func() { assert.NoError(t, sqlDB.Close()) })
+		var mode string
+		require.NoError(t, db.Raw("PRAGMA journal_mode").Scan(&mode).Error)
+		require.Equal(t, "wal", mode)
+		return db
+	}
+
+	db := open(60000)
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}, &tables.TableModelParameters{}))
+	store := &RDBConfigStore{}
+	store.db.Store(db)
+	// A short timeout makes a reserved writer fail promptly inside the query
+	// callback, so it can be retried after the client transaction finishes.
+	return store, open(25)
+}
+
+func TestClientConfigSQLiteConcurrentWrites(t *testing.T) {
+	for _, name := range []string{"metadata", "config"} {
+		t.Run(name, func(t *testing.T) {
+			store, catalogDB := setupClientConfigSQLiteTestStore(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{
+				EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30,
+			}))
+			metadata := map[string]any{
+				"onboarding": map[string]any{"dismissed": false, "step": "welcome"},
+				"theme":      "dark",
+			}
+			require.NoError(t, store.UpdateClientMetadata(ctx, metadata))
+			require.NoError(t, catalogDB.Create(&tables.TableModelParameters{
+				Model: "concurrent-model", Data: `{"phase":"before"}`,
+			}).Error)
+			writeCatalog := func() error {
+				result := catalogDB.WithContext(ctx).Model(&tables.TableModelParameters{}).
+					Where("model = ?", "concurrent-model").Update("data", `{"phase":"after"}`)
+				if result.Error != nil {
+					return result.Error
+				}
+				if result.RowsAffected != 1 {
+					return fmt.Errorf("catalog write affected %d rows", result.RowsAffected)
+				}
+				return nil
+			}
+
+			// Force the other connection's write after the client SELECT. There
+			// are no scheduler sleeps or assertions inside the callback. In a
+			// deferred WAL transaction the write commits and makes its snapshot
+			// stale; with a writer reservation it waits, then returns SQLITE_BUSY.
+			var once sync.Once
+			var attempted bool
+			var catalogErr error
+			const callbackName = "test:client_config_catalog_write"
+			require.NoError(t, store.DB().Callback().Query().After("gorm:after_query").Register(callbackName, func(db *gorm.DB) {
+				if db.Statement.Table != (tables.TableClientConfig{}).TableName() || db.Error != nil || db.RowsAffected == 0 {
+					return
+				}
+				once.Do(func() {
+					attempted = true
+					catalogErr = writeCatalog()
+				})
+			}))
+			t.Cleanup(func() { assert.NoError(t, store.DB().Callback().Query().Remove(callbackName)) })
+
+			var err error
+			if name == "metadata" {
+				err = store.UpdateClientMetadata(ctx, map[string]any{
+					"onboarding": map[string]any{"dismissed": true},
+					"theme":      nil,
+				})
+				metadata = map[string]any{"onboarding": map[string]any{"dismissed": true, "step": "welcome"}}
+			} else {
+				err = store.UpdateClientConfig(ctx, &ClientConfig{
+					EnableLogging: new(false), InitialPoolSize: 200, LogRetentionDays: 7,
+				})
+			}
+			require.True(t, attempted, "the competing catalog write must run after the client read")
+			if catalogErr != nil {
+				require.EqualError(t, catalogErr, "database is locked", "unexpected catalog error")
+				t.Logf("competing catalog write: %T %#v", catalogErr, catalogErr)
+			} else {
+				t.Log("competing catalog write committed after the client read")
+			}
+			if err != nil {
+				t.Logf("client update: %T %#v", err, err)
+			}
+			require.NoError(t, err, "a concurrent model-catalog write must not break the client update")
+			if catalogErr != nil {
+				require.NoError(t, writeCatalog(), "catalog write must succeed after the client transaction finishes")
+			}
+
+			gotMetadata, err := store.GetClientMetadata(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, metadata, gotMetadata)
+			config, err := store.GetClientConfig(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, config.EnableLogging)
+			if name == "metadata" {
+				assert.True(t, *config.EnableLogging)
+				assert.Equal(t, 100, config.InitialPoolSize)
+				assert.Equal(t, 30, config.LogRetentionDays)
+			} else {
+				assert.False(t, *config.EnableLogging)
+				assert.Equal(t, 200, config.InitialPoolSize)
+				assert.Equal(t, 7, config.LogRetentionDays)
+			}
+			var catalog tables.TableModelParameters
+			require.NoError(t, catalogDB.First(&catalog, "model = ?", "concurrent-model").Error)
+			assert.JSONEq(t, `{"phase":"after"}`, catalog.Data)
+			var count int64
+			require.NoError(t, store.DB().Model(&tables.TableClientConfig{}).Count(&count).Error)
+			assert.Equal(t, int64(1), count)
+		})
+	}
+}
+
+func TestClientConfigSQLiteWriterControls(t *testing.T) {
+	t.Run("fresh config", func(t *testing.T) {
+		store, _ := setupClientConfigSQLiteTestStore(t)
+		ctx := context.Background()
+		require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{InitialPoolSize: 150, LogRetentionDays: 14}))
+		config, err := store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, 150, config.InitialPoolSize)
+		assert.Equal(t, 14, config.LogRetentionDays)
+		metadata, err := store.GetClientMetadata(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, metadata)
+	})
+
+	t.Run("missing metadata row", func(t *testing.T) {
+		store, catalogDB := setupClientConfigSQLiteTestStore(t)
+		err := store.UpdateClientMetadata(context.Background(), map[string]any{"theme": "dark"})
+		require.ErrorIs(t, err, ErrNotFound)
+		var count int64
+		require.NoError(t, store.DB().Model(&tables.TableClientConfig{}).Count(&count).Error)
+		assert.Zero(t, count)
+		require.NoError(t, catalogDB.Create(&tables.TableModelParameters{Model: "after-not-found", Data: `{}`}).Error,
+			"missing-row rollback must release the writer reservation")
+	})
+
+	t.Run("nested merge", func(t *testing.T) {
+		store, _ := setupClientConfigSQLiteTestStore(t)
+		ctx := context.Background()
+		require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{LogRetentionDays: 30}))
+		require.NoError(t, store.UpdateClientMetadata(ctx, map[string]any{
+			"onboarding": map[string]any{"dismissed": false, "step": "welcome"}, "theme": "dark",
+		}))
+		require.NoError(t, store.UpdateClientMetadata(ctx, map[string]any{
+			"onboarding": map[string]any{"dismissed": true, "step": nil}, "theme": nil,
+		}))
+		metadata, err := store.GetClientMetadata(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"onboarding": map[string]any{"dismissed": true}}, metadata)
+	})
+
+	t.Run("failed patch rollback", func(t *testing.T) {
+		store, catalogDB := setupClientConfigSQLiteTestStore(t)
+		ctx := context.Background()
+		require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{LogRetentionDays: 30}))
+		require.NoError(t, store.UpdateClientMetadata(ctx, map[string]any{"theme": "dark"}))
+		require.Error(t, store.UpdateClientMetadata(ctx, map[string]any{"theme": "light", "unsupported": make(chan int)}))
+		metadata, err := store.GetClientMetadata(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"theme": "dark"}, metadata)
+		require.NoError(t, catalogDB.Create(&tables.TableModelParameters{Model: "after-rollback", Data: `{}`}).Error,
+			"failed-patch rollback must release the writer reservation")
+		require.NoError(t, store.UpdateClientMetadata(ctx, map[string]any{"theme": "light"}))
+		metadata, err = store.GetClientMetadata(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"theme": "light"}, metadata)
+	})
 }
 
 // =============================================================================
