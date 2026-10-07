@@ -1963,6 +1963,9 @@ func HandleAnthropicResponsesStream(
 		// accumulated usage handle, so a fold after the send never reaches the billed
 		// copy. Guarded, so the ctx.Err() defer above stays a no-op after this.
 		normalizeBilledUsage()
+		// No terminal frame was produced, so nothing downstream will release the
+		// prompt-usage readings; this is the other end of that lifetime.
+		closeAnthropicStreamDeltaPromptUsageLedger(ctx)
 		providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 	}()
 
