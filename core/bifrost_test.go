@@ -5807,9 +5807,10 @@ func TestRequestScopedConfiguration_UnconfiguredProviderWithoutOverrides(t *test
 }
 
 // shutdownOrderPlugin gives every request request-scoped configuration and records, in order,
-// each PostLLMHook and Cleanup call.
+// each PostLLMHook and Cleanup call. A PostLLMHook is recorded as it returns, after inPost.
 type shutdownOrderPlugin struct {
 	requestScopedTestPlugin
+	inPost func()
 
 	eventsMu sync.Mutex
 	events   []string
@@ -5825,7 +5826,10 @@ func (p *shutdownOrderPlugin) Cleanup() error {
 	return nil
 }
 func (p *shutdownOrderPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	p.record("post")
+	if p.inPost != nil {
+		p.inPost()
+	}
+	defer p.record("post")
 	return p.requestScopedTestPlugin.PostLLMHook(ctx, resp, bifrostErr)
 }
 
@@ -6106,4 +6110,105 @@ func TestRequestScopedConfiguration_ShutdownNoGoroutineLeak(t *testing.T) {
 		}
 		<-shutdown
 	})
+}
+
+// TestRequestScopedConfiguration_ShutdownRunsPostHooks pins that an attempt whose PreLLMHook
+// ran gets its PostLLMHook, with the shutdown error, before Shutdown cleans up plugins: both
+// when shutdown begins before the attempt is admitted and when it ends a wait for a slot.
+func TestRequestScopedConfiguration_ShutdownRunsPostHooks(t *testing.T) {
+	const shutdownErr = "provider is shutting down"
+	for _, stream := range []bool{false, true} {
+		for _, slotWait := range []bool{false, true} {
+			name := "admission"
+			if slotWait {
+				name = "slot wait"
+			}
+			if stream {
+				name += " stream"
+			}
+			t.Run(name, func(t *testing.T) {
+				server := newGatedScopedServer(t)
+				memtest.AssertNoGoroutineLeak(t, func() {
+					plugin := &shutdownOrderPlugin{}
+					plugin.configure = func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+						mustConfigureOpenAI(t, req, "sk-scoped", server.URL)
+					}
+					client, err := Init(context.Background(), schemas.BifrostConfig{
+						Account:    NewMockAccount(),
+						LLMPlugins: []schemas.LLMPlugin{plugin},
+						Logger:     NewDefaultLogger(schemas.LogLevelError),
+					})
+					if err != nil {
+						t.Fatalf("Init: %v", err)
+					}
+					// Hold Shutdown after it begins and before it waits for request-scoped
+					// attempts. The PostLLMHook lets it go on and then lingers, so a Cleanup
+					// that does not wait for the hook lands before it in the events.
+					client.oldWorkerCleanups.Add(1)
+					var release sync.Once
+					plugin.inPost = func() {
+						release.Do(client.oldWorkerCleanups.Done)
+						time.Sleep(50 * time.Millisecond)
+					}
+					shutdown := make(chan struct{})
+					startShutdown := func() {
+						go func() {
+							client.Shutdown()
+							close(shutdown)
+						}()
+						<-client.ctx.Done()
+					}
+					if slotWait {
+						instance, err := client.getRequestScopedProvider(requestScopedClass{provider: schemas.OpenAI, allowPrivateNetwork: true})
+						if err != nil {
+							t.Fatal(err)
+						}
+						for range cap(instance.slots) {
+							instance.slots <- struct{}{}
+						}
+					} else {
+						// Shutdown begins after the PreLLMHook and before the attempt is admitted.
+						plugin.attempt = func(int, *schemas.BifrostRequest) { startShutdown() }
+					}
+					result := make(chan *schemas.BifrostError, 1)
+					go func() {
+						ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+						var err *schemas.BifrostError
+						if stream {
+							var chunks chan *schemas.BifrostStreamChunk
+							if chunks, err = client.ChatCompletionStreamRequest(ctx, requestScopedChat(schemas.OpenAI, "m")); chunks != nil {
+								drainStream(chunks)
+							}
+						} else {
+							_, err = client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m"))
+						}
+						result <- err
+					}()
+					if slotWait {
+						for plugin.preLLMCalls.Load() == 0 {
+							time.Sleep(time.Millisecond)
+						}
+						// Let the attempt reach the slot wait.
+						time.Sleep(20 * time.Millisecond)
+						startShutdown()
+					}
+					if err := <-result; !strings.Contains(requestScopedErrorText(err), shutdownErr) {
+						t.Errorf("error = %q, want %q", requestScopedErrorText(err), shutdownErr)
+					}
+					release.Do(client.oldWorkerCleanups.Done)
+					<-shutdown
+					if n := plugin.postLLMCalls.Load(); n != 1 {
+						t.Errorf("PostLLMHook calls = %d, want 1", n)
+					}
+					if errs := plugin.observedErrors(); len(errs) != 1 || !strings.Contains(errs[0], shutdownErr) {
+						t.Errorf("PostLLMHook errors = %q, want one %q", errs, shutdownErr)
+					}
+					plugin.assertNoHookAfterCleanup(t)
+					if n := server.calls.Load(); n != 0 {
+						t.Errorf("upstream calls = %d, want 0", n)
+					}
+				})
+			})
+		}
+	}
 }

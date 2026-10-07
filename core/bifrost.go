@@ -153,7 +153,8 @@ type Bifrost struct {
 	requestScopedProviders   atomic.Pointer[map[requestScopedClass]*requestScopedProvider] // instances serving request-scoped attempts; never registered or listed
 	requestScopedProvidersMu sync.Mutex                                                    // serializes additions to requestScopedProviders
 	requestScopedAttempts    sync.WaitGroup                                                // request-scoped attempts in progress; Shutdown waits for them before cleanup
-	requestScopedAdmission   sync.RWMutex                                                  // orders admission to requestScopedAttempts against Shutdown
+	requestScopedAdmission   sync.RWMutex                                                  // orders admission to requestScopedAttempts against Shutdown's wait
+	requestScopedDrained     bool                                                          // set by Shutdown, under requestScopedAdmission, before it waits for requestScopedAttempts
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -5164,9 +5165,13 @@ func (bifrost *Bifrost) getRequestScopedProvider(class requestScopedClass) (*req
 // channels exactly as a worker's would, so the caller receives it the same way. The attempt
 // first takes a slot on its instance: it waits for one, or with dropExcessRequests fails at
 // once when none is free, and stops waiting when shutdown begins. Configuration the provider
-// cannot serve fails the attempt without calling the provider. The caller admits the attempt
-// with beginRequestScoped first.
+// cannot serve, or shutdown having begun, fails the attempt without calling the provider. The
+// caller admits the attempt with beginRequestScoped first.
 func (bifrost *Bifrost) processRequestScoped(providerKey schemas.ModelProvider, override *schemas.ProviderOverride, msg *ChannelMessage) {
+	if bifrost.ctx.Err() != nil {
+		bifrost.sendWorkerError(msg, *newBifrostErrorFromMsg("provider is shutting down"))
+		return
+	}
 	instance, err := bifrost.getRequestScopedProvider(requestScopedClass{provider: providerKey, allowPrivateNetwork: override.AllowPrivateNetwork})
 	var provider schemas.Provider
 	if err == nil {
@@ -5221,16 +5226,17 @@ func (bifrost *Bifrost) processRequestScoped(providerKey schemas.ModelProvider, 
 }
 
 // beginRequestScoped admits a request-scoped attempt to requestScopedAttempts, or reports
-// false once shutdown has begun. These attempts run in their callers' goroutines, outside any
-// provider's workers, so Shutdown waits for them here before it cleans up plugins and the
-// tracer. Admission holds the read lock while it checks bifrost.ctx and adds, and Shutdown
-// cancels bifrost.ctx under the write lock before it waits: an attempt that saw bifrost.ctx
-// live was added before Wait began, and any later one sees it cancelled, so an Add never
-// races with Wait. An admitted attempt calls requestScopedAttempts.Done when it ends.
+// false once Shutdown has started waiting for them. These attempts run in their callers'
+// goroutines, outside any provider's workers, so Shutdown waits for them before it cleans up
+// plugins and the tracer. An attempt admitted after shutdown begins is still counted while
+// processRequestScoped fails it, so its post-hooks finish before that cleanup too. Admission
+// holds the read lock while it checks requestScopedDrained and adds, and Shutdown sets it
+// under the write lock before it waits, so an Add never races with Wait. An admitted attempt
+// calls requestScopedAttempts.Done when it ends.
 func (bifrost *Bifrost) beginRequestScoped() bool {
 	bifrost.requestScopedAdmission.RLock()
 	defer bifrost.requestScopedAdmission.RUnlock()
-	if bifrost.ctx.Err() != nil {
+	if bifrost.requestScopedDrained {
 		return false
 	}
 	bifrost.requestScopedAttempts.Add(1)
@@ -10631,13 +10637,10 @@ func (bifrost *Bifrost) Shutdown() {
 	defer bifrost.providerLifecycleMu.Unlock()
 
 	bifrost.logger.Info("closing all request channels...")
-	// Cancel the context if not already done. The write lock orders this against the
-	// admission of request-scoped attempts (see beginRequestScoped).
-	bifrost.requestScopedAdmission.Lock()
+	// Cancel the context if not already done
 	if bifrost.ctx.Err() == nil && bifrost.cancel != nil {
 		bifrost.cancel()
 	}
-	bifrost.requestScopedAdmission.Unlock()
 	// Signal all provider queues to close. Workers exit via pq.done;
 	// we never close pq.queue to avoid "send on closed channel" panics in
 	// producers that are concurrently in tryRequest.
@@ -10661,6 +10664,10 @@ func (bifrost *Bifrost) Shutdown() {
 
 	// Wait for request-scoped attempts, which run in their callers' goroutines. Those waiting
 	// for a slot stop on bifrost.ctx; a stream is no longer tracked once it is handed back.
+	// Attempts that reach admission from now on fail without post-hooks, as on a closed queue.
+	bifrost.requestScopedAdmission.Lock()
+	bifrost.requestScopedDrained = true
+	bifrost.requestScopedAdmission.Unlock()
 	bifrost.requestScopedAttempts.Wait()
 
 	// Final drain sweep — same reasoning as RemoveProvider's Step 3b.
