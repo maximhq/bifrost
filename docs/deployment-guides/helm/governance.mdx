@@ -390,18 +390,20 @@ bifrost:
 
 ## Complexity Router Configuration
 
-If you use `complexity_tier` in routing rules, choose Jev or Semantic as the primary classifier in Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`. Jev uses the configured Typesafe provider and its enabled key. Semantic needs an embedding provider and reference phrases.
+If you use `complexity_tier` in routing rules, choose a decision model or Semantic as the primary classifier in Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`. The decision model is Typesafe Jev by default, or any decision model reachable through `/v1/decisions` (for example Laya, Nimble, or Clef served by a custom provider with `base_provider_type: typesafe`); it uses that provider's enabled key. Semantic needs an embedding provider and reference phrases.
 
-Omit this block, or leave `complexityAnalyzerConfig: null`, to leave complexity classification disabled. To enable it, supply all three `keywords` lists. They are required by the current config shape even when Jev is primary, though Jev does not use the phrases. In the default split mode, supplied phrases merge with stored built-in defaults; with `sourceOfTruth: config.json`, the supplied lists are the complete phrase set.
+Omit this block, or leave `complexityAnalyzerConfig: null`, to leave complexity classification disabled. To enable it, supply all three `keywords` lists. They are required by the current config shape even when the decision model is primary, though it does not use the phrases. In the default split mode, supplied phrases merge with stored built-in defaults; with `sourceOfTruth: config.json`, the supplied lists are the complete phrase set.
 
-For Jev as the primary classifier:
+For a decision model as the primary classifier:
 
 ```yaml
 bifrost:
   governance:
     complexityAnalyzerConfig:
-      classifier: jev
-      jev:
+      classifier: decision
+      decision:
+        provider: typesafe             # Optional: omit provider and model for typesafe/jev-latest
+        model: jev-latest              # e.g. nimble-latest on a custom "nimble" provider
         previous_message_count: 1
         timeout: "1.5s"
         criteria:                      # Optional: omit to use the shipped tier guidance
@@ -415,9 +417,9 @@ bifrost:
         complex_keywords: ["design a solution under several competing constraints."]
 ```
 
-`jev.previous_message_count` accepts 0 to 5 earlier user messages in addition to the current request. Jev usage counts toward request cost and budgets.
+`decision.provider` and `decision.model` are set together; omit both to use `typesafe`/`jev-latest`. `decision.previous_message_count` accepts 0 to 5 earlier user messages in addition to the current request. Decision-model usage counts toward request cost and budgets.
 
-`jev.criteria` optionally overrides the tier guidance Jev classifies against. Its keys are `SIMPLE`, `MEDIUM`, and `COMPLEX`, each with an optional `definition` (max 500 characters), `signals`, and `examples` (each max 12 items of 300 characters). A supplied list replaces the whole default list, and anything omitted uses the shipped default. See [Tier guidance](/features/complexity-router#tier-guidance) for the defaults and how to write your own. To use Jev after an inconclusive semantic result, keep the semantic configuration below, set `semantic.fallback: jev`, and optionally include the `jev` settings above.
+`decision.criteria` optionally overrides the tier guidance the decision model classifies against. Its keys are `SIMPLE`, `MEDIUM`, and `COMPLEX`, each with an optional `definition` (max 500 characters), `signals`, and `examples` (each max 12 items of 300 characters). A supplied list replaces the whole default list, and anything omitted uses the shipped default. See [Tier guidance](/features/complexity-router#tier-guidance) for the defaults and how to write your own. To use the decision model after an inconclusive semantic result, keep the semantic configuration below, set `semantic.fallback: decision`, and optionally include the `decision` settings above.
 
 For Semantic as the primary classifier:
 
