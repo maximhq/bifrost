@@ -21,6 +21,30 @@ func isUnsupportedOperation(err *schemas.BifrostError) bool {
 	return err != nil && err.Error != nil && err.Error.Code != nil && *err.Error.Code == "unsupported_operation"
 }
 
+// rejectUnservableOrderedDecision returns a 400 for an ordered-form decision
+// request (Input plus OrderedQuestions, see BifrostDecisionRequest) on any
+// attempt that cannot serve that form, and nil when the attempt can. Today the
+// only attempt that can is an OpenAI-based provider resolving to a model OpenAI
+// serves on its decisions endpoint (such as gpt-6-luna).
+//
+// It runs at dispatch, before the provider is called, and not inside provider
+// converters, because a raw request body skips converters: a converter-level
+// check would let an ordered body reach a provider that expects the map form.
+// Without this check the other outcome is emulation, which reads only the map
+// form and would silently drop the question order, score labels, and images.
+func rejectUnservableOrderedDecision(ctx *schemas.BifrostContext, provider schemas.Provider, request *schemas.BifrostDecisionRequest) *schemas.BifrostError {
+	if !request.UsesOrderedForm() {
+		return nil
+	}
+	if schemas.ResolveBaseProvider(ctx, provider.GetProviderKey()) == schemas.OpenAI && schemas.IsOpenAIDecisionModelFamily(ctx, request.Model) {
+		return nil
+	}
+	err := providerUtils.NewBifrostBadRequestError(fmt.Sprintf("provider %q cannot serve a decision request with ordered input and questions for model %q; route it to an OpenAI decisions model such as gpt-6-luna", provider.GetProviderKey(), request.Model))
+	err.ExtraFields.Provider = provider.GetProviderKey()
+	err.ExtraFields.OriginalModelRequested = request.Model
+	return err
+}
+
 // decisionSystemPrompt frames the judgment task for an emulating LLM.
 const decisionSystemPrompt = "You are a judgment engine. Read the given state and answer every question by " +
 	"calling the provided function exactly once. For each question emit the requested value and your " +
@@ -42,6 +66,11 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 	key schemas.Key,
 	req *schemas.BifrostDecisionRequest,
 ) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	// Emulation reads State and the Questions map, so an ordered request would
+	// lose its ordering, labels, and images; dispatch already refuses it.
+	if req.UsesOrderedForm() {
+		return nil, providerUtils.NewBifrostBadRequestError("decision emulation cannot serve ordered input and questions; route the request to an OpenAI decisions model such as gpt-6-luna")
+	}
 	if req == nil || len(req.Questions) == 0 {
 		return nil, providerUtils.NewBifrostBadRequestError("decision request requires at least one question")
 	}

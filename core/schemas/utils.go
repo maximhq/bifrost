@@ -2343,6 +2343,17 @@ func IsTypesafeModel(model string) bool {
 	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "~"), "typesafe/")
 }
 
+// openAIDecisionModelPrefix is the model family OpenAI serves on its dedicated
+// POST /v1/decisions endpoint. Dated snapshots share the prefix.
+const openAIDecisionModelPrefix = "gpt-6-luna"
+
+// IsOpenAIDecisionModel checks if the model is served by OpenAI's dedicated
+// Decisions API (e.g. "gpt-6-luna") rather than by a general chat model that
+// would answer a decision through emulation.
+func IsOpenAIDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "openai/"), openAIDecisionModelPrefix)
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {

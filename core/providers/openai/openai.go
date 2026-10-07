@@ -4243,9 +4243,32 @@ func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	)
 }
 
-// Decision is not supported by the OpenAI provider.
+// Decision performs a decision request against OpenAI's dedicated decisions
+// endpoint (POST /v1/decisions). Only an ordered-form request for a model
+// OpenAI serves there, such as gpt-6-luna, is sent natively. Every other request
+// is reported as unsupported: core then emulates a map-form request through the
+// model, and the dispatch guard has already rejected an ordered-form request
+// that does not target a decisions model.
 func (provider *OpenAIProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+	if !request.UsesOrderedForm() || !schemas.IsOpenAIDecisionModelFamily(ctx, request.Model) {
+		return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+	}
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.DecisionRequest); err != nil {
+		return nil, err
+	}
+
+	return HandleOpenAIDecisionRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/decisions", schemas.DecisionRequest),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
 }
 
 // HandleOpenAIRerankRequest handles rerank requests for custom OpenAI-compatible APIs.

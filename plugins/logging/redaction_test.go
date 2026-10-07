@@ -116,3 +116,24 @@ func TestAttachMCPLogRedactionDataSkipsUnavailableContent(t *testing.T) {
 
 	assert.Nil(t, entry.RedactionData)
 }
+
+// TestDecisionInputLogTextRedactsImages pins that a logged ordered decision
+// input keeps its text but never carries inline image data, and that an
+// unfamiliar part is reduced to its type name.
+func TestDecisionInputLogTextRedactsImages(t *testing.T) {
+	assert.Equal(t, "", decisionInputLogText(nil))
+	assert.Equal(t, "I was charged twice.", decisionInputLogText(&schemas.DecisionInput{Text: schemas.Ptr("I was charged twice.")}))
+
+	input := &schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		{Role: "user", Content: schemas.DecisionInputContent{Text: schemas.Ptr("Plain message.")}},
+		{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr("Inspect the product.")},
+			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
+			{Type: "input_audio"},
+		}}},
+	}}
+
+	logged := decisionInputLogText(input)
+	assert.Equal(t, "Plain message.\nInspect the product.\n[image omitted]\n[input_audio]", logged)
+	assert.NotContains(t, logged, "base64")
+}

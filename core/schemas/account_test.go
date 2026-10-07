@@ -798,3 +798,27 @@ func TestApplyRequestRouting(t *testing.T) {
 	nilInfo.ApplyRequestRouting(ctx)
 	(&RoutingInfo{}).ApplyRequestRouting(nil)
 }
+
+// TestIsOpenAIDecisionModelFamilyHonorsAliases pins that an alias resolving to
+// a decisions model is served natively under its canonical name, and that an
+// alias for a chat model is not.
+func TestIsOpenAIDecisionModelFamilyHonorsAliases(t *testing.T) {
+	withAlias := func(modelName string) *BifrostContext {
+		bc := NewBifrostContext(nil, NoDeadline)
+		bc.SetValue(BifrostContextKeyResolvedAlias, &ResolvedAlias{
+			Key:    "my-decider",
+			Config: &AliasConfig{ModelID: "opaque-id", ModelName: Ptr(modelName)},
+		})
+		return bc
+	}
+
+	if !IsOpenAIDecisionModelFamily(withAlias("gpt-6-luna"), "my-decider") {
+		t.Error("an alias resolving to gpt-6-luna must be a decisions model")
+	}
+	if IsOpenAIDecisionModelFamily(withAlias("gpt-4o"), "gpt-6-luna") {
+		t.Error("the canonical model decides, not the requested name")
+	}
+	if !IsOpenAIDecisionModelFamily(nil, "gpt-6-luna") {
+		t.Error("without an alias the requested model decides")
+	}
+}

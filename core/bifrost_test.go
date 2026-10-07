@@ -4714,3 +4714,146 @@ func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
 		t.Errorf("provider must receive state null, got bodies %v", bodies)
 	}
 }
+
+// orderedDecisionTestRequest builds a minimal ordered decision request. The
+// payload is synthetic.
+func orderedDecisionTestRequest(provider schemas.ModelProvider, model string) *schemas.BifrostDecisionRequest {
+	return &schemas.BifrostDecisionRequest{
+		Provider: provider,
+		Model:    model,
+		Input:    &schemas.DecisionInput{Text: schemas.Ptr("I was charged twice for my order.")},
+		OrderedQuestions: []schemas.DecisionOrderedQuestion{
+			{Type: schemas.DecisionOrderedKindPredicate, Name: schemas.Ptr("is_frustrated"), Instructions: "Is the customer frustrated?"},
+		},
+	}
+}
+
+// newOrderedDecisionClient starts a client whose given providers all point at
+// one stub upstream, and returns the client and the paths the upstream saw.
+func newOrderedDecisionClient(t *testing.T, providers ...schemas.ModelProvider) (*Bifrost, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/decisions":
+			_, _ = w.Write([]byte(`{"model":"gpt-6-luna","answers":[{"type":"predicate","name":"is_frustrated","probability":0.97}],"usage":{"input_tokens":9,"output_tokens":0,"total_tokens":9}}`))
+		case "/v1/systemone":
+			_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.25}}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	for _, provider := range providers {
+		account.AddProviderWithBaseURL(provider, 1, 1, server.URL)
+		account.configs[provider].NetworkConfig.MaxRetries = 0
+		account.SetKeysForProvider(provider, []schemas.Key{{
+			ID:     "test-key-" + string(provider),
+			Value:  *schemas.NewSecretVar("sk-test-" + string(provider)),
+			Models: schemas.WhiteList{"*"},
+			Weight: 100,
+		}})
+	}
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("failed to initialize bifrost: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	return client, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), paths...)
+	}
+}
+
+// TestOrderedDecisionRequestIsServedNativelyByOpenAI pins that an ordered
+// request for a decisions model reaches OpenAI's decisions endpoint and comes
+// back as ordered answers, with the map form left empty.
+func TestOrderedDecisionRequestIsServedNativelyByOpenAI(t *testing.T) {
+	client, seenPaths := newOrderedDecisionClient(t, schemas.OpenAI)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := client.DecisionRequest(ctx, orderedDecisionTestRequest(schemas.OpenAI, "gpt-6-luna"))
+	if bifrostErr != nil {
+		t.Fatalf("ordered request must be served natively, got %v", bifrostErr)
+	}
+	if !resp.UsesOrderedForm() || len(resp.OrderedAnswers) != 1 || len(resp.Answers) != 0 {
+		t.Fatalf("expected one ordered answer and no map answers, got %+v", resp)
+	}
+	if got := seenPaths(); !reflect.DeepEqual(got, []string{"/v1/decisions"}) {
+		t.Errorf("upstream saw %v, want only /v1/decisions", got)
+	}
+}
+
+// TestOrderedDecisionRequestIsRefusedWhereItCannotBeServed pins the dispatch
+// guard: an ordered request never reaches a provider or the emulation path that
+// would flatten it, including when a raw request body would skip the provider's
+// own converter.
+func TestOrderedDecisionRequestIsRefusedWhereItCannotBeServed(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		rawBody  bool
+	}{
+		{name: "typesafe", provider: schemas.Typesafe, model: "jev-1.13.0"},
+		{name: "typesafe with raw request body", provider: schemas.Typesafe, model: "jev-1.13.0", rawBody: true},
+		{name: "openai chat model is not emulated", provider: schemas.OpenAI, model: "gpt-4o"},
+		{name: "openai chat model with raw request body", provider: schemas.OpenAI, model: "gpt-4o", rawBody: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, seenPaths := newOrderedDecisionClient(t, tc.provider)
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			request := orderedDecisionTestRequest(tc.provider, tc.model)
+			if tc.rawBody {
+				ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+				request.RawRequestBody = []byte(`{"model":"` + tc.model + `","input":"hi","questions":[{"type":"predicate","name":"q","instructions":"ok?"}]}`)
+			}
+
+			resp, bifrostErr := client.DecisionRequest(ctx, request)
+			if resp != nil || bifrostErr == nil {
+				t.Fatalf("ordered request must be refused, got resp=%+v err=%v", resp, bifrostErr)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Errorf("expected a 400, got %+v", bifrostErr.StatusCode)
+			}
+			if got := seenPaths(); len(got) != 0 {
+				t.Errorf("nothing may reach the upstream, saw %v", got)
+			}
+		})
+	}
+}
+
+// TestDecisionRequestMustCarryExactlyOneForm pins the entry
+// validation: neither form, or both, is refused before dispatch.
+func TestDecisionRequestMustCarryExactlyOneForm(t *testing.T) {
+	client, seenPaths := newOrderedDecisionClient(t, schemas.OpenAI)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	neither := &schemas.BifrostDecisionRequest{Provider: schemas.OpenAI, Model: "gpt-6-luna"}
+	if _, bifrostErr := client.DecisionRequest(ctx, neither); bifrostErr == nil || !strings.Contains(bifrostErr.Error.Message, "questions not provided") {
+		t.Errorf("expected the missing-questions error, got %v", bifrostErr)
+	}
+
+	both := orderedDecisionTestRequest(schemas.OpenAI, "gpt-6-luna")
+	both.Questions = map[string]schemas.DecisionQuestion{"q": {Kind: schemas.DecisionKindNoul}}
+	if _, bifrostErr := client.DecisionRequest(ctx, both); bifrostErr == nil || !strings.Contains(bifrostErr.Error.Message, "exactly one") {
+		t.Errorf("expected the ambiguous-form error, got %v", bifrostErr)
+	}
+	if got := seenPaths(); len(got) != 0 {
+		t.Errorf("nothing may reach the upstream, saw %v", got)
+	}
+}

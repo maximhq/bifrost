@@ -665,7 +665,9 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 	}
 	if request.DecisionRequest != nil {
 		var state string
-		if s, ok := request.DecisionRequest.State.(string); ok {
+		if request.DecisionRequest.UsesOrderedForm() {
+			state = decisionInputLogText(request.DecisionRequest.Input)
+		} else if s, ok := request.DecisionRequest.State.(string); ok {
 			state = s
 		} else if raw, err := sonic.Marshal(request.DecisionRequest.State); err == nil {
 			state = string(raw)
@@ -729,6 +731,40 @@ func redactEmbeddingMediaData(items []schemas.EmbeddingInputItem) []schemas.Embe
 		stripped[i] = schemas.EmbeddingInputItem{Content: parts, Params: item.Params}
 	}
 	return stripped
+}
+
+// decisionImageLogPlaceholder stands in for an inline image in a logged
+// decision input, so base64 image data never reaches the log store.
+const decisionImageLogPlaceholder = "[image omitted]"
+
+// decisionInputLogText renders an ordered decision input for the log: text is
+// kept, an inline image is replaced by a placeholder, and any other part is
+// reduced to its type name.
+func decisionInputLogText(input *schemas.DecisionInput) string {
+	if input == nil {
+		return ""
+	}
+	if input.Text != nil {
+		return *input.Text
+	}
+	var lines []string
+	for _, message := range input.Messages {
+		if message.Content.Text != nil {
+			lines = append(lines, *message.Content.Text)
+			continue
+		}
+		for _, part := range message.Content.Parts {
+			switch {
+			case part.Type == schemas.DecisionInputPartTypeText && part.Text != nil:
+				lines = append(lines, *part.Text)
+			case part.Type == schemas.DecisionInputPartTypeImage:
+				lines = append(lines, decisionImageLogPlaceholder)
+			default:
+				lines = append(lines, "["+part.Type+"]")
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // embeddingMediaDataSize totals the inline media bytes across every item.

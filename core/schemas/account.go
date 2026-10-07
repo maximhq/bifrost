@@ -553,6 +553,14 @@ func IsTypesafeModelFamily(ctx *BifrostContext, model string) bool {
 	return IsTypesafeModel(ResolveCanonicalModel(ctx, model))
 }
 
+// IsOpenAIDecisionModelFamily reports whether the current attempt resolves to a
+// model served by OpenAI's dedicated Decisions API. It honors aliases by
+// resolving the canonical model name first. See IsAnthropicModelFamily for
+// usage notes.
+func IsOpenAIDecisionModelFamily(ctx *BifrostContext, model string) bool {
+	return IsOpenAIDecisionModel(ResolveCanonicalModel(ctx, model))
+}
+
 // IsMistralModelFamily reports whether the current attempt resolves to the
 // Mistral model family. See IsAnthropicModelFamily for usage notes.
 func IsMistralModelFamily(ctx *BifrostContext, model string) bool {

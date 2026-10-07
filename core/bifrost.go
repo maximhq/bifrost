@@ -1633,13 +1633,15 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 			},
 		}
 	}
-	// A nil state is forwarded as JSON null: the TypeSafe SDKs allow it and the
+	// A request is written in exactly one form: the map form (State and the
+	// Questions map) or the ordered form (Input and OrderedQuestions). A nil
+	// state is forwarded as JSON null: the TypeSafe SDKs allow it and the
 	// endpoint decides whether it is acceptable.
-	if len(req.Questions) == 0 {
-		return nil, &schemas.BifrostError{
+	invalidDecisionRequest := func(message string) *schemas.BifrostError {
+		return &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
-				Message: "questions not provided for decision request",
+				Message: message,
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RequestType:            schemas.DecisionRequest,
@@ -1648,6 +1650,12 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 				ResolvedModelUsed:      req.Model,
 			},
 		}
+	}
+	if req.UsesOrderedForm() && req.UsesMapForm() {
+		return nil, invalidDecisionRequest("decision request carries both questions and ordered questions; provide exactly one")
+	}
+	if !req.UsesOrderedForm() && !req.UsesMapForm() {
+		return nil, invalidDecisionRequest("questions not provided for decision request")
 	}
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.DecisionRequest
@@ -8629,6 +8637,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.RerankResponse = rerankResponse
 	case schemas.DecisionRequest:
+		if bifrostError := rejectUnservableOrderedDecision(req.Context, provider, req.BifrostRequest.DecisionRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
 		decisionResponse, bifrostError := provider.Decision(req.Context, key, req.BifrostRequest.DecisionRequest)
 		// A provider without native decision support returns unsupported_operation;
 		// emulate the judgment through that provider's model (tool-calling /
