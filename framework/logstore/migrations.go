@@ -343,6 +343,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"agent_logs_add_raw_payload_columns"}, run: migrationAddAgentRawPayloadColumns},
 	{IDs: []string{"logs_add_matview_refresh_state_table"}, run: migrationAddMatViewRefreshStateTable},
 	{IDs: []string{"logs_add_is_passthrough_column"}, run: migrationAddIsPassthroughColumn},
+	{IDs: []string{"logs_add_warp_topic_tables"}, run: migrationAddWarpTopicTables},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -5374,6 +5375,62 @@ func migrationAddWarpConversationTables(ctx context.Context, db *gorm.DB, logger
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
+}
+
+// migrationAddWarpTopicTables creates the storage for Warp's topics: the
+// topics, one assignment row per request, and the pool of requests that
+// matched no topic. See warptopics.go.
+func migrationAddWarpTopicTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_warp_topic_tables"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	// Transactional so a boot that dies part-way leaves none of the three. No
+	// boundDDLLockWait: this only creates tables that do not exist yet.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&WarpTopic{}, &WarpTopicAssignment{}, &WarpTopicUnmatched{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackWarpTopicTables(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// rollbackWarpTopicTables drops Warp's topic tables, but only while warp_topics
+// is empty.
+//
+// Assignments and the unmatched pool are rebuilt from the logs, but topics are
+// not: they outlive the requests they were built from, and each name came from
+// a model call. Dropping a populated warp_topics deletes what cannot be rebuilt,
+// so it is refused, the same way rollbackWarpConversationTables refuses saved
+// chats. On PostgreSQL warp_topics is locked first, so no topic run can write
+// between the probe and the drop.
+func rollbackWarpTopicTables(tx *gorm.DB) error {
+	if tx.Migrator().HasTable(&WarpTopic{}) {
+		if tx.Dialector.Name() == "postgres" {
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := tx.Exec("LOCK TABLE warp_topics IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+				return fmt.Errorf("could not lock warp topics before rollback: %w", err)
+			}
+		}
+		var present []struct{ One int }
+		if err := tx.Model(&WarpTopic{}).Select("1 AS one").Limit(1).Find(&present).Error; err != nil {
+			return fmt.Errorf("could not check warp topics before rollback: %w", err)
+		}
+		if len(present) > 0 {
+			return fmt.Errorf("logs_add_warp_topic_tables is non-rollbackable: warp_topics holds topics that outlive the requests they were built from and cannot be rebuilt from the logs; clear them first if the rollback is genuinely intended")
+		}
+	}
+	return tx.Migrator().DropTable(&WarpTopicUnmatched{}, &WarpTopicAssignment{}, &WarpTopic{})
 }
 
 // rollbackWarpConversationTables drops Warp's history tables, but only while
