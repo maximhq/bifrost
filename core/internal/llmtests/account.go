@@ -93,6 +93,7 @@ type TestScenarios struct {
 	Rerank                       bool // Rerank functionality
 	Decision                     bool // Decision functionality (annotated function-tool evaluation)
 	DecisionEmulation            bool // Decision emulated via a general LLM (tool-calling / structured output)
+	DecisionOrdered              bool // Ordered decision form (list of questions, answers in request order)
 	PassthroughAPI               bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
 	WebSocketResponses           bool // WebSocket Responses API mode
 	Realtime                     bool // Realtime API (bidirectional audio/text)
