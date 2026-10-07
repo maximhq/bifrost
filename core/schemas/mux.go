@@ -1710,6 +1710,9 @@ func mergeResponseChatMessages(messages []ChatMessage) []ChatMessage {
 	}
 	for i := range merged {
 		if merged[i].ChatAssistantMessage != nil {
+			for j := range merged[i].ChatAssistantMessage.ReasoningDetails {
+				merged[i].ChatAssistantMessage.ReasoningDetails[j].Index = j
+			}
 			for j := range merged[i].ChatAssistantMessage.ToolCalls {
 				merged[i].ChatAssistantMessage.ToolCalls[j].Index = uint16(j)
 			}

@@ -1615,6 +1615,76 @@ func TestToBifrostChatResponse_MergesWholeAssistantTurn(t *testing.T) {
 	}
 }
 
+func TestToBifrostChatResponse_ReindexesMergedReasoningDetails(t *testing.T) {
+	reasoning := func(id, text, summary, encrypted string) ResponsesMessage {
+		return ResponsesMessage{
+			ID: Ptr(id), Type: Ptr(ResponsesMessageTypeReasoning),
+			Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{
+				Type: ResponsesOutputMessageContentTypeReasoning, Text: Ptr(text), Signature: Ptr("sig_" + id),
+			}}},
+			ResponsesReasoning: &ResponsesReasoning{
+				Summary: []ResponsesReasoningSummary{{Type: "summary_text", Text: summary}}, EncryptedContent: Ptr(encrypted),
+			},
+		}
+	}
+	response := &BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: []ResponsesMessage{
+			reasoning("rs_first", "think first", "first summary", "first encrypted"),
+			responsesTextOutput("Checking the weather.")[0],
+			reasoning("rs_second", "think second", "second summary", "second encrypted"),
+			{Type: Ptr(ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &ResponsesToolMessage{
+				CallID: Ptr("call_1"), Name: Ptr("weather"), Arguments: Ptr(`{"city":"Moscow"}`),
+			}},
+		},
+	}
+	before, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// History retains two messages, with reasoning indexes local to each one.
+	history := ToChatMessages(response.Output)
+	if len(history) != 2 {
+		t.Fatalf("expected two history messages, got %d", len(history))
+	}
+	var expected []ChatReasoningDetails
+	for _, message := range history {
+		if message.ChatAssistantMessage == nil || len(message.ReasoningDetails) != 3 {
+			t.Fatalf("expected three reasoning details per history message, got %#v", message)
+		}
+		for i, detail := range message.ReasoningDetails {
+			if detail.Index != i {
+				t.Fatalf("history index = %d, want %d", detail.Index, i)
+			}
+			detail.Index = len(expected)
+			expected = append(expected, detail)
+		}
+	}
+
+	chat := response.ToBifrostChatResponse()
+	if len(chat.Choices) != 1 || chat.Choices[0].Message == nil || chat.Choices[0].Message.ChatAssistantMessage == nil {
+		t.Fatalf("expected one assistant response choice, got %#v", chat)
+	}
+	message := chat.Choices[0].Message
+	if !reflect.DeepEqual(message.ReasoningDetails, expected) {
+		t.Errorf("merged reasoning details = %#v, want ordered payloads with indexes 0 through 5: %#v", message.ReasoningDetails, expected)
+	}
+	if message.Reasoning == nil || *message.Reasoning != "think first\nthink second" {
+		t.Errorf("reasoning text changed: %#v", message.Reasoning)
+	}
+	if message.Content == nil || message.Content.ContentStr == nil || *message.Content.ContentStr != "Checking the weather." || len(message.ToolCalls) != 1 || message.ToolCalls[0].Index != 0 {
+		t.Errorf("text or tool call changed: %#v", message)
+	}
+	after, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Error("response conversion mutated the original Responses output")
+	}
+}
+
 func TestMergeResponseChatMessages_PreservesContentAndAssistantFields(t *testing.T) {
 	first := ChatMessage{Role: ChatMessageRoleAssistant, Content: &ChatMessageContent{ContentStr: Ptr("first")}, ChatAssistantMessage: &ChatAssistantMessage{
 		Reasoning: Ptr("think first"), ReasoningDetails: []ChatReasoningDetails{{Type: BifrostReasoningDetailsTypeText, Text: Ptr("detail first")}},
