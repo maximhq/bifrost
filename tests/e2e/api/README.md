@@ -150,16 +150,23 @@ sent, and answers 200 only on an exact match. Otherwise it answers 400 naming
 every field that drifted, so a wrong forwarded request fails loudly instead of
 passing on an uninspected 200.
 
-Seven cases are red before the caller-request-surface fix and green after:
+Four cases are red before the caller-request-surface fix and green after:
 `between_tools` thinking carrying a sibling `thinking.display`; `enabled` +
-`budget_tokens` on both the typed path and the `claude-cli` raw path; a
-caller-sent effort; and the `temperature`/`top_p`/`top_k` tuple on unary,
-streaming and `count_tokens`. Seven are invariance controls that must pass on
-both trees: bare `between_tools` on unary, streaming and `count_tokens`, the raw
-path's already-correct sampling tuple, and `claude-sonnet-5` keeping its adaptive
-rewrite, its raw-path asymmetry and its dropped count sampling. `count_tokens`
-still deletes `temperature` for every model on both paths; the count cases pin
-that deletion rather than change it.
+`budget_tokens` on both the typed path and the `claude-cli` raw path; and a
+caller-sent effort. Ten are invariance controls that must pass on both trees:
+bare `between_tools` on unary, streaming and `count_tokens`, the raw path's
+already-correct sampling tuple, the three typed sampling cases, and
+`claude-sonnet-5` keeping its adaptive rewrite, its raw-path asymmetry and its
+dropped count sampling. `count_tokens` still deletes `temperature` for every
+model on both paths; the count cases pin that deletion rather than change it.
+
+The three typed sampling cases are controls rather than fixes: this model family
+is adaptive-only, and the typed converter drops `temperature`/`top_p` and deletes
+`top_k` for it because the provider is recorded as rejecting the three. This
+change therefore leaves sampling stripped and expects the same wire stock
+produces. The `sampling-raw` control still forwards all three, so the typed/raw
+divergence stays visible in the table rather than being resolved in the direction
+that could only add provider rejections.
 
 The three bare `between_tools` cases are controls rather than fixes because
 upstream PR #7665 landed while this change was in review: it carries

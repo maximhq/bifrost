@@ -224,15 +224,15 @@ test("the body upstream forwards today is rejected exactly for the fixed cases",
 		);
 		redBefore.push(caseKey);
 	}
-	// Pinned so a case silently demoted to a control is visible in review.
+	// Pinned so a case silently demoted to a control is visible in review. The
+	// three sampling cases left this list when the sampling restore was dropped:
+	// this family is adaptive-only and the typed converter strips the three, so
+	// those cases now expect the same wire stock produces and are controls.
 	assert.deepEqual(redBefore, [
 		"between-tools-display-unary",
 		"enabled-budget-unary",
 		"enabled-budget-raw",
 		"effort-preserved-unary",
-		"sampling-unary",
-		"sampling-stream",
-		"sampling-count",
 	]);
 });
 

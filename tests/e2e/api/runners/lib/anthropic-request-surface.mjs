@@ -156,19 +156,25 @@ export const REQUEST_SURFACE_CASES = {
 		},
 		stock: { thinking: { type: "adaptive", display: "summarized" }, effort: "high", betas: [] },
 	},
+	// The three typed sampling cases expect the STRIPPED wire, which is also what
+	// stock produces: this model family is adaptive-only and the typed converter
+	// drops temperature/top_p and deletes top_k for it, because upstream records
+	// the provider rejecting the three. The cases are kept rather than deleted so
+	// the raw/typed divergence stays visible next to "sampling-raw".
 	"sampling-unary": {
 		path: MESSAGES,
 		model: "claude-sonnet-5-5",
 		expect: {
 			thinking: absent,
 			effort: absent,
-			temperature: 0.5,
-			top_p: 0.9,
-			top_k: 40,
+			temperature: absent,
+			top_p: absent,
+			top_k: absent,
 			requiredBetas: [],
 			forbiddenBetas: [INTERLEAVED_THINKING_BETA],
 		},
-		stock: { temperature: absent, top_p: absent, top_k: absent },
+		// An invariance control now: the expected wire IS what stock produces.
+		stock: {},
 	},
 	"sampling-stream": {
 		path: MESSAGES,
@@ -177,13 +183,14 @@ export const REQUEST_SURFACE_CASES = {
 		expect: {
 			thinking: absent,
 			effort: absent,
-			temperature: 0.5,
-			top_p: 0.9,
-			top_k: 40,
+			temperature: absent,
+			top_p: absent,
+			top_k: absent,
 			requiredBetas: [],
 			forbiddenBetas: [INTERLEAVED_THINKING_BETA],
 		},
-		stock: { temperature: absent, top_p: absent, top_k: absent },
+		// An invariance control now: the expected wire IS what stock produces.
+		stock: {},
 	},
 	"sampling-count": {
 		path: COUNT_TOKENS,
@@ -191,16 +198,16 @@ export const REQUEST_SURFACE_CASES = {
 		expect: {
 			thinking: absent,
 			effort: absent,
-			// count_tokens deletes temperature for EVERY model on both paths.
-			// That is upstream behaviour this change deliberately keeps, so the
-			// case pins the deletion rather than the caller's value.
+			// count_tokens deletes temperature for EVERY model on both paths, and
+			// the other two are stripped for this family anyway.
 			temperature: absent,
-			top_p: 0.9,
-			top_k: 40,
+			top_p: absent,
+			top_k: absent,
 			requiredBetas: [],
 			forbiddenBetas: [INTERLEAVED_THINKING_BETA],
 		},
-		stock: { temperature: absent, top_p: absent, top_k: absent },
+		// An invariance control now: the expected wire IS what stock produces.
+		stock: {},
 	},
 	"sampling-raw": {
 		path: MESSAGES,
