@@ -2361,6 +2361,10 @@
                   "store_raw_request_response": {
                     "type": "boolean"
                   },
+                  "ignore_provider_cost": {
+                    "type": "boolean",
+                    "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+                  },
                   "prompt_cache": {
                     "type": "object",
                     "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default; requests that already carry their own cache markers are never modified.",
@@ -5428,6 +5432,11 @@
                   "minimum": 1,
                   "description": "Connection dial timeout in milliseconds (default: 10000)"
                 },
+                "maxQuerySize": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "ClickHouse max_query_size setting in bytes, the longest SQL text the server will parse (default: 16777216)"
+                },
                 "cluster": {
                   "type": "string",
                   "description": "Optional cluster name; when set, DDL runs ON CLUSTER with replicated table engines"
@@ -5464,6 +5473,12 @@
               "additionalProperties": false
             },
             "objectStorageExcludeFields": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "objectStorageExcludeRequestTypes": {
               "type": "array",
               "items": {
                 "type": "string"
@@ -6516,6 +6531,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for plugins only; stripped before returning to client"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "prompt_cache": {
           "type": "object",

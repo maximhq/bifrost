@@ -125,9 +125,9 @@ type VideoCostDetails struct {
 //
 // Resolution order is provider-reported cost, then the catalog rate, then nothing.
 // A provider that hands back an exact figure is always right about its own bill, so
-// no estimate is allowed to override it.
+// no estimate is allowed to override it, unless the provider is configured to ignore its reported cost.
 func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider schemas.ModelProvider, scopes *LookupScopes) VideoCostDetails {
-	if dims.ProviderCost != nil && *dims.ProviderCost > 0 {
+	if dims.ProviderCost != nil && *dims.ProviderCost > 0 && !s.IsProviderCostIgnored(provider) {
 		return VideoCostDetails{
 			Cost:             *dims.ProviderCost,
 			Priced:           true,
