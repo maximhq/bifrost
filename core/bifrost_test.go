@@ -5247,6 +5247,9 @@ func TestRequestScopedConfiguration_LeavesNoState(t *testing.T) {
 // the caller's goroutine, start nothing that outlives them.
 func TestRequestScopedConfiguration_NoGoroutineLeak(t *testing.T) {
 	server, _ := requestScopedTestServer(t)
+	// Without keep-alives the server holds no goroutine per pooled connection, so the count
+	// cannot move with how many connections the client happens to keep open.
+	server.Config.SetKeepAlivesEnabled(false)
 	plugin := &requestScopedTestPlugin{configure: func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
 		mustConfigureOpenAI(t, req, "sk-scoped", server.URL)
 	}}
