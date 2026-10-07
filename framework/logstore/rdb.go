@@ -189,14 +189,24 @@ func teamOrBUFanoutFrom(idCol string) (string, bool) {
 // this team consume", not "how does org spend divide". DimensionRankingResult
 // reports TotalActualRequests alongside TotalAttributedRequests so the UI can
 // show both. User and virtual key have no array column and stay single-owner.
+//
+// Rows the caller may read but whose id on the dimension it may not be shown
+// (see applyDimensionCeiling) collapse into a second synthetic "Other" entry,
+// so the rollup reconciles to the caller's totals without naming the entity.
 const (
 	unassignedDimensionID   = "unassigned"
 	unassignedDimensionName = "Unassigned"
+	otherDimensionID        = "other"
+	otherDimensionName      = "Other"
 )
 
 // UnassignedDimensionID is the id of the synthetic Unassigned ranking bucket,
 // so callers that decorate rankings can tell it apart from a real entity.
 const UnassignedDimensionID = unassignedDimensionID
+
+// OtherDimensionID is the id of the synthetic Other ranking bucket that holds
+// the caller's rows whose entity it may not be shown.
+const OtherDimensionID = otherDimensionID
 
 // isBucketedDimension reports whether a scalar id column is a rollup dimension
 // that uses the Unassigned bucket: rows with no owner collapse into a synthetic
@@ -3307,13 +3317,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		currentQuery = currentQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
 	}
 
-	var currentResults []struct {
-		ID            string          `gorm:"column:id"`
-		Name          string          `gorm:"column:name"`
-		TotalRequests int64           `gorm:"column:total_requests"`
-		TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
-		TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
-	}
+	var currentResults []dimensionRankingRow
 
 	if err := applyRankingLimit(currentQuery.
 		Select(selectClause).
@@ -3327,7 +3331,12 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		return nil, fmt.Errorf("failed to get dimension rankings for %s: %w", dimension, err)
 	}
 
-	if len(currentResults) == 0 {
+	hidden, hasHidden, err := s.hiddenDimensionTotals(ctx, src, idCol, filters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get hidden dimension totals for %s: %w", dimension, err)
+	}
+
+	if len(currentResults) == 0 && !hasHidden {
 		return &DimensionRankingResult{
 			Rankings:  []DimensionRankingWithTrend{},
 			Dimension: dimension,
@@ -3357,13 +3366,11 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		requestCounts.AttributedRequests = total
 
 		if src.FannedOut {
+			// No ceiling: the attributions the caller may not be shown are in the
+			// Other row, so this still equals the sum of every ranking row.
 			attributedQuery := src.base(s.scopedLogsDB(ctx))
 			attributedQuery = s.applyFilters(attributedQuery, filters)
 			attributedQuery = attributedQuery.Where("status IN ?", terminalLogStatuses)
-			// Same ceiling as the rankings themselves: this total is the sum of
-			// the rows above, so counting attributions the caller may not be
-			// shown would make it disagree with them.
-			attributedQuery = applyDimensionCeiling(ctx, attributedQuery, src, idCol)
 			var attributed int64
 			if err := attributedQuery.Count(&attributed).Error; err != nil {
 				return nil, fmt.Errorf("failed to get attributed dimension ranking totals for %s: %w", dimension, err)
@@ -3417,11 +3424,15 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 			COALESCE(SUM(cost), 0) as total_cost
 		`, groupExpr)
 
-		if err := prevQuery.
-			Select(prevSelect).
-			Group(groupExpr).
-			Find(&prevResults).Error; err != nil {
-			return nil, fmt.Errorf("failed to get previous period dimension rankings: %w", err)
+		// With no visible row there are no ids to narrow this to, and only Other's
+		// previous total (read below) is needed.
+		if len(currentResults) > 0 {
+			if err := prevQuery.
+				Select(prevSelect).
+				Group(groupExpr).
+				Find(&prevResults).Error; err != nil {
+				return nil, fmt.Errorf("failed to get previous period dimension rankings: %w", err)
+			}
 		}
 
 		for _, r := range prevResults {
@@ -3431,6 +3442,38 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 				TotalTokens:   r.TotalTokens.Int64,
 				TotalCost:     r.TotalCost.Float64,
 			}
+		}
+
+		if hasHidden {
+			prevHidden, ok, err := s.hiddenDimensionTotals(ctx, src, idCol, prevFilters)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get previous period hidden dimension totals for %s: %w", dimension, err)
+			}
+			if ok {
+				prevMap[otherDimensionID] = DimensionRankingEntry{
+					ID:            otherDimensionID,
+					TotalRequests: prevHidden.TotalRequests,
+					TotalTokens:   prevHidden.TotalTokens.Int64,
+					TotalCost:     prevHidden.TotalCost.Float64,
+				}
+			}
+		}
+	}
+
+	if hasHidden {
+		currentResults = append(currentResults, dimensionRankingRow{
+			ID:            otherDimensionID,
+			Name:          otherDimensionName,
+			TotalRequests: hidden.TotalRequests,
+			TotalTokens:   hidden.TotalTokens,
+			TotalCost:     hidden.TotalCost,
+		})
+		sort.SliceStable(currentResults, func(i, j int) bool {
+			return currentResults[i].TotalRequests > currentResults[j].TotalRequests
+		})
+		// Other competes for the top-N like any row, so the limit still holds.
+		if limit := filters.EffectiveRankingLimit(defaultMaxRankingsLimit); limit > 0 && len(currentResults) > limit {
+			currentResults = currentResults[:limit]
 		}
 	}
 
@@ -6455,6 +6498,9 @@ func (s *RDBLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64
 // column directly. Passing the wrong one is a SQL error rather than a silent
 // hole, which is the failure mode to prefer.
 //
+// GetDimensionRankings adds the dropped rows back as one Other row (see
+// applyDimensionCeilingComplement), so its totals still reconcile.
+//
 // Rows with no id on this dimension are always kept. They aggregate into the
 // synthetic Unassigned bucket, which names no organisation and therefore
 // discloses nothing — dropping them would understate the caller's own totals
@@ -6477,6 +6523,68 @@ func applyDimensionCeiling(ctx context.Context, q *gorm.DB, src dimensionReadSou
 		return q.Where(unowned)
 	}
 	return q.Where(fmt.Sprintf("%s IN ? OR %s", col, unowned), allowed)
+}
+
+// dimensionRankingRow is one grouped row of a dimension ranking query.
+type dimensionRankingRow struct {
+	ID            string          `gorm:"column:id"`
+	Name          string          `gorm:"column:name"`
+	TotalRequests int64           `gorm:"column:total_requests"`
+	TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+	TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+}
+
+// dimensionTotals is one aggregate over a set of log rows.
+type dimensionTotals struct {
+	TotalRequests int64           `gorm:"column:total_requests"`
+	TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+	TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+}
+
+// hiddenDimensionTotals sums the caller's rows in the window whose id on this
+// dimension it may not be shown, which become the Other ranking row. ok is
+// false when nothing is hidden.
+func (s *RDBLogStore) hiddenDimensionTotals(ctx context.Context, src dimensionReadSource, idCol string, filters SearchFilters) (dimensionTotals, bool, error) {
+	var totals dimensionTotals
+	if !src.Bucketed {
+		return totals, false, nil
+	}
+	q := src.base(s.scopedLogsDB(ctx))
+	q = s.applyFilters(q, filters)
+	q = q.Where("status IN ?", terminalLogStatuses)
+	q, bounded := applyDimensionCeilingComplement(ctx, q, src, idCol)
+	if !bounded {
+		return totals, false, nil
+	}
+	if err := q.Select("COUNT(*) as total_requests, SUM(total_tokens) as total_tokens, COALESCE(SUM(cost), 0) as total_cost").
+		Scan(&totals).Error; err != nil {
+		return totals, false, err
+	}
+	return totals, totals.TotalRequests > 0, nil
+}
+
+// applyDimensionCeilingComplement keeps exactly the rows applyDimensionCeiling
+// drops: an id on this dimension the caller may not be shown. bounded is false
+// when ctx sets no ceiling for idCol, since nothing is hidden then.
+func applyDimensionCeilingComplement(ctx context.Context, q *gorm.DB, src dimensionReadSource, idCol string) (*gorm.DB, bool) {
+	scope := queryscope.DimensionFromContext(ctx)
+	if scope == nil {
+		return q, false
+	}
+	allowed, bounded := scope(idCol)
+	if !bounded {
+		return q, false
+	}
+	col := idCol
+	if src.FannedOut {
+		col = "dim_id"
+	}
+	q = q.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", col, col))
+	if len(allowed) == 0 {
+		return q, true
+	}
+	notIn, arg := queryscope.NotInStrings(q, col, allowed)
+	return q.Where(notIn, arg), true
 }
 
 // applyCommaListOverlapFilter matches rows whose comma-separated column
