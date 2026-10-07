@@ -5463,6 +5463,27 @@ func (s *RDBLogStore) applyAgentHistoryFilters(query *gorm.DB, filter AgentLogHi
 		"user_id": filter.UserID, "virtual_key_id": filter.VirtualKeyID, "project_id": filter.ProjectID,
 		"event_type": filter.EventType, "status": filter.Status, "record_kind": filter.RecordKind,
 	} {
+		if column == "event_type" && slices.Contains(filter.RecordKind, "request") {
+			// Request rows carry no event type. Match it on correlated child events
+			// and return their parent operation, within the same DAC scope.
+			if len(values) > 0 {
+				matchingEvents := s.ScopedDB(query.Statement.Context).
+					Model(&AgentLog{}).
+					Select("request_id").
+					Where("record_kind = ? AND event_type IN ?", "event", values)
+				if windowedRequestIDs != nil {
+					matchingEvents = matchingEvents.Where("request_id IN (?)", windowedRequestIDs)
+				}
+				if slices.Contains(filter.RecordKind, "event") {
+					// Event rows must match the type themselves; other rows inherit the
+					// match from their operation's child events.
+					query = query.Where("((record_kind <> ? AND request_id IN (?)) OR (record_kind = ? AND event_type IN ?))", "event", matchingEvents, "event", values)
+				} else {
+					query = query.Where("request_id IN (?)", matchingEvents)
+				}
+			}
+			continue
+		}
 		if len(values) > 0 {
 			query = query.Where(column+" IN ?", values)
 		}
@@ -5645,6 +5666,40 @@ func (s *RDBLogStore) GetAgentLogStats(ctx context.Context, filter AgentLogHisto
 		stats.SuccessRate = float64(row.SuccessCount) / float64(terminal) * 100
 	}
 	return stats, nil
+}
+
+// GetAgentTopAgents ranks Agents by operation count for the given filter. Only
+// request rows are counted, so an operation's stream events do not inflate its
+// Agent's total. The request-row restriction is part of the filter, like the
+// operation list, so task-state and search filters that match child events
+// still select their parent operation.
+func (s *RDBLogStore) GetAgentTopAgents(ctx context.Context, filter AgentLogHistoryFilter, limit int) (*AgentTopAgentsResult, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	filter.RecordKind = []string{"request"}
+	query := s.applyAgentHistoryFilters(s.ScopedDB(ctx).Model(&AgentLog{}), filter)
+
+	var results []struct {
+		AgentName      string  `gorm:"column:agent_name"`
+		Count          int64   `gorm:"column:count"`
+		ErrorCount     int64   `gorm:"column:error_count"`
+		AverageLatency float64 `gorm:"column:average_latency"`
+	}
+	if err := query.
+		Select("agent_name, COUNT(*) as count, SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count, COALESCE(AVG(latency), 0) as average_latency").
+		Group("agent_name").
+		Order("count DESC, agent_name ASC").
+		Limit(limit).
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get Agent top agents: %w", err)
+	}
+
+	agents := make([]AgentTopAgentResult, len(results))
+	for i, r := range results {
+		agents[i] = AgentTopAgentResult{AgentName: r.AgentName, Count: r.Count, ErrorCount: r.ErrorCount, AverageLatency: r.AverageLatency}
+	}
+	return &AgentTopAgentsResult{Agents: agents}, nil
 }
 
 // GetAgentHistogram returns time-bucketed A2A volume for the given filter, split

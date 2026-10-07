@@ -276,8 +276,8 @@ func TestAgentLogLatencyBreakdownRoundTrip(t *testing.T) {
 	now := time.Now().UTC()
 	upstream, overheadTotal, latency := 10.0, 5.0, 15.0
 	breakdown := []OverheadBucket{
-		{Name: "plugin.logging", Kind: "plugin", DurationUs: 2000},
-		{Name: "scheduling", Kind: "scheduling", DurationUs: 3000},
+		{Name: "plugin.logging", DurationUs: 2000},
+		{Name: "scheduling", DurationUs: 3000},
 	}
 	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{{
 		ID: "latency-row", Timestamp: now, RecordKind: "request", Operation: "message/send", Status: "success",

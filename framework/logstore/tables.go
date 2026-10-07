@@ -1501,6 +1501,19 @@ type AgentLogStats struct {
 	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
 }
 
+// AgentTopAgentResult is one Agent's operation totals in a top-Agents ranking.
+type AgentTopAgentResult struct {
+	AgentName      string  `json:"agent_name"`
+	Count          int64   `json:"count"`
+	ErrorCount     int64   `json:"error_count"`
+	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
+}
+
+// AgentTopAgentsResult ranks Agents by operation count.
+type AgentTopAgentsResult struct {
+	Agents []AgentTopAgentResult `json:"agents"`
+}
+
 // AgentHistogramBucket is one time bucket of the A2A volume chart.
 type AgentHistogramBucket struct {
 	Timestamp time.Time `json:"timestamp"`

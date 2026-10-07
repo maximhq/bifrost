@@ -1100,7 +1100,7 @@ func TestAgentGatewayExtendedCardFollowsEnforcementSetting(t *testing.T) {
 	vk := &tables.TableVirtualKey{ID: "vk-1", Value: *schemas.NewSecretVar("sk-bf-one"), IsActive: &active}
 	store := &agentAuthStore{byID: map[string]*tables.TableVirtualKey{"vk-1": vk}, byValue: map[string]*tables.TableVirtualKey{"sk-bf-one": vk}}
 	// Enforcement is deliberately disabled: anonymous traffic is otherwise allowed.
-	config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: false}}
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: false, A2AExternalClientURL: schemas.NewSecretVar("http://gateway")}}
 	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{AuthPolicy: AgentGatewayAuthPolicy(config)})
 	require.NoError(t, err)
 	defer manager.Close()

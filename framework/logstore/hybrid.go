@@ -1666,6 +1666,12 @@ func (h *HybridLogStore) GetAgentLogStats(ctx context.Context, filter AgentLogHi
 	return h.inner.GetAgentLogStats(ctx, filter)
 }
 
+// GetAgentTopAgents delegates to the database store; the ranking uses only
+// database-resident columns.
+func (h *HybridLogStore) GetAgentTopAgents(ctx context.Context, filter AgentLogHistoryFilter, limit int) (*AgentTopAgentsResult, error) {
+	return h.inner.GetAgentTopAgents(ctx, filter, limit)
+}
+
 func (h *HybridLogStore) GetAgentFilterData(ctx context.Context, dimensions []string, limit int, query string) (*AgentFilterData, error) {
 	return h.inner.GetAgentFilterData(ctx, dimensions, limit, query)
 }
