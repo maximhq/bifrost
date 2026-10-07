@@ -541,6 +541,16 @@ func isContainerRequestType(reqType schemas.RequestType) bool {
 		reqType == schemas.ContainerFileDeleteRequest
 }
 
+// isMultiKeyRequestType reports whether an operation is handed the provider's whole key list
+// rather than one selected key: every batch, file, container and cached-content operation
+// except the ones that create a resource.
+func isMultiKeyRequestType(reqType schemas.RequestType) bool {
+	return isBatchRequestType(reqType) && reqType != schemas.BatchCreateRequest ||
+		isFileRequestType(reqType) && reqType != schemas.FileUploadRequest ||
+		isContainerRequestType(reqType) && reqType != schemas.ContainerCreateRequest && reqType != schemas.ContainerFileCreateRequest ||
+		isCachedContentRequestType(reqType) && reqType != schemas.CachedContentCreateRequest
+}
+
 // isModellessVideoRequestType returns true if the given request type is a video request that can
 // be served without a model. Callers gate on model == "", so video edit — which takes a model when
 // the source is uploaded and omits it when the source is an existing video ID — belongs here too.

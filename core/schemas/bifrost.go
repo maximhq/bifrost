@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -624,6 +625,22 @@ type Fallback struct {
 	KeyID    string        `json:"key_id,omitempty"` // pins a provider key for this attempt; empty means normal key selection
 }
 
+// ProviderOverride is provider configuration supplied with a request rather than configured
+// in Bifrost, for plugins that do dynamic user lookup and set provider/model configuration at
+// runtime. Every attempt of the request against Provider, the primary or a fallback, runs with
+// it: the attempt does not read the provider's configured keys or network settings, and the
+// provider does not need to be configured at all. Nothing about an override is registered,
+// cached or persisted; it is released with the request.
+//
+// Set it with the BifrostRequest UpdateProviderKey, UpdateProviderBaseURL and
+// UpdateProviderAllowPrivateNetwork methods.
+type ProviderOverride struct {
+	Provider            ModelProvider // provider the configuration applies to
+	Key                 Key           // credential, including endpoint settings kept on the key (AzureKeyConfig.Endpoint, VLLMKeyConfig.URL, BedrockKeyConfig.Region, ...)
+	BaseURL             string        // replaces network_config.base_url for the provider; empty keeps the provider default
+	AllowPrivateNetwork bool          // permits RFC 1918 and loopback destinations; link-local stays blocked
+}
+
 // BifrostRequest is the request struct for all bifrost requests.
 // only ONE of the following fields should be set:
 // - ListModelsRequest
@@ -694,6 +711,11 @@ type BifrostRequest struct {
 	ContainerFileContentRequest  *BifrostContainerFileContentRequest
 	ContainerFileDeleteRequest   *BifrostContainerFileDeleteRequest
 	PassthroughRequest           *BifrostPassthroughRequest
+
+	// ProviderOverrides holds request-scoped provider configuration, at most one entry per
+	// provider. Set it with the UpdateProviderKey, UpdateProviderBaseURL and
+	// UpdateProviderAllowPrivateNetwork methods. It carries credentials and is never serialized.
+	ProviderOverrides []ProviderOverride `json:"-"`
 }
 
 // GetRequestFields returns the provider, model, and fallbacks from the request.
@@ -1082,6 +1104,116 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 	case br.CachedContentDeleteRequest != nil:
 		br.CachedContentDeleteRequest.RawRequestBody = rawRequestBody
 	}
+}
+
+// UpdateProviderKey makes key the credential of every attempt of this request against
+// provider, the primary and any fallback. The key is used as given: it is not looked up in,
+// checked against or added to the provider's configured keys, and the provider does not need
+// to be configured. Its fields must hold literal values; env. and vault. references are
+// rejected. A key without an ID is reported in routing info as "request-scoped".
+//
+// Call it from PreRequestHook to set the credential for the whole request. PreLLMHook can
+// change it for the attempt about to run, for example to give two fallbacks to the same
+// provider different credentials. A request that leaves PreRequestHook without any
+// request-scoped configuration resolves its provider before PreLLMHook as usual, so a
+// provider that is not configured in Bifrost must be given its configuration there.
+func (br *BifrostRequest) UpdateProviderKey(provider ModelProvider, key Key) error {
+	if key.hasSecretReference() {
+		return errors.New("request-scoped key must hold literal values, not env. or vault. references")
+	}
+	override, err := br.providerOverride(provider)
+	if err != nil {
+		return err
+	}
+	override.Key = key
+	return nil
+}
+
+// UpdateProviderBaseURL sends this request's attempts against provider to baseURL, which
+// takes the form network_config.base_url takes for that provider. Providers that keep their
+// endpoint on the key (Azure, Bedrock, vLLM) take it from the key instead and fail an
+// attempt that carries a base URL.
+//
+// The URL must be http or https with a host and no user info, query or fragment; trailing
+// slashes are removed. Its destination is checked when Bifrost connects: link-local
+// addresses are always refused, and RFC 1918 and loopback addresses need
+// UpdateProviderAllowPrivateNetwork.
+func (br *BifrostRequest) UpdateProviderBaseURL(provider ModelProvider, baseURL string) error {
+	baseURL, err := requestScopedBaseURL(baseURL)
+	if err != nil {
+		return err
+	}
+	override, err := br.providerOverride(provider)
+	if err != nil {
+		return err
+	}
+	override.BaseURL = baseURL
+	return nil
+}
+
+// UpdateProviderAllowPrivateNetwork lets this request's attempts against provider connect to
+// RFC 1918 and loopback addresses, as network_config.allow_private_network does for a
+// configured provider. Link-local addresses stay blocked.
+func (br *BifrostRequest) UpdateProviderAllowPrivateNetwork(provider ModelProvider, allow bool) error {
+	override, err := br.providerOverride(provider)
+	if err != nil {
+		return err
+	}
+	override.AllowPrivateNetwork = allow
+	return nil
+}
+
+// ProviderOverrideFor returns the request-scoped configuration this request carries for
+// provider, or nil when it has none.
+func (br *BifrostRequest) ProviderOverrideFor(provider ModelProvider) *ProviderOverride {
+	if br == nil {
+		return nil
+	}
+	for i := range br.ProviderOverrides {
+		if br.ProviderOverrides[i].Provider == provider {
+			return &br.ProviderOverrides[i]
+		}
+	}
+	return nil
+}
+
+// providerOverride returns the request's override for provider, adding an empty one when
+// the request has none.
+func (br *BifrostRequest) providerOverride(provider ModelProvider) (*ProviderOverride, error) {
+	if br == nil {
+		return nil, errors.New("bifrost request is nil")
+	}
+	if provider == "" {
+		return nil, errors.New("provider is required")
+	}
+	if override := br.ProviderOverrideFor(provider); override != nil {
+		return override, nil
+	}
+	br.ProviderOverrides = append(br.ProviderOverrides, ProviderOverride{Provider: provider})
+	return &br.ProviderOverrides[len(br.ProviderOverrides)-1], nil
+}
+
+// requestScopedBaseURL checks the shape of a request-scoped base URL and returns it without
+// trailing slashes. The host is not resolved here; its addresses are checked when Bifrost
+// connects. Errors do not quote the URL, which may carry a credential.
+func requestScopedBaseURL(baseURL string) (string, error) {
+	rest, ok := strings.CutPrefix(baseURL, "https://")
+	if !ok {
+		rest, ok = strings.CutPrefix(baseURL, "http://")
+	}
+	if !ok {
+		return "", errors.New("base URL must start with http:// or https://")
+	}
+	if host, _, _ := strings.Cut(rest, "/"); host == "" || host[0] == ':' {
+		return "", errors.New("base URL must have a host")
+	}
+	for i := 0; i < len(rest); i++ {
+		switch c := rest[i]; {
+		case c <= ' ', c == 0x7f, c == '@', c == '?', c == '#', c == '\\':
+			return "", errors.New("base URL must not contain user info, a query, a fragment, backslashes or whitespace")
+		}
+	}
+	return strings.TrimRight(baseURL, "/"), nil
 }
 
 type MCPRequestType string

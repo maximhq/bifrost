@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -333,6 +334,65 @@ func TestConfigureDialer_SSRFProtection(t *testing.T) {
 				t.Errorf("expected error containing %q, got %q", tt.wantErr, err.Error())
 			}
 		})
+	}
+}
+
+// TestConfigureDialerFor_LoopbackIsPrivate verifies that a client built with
+// LoopbackIsPrivate reaches loopback only when private networks are allowed, while
+// ConfigureDialer keeps loopback reachable.
+func TestConfigureDialerFor_LoopbackIsPrivate(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	tests := []struct {
+		name    string
+		build   func(*fasthttp.Client) *fasthttp.Client
+		wantErr bool
+	}{
+		{"ConfigureDialer", func(c *fasthttp.Client) *fasthttp.Client { return ConfigureDialer(c, false) }, false},
+		{"network config", func(c *fasthttp.Client) *fasthttp.Client { return ConfigureDialerFor(c, schemas.NetworkConfig{}) }, false},
+		{"loopback private", func(c *fasthttp.Client) *fasthttp.Client {
+			return ConfigureDialerFor(c, schemas.NetworkConfig{LoopbackIsPrivate: true})
+		}, true},
+		{"loopback private, private network allowed", func(c *fasthttp.Client) *fasthttp.Client {
+			return ConfigureDialerFor(c, schemas.NetworkConfig{LoopbackIsPrivate: true, AllowPrivateNetwork: true})
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := tt.build(&fasthttp.Client{ReadTimeout: time.Second})
+			conn, err := client.Dial(ln.Addr().String())
+			if conn != nil {
+				_ = conn.Close()
+			}
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "private IP") {
+					t.Fatalf("expected the loopback dial to be refused, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected the loopback dial to succeed, got %v", err)
+			}
+		})
+	}
+
+	// Link-local stays blocked even with private networks allowed.
+	client := ConfigureDialerFor(&fasthttp.Client{ReadTimeout: time.Second}, schemas.NetworkConfig{LoopbackIsPrivate: true, AllowPrivateNetwork: true})
+	if _, err := client.Dial("169.254.169.254:80"); err == nil || !strings.Contains(err.Error(), "link-local IP") {
+		t.Fatalf("expected link-local to be refused, got %v", err)
 	}
 }
 

@@ -76,6 +76,12 @@ type NetworkConfig struct {
 	HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"` // Seconds of stream idle before an HTTP/2 keepalive PING (0 = disabled; only when enforce_http2)
 	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
 	AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
+
+	// LoopbackIsPrivate makes loopback addresses subject to AllowPrivateNetwork instead of
+	// always reachable. Runtime-only: Bifrost sets it on the provider instances that serve
+	// request-scoped configuration (see ProviderOverride), whose destinations come from
+	// requests rather than from the operator, and it is never serialized.
+	LoopbackIsPrivate bool `json:"-"`
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -853,6 +859,20 @@ type ResponsesLifecycleProvider interface {
 // not implement it fall back to a per-provider default in core/providers/utils.
 type ResponsesNamespaceToolProvider interface {
 	SupportsResponsesNamespaceTools(ctx *BifrostContext, key Key, model string) bool
+}
+
+// RequestScopedProvider is an optional interface for providers that can serve an attempt
+// configured by the request (see ProviderOverride) without process state or ambient
+// credentials. Bifrost calls ForRequest on an instance it built with default network settings
+// and never registered, and fails the attempt without calling the provider when ForRequest
+// returns an error. Providers that do not implement it cannot be configured per request.
+type RequestScopedProvider interface {
+	// ForRequest checks that key and baseURL can serve requestType and returns the provider to
+	// run the attempt with: the receiver when baseURL is empty, otherwise a copy that sends
+	// requests to baseURL and shares the receiver's HTTP clients. It rejects configurations the
+	// provider would serve with ambient credentials or per-credential caches, and a base URL
+	// it cannot honor.
+	ForRequest(requestType RequestType, key Key, baseURL string) (Provider, error)
 }
 
 // WebSocketCapableProvider is an optional interface that providers can implement
