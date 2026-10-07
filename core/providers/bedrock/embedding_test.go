@@ -336,7 +336,7 @@ func TestToBedrockTitanMultimodalEmbeddingRequest(t *testing.T) {
 			}}},
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), `do not support "audio" parts`)
+		assert.Contains(t, err.Error(), `does not support "audio" parts`)
 	})
 
 	t.Run("two images cannot be represented in one request", func(t *testing.T) {
@@ -1073,7 +1073,7 @@ func TestToBedrockNovaEmbeddingRequest(t *testing.T) {
 				input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
 					{Type: schemas.EmbeddingContentPartTypeFile, File: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("data:application/pdf;base64,AA==")}},
 				}}},
-				message: `do not support "file" parts`,
+				message: `does not support "file" parts`,
 			},
 			{
 				name: "an https url Nova will not fetch",

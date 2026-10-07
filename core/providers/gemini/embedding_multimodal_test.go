@@ -153,7 +153,7 @@ func TestGeminiEmbeddingRequestsHoistUniformParamsToRequestLevel(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, req := range []*schemas.BifrostEmbeddingRequest{batch, single} {
-		require.NoError(t, schemas.EmbeddingInput(req.Input).RejectPerItemParams("openai"))
+		require.NoError(t, schemas.EmbeddingInput(req.Input).RejectPerItemParams())
 		require.NotNil(t, req.Params)
 		require.Equal(t, dims, *req.Params.Dimensions)
 		require.Equal(t, taskType, *req.Params.TaskType)
