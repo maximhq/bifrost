@@ -207021,7 +207021,7 @@
       ]
     },
     {
-      "name": "184. Model tags on the management models API (PR #7944) (model-tags-api)",
+      "name": "197. Model tags on the management models API (PR #7944) (model-tags-api)",
       "description": "PR #7944 adds PUT /api/models/tags, which replaces the tags of each listed provider/model (written to config_models in one transaction; an empty list clears them), returns the tags on GET /api/models and GET /api/models/details, and filters both with tags=a,b (every listed tag must match). An invalid tag is a 400 on the write and on the filter; an unconfigured provider is a 404. These rows record openai/gpt-4o-mini's current tags from GET /api/models, tag it, check both listings with the filter and the every-tag rule, check the 400 replies (an invalid tag, and 51 tags of which only 50 are distinct: the cap counts the list as sent, as config.schema.json's maxItems does) and the 404 reply, then restore the recorded tags and confirm the filtered listing is empty. Before the PR the write route does not exist and the tags parameter is ignored, so the write, filter and 400 rows fail. Needs a config store (the default harness profile has one). No inference request is made; the listings read the gateway's model catalog.",
       "item": [
         {
@@ -207537,7 +207537,7 @@
       ]
     },
     {
-      "name": "185. Model tags filter on /v1/models (model-tags)",
+      "name": "198. Model tags filter on /v1/models (model-tags)",
       "description": "PR #7945 returns operator-assigned model tags (set through PUT /api/models/tags) on GET /v1/models and filters that listing with tags=a,b (every listed tag must match). The filter runs in the gateway after the provider listing, is not forwarded upstream, and pagination is cut from the filtered list. These rows record openai/gpt-4o-mini's current tags, tag it, list with the filter (only tagged models, each carrying the tag), check the every-tag rule, then restore the recorded tags and confirm the filtered listing is empty. Before the PR /v1/models carries no tags and ignores the tags parameter, so the filter rows fail. Needs a config store (the default harness profile has one). The list calls hit the OpenAI models endpoint only; no tokens are spent.",
       "item": [
         {
