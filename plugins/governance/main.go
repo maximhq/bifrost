@@ -773,23 +773,8 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// This is the funnel every pipeline passes through, including the streaming, realtime-turn and
 	// MCP ones that run no request hook, so refusing here is what makes the answer the same on all
 	// of them.
-	if refusal := unusablePermit(access); refusal != nil {
+	if refusal := IdentityRefusal(ctx, access); refusal != nil {
 		return p.decide(ctx, refusal)
-	}
-	if access == nil && presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx) {
-		return p.decide(ctx, &EvaluationResult{
-			Decision: DecisionAccessNotFound,
-			Reason:   "access not found. The provided credential does not exist or has been revoked.",
-		})
-	}
-	// Blocked rather than not-found, though the shape of the question is the same. A credential that
-	// resolves to nothing is an authentication failure and says so; a caller who authenticated fine
-	// and named a project they may not have is being refused, not asked to identify themselves again.
-	if named, nothingScoped := namedProjectNothingScoped(ctx); nothingScoped {
-		return p.decide(ctx, &EvaluationResult{
-			Decision: DecisionAccessBlocked,
-			Reason:   fmt.Sprintf("project %q not found. It does not exist or does not admit this request.", named),
-		})
 	}
 
 	// Step 3: what the request may reach.
@@ -840,6 +825,33 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	}
 
 	return p.decide(ctx, result)
+}
+
+// IdentityRefusal is the funnel's refusal for who the request is, whatever it asks for: a permit it
+// carries may not be used, the credential it presented resolved to no access, or the project it
+// named scoped nothing. Nil when the request passes that step. A layer that runs before the funnel
+// asks it of the access it resolved so it spends nothing on a request that is going to be refused,
+// such as routing, whose rules can call a paid classifier.
+func IdentityRefusal(ctx *schemas.BifrostContext, access schemas.Access) *EvaluationResult {
+	if refusal := unusablePermit(access); refusal != nil {
+		return refusal
+	}
+	if access == nil && presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx) {
+		return &EvaluationResult{
+			Decision: DecisionAccessNotFound,
+			Reason:   "access not found. The provided credential does not exist or has been revoked.",
+		}
+	}
+	// Blocked rather than not-found, though the shape of the question is the same. A credential that
+	// resolves to nothing is an authentication failure and says so; a caller who authenticated fine
+	// and named a project they may not have is being refused, not asked to identify themselves again.
+	if named, nothingScoped := namedProjectNothingScoped(ctx); nothingScoped {
+		return &EvaluationResult{
+			Decision: DecisionAccessBlocked,
+			Reason:   fmt.Sprintf("project %q not found. It does not exist or does not admit this request.", named),
+		}
+	}
+	return nil
 }
 
 // unusablePermit is the refusal for a request that carries a permit that may not be used: one that

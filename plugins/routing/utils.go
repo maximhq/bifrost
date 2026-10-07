@@ -8,6 +8,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 )
@@ -25,6 +26,13 @@ func (p *RoutingPlugin) resolveGovernanceScope(ctx *schemas.BifrostContext) (rul
 	if err != nil {
 		// A request nothing settled who it is: governance refuses it downstream, and there is no
 		// scope to match rules against here.
+		return rules.GovernanceScope{}, false
+	}
+	// A request governance refuses for who it is, a deactivated, expired or unknown credential or a
+	// project that does not admit it, is not routed: rules can call a paid classifier, and the
+	// refused request's trail would read as though it had been routed.
+	if governance.IdentityRefusal(ctx, access) != nil {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Routing skipped: governance refuses this request's credential")
 		return rules.GovernanceScope{}, false
 	}
 	if access == nil {

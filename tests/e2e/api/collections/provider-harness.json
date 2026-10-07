@@ -205719,6 +205719,511 @@
           }
         }
       ]
+    },
+    {
+      "name": "175. Routing skips a request governance refuses for its credential (refused-credential-routing)",
+      "description": "Governance refuses a request whose virtual key is deactivated, expired or unknown, but the routing plugin ran first: every rule in reach was evaluated (a paid complexity classifier included) and load balancing ran, so the refused request's log row named the matched rule and the provider and model it would have been sent to. Routing now asks governance whether the request is going to be refused for its credential and skips rule evaluation and load balancing when it is. The refusal itself is unchanged.\n\nEach row creates a header-gated global rule that would send the request to anthropic/claude-haiku-4-5, then sends gpt-4o-mini with (1) a deactivated key, (2) a key that expired seconds after it was made, or (3) a key that does not exist. The response must be the refusal, and the request's log row must name no routing rule, keep the requested model, and say routing was skipped. Nothing reaches a provider. Each row deletes what it made. Run with FEATURE=\"refused-credential-routing\".",
+      "item": [
+        {
+          "name": "[EXPECT-403] openai gpt-4o-mini with a deactivated virtual key is refused without being routed - refused-credential-routing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-refused-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.vkId) { paths.push('/api/governance/virtual-keys/' + state.vkId); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[3] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, requestId: 'refused-credential-deactivated-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) };",
+                  "pm.collectionVariables.set('refusedOffState', JSON.stringify(state));",
+                  "function finish() {",
+                  "  pm.collectionVariables.set('refusedOffState', JSON.stringify(state));",
+                  "  pm.collectionVariables.set('refusedOffRun', run);",
+                  "  pm.collectionVariables.set('refusedOffKey', state.vkValue || 'missing');",
+                  "  pm.collectionVariables.set('refusedOffRequestId', state.requestId);",
+                  "}",
+                  "function rule(next) {",
+                  "  // The rule would send the request to Anthropic: the log row shows whether it was evaluated.",
+                  "  call('POST', '/api/governance/routing-rules', { name: 'Harness refused credential ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: 500000 + (Date.now() % 90000), cel_expression: '\"x-harness-refused-run\" in headers && headers[\"x-harness-refused-run\"] == \"' + run + '\"', targets: [{ provider: 'anthropic', model: 'claude-haiku-4-5', weight: 1 }], scope: 'global' }, function (res, j) {",
+                  "    if (!expectOk('setup: created the header-gated rule that would route the request to anthropic', res)) { return finish(); }",
+                  "    state.ruleId = ((j || {}).rule || {}).id;",
+                  "    next();",
+                  "  });",
+                  "}",
+                  "call('GET', '/api/governance/routing-rules', null, function (r1, j1) {",
+                  "  var stale = ((j1 && j1.rules) || []).filter(function (r) { return String(r.name).indexOf('Harness refused credential ') === 0 && isStale(r.name); });",
+                  "  var i = 0; (function del() {",
+                  "    if (i < stale.length) { return call('DELETE', '/api/governance/routing-rules/' + stale[i++].id, null, function () { del(); }); }",
+                  "    call('GET', '/api/governance/virtual-keys', null, function (r2, j2) {",
+                  "      var vks = ((j2 && j2.virtual_keys) || []).filter(function (k) { return String(k.name).indexOf(PREFIX) === 0 && isStale(k.name); });",
+                  "      var n = 0; (function delVK() {",
+                  "        if (n < vks.length) { return call('DELETE', '/api/governance/virtual-keys/' + vks[n++].id, null, function () { delVK(); }); }",
+                  "        rule(function () {",
+                  "          call('POST', '/api/governance/virtual-keys', { name: PREFIX + 'off-' + run, is_active: false, provider_configs: [{ provider: 'openai', allowed_models: ['*'], weight: 1 }] }, function (res, j) {",
+                  "            if (!expectOk('setup: created the virtual key', res)) { return finish(); }",
+                  "            var vk = (j || {}).virtual_key || {};",
+                  "            state.vkId = vk.id;",
+                  "            state.vkValue = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "            finish();",
+                  "          });",
+                  "        });",
+                  "      })();",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-refused-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.vkId) { paths.push('/api/governance/virtual-keys/' + state.vkId); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[3] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('refusedOffState') || '{}');",
+                  "pm.test('the deactivated virtual key is refused with 403 access_blocked', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(403);",
+                  "  pm.expect(pm.response.text()).to.include('access_blocked');",
+                  "});",
+                  "// The refused request is logged under its own request id: its routing trail says whether routing ran.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(state.requestId), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      var trail = String(j.routing_engine_logs || '');",
+                  "      pm.test('no routing rule ran for the refused request', function () {",
+                  "        pm.expect(j.routing_rule_name || '', 'a rule was matched for a request governance refused: ' + JSON.stringify({ rule: j.routing_rule_name, provider: j.provider, model: j.model })).to.eql('');",
+                  "        pm.expect(trail, 'the trail reads as though the refused request was routed').to.not.include('Evaluating routing rules');",
+                  "        pm.expect(j.model, 'the rule rewrote the model of a refused request').to.eql('gpt-4o-mini');",
+                  "      });",
+                  "      pm.test('the trail says routing was skipped', function () { pm.expect(trail).to.include('Routing skipped: governance refuses'); });",
+                  "      return cleanup(state);",
+                  "    }",
+                  "    if (attempt < 15) { return setTimeout(function () { checkLog(attempt + 1); }, 1000); }",
+                  "    pm.test('no routing rule ran for the refused request', function () { pm.expect.fail('log ' + state.requestId + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "    cleanup(state);",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-refused-run",
+                "value": "{{refusedOffRun}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{refusedOffKey}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{refusedOffRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai gpt-4o-mini with an expired virtual key is refused without being routed - refused-credential-routing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-refused-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.vkId) { paths.push('/api/governance/virtual-keys/' + state.vkId); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[3] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, requestId: 'refused-credential-expired-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) };",
+                  "pm.collectionVariables.set('refusedExpiredState', JSON.stringify(state));",
+                  "function finish() {",
+                  "  pm.collectionVariables.set('refusedExpiredState', JSON.stringify(state));",
+                  "  pm.collectionVariables.set('refusedExpiredRun', run);",
+                  "  pm.collectionVariables.set('refusedExpiredKey', state.vkValue || 'missing');",
+                  "  pm.collectionVariables.set('refusedExpiredRequestId', state.requestId);",
+                  "}",
+                  "function rule(next) {",
+                  "  // The rule would send the request to Anthropic: the log row shows whether it was evaluated.",
+                  "  call('POST', '/api/governance/routing-rules', { name: 'Harness refused credential ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: 500000 + (Date.now() % 90000), cel_expression: '\"x-harness-refused-run\" in headers && headers[\"x-harness-refused-run\"] == \"' + run + '\"', targets: [{ provider: 'anthropic', model: 'claude-haiku-4-5', weight: 1 }], scope: 'global' }, function (res, j) {",
+                  "    if (!expectOk('setup: created the header-gated rule that would route the request to anthropic', res)) { return finish(); }",
+                  "    state.ruleId = ((j || {}).rule || {}).id;",
+                  "    next();",
+                  "  });",
+                  "}",
+                  "call('GET', '/api/governance/routing-rules', null, function (r1, j1) {",
+                  "  var stale = ((j1 && j1.rules) || []).filter(function (r) { return String(r.name).indexOf('Harness refused credential ') === 0 && isStale(r.name); });",
+                  "  var i = 0; (function del() {",
+                  "    if (i < stale.length) { return call('DELETE', '/api/governance/routing-rules/' + stale[i++].id, null, function () { del(); }); }",
+                  "    call('GET', '/api/governance/virtual-keys', null, function (r2, j2) {",
+                  "      var vks = ((j2 && j2.virtual_keys) || []).filter(function (k) { return String(k.name).indexOf(PREFIX) === 0 && isStale(k.name); });",
+                  "      var n = 0; (function delVK() {",
+                  "        if (n < vks.length) { return call('DELETE', '/api/governance/virtual-keys/' + vks[n++].id, null, function () { delVK(); }); }",
+                  "        rule(function () {",
+                  "          call('POST', '/api/governance/virtual-keys', { name: PREFIX + 'expired-' + run, expires_at: new Date(Date.now() + 3000).toISOString(), delete_after_expire: false, provider_configs: [{ provider: 'openai', allowed_models: ['*'], weight: 1 }] }, function (res, j) {",
+                  "            if (!expectOk('setup: created the virtual key', res)) { return finish(); }",
+                  "            var vk = (j || {}).virtual_key || {};",
+                  "            state.vkId = vk.id;",
+                  "            state.vkValue = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "            setTimeout(finish, 4500);",
+                  "          });",
+                  "        });",
+                  "      })();",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-refused-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.vkId) { paths.push('/api/governance/virtual-keys/' + state.vkId); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[3] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('refusedExpiredState') || '{}');",
+                  "pm.test('the expired virtual key is refused with 403 access_blocked', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(403);",
+                  "  pm.expect(pm.response.text()).to.include('access_blocked');",
+                  "});",
+                  "// The refused request is logged under its own request id: its routing trail says whether routing ran.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(state.requestId), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      var trail = String(j.routing_engine_logs || '');",
+                  "      pm.test('no routing rule ran for the refused request', function () {",
+                  "        pm.expect(j.routing_rule_name || '', 'a rule was matched for a request governance refused: ' + JSON.stringify({ rule: j.routing_rule_name, provider: j.provider, model: j.model })).to.eql('');",
+                  "        pm.expect(trail, 'the trail reads as though the refused request was routed').to.not.include('Evaluating routing rules');",
+                  "        pm.expect(j.model, 'the rule rewrote the model of a refused request').to.eql('gpt-4o-mini');",
+                  "      });",
+                  "      pm.test('the trail says routing was skipped', function () { pm.expect(trail).to.include('Routing skipped: governance refuses'); });",
+                  "      return cleanup(state);",
+                  "    }",
+                  "    if (attempt < 15) { return setTimeout(function () { checkLog(attempt + 1); }, 1000); }",
+                  "    pm.test('no routing rule ran for the refused request', function () { pm.expect.fail('log ' + state.requestId + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "    cleanup(state);",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-refused-run",
+                "value": "{{refusedExpiredRun}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{refusedExpiredKey}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{refusedExpiredRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openai gpt-4o-mini with a virtual key that does not exist is refused without being routed - refused-credential-routing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-refused-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.vkId) { paths.push('/api/governance/virtual-keys/' + state.vkId); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[3] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, requestId: 'refused-credential-unknown-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) };",
+                  "pm.collectionVariables.set('refusedUnknownState', JSON.stringify(state));",
+                  "function finish() {",
+                  "  pm.collectionVariables.set('refusedUnknownState', JSON.stringify(state));",
+                  "  pm.collectionVariables.set('refusedUnknownRun', run);",
+                  "  pm.collectionVariables.set('refusedUnknownKey', state.vkValue || 'missing');",
+                  "  pm.collectionVariables.set('refusedUnknownRequestId', state.requestId);",
+                  "}",
+                  "function rule(next) {",
+                  "  // The rule would send the request to Anthropic: the log row shows whether it was evaluated.",
+                  "  call('POST', '/api/governance/routing-rules', { name: 'Harness refused credential ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: 500000 + (Date.now() % 90000), cel_expression: '\"x-harness-refused-run\" in headers && headers[\"x-harness-refused-run\"] == \"' + run + '\"', targets: [{ provider: 'anthropic', model: 'claude-haiku-4-5', weight: 1 }], scope: 'global' }, function (res, j) {",
+                  "    if (!expectOk('setup: created the header-gated rule that would route the request to anthropic', res)) { return finish(); }",
+                  "    state.ruleId = ((j || {}).rule || {}).id;",
+                  "    next();",
+                  "  });",
+                  "}",
+                  "call('GET', '/api/governance/routing-rules', null, function (r1, j1) {",
+                  "  var stale = ((j1 && j1.rules) || []).filter(function (r) { return String(r.name).indexOf('Harness refused credential ') === 0 && isStale(r.name); });",
+                  "  var i = 0; (function del() {",
+                  "    if (i < stale.length) { return call('DELETE', '/api/governance/routing-rules/' + stale[i++].id, null, function () { del(); }); }",
+                  "    call('GET', '/api/governance/virtual-keys', null, function (r2, j2) {",
+                  "      var vks = ((j2 && j2.virtual_keys) || []).filter(function (k) { return String(k.name).indexOf(PREFIX) === 0 && isStale(k.name); });",
+                  "      var n = 0; (function delVK() {",
+                  "        if (n < vks.length) { return call('DELETE', '/api/governance/virtual-keys/' + vks[n++].id, null, function () { delVK(); }); }",
+                  "        rule(function () {",
+                  "          state.vkValue = 'sk-bf-harness-refused-unknown-' + pm.variables.replaceIn('{{$guid}}');",
+                  "          finish();",
+                  "        });",
+                  "      })();",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-refused-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.vkId) { paths.push('/api/governance/virtual-keys/' + state.vkId); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[3] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('refusedUnknownState') || '{}');",
+                  "pm.test('the unknown virtual key is refused with 401 access_not_found', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(401);",
+                  "  pm.expect(pm.response.text()).to.include('access_not_found');",
+                  "});",
+                  "// The refused request is logged under its own request id: its routing trail says whether routing ran.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(state.requestId), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      var trail = String(j.routing_engine_logs || '');",
+                  "      pm.test('no routing rule ran for the refused request', function () {",
+                  "        pm.expect(j.routing_rule_name || '', 'a rule was matched for a request governance refused: ' + JSON.stringify({ rule: j.routing_rule_name, provider: j.provider, model: j.model })).to.eql('');",
+                  "        pm.expect(trail, 'the trail reads as though the refused request was routed').to.not.include('Evaluating routing rules');",
+                  "        pm.expect(j.model, 'the rule rewrote the model of a refused request').to.eql('gpt-4o-mini');",
+                  "      });",
+                  "      pm.test('the trail says routing was skipped', function () { pm.expect(trail).to.include('Routing skipped: governance refuses'); });",
+                  "      return cleanup(state);",
+                  "    }",
+                  "    if (attempt < 15) { return setTimeout(function () { checkLog(attempt + 1); }, 1000); }",
+                  "    pm.test('no routing rule ran for the refused request', function () { pm.expect.fail('log ' + state.requestId + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "    cleanup(state);",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-refused-run",
+                "value": "{{refusedUnknownRun}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{refusedUnknownKey}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{refusedUnknownRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

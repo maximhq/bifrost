@@ -9,6 +9,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -315,6 +316,107 @@ func TestPreRequestHook_LargePayloadPublishesAllowlistBeforeRefinement(t *testin
 		"load balancing must run on the routed model")
 	assert.Equal(t, "azure/azure-gpt-4o-mini-deployment", metadata.Model,
 		"the refined provider/model must be written back to the streamed metadata")
+}
+
+// TestPreRequestHook_SkipsRoutingForARefusedIdentity pins that a request governance refuses for who
+// it is never reaches rule evaluation or load balancing. Routing used to run first, so a deactivated,
+// expired or made-up virtual key still ran every rule in reach, a paid complexity classifier
+// included, and the refused request's trail read as though it had been routed.
+func TestPreRequestHook_SkipsRoutingForARefusedIdentity(t *testing.T) {
+	newPlugin := func(t *testing.T, access schemas.Access) (*RoutingPlugin, *MockGovernance) {
+		t.Helper()
+		store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+		require.NoError(t, err)
+		require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+			ID:            "rewrite-identity",
+			Name:          "Rewrite Model",
+			CelExpression: "model == 'gpt-4o'",
+			Targets: []configstoreTables.TableRoutingTarget{
+				{Provider: bifrost.Ptr("anthropic"), Model: bifrost.Ptr("claude-sonnet-4"), Weight: 1.0},
+			},
+			Enabled:  bifrost.Ptr(true),
+			Scope:    "global",
+			Priority: 0,
+		}))
+		governance := NewMockGovernance()
+		governance.Access = access
+		plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, governance)
+		require.NoError(t, err)
+		return plugin, governance
+	}
+	// presentingKey is a request context as the transport settles it for a header virtual key.
+	presentingKey := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+		g := grant.New()
+		g.SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-test"), nil, nil, nil, nil, nil, nil))
+		ctx.SetGrant(g)
+		return ctx
+	}
+	keyAccess := func(active, expired bool) schemas.Access {
+		permit := grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", active, expired, nil, nil)
+		return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	}
+	newRequest := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		access schemas.Access
+	}{
+		{"a deactivated virtual key", keyAccess(false, false)},
+		{"an expired virtual key", keyAccess(true, true)},
+		{"a virtual key that resolves to nothing", nil},
+	} {
+		t.Run(tc.name+" is not routed", func(t *testing.T) {
+			plugin, governance := newPlugin(t, tc.access)
+			ctx := presentingKey()
+			req := newRequest()
+			require.NoError(t, plugin.PreRequestHook(ctx, req))
+
+			provider, model, _ := req.GetRequestFields()
+			assert.Equal(t, schemas.OpenAI, provider, "no rule may rewrite a request governance refuses")
+			assert.Equal(t, "gpt-4o", model, "no rule may rewrite a request governance refuses")
+			assert.Empty(t, governance.AllowlistModels, "no allowlist is published for a refused request")
+			assert.Empty(t, governance.LoadBalancedModels, "a refused request is not load balanced")
+			for _, entry := range ctx.GetRoutingEngineLogs() {
+				assert.NotContains(t, entry.Message, "Evaluating routing rules", "the trail of a refused request must not read as routed")
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		ctx  func() *schemas.BifrostContext
+	}{
+		{"an active virtual key", presentingKey},
+		{"a direct key and nothing else", func() *schemas.BifrostContext {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+			ctx.SetGrant(grant.New())
+			ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "header-provided", Value: *schemas.NewSecretVar("sk-caller")})
+			return ctx
+		}},
+		{"no credential at all", func() *schemas.BifrostContext {
+			return schemas.NewBifrostContext(context.Background(), time.Now())
+		}},
+	} {
+		t.Run(tc.name+" is still routed", func(t *testing.T) {
+			var access schemas.Access
+			if tc.name == "an active virtual key" {
+				access = keyAccess(true, false)
+			}
+			plugin, governance := newPlugin(t, access)
+			req := newRequest()
+			require.NoError(t, plugin.PreRequestHook(tc.ctx(), req))
+
+			_, model, _ := req.GetRequestFields()
+			assert.Equal(t, "claude-sonnet-4", model, "the rule should have rewritten the model")
+			assert.Equal(t, []string{"claude-sonnet-4"}, governance.LoadBalancedModels, "load balancing runs on the routed model")
+		})
+	}
 }
 
 // fallbackMatrixPlugin loads one global rule matching model "m" whose fallbacks are decoded from
