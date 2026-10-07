@@ -60,6 +60,7 @@ var payloadFields = []string{
 	"passthrough_request_body",
 	"passthrough_response_body",
 	"routing_engine_logs",
+	"plugin_logs",
 }
 
 // ExtractPayload reads the serialized TEXT payload fields from a Log into a map.
@@ -105,6 +106,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["passthrough_request_body"] = l.PassthroughRequestBody
 	m["passthrough_response_body"] = l.PassthroughResponseBody
 	m["routing_engine_logs"] = l.RoutingEngineLogs
+	m["plugin_logs"] = l.PluginLogs
 	// Metadata is written to the snapshot so consumers reading objects
 	// directly see custom attributes, but it is deliberately NOT part of
 	// payloadFields: it must always stay DB-resident as well (filters,
@@ -251,6 +253,7 @@ func ClearPayload(l *Log) {
 	l.PassthroughRequestBody = ""
 	l.PassthroughResponseBody = ""
 	l.RoutingEngineLogs = ""
+	l.PluginLogs = ""
 
 	// Clear Parsed virtual fields so GORM's SerializeFields won't re-serialize them.
 	l.InputHistoryParsed = nil
@@ -413,6 +416,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	}
 	if v, ok := m["routing_engine_logs"]; ok && v != "" {
 		l.RoutingEngineLogs = v
+	}
+	if v, ok := m["plugin_logs"]; ok && v != "" {
+		l.PluginLogs = v
 	}
 	// Metadata is intentionally NOT restored from the snapshot: the copy
 	// written there (see ExtractPayload) is for external object consumers
@@ -1073,6 +1079,8 @@ func clearPayloadField(l *Log, name string) {
 		l.PassthroughResponseBody = ""
 	case "routing_engine_logs":
 		l.RoutingEngineLogs = ""
+	case "plugin_logs":
+		l.PluginLogs = ""
 	}
 }
 

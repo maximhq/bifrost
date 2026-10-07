@@ -232,17 +232,17 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	}
 }
 
-// TestComplexityAnalyzerConfigPutPersistsJev verifies the API accepts and stores the Jev classifier payload.
-func TestComplexityAnalyzerConfigPutPersistsJev(t *testing.T) {
+// TestComplexityAnalyzerConfigPutPersistsDecision verifies the API accepts and stores the decision-model classifier payload.
+func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := setupPricingOverrideHandlerStore(t)
 	manager := &mockRoutingManager{}
 	handler := &RoutingHandler{configStore: store, routingManager: manager}
 
 	cfg := complexity.DefaultAnalyzerConfig()
-	cfg.Classifier = complexity.ClassifierJev
+	cfg.Classifier = complexity.ClassifierDecision
 	count := 1
-	cfg.Jev = &complexity.JevConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond}
+	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond}
 	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
 	handler.updateComplexityAnalyzerConfig(ctx)
 
@@ -250,11 +250,11 @@ func TestComplexityAnalyzerConfigPutPersistsJev(t *testing.T) {
 	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, stored)
-	require.Equal(t, complexity.ClassifierJev, stored.Classifier)
-	require.NotNil(t, stored.Jev)
-	require.NotNil(t, stored.Jev.PreviousMessageCount)
-	require.Equal(t, 1, *stored.Jev.PreviousMessageCount)
-	require.Equal(t, 400*time.Millisecond, stored.Jev.Timeout)
+	require.Equal(t, complexity.ClassifierDecision, stored.Classifier)
+	require.NotNil(t, stored.Decision)
+	require.NotNil(t, stored.Decision.PreviousMessageCount)
+	require.Equal(t, 1, *stored.Decision.PreviousMessageCount)
+	require.Equal(t, 400*time.Millisecond, stored.Decision.Timeout)
 	require.Equal(t, 1, manager.reloadCalls)
 }
 

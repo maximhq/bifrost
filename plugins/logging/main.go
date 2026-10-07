@@ -342,7 +342,7 @@ func guardrailMetadataForLog(ctx *schemas.BifrostContext, result *schemas.Bifros
 }
 
 // routingMetadataForLog returns the request's routing-classification metadata
-// snapshot — a semantic embed, LLM completion, Jev decision, or the embed plus
+// snapshot — a semantic embed, LLM completion, decision-model call, or the embed plus
 // its configured classifier fallback. Classification runs once in PreRequestHook,
 // before any retry or fallback attempt, so the context snapshot is stable across every
 // PostLLMHook call for this request; unlike applyInternalCallCosts, this is

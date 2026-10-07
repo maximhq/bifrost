@@ -2467,23 +2467,25 @@
             },
             "complexityAnalyzerConfig": {
               "type": ["object", "null"],
-              "description": "Runtime configuration for complexity_tier CEL routing. Select semantic or Typesafe Jev as the primary classifier; semantic may fall back to LLM or Jev. Session state reuses the effective tier on tool continuations and can optionally retain the highest tier across turns.",
+              "description": "Runtime configuration for complexity_tier CEL routing. Select semantic or a decision model as the primary classifier; semantic may fall back to LLM or the decision model. Session state reuses the effective tier on tool continuations and can optionally retain the highest tier across turns.",
               "properties": {
                 "classifier": {
                   "type": "string",
-                  "enum": ["semantic", "jev"],
+                  "enum": ["semantic", "decision"],
                   "default": "semantic",
-                  "description": "Primary complexity classifier; defaults to semantic. Jev uses Typesafe provider credentials."
+                  "description": "Primary complexity classifier; defaults to semantic. The decision model uses its provider's credentials."
                 },
-                "jev": {
+                "decision": {
                   "type": "object",
-                  "description": "Typesafe Jev request settings; no API key or model is configured in this block.",
+                  "description": "Decision-model request settings; credentials come from the selected provider, never from this block.",
                   "properties": {
+                    "provider": {"type": "string", "description": "Provider serving the decision model, e.g. typesafe or a custom provider with base_provider_type typesafe (Laya, Nimble, Clef). Set together with model; leave both empty for typesafe/jev-latest."},
+                    "model": {"type": "string", "description": "Decision model on that provider, e.g. jev-latest, nimble-latest, english, clef. Set together with provider; leave both empty for typesafe/jev-latest."},
                     "previous_message_count": {"type": "integer", "minimum": 0, "maximum": 5, "default": 1, "description": "Number of preceding user messages sent with the current request. Assistant messages are excluded."},
-                    "timeout": {"description": "Maximum Jev classification latency; duration string or milliseconds (default: 1500ms).", "oneOf": [{"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"}, {"type": "number", "minimum": 0}], "default": "1500ms"},
+                    "timeout": {"description": "Maximum decision-model classification latency; duration string or milliseconds (default: 1500ms).", "oneOf": [{"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"}, {"type": "number", "minimum": 0}], "default": "1500ms"},
                     "criteria": {
                       "type": "object",
-                      "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+                      "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
                       "properties": {
                         "SIMPLE": {"type": "object", "properties": {"definition": {"type": "string", "maxLength": 500, "description": "Replaces this tier's shipped definition. Omit to use the default."}, "signals": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}, "description": "Replaces this tier's shipped signals. Omit to use the default."}, "examples": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}, "description": "Replaces this tier's shipped examples. Omit to use the default."}}, "additionalProperties": false},
                         "MEDIUM": {"type": "object", "properties": {"definition": {"type": "string", "maxLength": 500, "description": "Replaces this tier's shipped definition. Omit to use the default."}, "signals": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}, "description": "Replaces this tier's shipped signals. Omit to use the default."}, "examples": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}, "description": "Replaces this tier's shipped examples. Omit to use the default."}}, "additionalProperties": false},
@@ -2556,8 +2558,8 @@
                     },
                     "fallback": {
                       "type": "string",
-                      "enum": ["none", "llm", "jev"],
-                      "description": "What answers when semantic classification produces no tier: none (default), the configured LLM classifier, or Typesafe Jev."
+                      "enum": ["none", "llm", "decision"],
+                      "description": "What answers when semantic classification produces no tier: none (default), the configured LLM classifier, or the configured decision model."
                     }
                   },
                   "required": ["provider", "embedding_model"],
@@ -2640,7 +2642,7 @@
                   "additionalProperties": false
                 },
                 "keywords": {
-                  "description": "Required reference phrases per tier when complexityAnalyzerConfig is non-null. Semantic embeds requests and matches the nearest phrase; Jev does not read these lists. In split mode the lists merge with stored phrases; the legacy four-list shape remains accepted for upgrades.",
+                  "description": "Required reference phrases per tier when complexityAnalyzerConfig is non-null. Semantic embeds requests and matches the nearest phrase; the decision model does not read these lists. In split mode the lists merge with stored phrases; the legacy four-list shape remains accepted for upgrades.",
                   "oneOf": [
                     {
                       "type": "object",
@@ -2738,7 +2740,7 @@
                       }
                     },
                     "required": ["session"],
-                    "not": {"required": ["classifier"], "properties": {"classifier": {"const": "jev"}}}
+                    "not": {"required": ["classifier"], "properties": {"classifier": {"const": "decision"}}}
                   },
                   "then": {
                     "required": ["semantic"]
