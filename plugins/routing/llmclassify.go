@@ -282,12 +282,17 @@ func (p *RoutingPlugin) classifyLLMComplexity(ctx *schemas.BifrostContext, input
 		// synthetic one would invite comparisons against thresholds tuned for
 		// the vector backends.
 		out := &complexity.ComplexityResult{Tier: result.Tier}
-		return complexityProposal{
+		proposal := complexityProposal{
 			Result:     out,
 			Mechanism:  complexity.MechanismLLM,
 			LogLevel:   schemas.LogLevelInfo,
 			LogMessage: fmt.Sprintf("LLM complexity: tier=%s", out.Tier),
 		}
+		if config := p.complexityConfig.Load(); config != nil && config.LLM != nil {
+			proposal.Model = string(config.LLM.Provider) + "/" + config.LLM.Model
+			proposal.LogMessage += fmt.Sprintf(" model=%s", proposal.Model)
+		}
+		return proposal
 	}
 
 	if err != nil && p.logger != nil {
