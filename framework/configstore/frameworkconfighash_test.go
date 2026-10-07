@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -189,4 +190,60 @@ func TestGenerateRoutingRuleHash_FallbackIdentity(t *testing.T) {
 	assert.NotEqual(t, base, hash(`[{"provider":"azure","model":"m","key_id":"k1"}]`), "a different provider must change the hash")
 	assert.Equal(t, hash(`["vertex/m"]`), hash(`[{"provider":"vertex","model":"m"}]`), "an unpinned object must hash like its string form")
 	assert.Equal(t, hash(`["anthropic/"]`), hash(`[{"provider":"anthropic"}]`), "an unpinned provider-only object must hash like its string form")
+}
+
+// TestGenerateConfigHash_DeterministicWithMaps guards against hash inputs
+// depending on Go's randomized map iteration order. sonic.Marshal does not sort
+// map keys, so a provider with several extra_headers / request_path_overrides
+// used to get a new ConfigHash on every call; on boot an unchanged config.json
+// then looked edited and DB-only keys were dropped.
+func TestGenerateConfigHash_DeterministicWithMaps(t *testing.T) {
+	cfg := ProviderConfig{
+		NetworkConfig: &schemas.NetworkConfig{
+			ExtraHeaders:        map[string]string{"a": "1", "b": "2", "c": "3", "d": "4", "e": "5"},
+			BetaHeaderOverrides: map[string]bool{"w-": true, "x-": false, "y-": true, "z-": false},
+		},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.ChatCompletionRequest: "/a",
+				schemas.ResponsesRequest:      "/b",
+				schemas.EmbeddingRequest:      "/c",
+				schemas.ListModelsRequest:     "/d",
+			},
+		},
+	}
+
+	want, err := cfg.GenerateConfigHash("custom")
+	require.NoError(t, err)
+	for i := 0; i < 200; i++ {
+		got, err := cfg.GenerateConfigHash("custom")
+		require.NoError(t, err)
+		require.Equal(t, want, got, "hash changed between calls on an identical config (run %d)", i)
+	}
+}
+
+// TestHashJSON_MatchesSonicDefaultWithoutMultiEntryMaps pins the back-compat
+// contract of hashJSON: sorting map keys must not change the bytes for inputs
+// that were already stable (no map, or a single-entry map), otherwise every
+// upgraded deployment would see a spurious "file changed" on first boot.
+func TestHashJSON_MatchesSonicDefaultWithoutMultiEntryMaps(t *testing.T) {
+	inputs := []any{
+		schemas.NetworkConfig{BaseURL: "https://example.com", ExtraHeaders: map[string]string{"x-a": "1"}},
+		schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+		schemas.KeyAliases{"best": {ModelID: "gpt-4o"}},
+		map[string]any{"html": "<a&b>"},
+	}
+	for _, in := range inputs {
+		want, err := sonic.Marshal(in)
+		require.NoError(t, err)
+		got, err := hashJSON.Marshal(in)
+		require.NoError(t, err)
+		assert.Equal(t, string(want), string(got))
+	}
+
+	// A provider with nothing configured hashes to sha256 of its name alone.
+	got, err := (&ProviderConfig{}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.Equal(t, "7d3194f79e645c42e4396dda38be04766810ec6a00d00aced3ffc2a0a1f1a9ef", got)
 }

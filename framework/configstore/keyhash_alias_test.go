@@ -74,3 +74,25 @@ func TestGenerateKeyHash_RichAliasesProduceDifferentHash(t *testing.T) {
 
 	assert.NotEqual(t, legacyHash, richHash, "enriching an alias must change the key hash so config diffs are detected")
 }
+
+// TestGenerateKeyHash_DeterministicWithMultiEntryAliases guards against the
+// alias map being serialized in randomized order, which made the key hash
+// change on every call and a restart treat an unchanged key as edited.
+func TestGenerateKeyHash_DeterministicWithMultiEntryAliases(t *testing.T) {
+	key := schemas.Key{
+		Name:   "k",
+		Value:  *schemas.NewSecretVar("sk"),
+		Weight: 1.0,
+		Aliases: schemas.KeyAliases{
+			"a": {ModelID: "1"}, "b": {ModelID: "2"}, "c": {ModelID: "3"},
+			"d": {ModelID: "4"}, "e": {ModelID: "5"},
+		},
+	}
+	want, err := GenerateKeyHash(key)
+	require.NoError(t, err)
+	for i := 0; i < 200; i++ {
+		got, err := GenerateKeyHash(key)
+		require.NoError(t, err)
+		require.Equal(t, want, got, "key hash changed between calls (run %d)", i)
+	}
+}
