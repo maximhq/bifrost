@@ -1,11 +1,9 @@
-# Fork only: runs scripts/fork/verify.sh (the fork's builds and tests, UI included) on the fork
-# branch and on pull requests into it, e.g. the upstream sync pull requests.
+# Fork only: runs scripts/fork/verify.sh (the fork's builds and tests, UI included) on every
+# push to the fork branch.
 name: Fork - Verify
 
 on:
   push:
-    branches: ["plus"]
-  pull_request:
     branches: ["plus"]
   workflow_dispatch:
 

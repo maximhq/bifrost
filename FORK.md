@@ -17,7 +17,7 @@ Everything else is upstream Bifrost. Upstream's documentation applies unchanged.
 |--------|----------|------|
 | `dev` | Exact mirror of upstream `dev` | Never commit here. It only fast-forwards to upstream. |
 | `plus` | Upstream `dev` + this fork's features | All fork work lands here. Make it the repository's default branch. |
-| `sync/upstream-dev` | Upstream merge in progress | Created by the sync workflow and merged into `plus` through a pull request. |
+| `sync/upstream-dev` | A failed automatic sync | Only exists when the sync workflow merged upstream but verification failed; inspect it, then delete it. |
 
 `git diff dev plus` is always exactly what the fork changes.
 
@@ -83,20 +83,18 @@ Use `transports/Dockerfile.local`, which builds from the local modules. `make do
 
 `.github/workflows/fork-sync-upstream.yml` runs every day at 03:23 UTC, and on demand from the Actions tab:
 
-1. It fast-forwards `dev` to upstream `dev`.
-2. It merges upstream into `sync/upstream-dev`, which is cut from `plus`.
-3. It runs `scripts/fork/verify.sh` on the merged tree.
-4. It opens or updates a pull request into `plus`, and says in the description whether verification passed. Merge it with a **merge commit**, not squash or rebase, so the next sync only carries new upstream commits.
-5. If the merge has conflicts it cannot resolve, it opens or comments on an issue that lists the conflicted files.
+1. It fast-forwards `dev` to upstream `dev` and pushes it.
+2. It merges upstream into `plus` and runs `scripts/fork/verify.sh` on the result.
+3. If verification passes, it pushes `plus`. No pull request involved.
+4. If the merge conflicts, or verification fails, `plus` is left untouched and it opens or comments on an issue. For a failed verification the merge is pushed to `sync/upstream-dev` so you can inspect it.
 
-`.github/workflows/fork-verify.yml` runs the same verification, plus the dashboard build and its unit tests, on pushes to `plus` and on pull requests into it.
+`.github/workflows/fork-verify.yml` runs the same verification, plus the dashboard build and its unit tests, on every push to `plus`.
 
 One-time setup (after pushing `plus` and making it the default branch, so GitHub picks up the `fork-*` workflows):
 
 1. **Enable Actions.** Forks start with Actions disabled: open the **Actions** tab and enable them.
-2. **Secret `FORK_SYNC_TOKEN`.** Create a fine-grained personal access token for this repository with read/write on Contents, Pull requests, Issues and **Workflows**. Most upstream syncs touch `.github/workflows/`, and GitHub refuses those pushes from the default `GITHUB_TOKEN`. Pull requests opened with the PAT also trigger `fork-verify.yml`.
-3. **Settings → Actions → General.** Allow GitHub Actions to create pull requests. Without the PAT this is required; with it, it is harmless.
-4. **Disable upstream's workflows in this fork.** They expect upstream's secrets and infrastructure (releases, Docker Hub, codecov, live provider tests):
+2. **Secret `FORK_SYNC_TOKEN`.** Create a fine-grained personal access token for this repository with read/write on Contents, Issues and **Workflows**. Most upstream syncs touch `.github/workflows/`, and GitHub refuses those pushes from the default `GITHUB_TOKEN`. Pushes made with the PAT also trigger `fork-verify.yml`.
+3. **Disable upstream's workflows in this fork.** They expect upstream's secrets and infrastructure (releases, Docker Hub, codecov, live provider tests):
 
    ```bash
    gh workflow list -R buiducnhat/bifrost --all --json path -q '.[].path' \

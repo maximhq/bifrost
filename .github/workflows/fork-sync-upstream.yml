@@ -1,12 +1,13 @@
 # Fork only: keeps this fork in step with maximhq/bifrost.
 #
 # Daily (or on demand) it fast-forwards the `dev` mirror to upstream `dev`, merges upstream into
-# a `sync/upstream-dev` branch cut from `plus`, runs scripts/fork/verify.sh and opens a pull
-# request into `plus`. Conflicts it cannot resolve are reported in an issue instead.
+# `plus`, runs scripts/fork/verify.sh and pushes `plus` when verification passes. When the merge
+# conflicts, or the merged tree fails verification (the merge is then pushed to
+# `sync/upstream-dev` for inspection), it opens or comments on an issue instead.
 #
 # Needs a repository secret FORK_SYNC_TOKEN (fine-grained PAT on this repo with Contents,
-# Pull requests, Issues and Workflows read/write): the default GITHUB_TOKEN cannot push commits
-# that touch .github/workflows, which most upstream syncs do. See FORK.md.
+# Issues and Workflows read/write): the default GITHUB_TOKEN cannot push commits that touch
+# .github/workflows, which most upstream syncs do. See FORK.md.
 name: Fork - Sync upstream
 
 on:
@@ -16,7 +17,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
   issues: write
 
 concurrency:
@@ -33,7 +33,7 @@ jobs:
       UPSTREAM_BRANCH: dev
       MIRROR_BRANCH: dev
       FORK_BRANCH: plus
-      SYNC_BRANCH: sync/upstream-dev
+      FAILED_SYNC_BRANCH: sync/upstream-dev
       GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
     steps:
       - name: Checkout repository
@@ -70,19 +70,11 @@ jobs:
       - name: Merge upstream
         id: sync
         run: |
-          # Continue an open sync pull request rather than replacing it, so fixes pushed to
-          # its branch survive the next scheduled run.
-          open_pr="$(gh pr list --head "$SYNC_BRANCH" --base "$FORK_BRANCH" --state open --json number -q '.[0].number')"
-          if [ -n "$open_pr" ] && git show-ref --verify --quiet "refs/remotes/origin/$SYNC_BRANCH"; then
-            git checkout -B "$SYNC_BRANCH" "origin/$SYNC_BRANCH"
-          else
-            git checkout -B "$SYNC_BRANCH" "origin/$FORK_BRANCH"
-          fi
           set +e
           scripts/fork/sync-upstream.sh \
             --upstream-branch "$UPSTREAM_BRANCH" \
             --mirror "$MIRROR_BRANCH" \
-            --branch "$SYNC_BRANCH"
+            --branch "$FORK_BRANCH"
           status=$?
           set -e
           echo "status=$status" >> "$GITHUB_OUTPUT"
@@ -98,62 +90,51 @@ jobs:
       - name: Update the dev mirror
         run: git push origin "$MIRROR_BRANCH"
 
-      - name: Open or update the sync pull request
-        if: steps.sync.outputs.status == '0' || steps.sync.outputs.status == '3'
+      - name: Push plus
+        if: steps.sync.outputs.status == '0'
+        run: |
+          if [ "$(git rev-list --count "origin/$FORK_BRANCH..HEAD")" -eq 0 ]; then
+            echo "$FORK_BRANCH already contains upstream $UPSTREAM_BRANCH"
+          else
+            git push origin "HEAD:refs/heads/$FORK_BRANCH"
+          fi
+
+      - name: Keep the failed merge for inspection
+        if: steps.sync.outputs.status == '3'
+        run: git push --force origin "HEAD:refs/heads/$FAILED_SYNC_BRANCH"
+
+      - name: Report a sync that needs attention
+        if: steps.sync.outputs.status == '1' || steps.sync.outputs.status == '3'
         env:
           STATUS: ${{ steps.sync.outputs.status }}
           UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
         run: |
-          if [ "$(git rev-list --count "origin/$FORK_BRANCH..HEAD")" -eq 0 ]; then
-            echo "$FORK_BRANCH is already up to date with upstream $UPSTREAM_BRANCH"
-            exit 0
-          fi
-          git push --force-with-lease origin "HEAD:refs/heads/$SYNC_BRANCH"
-          if [ "$STATUS" = "0" ]; then
-            verdict="scripts/fork/verify.sh passed on the merged tree."
-          else
-            verdict="**scripts/fork/verify.sh failed on the merged tree** - see the [workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID). Fix it on this branch before merging."
-          fi
-          body="Merges upstream \`$UPSTREAM_BRANCH\` (\`$UPSTREAM_SHA\`) into \`$FORK_BRANCH\`.
-
-          $verdict
-
-          Merge with a merge commit (not squash or rebase) so the next sync only brings new upstream commits."
-          existing="$(gh pr list --head "$SYNC_BRANCH" --base "$FORK_BRANCH" --state open --json number -q '.[0].number')"
-          if [ -n "$existing" ]; then
-            gh pr edit "$existing" --title "Sync upstream $UPSTREAM_BRANCH ($UPSTREAM_SHA)" --body "$body"
-          else
-            gh pr create --head "$SYNC_BRANCH" --base "$FORK_BRANCH" --title "Sync upstream $UPSTREAM_BRANCH ($UPSTREAM_SHA)" --body "$body"
-          fi
-          if [ "$STATUS" != "0" ]; then
-            exit 1
-          fi
-
-      - name: Report conflicts
-        if: steps.sync.outputs.status == '1'
-        env:
-          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
-        run: |
-          title="Upstream sync needs manual conflict resolution"
-          files=""
-          while IFS= read -r file; do
-            files="$files- \`$file\`
+          title="Upstream sync needs attention"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ "$STATUS" = "1" ]; then
+            files=""
+            while IFS= read -r file; do
+              files="$files- \`$file\`
           "
-          done < "$RUNNER_TEMP/conflicts.txt"
-          body="Merging upstream \`$UPSTREAM_BRANCH\` (\`$UPSTREAM_SHA\`) into \`$FORK_BRANCH\` conflicts in:
+            done < "$RUNNER_TEMP/conflicts.txt"
+            problem="Merging upstream \`$UPSTREAM_BRANCH\` (\`$UPSTREAM_SHA\`) into \`$FORK_BRANCH\` conflicts in:
 
-          $files
+          $files"
+          else
+            problem="Upstream \`$UPSTREAM_BRANCH\` (\`$UPSTREAM_SHA\`) merged into \`$FORK_BRANCH\` cleanly, but \`scripts/fork/verify.sh\` failed, so \`$FORK_BRANCH\` was not updated. The merge is on \`$FAILED_SYNC_BRANCH\`."
+          fi
+          body="$problem
 
-          Resolve locally (see FORK.md, *Resolving sync conflicts*):
+          Fix it locally (see FORK.md, *Resolving sync conflicts*):
 
           \`\`\`bash
           git checkout $FORK_BRANCH && git pull
           scripts/fork/sync-upstream.sh
-          # fix the files listed, then
-          git add -A && git commit --no-edit && scripts/fork/verify.sh && git push origin $FORK_BRANCH
+          # resolve or fix, commit, then
+          scripts/fork/verify.sh && git push origin $FORK_BRANCH $MIRROR_BRANCH
           \`\`\`
 
-          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          Run: $run_url"
           existing="$(gh issue list --state open --search "in:title \"$title\"" --json number -q '.[0].number')"
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"
