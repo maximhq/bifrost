@@ -41515,7 +41515,7 @@
             "description": "User has no access profiles"
           },
           "409": {
-            "description": "A virtual key with this name already exists among keys with no team, customer or business unit. User-issued keys share that single namespace, so the name must be unused by every other unowned key"
+            "description": "A virtual key with this name already exists among keys with no team, customer or business unit. User-issued keys never have an owner, so they always fall in that single shared namespace and the name must be unused by every other unowned key. (Keys with a team, customer or business unit are unique within that owner instead.)"
           },
           "500": {
             "description": "Internal server error",
@@ -47923,6 +47923,16 @@
               }
             }
           },
+          "409": {
+            "description": "A virtual key with this name already exists for this owner. Names are unique within one team, one customer or one business unit; keys with no owner share a single namespace, so an unowned key's name must be unused by every other unowned key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -48160,6 +48170,16 @@
           },
           "404": {
             "description": "Virtual key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A virtual key with this name already exists for this owner. Names are unique within one team, one customer or one business unit; keys with no owner share a single namespace, so an unowned key's name must be unused by every other unowned key",
             "content": {
               "application/json": {
                 "schema": {
@@ -58985,7 +59005,7 @@
             }
           },
           "409": {
-            "description": "A virtual key with this name already exists among keys with no team, customer or business unit. User-issued keys share that single namespace, so the name must be unused by every other unowned key"
+            "description": "A virtual key with this name already exists among keys with no team, customer or business unit. User-issued keys never have an owner, so they always fall in that single shared namespace and the name must be unused by every other unowned key. (Keys with a team, customer or business unit are unique within that owner instead.)"
           },
           "500": {
             "description": "Internal server error",
@@ -76847,7 +76867,7 @@
             "description": "User has no access profiles"
           },
           "409": {
-            "description": "A virtual key with this name already exists among keys with no team, customer or business unit. User-issued keys share that single namespace, so the name must be unused by every other unowned key"
+            "description": "A virtual key with this name already exists among keys with no team, customer or business unit. User-issued keys never have an owner, so they always fall in that single shared namespace and the name must be unused by every other unowned key. (Keys with a team, customer or business unit are unique within that owner instead.)"
           },
           "500": {
             "description": "Internal server error",
@@ -77240,7 +77260,7 @@
             }
           },
           "409": {
-            "description": "A virtual key with this name already exists among keys with no team, customer or business unit. User-issued keys share that single namespace, so the name must be unused by every other unowned key"
+            "description": "A virtual key with this name already exists among keys with no team, customer or business unit. User-issued keys never have an owner, so they always fall in that single shared namespace and the name must be unused by every other unowned key. (Keys with a team, customer or business unit are unique within that owner instead.)"
           },
           "500": {
             "description": "Internal server error",
