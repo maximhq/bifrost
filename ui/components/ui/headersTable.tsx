@@ -7,6 +7,9 @@ import { cn } from "@/lib/utils";
 import { Trash } from "lucide-react";
 import React, { useRef, useState } from "react";
 
+// A key name a plain object cannot hold as an own entry (see handleKeyChange).
+const UNSUPPORTED_KEY = "__proto__";
+
 // Support both plain string values and SecretVar objects
 type HeaderValue = string | SecretVar;
 
@@ -108,8 +111,12 @@ export function HeadersTable<T extends HeaderValue>({
 		// Check if newKey already exists (and it's not the current row's original key)
 		// Own keys only: `in` also sees inherited names such as constructor or toString.
 		const isDuplicate = newKey !== "" && newKey !== oldKey && Object.hasOwn(value, newKey);
+		// "__proto__" can't be stored as a key of a plain object: assigning it sets the prototype
+		// instead, so the row would vanish and the key would silently never be saved. Hold it as a
+		// row conflict, like a duplicate, so the row stays visible with an explanation.
+		const isUnsupported = newKey === UNSUPPORTED_KEY;
 
-		if (isDuplicate) {
+		if (isDuplicate || isUnsupported) {
 			// Duplicate detected - store conflict key locally, let user continue typing
 			// Don't update parent value (would overwrite existing entry)
 			setDuplicateConflicts((prev) => new Map(prev).set(rowIndex, newKey));
@@ -273,7 +280,11 @@ export function HeadersTable<T extends HeaderValue>({
 													disabled={disabled}
 												/>
 											)}
-											{hasConflict && <span className="text-destructive px-3 text-xs">Duplicate key</span>}
+											{hasConflict && (
+												<span className="text-destructive px-3 text-xs">
+													{conflictKey === UNSUPPORTED_KEY ? "This key name is not supported" : "Duplicate key"}
+												</span>
+											)}
 										</div>
 									</TableCell>
 									<TableCell className="p-2">
