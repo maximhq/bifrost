@@ -6420,6 +6420,24 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	bifrost.endCoreSpan(prePipeSpan)
 	if shortCircuit != nil {
+		// A stream's headers are written from the routing info a provider worker records for each
+		// attempt, and a plugin's answer runs on no worker. On a fallback the previous attempt's
+		// record would still stand and the headers would name the provider that failed, so the
+		// answered attempt is recorded here. A primary the plugin answered keeps no record, as before.
+		// Not BuildRoutingInfo: it reads the resolved key alias, which on a fallback still holds the
+		// failed attempt's, and no provider key served this answer. The target is read from preReq,
+		// since a hook that ran before the answering plugin may have moved it.
+		if shortCircuit.Response != nil || shortCircuit.Stream != nil {
+			if fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); fallbackIndex > 0 {
+				answered := schemas.RoutingInfo{Provider: provider, Model: model}
+				if preReq != nil {
+					answered.Provider, answered.Model, _ = preReq.GetRequestFields()
+				}
+				answered.ApplyRequestRouting(ctx)
+				layerFallbackIdentity(ctx, &answered)
+				ctx.SetRoutingInfoSnapshot(answered)
+			}
+		}
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
 			shortCircuit.Response.PopulateExtraFields(req.RequestType, provider, model, model)
@@ -7931,20 +7949,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// fallback index > 0 ⟺ this attempt is a fallback; Primary comes from the
 				// previous attempt's snapshot (the primary, or the carried-through primary on a
 				// later fallback — clearCtxForFallback keeps BifrostContextKeyRoutingInfo).
-				if fi, _ := req.Context.Value(schemas.BifrostContextKeyFallbackIndex).(int); fi > 0 {
-					attemptRoutingInfo.IsFallback = true
-					if prev, ok := req.Context.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
-						if prev.IsFallback && prev.PrimaryProvider != nil {
-							attemptRoutingInfo.PrimaryProvider = prev.PrimaryProvider
-							attemptRoutingInfo.PrimaryModel = prev.PrimaryModel
-						} else if prev.Provider != "" {
-							pp := prev.Provider
-							pm := prev.Model
-							attemptRoutingInfo.PrimaryProvider = &pp
-							attemptRoutingInfo.PrimaryModel = &pm
-						}
-					}
-				}
+				layerFallbackIdentity(req.Context, &attemptRoutingInfo)
 				// Stash for the transport: streams carry RoutingInfo only on chunks, but
 				// response headers must be written before the first chunk arrives. Each
 				// retry overwrites, so the winning attempt's snapshot survives.
