@@ -9,4 +9,5 @@ export { NetworkFormFragment } from "./networkFormFragment";
 export { PerformanceFormFragment } from "./performanceFormFragment";
 export { PromptCacheFormFragment } from "./promptCacheFormFragment";
 export { PerformanceFormFragment as PerformanceTab } from "./performanceFormFragment";
+export { PricingFormFragment } from "./pricingFormFragment";
 export { ProxyFormFragment } from "./proxyFormFragment";
