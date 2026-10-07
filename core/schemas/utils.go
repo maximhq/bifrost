@@ -2160,6 +2160,23 @@ func IsOpenAIModel(model string) bool {
 	return isOSeriesModel(model)
 }
 
+// IsTypesafeModel checks if the model targets a TypeSafe System One decisions
+// endpoint rather than chat.
+func IsTypesafeModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "~"), "typesafe/")
+}
+
+// openAIDecisionModelPrefix is the model family OpenAI serves on its dedicated
+// POST /v1/decisions endpoint. Dated snapshots share the prefix.
+const openAIDecisionModelPrefix = "gpt-6-luna"
+
+// IsOpenAIDecisionModel checks if the model is served by OpenAI's dedicated
+// Decisions API rather than by a general chat model that would answer a
+// decision through emulation.
+func IsOpenAIDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "openai/"), openAIDecisionModelPrefix)
+}
+
 // isOSeriesModel reports whether model names an OpenAI o-series model. It
 // strips any provider prefix (e.g. "openai/o3") and matches an "o" followed by
 // a single digit, where the next character is either end of string or a "-"

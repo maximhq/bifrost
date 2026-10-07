@@ -708,8 +708,12 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		if result.RerankResponse != nil && len(result.RerankResponse.Results) > 0 {
 			entry.RerankOutputParsed = result.RerankResponse.Results
 		}
-		if result.DecisionResponse != nil && len(result.DecisionResponse.Answers) > 0 {
-			if answersJSON, err := sonic.Marshal(result.DecisionResponse.Answers); err == nil {
+		if result.DecisionResponse != nil && (len(result.DecisionResponse.Answers) > 0 || result.DecisionResponse.UsesOrderedForm()) {
+			var loggedAnswers interface{} = result.DecisionResponse.Answers
+			if result.DecisionResponse.UsesOrderedForm() {
+				loggedAnswers = result.DecisionResponse.OrderedAnswers
+			}
+			if answersJSON, err := sonic.Marshal(loggedAnswers); err == nil {
 				answers := string(answersJSON)
 				entry.OutputMessageParsed = &schemas.ChatMessage{
 					Role: schemas.ChatMessageRoleAssistant,

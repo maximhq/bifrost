@@ -504,6 +504,20 @@ func IsOpenAIModelFamily(ctx *BifrostContext, model string) bool {
 	return ResolveFamily(ctx, model) == ModelFamilyOpenAI
 }
 
+// IsTypesafeModelFamily reports whether the current attempt resolves to a
+// TypeSafe System One model. It honors aliases by resolving the canonical
+// model name first.
+func IsTypesafeModelFamily(ctx *BifrostContext, model string) bool {
+	return IsTypesafeModel(ResolveCanonicalModel(ctx, model))
+}
+
+// IsOpenAIDecisionModelFamily reports whether the current attempt resolves to a
+// model served by OpenAI's dedicated Decisions API. It honors aliases by
+// resolving the canonical model name first.
+func IsOpenAIDecisionModelFamily(ctx *BifrostContext, model string) bool {
+	return IsOpenAIDecisionModel(ResolveCanonicalModel(ctx, model))
+}
+
 // IsElevenlabsSoundModelFamily reports whether the current attempt resolves to
 // an ElevenLabs sound-effects (text-to-sound) model. It honors aliases by
 // resolving the canonical model name first, so an alias whose ModelName/ModelID

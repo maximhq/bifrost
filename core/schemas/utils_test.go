@@ -175,3 +175,15 @@ func TestModelSupportsPromptCacheBreakpointCoversGPT6(t *testing.T) {
 	assert.True(t, ModelSupportsPromptCaching(BedrockMantle, "openai.gpt-6-astra"))
 	assert.False(t, ModelSupportsPromptCaching(OpenAI, "gpt-5.5"))
 }
+
+// TestIsOpenAIDecisionModel pins which models OpenAI serves on its dedicated
+// decisions endpoint: the gpt-6-luna family only, not other gpt-6 models or
+// chat models that would answer a decision through emulation.
+func TestIsOpenAIDecisionModel(t *testing.T) {
+	for _, model := range []string{"gpt-6-luna", "GPT-6-Luna", "gpt-6-luna-2026-09-29", "openai/gpt-6-luna"} {
+		assert.True(t, IsOpenAIDecisionModel(model), model)
+	}
+	for _, model := range []string{"gpt-6-astra", "gpt-4o", "gpt-5.6-luna", "my-gpt-6-luna", "typesafe/jev-1.13", ""} {
+		assert.False(t, IsOpenAIDecisionModel(model), model)
+	}
+}

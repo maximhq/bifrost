@@ -75,6 +75,33 @@ func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
 	r.EmbeddingParameters.ExtraParams = params
 }
 
+// OpenAIDecisionRequest represents a request to OpenAI's dedicated
+// POST /v1/decisions endpoint. Input and Questions use the shared ordered
+// decision schema, whose shape is OpenAI's wire shape.
+type OpenAIDecisionRequest struct {
+	Model            string                            `json:"model"`
+	Input            *schemas.DecisionInput            `json:"input"`
+	Questions        []schemas.DecisionOrderedQuestion `json:"questions"`
+	SafetyIdentifier *string                           `json:"safety_identifier,omitempty"`
+	ExtraParams      map[string]interface{}            `json:"-"` // Optional: Extra parameters
+}
+
+// GetExtraParams implements providerUtils.RequestBodyWithExtraParams.
+func (r *OpenAIDecisionRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// OpenAIDecisionResponse represents a response from OpenAI's decisions
+// endpoint. Answers are in the order of the request's questions. The usage
+// shape is not published; the Responses usage type already covers token,
+// cached-token, and reasoning-token counts.
+type OpenAIDecisionResponse struct {
+	ID      string                          `json:"id,omitempty"`
+	Model   string                          `json:"model,omitempty"`
+	Answers []schemas.DecisionOrderedAnswer `json:"answers"`
+	Usage   *schemas.ResponsesResponseUsage `json:"usage,omitempty"`
+}
+
 // OpenAIRerankRequest represents an OpenAI-compatible rerank request
 type OpenAIRerankRequest struct {
 	Model           string                   `json:"model"`

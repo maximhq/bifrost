@@ -280,3 +280,25 @@ func TestEmulateDecisionToolChoicePerSurface(t *testing.T) {
 		})
 	}
 }
+
+// TestEmulateDecisionRefusesOrderedRequest pins that emulation never serves an
+// ordered request, which it would flatten into State and a question map.
+func TestEmulateDecisionRefusesOrderedRequest(t *testing.T) {
+	provider := &decisionEmulationProvider{response: emulationFunctionCallResponse(`{}`)}
+	request := &schemas.BifrostDecisionRequest{
+		Model: "gpt-4o-mini",
+		Input: &schemas.DecisionInput{Text: schemas.Ptr("hello")},
+		OrderedQuestions: []schemas.DecisionOrderedQuestion{
+			{Type: schemas.DecisionOrderedKindPredicate, Instructions: "ok?"},
+		},
+	}
+
+	var b Bifrost
+	resp, bifrostErr := b.emulateDecisionViaResponses(nil, provider, schemas.Key{}, request)
+	if resp != nil || bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+		t.Fatalf("expected a 400 and no response, got resp=%+v err=%+v", resp, bifrostErr)
+	}
+	if provider.lastRequest != nil {
+		t.Error("the emulating model must not be called")
+	}
+}
