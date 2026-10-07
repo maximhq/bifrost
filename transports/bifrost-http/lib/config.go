@@ -3626,6 +3626,12 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					// Resolve MCP client names to IDs for config file mcp_configs
 					configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
 						ctx, config.ConfigStore, configData.Governance.VirtualKeys[i].MCPConfigs, newVirtualKey.ID)
+					// An entry without a metadata field keeps the metadata already stored (set
+					// through the API); only an explicit {} clears it. The store's UpdateVirtualKey
+					// keeps it too, and carrying it here keeps the in-memory copy in step.
+					if configData.Governance.VirtualKeys[i].Metadata == nil {
+						configData.Governance.VirtualKeys[i].Metadata = existingVirtualKey.Metadata
+					}
 					virtualKeysToUpdate = append(virtualKeysToUpdate, configData.Governance.VirtualKeys[i])
 					governanceConfig.VirtualKeys[j] = configData.Governance.VirtualKeys[i]
 				} else {

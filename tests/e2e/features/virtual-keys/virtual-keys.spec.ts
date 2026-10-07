@@ -514,6 +514,48 @@ test.describe('Virtual Key Management', () => {
     await virtualKeysPage.closeSheet()
   })
 
+  test('should create, edit and remove virtual key metadata', async ({ virtualKeysPage, request }) => {
+    const vkName = `Metadata VK ${Date.now()}`
+    managementVKs.push(vkName)
+    await virtualKeysPage.createVirtualKey(
+      createVirtualKeyData({
+        name: vkName,
+        metadata: { cost_center: 'cc-42', owner: 'team-a@example.com' },
+      }),
+    )
+
+    const metadataOf = async () =>
+      ((await findVirtualKeyByName(request, vkName)) as { metadata?: Record<string, string> }).metadata ?? {}
+    expect(await metadataOf()).toEqual({ cost_center: 'cc-42', owner: 'team-a@example.com' })
+
+    // Reopened, the editor shows what was saved.
+    await virtualKeysPage.viewVirtualKey(vkName)
+    expect(await virtualKeysPage.getMetadata()).toEqual({ cost_center: 'cc-42', owner: 'team-a@example.com' })
+    await virtualKeysPage.closeSheet()
+
+    // Edit one value, remove one entry and add another in a single save.
+    await virtualKeysPage.editVirtualKey(vkName, {
+      removeMetadataKeys: ['owner'],
+      metadata: { cost_center: 'cc-7', env: 'prod' },
+    })
+    expect(await metadataOf()).toEqual({ cost_center: 'cc-7', env: 'prod' })
+
+    // Removing every entry clears the metadata.
+    await virtualKeysPage.editVirtualKey(vkName, { removeMetadataKeys: ['cost_center', 'env'] })
+    expect(await metadataOf()).toEqual({})
+  })
+
+  test('should reject an invalid metadata key before saving', async ({ virtualKeysPage }) => {
+    await virtualKeysPage.createBtn.click()
+    await expect(virtualKeysPage.sheet).toBeVisible()
+    await virtualKeysPage.nameInput.fill(`Bad Metadata VK ${Date.now()}`)
+    await virtualKeysPage.setMetadata({ 'cost center': 'cc-42' })
+    await virtualKeysPage.saveBtn.click()
+
+    await expect(virtualKeysPage.metadataSection.getByText('Invalid key "cost center"')).toBeVisible()
+    await expect(virtualKeysPage.sheet).toBeVisible()
+  })
+
   test('should delete virtual key', async ({ virtualKeysPage }) => {
     const vkName = `Delete Test VK ${Date.now()}`
     const vkData = createVirtualKeyData({ name: vkName })
@@ -934,5 +976,40 @@ test.describe('Provider Management', () => {
     // Verify it still exists
     const vkExists = await virtualKeysPage.virtualKeyExists(vkName)
     expect(vkExists).toBe(true)
+  })
+})
+
+// A shared or hand-edited link can carry a metadata filter key the server refuses. The page must not
+// send it (every list and export request would fail with 400) and must offer to clear it. The API is
+// mocked so the shared test gateway is untouched.
+test.describe('Virtual key metadata filter from the URL', () => {
+  test.use({ skipAutoLogin: true })
+
+  test('an invalid metadata_key in the link is not sent and can be cleared', async ({ page }) => {
+    const listQueries: string[] = []
+    await page.route('**/api/**', async route => {
+      const url = new URL(route.request().url())
+      if (url.pathname === '/api/governance/virtual-keys') {
+        listQueries.push(url.search)
+        await route.fulfill({ json: { virtual_keys: [], count: 0, total_count: 0, limit: 25, offset: 0 } })
+      } else if (url.pathname === '/api/session/is-auth-enabled') {
+        await route.fulfill({ json: { is_auth_enabled: false, has_valid_token: false, auth_type: 'none', inference_auth_enforced: false } })
+      } else if (url.pathname === '/api/version') {
+        await route.fulfill({ json: '1.0.0' })
+      } else if (url.pathname === '/api/config') {
+        await route.fulfill({ json: { client_config: {}, auth_config: null, framework_config: {}, is_db_connected: true, metadata: { onboarding_dismissed: true } } })
+      } else {
+        await route.fulfill({ json: {} })
+      }
+    })
+
+    await page.goto('/workspace/governance/virtual-keys?metadata_key=cost%20center&metadata_value=cc-42')
+    await expect(page.getByTestId('vk-metadata-filter-invalid-alert')).toBeVisible()
+    await expect.poll(() => listQueries.length).toBeGreaterThan(0)
+    expect(listQueries.every(q => !q.includes('metadata_'))).toBe(true)
+
+    await page.getByTestId('vk-metadata-filter-invalid-clear-btn').click()
+    await expect(page.getByTestId('vk-metadata-filter-invalid-alert')).toHaveCount(0)
+    await expect(page).not.toHaveURL(/metadata_key=/)
   })
 })

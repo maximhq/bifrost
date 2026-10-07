@@ -4357,6 +4357,63 @@ func TestMigrationAddVirtualKeyDisableContentLoggingColumn(t *testing.T) {
 	assert.Equal(t, storedOff.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
 }
 
+// TestMigrationAddVirtualKeyMetadataColumn pins the metadata column: the migration adds it and is
+// idempotent, a key without metadata reads back with none, and the config hash only moves when the
+// key has metadata, so every pre-existing key keeps the hash synchronization already stored for it.
+func TestMigrationAddVirtualKeyMetadataColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "metadata"), "metadata column must not exist before migration")
+	require.NoError(t, migrationAddVirtualKeyMetadataColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "metadata"))
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_metadata_column").Error)
+	require.NoError(t, migrationAddVirtualKeyMetadataColumn(ctx, db, testMigrationLogger))
+
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+	plain := tables.TableVirtualKey{ID: "vk-md-none", Name: "vk-md-none", Value: *schemas.NewSecretVar("sk-bf-vk-md-none")}
+	tagged := tables.TableVirtualKey{ID: "vk-md-tagged", Name: "vk-md-tagged", Value: *schemas.NewSecretVar("sk-bf-vk-md-tagged"), Metadata: map[string]string{"cost_center": "cc-42", "env": "prod"}}
+	for _, vk := range []*tables.TableVirtualKey{&plain, &tagged} {
+		hash, err := GenerateVirtualKeyHash(*vk)
+		require.NoError(t, err)
+		vk.ConfigHash = hash
+		require.NoError(t, db.Create(vk).Error)
+	}
+	read := func(id string) tables.TableVirtualKey {
+		var stored tables.TableVirtualKey
+		require.NoError(t, db.First(&stored, "id = ?", id).Error)
+		return stored
+	}
+	assert.Nil(t, read(plain.ID).Metadata)
+	storedTagged := read(tagged.ID)
+	assert.Equal(t, map[string]string{"cost_center": "cc-42", "env": "prod"}, storedTagged.Metadata)
+	recomputed, err := GenerateVirtualKeyHash(storedTagged)
+	require.NoError(t, err)
+	assert.Equal(t, storedTagged.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
+
+	// Hash stability: nil and empty metadata hash like a key from before the column existed, any
+	// metadata moves the hash, and a value change moves it again.
+	same := tables.TableVirtualKey{ID: plain.ID, Name: plain.Name, Value: *schemas.NewSecretVar("sk-bf-vk-md-none")}
+	hashWith := func(md map[string]string) string {
+		same.Metadata = md
+		hash, err := GenerateVirtualKeyHash(same)
+		require.NoError(t, err)
+		return hash
+	}
+	assert.Equal(t, plain.ConfigHash, hashWith(nil), "no metadata must hash exactly like a key from before the column existed")
+	assert.Equal(t, plain.ConfigHash, hashWith(map[string]string{}), "empty metadata must hash like no metadata")
+	withMD := hashWith(map[string]string{"cost_center": "cc-42"})
+	assert.NotEqual(t, plain.ConfigHash, withMD, "adding metadata must change the hash")
+	assert.NotEqual(t, withMD, hashWith(map[string]string{"cost_center": "cc-43"}), "changing a value must change the hash")
+	assert.NotEqual(t, hashWith(map[string]string{"a": "bc"}), hashWith(map[string]string{"ab": "c"}), "key/value boundaries must not be ambiguous")
+	for range 20 {
+		assert.Equal(t, hashWith(map[string]string{"a": "1", "b": "2", "c": "3"}), hashWith(map[string]string{"c": "3", "b": "2", "a": "1"}), "map order must not move the hash")
+	}
+}
+
 // TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable pins that rolling the
 // column back is refused rather than performed. The column is the only home for a key's own
 // content-logging decision, and a nil reads as "inherit": dropping it would not merely lose

@@ -968,6 +968,38 @@ func mergeLoadBalancerMetadata(metadata map[string]interface{}, ctx *schemas.Bif
 	return metadata
 }
 
+// virtualKeyMetadataContextKey is the context key under which the governance plugin publishes the
+// resolved virtual key's metadata (governance.VirtualKeyMetadataContextKey). This module cannot
+// import the governance plugin, and the key is kept out of core so both plugins build against
+// published core; the string must stay identical to governance's.
+const virtualKeyMetadataContextKey schemas.BifrostContextKey = "bifrost-governance-virtual-key-metadata"
+
+// mergeVirtualKeyMetadata snapshots the resolved virtual key's metadata onto a log row's metadata,
+// so spend stays filterable by it (cost center, owner, ...) even after the key's metadata changes.
+// It is applied after every request-supplied source (logging headers, x-bf-lh-* and x-bf-dim-*), so
+// on a key collision the virtual key's value wins: attribution an operator set on the key cannot be
+// spoofed by a caller sending a header of the same name. Keys under schemas.LoadBalancerMetadataPrefix
+// are skipped, as for headers; config validation already refuses them.
+func mergeVirtualKeyMetadata(metadata map[string]interface{}, ctx *schemas.BifrostContext) map[string]interface{} {
+	if ctx == nil {
+		return metadata
+	}
+	vkMetadata, ok := ctx.Value(virtualKeyMetadataContextKey).(map[string]string)
+	if !ok || len(vkMetadata) == 0 {
+		return metadata
+	}
+	for key, value := range vkMetadata {
+		if strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix) {
+			continue
+		}
+		if metadata == nil {
+			metadata = make(map[string]interface{}, len(vkMetadata))
+		}
+		metadata[key] = value
+	}
+	return metadata
+}
+
 // formatRoutingEngineLogs formats routing engine logs into a human-readable string.
 // Format: [timestamp] [engine] [level] - message
 // The level token lets the log detail view filter and badge each line by severity.

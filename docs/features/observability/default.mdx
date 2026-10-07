@@ -470,6 +470,8 @@ There are two ways headers get captured into log metadata:
 
 Both methods can be used together - configured headers and `x-bf-lh-*` headers are merged into the same metadata map.
 
+Requests made with a virtual key that has [metadata](/features/governance/virtual-keys#metadata-per-key) also get the key's metadata in the same map. The key's values are applied last, so on a key collision they override header values.
+
 ### Configuring Logging Headers
 
 <Tabs group="logging-headers-config">

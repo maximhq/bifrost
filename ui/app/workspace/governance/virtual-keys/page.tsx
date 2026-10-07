@@ -1,8 +1,11 @@
 import VirtualKeysTable from "@/app/workspace/virtual-keys/views/virtualKeysTable";
 import FullPageLoader from "@/components/fullPageLoader";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { getErrorMessage, useGetVirtualKeysQuery } from "@/lib/store";
+import { isValidVirtualKeyMetadataFilterKey } from "@/lib/utils/virtualKeyMetadata";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
@@ -21,6 +24,8 @@ export default function GovernanceVirtualKeysPage() {
 			customer_id: parseAsString.withDefault(""),
 			team_id: parseAsString.withDefault(""),
 			user_id: parseAsString.withDefault(""),
+			metadata_key: parseAsString.withDefault(""),
+			metadata_value: parseAsString.withDefault(""),
 			offset: parseAsInteger.withDefault(0),
 			sort_by: parseAsString.withDefault(""),
 			order: parseAsString.withDefault(""),
@@ -30,6 +35,12 @@ export default function GovernanceVirtualKeysPage() {
 	);
 
 	const debouncedSearch = useDebouncedValue(urlState.search, 300);
+
+	// A metadata key from the URL (a shared or hand-edited link) is checked with the server's rule
+	// before it is sent: an invalid one would make every list and export request fail with 400.
+	// It is dropped instead, and a banner offers to clear it.
+	const metadataKeyInvalid = urlState.metadata_key !== "" && !isValidVirtualKeyMetadataFilterKey(urlState.metadata_key);
+	const activeMetadataKey = metadataKeyInvalid ? "" : urlState.metadata_key;
 
 	const {
 		data: virtualKeysData,
@@ -43,6 +54,7 @@ export default function GovernanceVirtualKeysPage() {
 			customer_id: urlState.customer_id || undefined,
 			team_id: urlState.team_id || undefined,
 			user_id: urlState.user_id || undefined,
+			metadata: activeMetadataKey ? { [activeMetadataKey]: urlState.metadata_value } : undefined,
 			sort_by: (urlState.sort_by as "name" | "budget_spent" | "created_at" | "status") || undefined,
 			order: (urlState.order as "asc" | "desc") || undefined,
 		},
@@ -95,6 +107,10 @@ export default function GovernanceVirtualKeysPage() {
 		setUrlState({ user_id: value || null, offset: 0 });
 	};
 
+	const handleMetadataFilterChange = (key: string, value: string) => {
+		setUrlState({ metadata_key: key || null, metadata_value: key ? value : null, offset: 0 });
+	};
+
 	const handleOffsetChange = (newOffset: number) => {
 		setUrlState({ offset: newOffset });
 	};
@@ -119,6 +135,24 @@ export default function GovernanceVirtualKeysPage() {
 
 	return (
 		<div className="no-padding-parent mx-auto flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] min-h-0 w-full flex-col overflow-hidden p-4">
+			{metadataKeyInvalid && (
+				<Alert variant="warning" className="mb-3" data-testid="vk-metadata-filter-invalid-alert">
+					<AlertDescription className="flex items-center justify-between gap-3">
+						<span>
+							The metadata filter key in this link is not valid, so it is not applied. Keys use 1-256 letters, digits, &quot;.&quot;,
+							&quot;_&quot; or &quot;-&quot;.
+						</span>
+						<Button
+							size="sm"
+							variant="outline"
+							data-testid="vk-metadata-filter-invalid-clear-btn"
+							onClick={() => handleMetadataFilterChange("", "")}
+						>
+							Clear filter
+						</Button>
+					</AlertDescription>
+				</Alert>
+			)}
 			<VirtualKeysTable
 				virtualKeys={virtualKeysData?.virtual_keys || []}
 				totalCount={virtualKeysData?.total_count || 0}
@@ -131,6 +165,9 @@ export default function GovernanceVirtualKeysPage() {
 				onTeamFilterChange={handleTeamFilterChange}
 				userFilter={urlState.user_id}
 				onUserFilterChange={handleUserFilterChange}
+				metadataFilterKey={activeMetadataKey}
+				metadataFilterValue={urlState.metadata_value}
+				onMetadataFilterChange={handleMetadataFilterChange}
 				offset={urlState.offset}
 				limit={PAGE_SIZE}
 				onOffsetChange={handleOffsetChange}
