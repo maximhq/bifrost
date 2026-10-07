@@ -20523,8 +20523,8 @@
                     "type": "text/javascript",
                     "exec": [
                       "pm.test('VK content logging off: chat succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                      "var reqId = pm.response.headers.get('x-request-id');",
-                      "pm.test('VK content logging off: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                      "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                      "pm.test('VK content logging off: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                       "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
                       "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
                       "function checkLog(attempt) {",
@@ -20583,8 +20583,8 @@
                     "type": "text/javascript",
                     "exec": [
                       "pm.test('VK content logging inherit: chat succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                      "var reqId = pm.response.headers.get('x-request-id');",
-                      "pm.test('VK content logging inherit: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                      "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                      "pm.test('VK content logging inherit: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                       "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
                       "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
                       "function checkLog(attempt) {",
@@ -175761,7 +175761,7 @@
                 "exec": [
                   "// The log row id is the request id; recorded so the cleanup step can delete this seed.",
                   "function addLogsNullSortIds(ids) { var cur = JSON.parse(pm.collectionVariables.get('logsNullSortIds') || '[]'); ids.forEach(function (id) { if (id && cur.indexOf(id) === -1) { cur.push(id); } }); pm.collectionVariables.set('logsNullSortIds', JSON.stringify(cur)); }",
-                  "addLogsNullSortIds([pm.response.headers.get('x-request-id')]);",
+                  "addLogsNullSortIds([pm.response.headers.get('x-bifrost-request-id')]);",
                   "pm.test('logs-null-sort seed: priced request succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});"
@@ -175814,7 +175814,7 @@
                 "exec": [
                   "// The log row id is the request id; recorded so the cleanup step can delete this seed.",
                   "function addLogsNullSortIds(ids) { var cur = JSON.parse(pm.collectionVariables.get('logsNullSortIds') || '[]'); ids.forEach(function (id) { if (id && cur.indexOf(id) === -1) { cur.push(id); } }); pm.collectionVariables.set('logsNullSortIds', JSON.stringify(cur)); }",
-                  "addLogsNullSortIds([pm.response.headers.get('x-request-id')]);",
+                  "addLogsNullSortIds([pm.response.headers.get('x-bifrost-request-id')]);",
                   "pm.test('logs-null-sort seed: unknown model fails at the provider', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
                   "});"
@@ -206694,6 +206694,1846 @@
             }
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "167. Bifrost request id survives the provider's own x-request-id (bifrost-request-id)",
+      "description": "x-bifrost-request-id is this gateway's request id on every response: the caller's x-request-id, or the UUID generated when it sent none, and the id of the request's log entry. It sits beside x-bifrost-trace-id.\n\nThe x-request-id response header is deprecated for reading that id. Provider response headers are forwarded, and OpenAI answers with its own x-request-id, which replaces the gateway's there; before x-bifrost-request-id existed, an OpenAI caller had no way to learn the id its request was logged under. Anthropic sends its request id as request-id, so x-request-id still echoes the caller's there.\n\nEach row sends a fresh x-request-id (except the last, which sends none) and requires x-bifrost-request-id to echo it and /api/logs/{id} to find the entry: OpenAI non-streaming, streaming and the /openai drop-in, Anthropic, and OpenAI with a generated id. Run with FEATURE=\"bifrost-request-id\".",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini: x-bifrost-request-id echoes the caller id though OpenAI sends its own x-request-id - bifrost-request-id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('bfRequestId1', 'bifrost-request-id-1-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var sent = pm.collectionVariables.get('bfRequestId1');",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var got = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('x-bifrost-request-id echoes the caller request id', function () {",
+                  "  pm.expect(got, 'x-bifrost-request-id; x-request-id was ' + pm.response.headers.get('x-request-id')).to.eql(sent);",
+                  "});",
+                  "pm.test('the deprecated x-request-id is still present', function () {",
+                  "  pm.expect(pm.response.headers.get('x-request-id'), 'x-request-id').to.be.a('string').and.not.empty;",
+                  "});",
+                  "function checkLog(id, attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('the log entry is found under x-bifrost-request-id', function () { pm.expect(j.id, JSON.stringify(j).slice(0, 300)).to.eql(id); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 15) { setTimeout(function () { checkLog(id, attempt + 1); }, 1000); return; }",
+                  "    pm.test('the log entry is found under x-bifrost-request-id', function () { pm.expect.fail('log ' + id + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (got) { checkLog(got, 0); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{bfRequestId1}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini streaming: x-bifrost-request-id echoes the caller id - bifrost-request-id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('bfRequestId2', 'bifrost-request-id-2-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var sent = pm.collectionVariables.get('bfRequestId2');",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var got = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('x-bifrost-request-id echoes the caller request id', function () {",
+                  "  pm.expect(got, 'x-bifrost-request-id; x-request-id was ' + pm.response.headers.get('x-request-id')).to.eql(sent);",
+                  "});",
+                  "pm.test('the deprecated x-request-id is still present', function () {",
+                  "  pm.expect(pm.response.headers.get('x-request-id'), 'x-request-id').to.be.a('string').and.not.empty;",
+                  "});",
+                  "function checkLog(id, attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('the log entry is found under x-bifrost-request-id', function () { pm.expect(j.id, JSON.stringify(j).slice(0, 300)).to.eql(id); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 15) { setTimeout(function () { checkLog(id, attempt + 1); }, 1000); return; }",
+                  "    pm.test('the log entry is found under x-bifrost-request-id', function () { pm.expect.fail('log ' + id + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (got) { checkLog(got, 0); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{bfRequestId2}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini /openai drop-in: x-bifrost-request-id echoes the caller id - bifrost-request-id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('bfRequestId3', 'bifrost-request-id-3-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var sent = pm.collectionVariables.get('bfRequestId3');",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var got = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('x-bifrost-request-id echoes the caller request id', function () {",
+                  "  pm.expect(got, 'x-bifrost-request-id; x-request-id was ' + pm.response.headers.get('x-request-id')).to.eql(sent);",
+                  "});",
+                  "pm.test('the deprecated x-request-id is still present', function () {",
+                  "  pm.expect(pm.response.headers.get('x-request-id'), 'x-request-id').to.be.a('string').and.not.empty;",
+                  "});",
+                  "function checkLog(id, attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('the log entry is found under x-bifrost-request-id', function () { pm.expect(j.id, JSON.stringify(j).slice(0, 300)).to.eql(id); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 15) { setTimeout(function () { checkLog(id, attempt + 1); }, 1000); return; }",
+                  "    pm.test('the log entry is found under x-bifrost-request-id', function () { pm.expect.fail('log ' + id + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (got) { checkLog(got, 0); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{bfRequestId3}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-sonnet-4-6: x-bifrost-request-id and the deprecated x-request-id both echo the caller id - bifrost-request-id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('bfRequestId4', 'bifrost-request-id-4-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var sent = pm.collectionVariables.get('bfRequestId4');",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var got = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('x-bifrost-request-id echoes the caller request id', function () {",
+                  "  pm.expect(got, 'x-bifrost-request-id; x-request-id was ' + pm.response.headers.get('x-request-id')).to.eql(sent);",
+                  "});",
+                  "pm.test('the deprecated x-request-id still echoes the request id when the provider sends none', function () {",
+                  "  pm.expect(pm.response.headers.get('x-request-id'), 'x-request-id').to.eql(sent);",
+                  "});",
+                  "function checkLog(id, attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('the log entry is found under x-bifrost-request-id', function () { pm.expect(j.id, JSON.stringify(j).slice(0, 300)).to.eql(id); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 15) { setTimeout(function () { checkLog(id, attempt + 1); }, 1000); return; }",
+                  "    pm.test('the log entry is found under x-bifrost-request-id', function () { pm.expect.fail('log ' + id + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (got) { checkLog(got, 0); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{bfRequestId4}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini without a caller id: x-bifrost-request-id names the log entry - bifrost-request-id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var got = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('x-bifrost-request-id carries the generated request id', function () {",
+                  "  pm.expect(got, 'x-bifrost-request-id; x-request-id was ' + pm.response.headers.get('x-request-id')).to.be.a('string').and.not.empty;",
+                  "});",
+                  "function checkLog(id, attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('the log entry is found under x-bifrost-request-id', function () { pm.expect(j.id, JSON.stringify(j).slice(0, 300)).to.eql(id); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 15) { setTimeout(function () { checkLog(id, attempt + 1); }, 1000); return; }",
+                  "    pm.test('the log entry is found under x-bifrost-request-id', function () { pm.expect.fail('log ' + id + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (got) { checkLog(got, 0); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "168. Weights must be valid: provider keys, virtual key provider configs and routing rule targets (weight-validation)",
+      "description": "Weighted selection happens in three places, and each now refuses a weight it cannot draw by.\n\n1. Provider keys. Key selection used to sum key weights as ints, so a negative weight, or one too large for an int, drove the total below zero and rand.Intn panicked inside the provider's request worker, which has no recover: one request on such a pool took the whole gateway down. The selector now counts a negative or non-finite weight as zero, and the key API rejects one. The row runs on a run-scoped OpenAI-backed custom provider that never serves a request.\n2. Virtual key provider configs. A negative weight pulled the load balancer's summed weight below the draw, so the pick fell through to the first configured provider whatever the weights said. Load balancing now counts it as zero, and the virtual key API rejects one on create and update.\n3. Routing rule targets. config.json's schema and the dashboard require every target weight to be greater than 0, but the API accepted 0, a target that is never drawn. The API now rejects it too.\n\nThe selector and load-balancer halves are unit-tested. Every request here is a management call. Run with FEATURE=\"weight-validation\".",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai custom provider: a key with a negative weight is rejected - key-weight-validation",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function errorMessage(json) { return ((json || {}).error || {}).message || ''; }",
+                  "var PREFIX = 'harness-keyweight-';",
+                  "// Providers left by an aborted earlier run carry their run timestamp in their names. Only ones older",
+                  "// than ten minutes are swept, so a parallel shard's live provider is never touched.",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var provider = PREFIX + 'run-' + Date.now();",
+                  "pm.collectionVariables.set('keyWeightProvider', provider);",
+                  "pm.collectionVariables.unset('keyWeightKey');",
+                  "call('GET', '/api/providers', null, function (res, j) {",
+                  "  var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  var i = 0;",
+                  "  (function next() {",
+                  "    if (i < stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); }",
+                  "    // The provider never serves a request: a key with a negative weight accepted by a build without",
+                  "    // the check stays on this throwaway provider, which is deleted by the test script.",
+                  "    call('POST', '/api/providers', { provider: provider, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (r1) {",
+                  "      if (!expectOk('setup: created the run-scoped OpenAI-backed provider', r1)) { return; }",
+                  "      call('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', { name: provider + '-A', value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }, function (r2, k) {",
+                  "        if (!expectOk('setup: created key A with weight 1', r2)) { return; }",
+                  "        pm.collectionVariables.set('keyWeightKey', JSON.stringify({ id: k.id, name: k.name }));",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function errorMessage(json) { return ((json || {}).error || {}).message || ''; }",
+                  "var mainJson = {}; try { mainJson = pm.response.json() || {}; } catch (e) { mainJson = {}; }",
+                  "var provider = pm.collectionVariables.get('keyWeightProvider');",
+                  "var keyA = JSON.parse(pm.collectionVariables.get('keyWeightKey') || 'null');",
+                  "pm.test('a key created with a negative weight is rejected with 400', function () {",
+                  "  pm.expect(pm.response.code, 'a negative weight must never be stored: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('the error names the weight', function () {",
+                  "  pm.expect(errorMessage(mainJson), pm.response.text()).to.include('weight');",
+                  "});",
+                  "function finish() { call('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (res) { expectOk('cleanup: deleted the run-scoped provider', res); }); }",
+                  "// Setup already failed loudly in the prerequest when key A is missing.",
+                  "if (!keyA) { finish(); return; }",
+                  "call('PUT', '/api/providers/' + encodeURIComponent(provider) + '/keys/' + encodeURIComponent(keyA.id), { name: keyA.name, weight: -0.5 }, function (res) {",
+                  "  pm.test('an update to a negative weight is rejected with 400', function () {",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(400);",
+                  "  });",
+                  "  call('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (r2, j) {",
+                  "    var keys = (j && j.keys) || [];",
+                  "    pm.test('only key A is stored, still at weight 1', function () {",
+                  "      pm.expect(keys.map(function (k) { return k.name + '=' + k.weight; }), r2 ? r2.text() : '').to.eql([keyA.name + '=1']);",
+                  "    });",
+                  "    finish();",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{keyWeightProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{keyWeightProvider}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{keyWeightProvider}}-negative\",\n  \"value\": \"env.OPENAI_API_KEY\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": -1\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai virtual key: a provider config with a negative weight is rejected - weight-validation",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('weightVkRun', 'run-' + Date.now());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function errorMessage(json) { return ((json || {}).error || {}).message || ''; }",
+                  "var mainJson = {}; try { mainJson = pm.response.json() || {}; } catch (e) { mainJson = {}; }",
+                  "var run = pm.collectionVariables.get('weightVkRun');",
+                  "pm.test('a virtual key provider config with a negative weight is rejected with 400', function () {",
+                  "  pm.expect(pm.response.code, 'a negative weight must never be stored: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('the error names the weight', function () {",
+                  "  pm.expect(errorMessage(mainJson), pm.response.text()).to.include('weight');",
+                  "});",
+                  "function del(id, cb) { if (!id) { return cb(); } call('DELETE', '/api/governance/virtual-keys/' + id, null, function (res) { expectOk('cleanup: deleted a run-scoped virtual key', res); cb(); }); }",
+                  "var leaked = (mainJson.virtual_key || {}).id;",
+                  "del(leaked, function () {",
+                  "  call('POST', '/api/governance/virtual-keys', { name: 'harness-weight-vk-ok-' + run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], weight: 1 }] }, function (res, j) {",
+                  "    if (!expectOk('setup: created a virtual key with weight 1', res)) { return; }",
+                  "    var vk = (j || {}).virtual_key || {}; var pc = (vk.provider_configs || [])[0] || {};",
+                  "    call('PUT', '/api/governance/virtual-keys/' + vk.id, { provider_configs: [{ id: pc.id, provider: 'openai', allowed_models: ['*'], weight: -0.5 }] }, function (r2, j2) {",
+                  "      pm.test('an update to a negative provider-config weight is rejected with 400', function () {",
+                  "        pm.expect(r2 && r2.code, r2 ? r2.text() : 'no response').to.eql(400);",
+                  "        pm.expect(errorMessage(j2), r2 ? r2.text() : '').to.include('weight');",
+                  "      });",
+                  "      call('GET', '/api/governance/virtual-keys/' + vk.id, null, function (r3, j3) {",
+                  "        var stored = (((j3 || {}).virtual_key || {}).provider_configs || []).map(function (p) { return p.weight; });",
+                  "        pm.test('the stored provider-config weight is still 1', function () {",
+                  "          pm.expect(stored, r3 ? r3.text() : '').to.eql([1]);",
+                  "        });",
+                  "        del(vk.id, function () {});",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness-weight-vk-negative-{{weightVkRun}}\",\n  \"provider_configs\": [\n    {\n      \"provider\": \"openai\",\n      \"allowed_models\": [\n        \"*\"\n      ],\n      \"weight\": -1\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai routing rule: a target with a zero weight is rejected - weight-validation",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var run = 'run-' + Date.now();",
+                  "pm.collectionVariables.set('weightRuleRun', run);",
+                  "// Priorities must be distinct within a scope; derive one from the clock so runs and shards never collide.",
+                  "pm.collectionVariables.set('weightRulePriority', String(700000 + (Date.now() % 90000)));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function errorMessage(json) { return ((json || {}).error || {}).message || ''; }",
+                  "var mainJson = {}; try { mainJson = pm.response.json() || {}; } catch (e) { mainJson = {}; }",
+                  "pm.test('a routing rule with a zero-weight target is rejected with 400', function () {",
+                  "  pm.expect(pm.response.code, 'every target weight must be greater than 0: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('the error says the weight must be greater than 0', function () {",
+                  "  pm.expect(errorMessage(mainJson), pm.response.text()).to.include('greater than 0');",
+                  "});",
+                  "var leaked = (mainJson.rule || {}).id;",
+                  "if (leaked) { call('DELETE', '/api/governance/routing-rules/' + leaked, null, function (res) { expectOk('cleanup: deleted the accepted rule', res); }); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/routing-rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Harness weight validation {{weightRuleRun}}\",\n  \"description\": \"Provider harness, rejected at create; deleted by the same row if a build accepts it.\",\n  \"priority\": {{weightRulePriority}},\n  \"cel_expression\": \"\\\"x-harness-weight-run\\\" in headers && headers[\\\"x-harness-weight-run\\\"] == \\\"{{weightRuleRun}}\\\"\",\n  \"scope\": \"global\",\n  \"targets\": [\n    {\n      \"provider\": \"openai\",\n      \"model\": \"gpt-4o-mini\",\n      \"weight\": 1\n    },\n    {\n      \"provider\": \"openai\",\n      \"model\": \"gpt-4o\",\n      \"weight\": 0\n    }\n  ]\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "169. A duplicate routing rule priority is a 409 conflict (routing-priority-conflict)",
+      "description": "Two routing rules in one scope cannot share a priority. The store rejected the second one, but as a plain error the API answered 500 \"Failed to create routing rule\" (or \"Failed to update routing rule in database\"), which reads as a server failure a client may retry, and for a rule scoped to a team, customer or virtual key the message printed the address of the scope ID's pointer instead of the ID. The conflict is now ErrAlreadyExists, answered 409 with the priority and scope ID spelled out.\n\n(1) A global rule at a priority already taken is a 409 naming the priority, and moving another rule onto it with PUT is a 409 too. (2) A virtual-key-scoped duplicate is a 409 whose message names the virtual key's ID. Every rule matches only a header no request sends and is deleted by its row. Run with FEATURE=\"routing-priority-conflict\".",
+      "item": [
+        {
+          "name": "[EXPECT-409] openai routing rule: a duplicate priority in the global scope is a conflict - routing-priority-conflict",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// A rule that matches only a header no request sends, so it never routes anything.",
+                  "function ruleBody(run, suffix, priority, scope, scopeID) {",
+                  "  var body = { name: 'Harness priority conflict ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-priority-run\" in headers && headers[\"x-harness-priority-run\"] == \"' + run + '\"', targets: [{ provider: 'openai', model: 'gpt-4o-mini', weight: 1 }], scope: scope };",
+                  "  if (scopeID) { body.scope_id = scopeID; }",
+                  "  return body;",
+                  "}",
+                  "function deleteEach(paths, done) {",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return done(); } var p = paths[i++]; if (!p) { return next(); } call('DELETE', p, null, function (res) { expectOk('cleanup: deleted ' + p.split('/').slice(-2, -1)[0].replace(/s$/, ''), res); next(); }); })();",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var priority = 600000 + (Date.now() % 90000);",
+                  "pm.collectionVariables.set('prioRun', run);",
+                  "pm.collectionVariables.set('prioPriority', String(priority));",
+                  "pm.collectionVariables.unset('prioFirstId');",
+                  "call('POST', '/api/governance/routing-rules', ruleBody(run, 'first', priority, 'global'), function (res, j) {",
+                  "  if (!expectOk('setup: created the first rule at the priority', res)) { return; }",
+                  "  pm.collectionVariables.set('prioFirstId', ((j || {}).rule || {}).id || '');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// A rule that matches only a header no request sends, so it never routes anything.",
+                  "function ruleBody(run, suffix, priority, scope, scopeID) {",
+                  "  var body = { name: 'Harness priority conflict ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-priority-run\" in headers && headers[\"x-harness-priority-run\"] == \"' + run + '\"', targets: [{ provider: 'openai', model: 'gpt-4o-mini', weight: 1 }], scope: scope };",
+                  "  if (scopeID) { body.scope_id = scopeID; }",
+                  "  return body;",
+                  "}",
+                  "function deleteEach(paths, done) {",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return done(); } var p = paths[i++]; if (!p) { return next(); } call('DELETE', p, null, function (res) { expectOk('cleanup: deleted ' + p.split('/').slice(-2, -1)[0].replace(/s$/, ''), res); next(); }); })();",
+                  "}",
+                  "var run = pm.collectionVariables.get('prioRun');",
+                  "var priority = Number(pm.collectionVariables.get('prioPriority'));",
+                  "var firstId = pm.collectionVariables.get('prioFirstId');",
+                  "var mainJson = {}; try { mainJson = pm.response.json() || {}; } catch (e) { mainJson = {}; }",
+                  "var msg = (mainJson.error || {}).message || '';",
+                  "pm.test('a second rule at the same priority in the scope is a 409 conflict', function () {",
+                  "  pm.expect(pm.response.code, 'a taken priority is a conflict, not a server error: ' + pm.response.text()).to.eql(409);",
+                  "});",
+                  "pm.test('the conflict names the taken priority and the scope', function () {",
+                  "  pm.expect(msg, pm.response.text()).to.include('priority ' + priority + ' already exists');",
+                  "  pm.expect(msg, pm.response.text()).to.include(\"scope 'global'\");",
+                  "});",
+                  "var leaked = (mainJson.rule || {}).id;",
+                  "call('POST', '/api/governance/routing-rules', ruleBody(run, 'other', priority + 1, 'global'), function (res, j) {",
+                  "  var otherId = expectOk('setup: created another rule one priority lower', res) ? (((j || {}).rule || {}).id || '') : '';",
+                  "  var done = function () { deleteEach([firstId && '/api/governance/routing-rules/' + firstId, otherId && '/api/governance/routing-rules/' + otherId, leaked && '/api/governance/routing-rules/' + leaked], function () {}); };",
+                  "  if (!otherId) { return done(); }",
+                  "  call('PUT', '/api/governance/routing-rules/' + otherId, { priority: priority }, function (r2, j2) {",
+                  "    pm.test('moving another rule onto the taken priority is a 409 conflict', function () {",
+                  "      pm.expect(r2 && r2.code, r2 ? r2.text() : 'no response').to.eql(409);",
+                  "      pm.expect(((j2 || {}).error || {}).message || '', r2 ? r2.text() : '').to.include('priority ' + priority + ' already exists');",
+                  "    });",
+                  "    done();",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/routing-rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Harness priority conflict duplicate {{prioRun}}\",\n  \"description\": \"Provider harness duplicate; rejected at create.\",\n  \"priority\": {{prioPriority}},\n  \"cel_expression\": \"\\\"x-harness-priority-run\\\" in headers && headers[\\\"x-harness-priority-run\\\"] == \\\"{{prioRun}}\\\"\",\n  \"targets\": [\n    {\n      \"provider\": \"openai\",\n      \"model\": \"gpt-4o-mini\",\n      \"weight\": 1\n    }\n  ],\n  \"scope\": \"global\"\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-409] openai routing rule: a duplicate priority under a virtual key names the virtual key - routing-priority-conflict",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// A rule that matches only a header no request sends, so it never routes anything.",
+                  "function ruleBody(run, suffix, priority, scope, scopeID) {",
+                  "  var body = { name: 'Harness priority conflict ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-priority-run\" in headers && headers[\"x-harness-priority-run\"] == \"' + run + '\"', targets: [{ provider: 'openai', model: 'gpt-4o-mini', weight: 1 }], scope: scope };",
+                  "  if (scopeID) { body.scope_id = scopeID; }",
+                  "  return body;",
+                  "}",
+                  "function deleteEach(paths, done) {",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return done(); } var p = paths[i++]; if (!p) { return next(); } call('DELETE', p, null, function (res) { expectOk('cleanup: deleted ' + p.split('/').slice(-2, -1)[0].replace(/s$/, ''), res); next(); }); })();",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var priority = 600000 + (Date.now() % 90000);",
+                  "pm.collectionVariables.set('prioVkRun', run);",
+                  "pm.collectionVariables.set('prioVkPriority', String(priority));",
+                  "pm.collectionVariables.unset('prioVkId');",
+                  "pm.collectionVariables.unset('prioVkFirstId');",
+                  "call('POST', '/api/governance/virtual-keys', { name: 'harness-priority-conflict-' + run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], weight: 1 }] }, function (res, j) {",
+                  "  if (!expectOk('setup: created the virtual key the rules are scoped to', res)) { return; }",
+                  "  var vkId = (((j || {}).virtual_key) || {}).id || '';",
+                  "  pm.collectionVariables.set('prioVkId', vkId);",
+                  "  call('POST', '/api/governance/routing-rules', ruleBody(run, 'first', priority, 'virtual_key', vkId), function (r2, j2) {",
+                  "    if (!expectOk('setup: created the first virtual-key-scoped rule at the priority', r2)) { return; }",
+                  "    pm.collectionVariables.set('prioVkFirstId', ((j2 || {}).rule || {}).id || '');",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// A rule that matches only a header no request sends, so it never routes anything.",
+                  "function ruleBody(run, suffix, priority, scope, scopeID) {",
+                  "  var body = { name: 'Harness priority conflict ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-priority-run\" in headers && headers[\"x-harness-priority-run\"] == \"' + run + '\"', targets: [{ provider: 'openai', model: 'gpt-4o-mini', weight: 1 }], scope: scope };",
+                  "  if (scopeID) { body.scope_id = scopeID; }",
+                  "  return body;",
+                  "}",
+                  "function deleteEach(paths, done) {",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return done(); } var p = paths[i++]; if (!p) { return next(); } call('DELETE', p, null, function (res) { expectOk('cleanup: deleted ' + p.split('/').slice(-2, -1)[0].replace(/s$/, ''), res); next(); }); })();",
+                  "}",
+                  "var priority = Number(pm.collectionVariables.get('prioVkPriority'));",
+                  "var vkId = pm.collectionVariables.get('prioVkId');",
+                  "var firstId = pm.collectionVariables.get('prioVkFirstId');",
+                  "var mainJson = {}; try { mainJson = pm.response.json() || {}; } catch (e) { mainJson = {}; }",
+                  "var msg = (mainJson.error || {}).message || '';",
+                  "pm.test('a second virtual-key-scoped rule at the same priority is a 409 conflict', function () {",
+                  "  pm.expect(pm.response.code, 'a taken priority is a conflict, not a server error: ' + pm.response.text()).to.eql(409);",
+                  "});",
+                  "pm.test('the conflict names the virtual key it is scoped to, not a pointer', function () {",
+                  "  pm.expect(msg, pm.response.text()).to.include(\"scope ID '\" + vkId + \"'\");",
+                  "  pm.expect(msg, pm.response.text()).to.not.match(/0x[0-9a-f]+/);",
+                  "});",
+                  "var leaked = (mainJson.rule || {}).id;",
+                  "deleteEach([leaked && '/api/governance/routing-rules/' + leaked, firstId && '/api/governance/routing-rules/' + firstId, vkId && '/api/governance/virtual-keys/' + vkId], function () {});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/routing-rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Harness priority conflict duplicate {{prioVkRun}}\",\n  \"description\": \"Provider harness duplicate; rejected at create.\",\n  \"priority\": {{prioVkPriority}},\n  \"cel_expression\": \"\\\"x-harness-priority-run\\\" in headers && headers[\\\"x-harness-priority-run\\\"] == \\\"{{prioVkRun}}\\\"\",\n  \"targets\": [\n    {\n      \"provider\": \"openai\",\n      \"model\": \"gpt-4o-mini\",\n      \"weight\": 1\n    }\n  ],\n  \"scope\": \"virtual_key\",\n  \"scope_id\": \"{{prioVkId}}\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "170. A direct key never fans out on a model listing (direct-key-model-listing)",
+      "description": "A direct key (x-bf-direct-key: true plus the caller's own provider key, enabled by client.allow_direct_keys) belongs to one provider. A model listing that named no provider asked every configured provider and selected the direct key in place of each provider's own keys, so one SDK models.list() call sent the caller's OpenAI key to Anthropic, Gemini, every custom provider's upstream and the rest.\n\nThe listing across every provider is now refused with 400 (GET /v1/models without ?provider=, or x-bf-model-provider: all), and a drop-in route lists only its own provider: /openai/v1/models asks OpenAI, /anthropic/v1/models asks Anthropic, and a route whose provider is not configured answers 400. Each row sends a throwaway key no provider accepts, so the provider's own 401 shows which one was asked. Every request is a free model listing. Run with FEATURE=\"direct-key-model-listing\".",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai direct key: GET /v1/models without a provider is refused - direct-key-model-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('directKeyProbe', 'sk-harness-direct-key-probe-' + pm.variables.replaceIn('{{$guid}}'));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "var msg = JSON.stringify(j.error || j);",
+                  "pm.test('a listing across every provider with a direct key is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'the direct key must not be sent to every provider: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(msg, pm.response.text()).to.include('must name its provider');",
+                  "});",
+                  "// x-bf-model-provider: all asks for the same fan-out on a drop-in route.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/openai/v1/models', method: 'GET', header: { 'x-bf-direct-key': 'true', 'Authorization': 'Bearer ' + pm.collectionVariables.get('directKeyProbe'), 'x-bf-model-provider': 'all' } }, function (err, res) {",
+                  "  pm.test('x-bf-model-provider: all with a direct key is refused with 400', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(400);",
+                  "    pm.expect(res.text()).to.include('must name its provider');",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{directKeyProbe}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openai direct key: /openai/v1/models asks only OpenAI - direct-key-model-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('directKeyProbe', 'sk-harness-direct-key-probe-' + pm.variables.replaceIn('{{$guid}}'));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the listing asks only openai, which rejects the probe key with 401', function () {",
+                  "  pm.expect(pm.response.code, 'the key must reach openai alone: ' + pm.response.text()).to.eql(401);",
+                  "  pm.expect(pm.response.text(), 'expected the rejection openai itself sends').to.include('Incorrect API key');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{directKeyProbe}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] anthropic direct key: /anthropic/v1/models asks only Anthropic - direct-key-model-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('directKeyProbe', 'sk-harness-direct-key-probe-' + pm.variables.replaceIn('{{$guid}}'));"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the listing asks only anthropic, which rejects the probe key with 401', function () {",
+                  "  pm.expect(pm.response.code, 'the key must reach anthropic alone: ' + pm.response.text()).to.eql(401);",
+                  "  pm.expect(pm.response.text(), 'expected the rejection anthropic itself sends').to.include('authentication_error');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{directKeyProbe}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "171. An exhausted fallback chain returns the primary's error with the primary's headers (exhausted-fallback-headers)",
+      "description": "When the primary and every fallback fail, core returns the primary's error. Each fallback attempt replaced the provider response headers on the request context with its own, so the primary's OpenAI error went out with the Anthropic fallback's request-id, organization, workspace and rate-limit headers. Core now restores the primary attempt's headers before returning its error.\n\nBoth rows send a missing OpenAI model with a missing Anthropic model as the fallback, so each attempt is a free 404: (1) on /v1/chat/completions and (2) on the /openai drop-in. Run with FEATURE=\"exhausted-fallback-headers\".",
+      "item": [
+        {
+          "name": "[EXPECT-404] openai gpt with a failing anthropic fallback: the primary error keeps its own headers on /v1 - exhausted-fallback-headers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the primary error is returned once the fallback also failed', function () {",
+                  "  pm.expect(pm.response.code, text).to.eql(404);",
+                  "  pm.expect(text, 'expected OpenAI\\u2019s model_not_found').to.include('gpt-harness-missing-model');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routed identity').to.eql('openai');",
+                  "});",
+                  "pm.test('no header the fallback provider sent rides along with the primary error', function () {",
+                  "  ['anthropic-organization-id', 'anthropic-workspace-id', 'anthropic-ratelimit-requests-limit'].forEach(function (h) {",
+                  "    pm.expect(pm.response.headers.get(h), h + ' comes from the Anthropic fallback, not the OpenAI error it is sent with').to.equal(undefined);",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-harness-missing-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3,\n  \"fallbacks\": [\n    \"anthropic/claude-harness-missing-model\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai gpt with a failing anthropic fallback: the primary error keeps its own headers on /openai - exhausted-fallback-headers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the primary error is returned once the fallback also failed', function () {",
+                  "  pm.expect(pm.response.code, text).to.eql(404);",
+                  "  pm.expect(text, 'expected OpenAI\\u2019s model_not_found').to.include('gpt-harness-missing-model');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routed identity').to.eql('openai');",
+                  "});",
+                  "pm.test('no header the fallback provider sent rides along with the primary error', function () {",
+                  "  ['anthropic-organization-id', 'anthropic-workspace-id', 'anthropic-ratelimit-requests-limit'].forEach(function (h) {",
+                  "    pm.expect(pm.response.headers.get(h), h + ' comes from the Anthropic fallback, not the OpenAI error it is sent with').to.equal(undefined);",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-harness-missing-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3,\n  \"fallbacks\": [\n    \"anthropic/claude-harness-missing-model\"\n  ]\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "172. A provider refusing a direct key returns its own error whatever max_retries is (direct-key-refusal)",
+      "description": "A direct key (x-bf-direct-key: true plus the caller's own provider key, enabled by client.allow_direct_keys) is a one-key pool. When the provider refused it and the provider's max_retries left a retry in the budget, the dead pool collapsed into 502 upstream_credentials_exhausted, which tells the caller the gateway's keys ran out and invites a retry with the same bad key. A refused direct key now returns the provider's own error whatever max_retries is; a configured key pinned within the budget still collapses into the 502.\n\nThe row creates a run-scoped OpenAI-backed custom provider with max_retries 1 and no keys, sends a chat completion with a throwaway direct key, and requires OpenAI's own 401 with a single attempt in the log row's attempt trail, then deletes the provider. Free: OpenAI rejects the key before any tokens. Run with FEATURE=\"direct-key-refusal\".",
+      "item": [
+        {
+          "name": "[EXPECT-401] openai direct key refused on a provider with max_retries 1 keeps the provider error - direct-key-refusal",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-directrefusal-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var provider = PREFIX + 'run-' + Date.now();",
+                  "pm.collectionVariables.set('directRefusalProvider', provider);",
+                  "pm.collectionVariables.set('directRefusalKey', 'sk-harness-direct-refusal-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('directRefusalRequestId', 'direct-key-refusal-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+                  "call('GET', '/api/providers', null, function (res, j) {",
+                  "  var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  var i = 0;",
+                  "  (function next() {",
+                  "    if (i < stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); }",
+                  "    // max_retries 1 leaves a retry in the budget: the case where a refused key used to collapse into",
+                  "    // 502 upstream_credentials_exhausted. The provider needs no keys of its own: a direct key replaces them.",
+                  "    call('POST', '/api/providers', { provider: provider, custom_provider_config: { base_provider_type: 'openai', is_key_less: false }, network_config: { max_retries: 1 } }, function (r1) {",
+                  "      expectOk('setup: created the run-scoped OpenAI-backed provider with max_retries 1', r1);",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-directrefusal-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "var provider = pm.collectionVariables.get('directRefusalProvider');",
+                  "var reqId = pm.collectionVariables.get('directRefusalRequestId');",
+                  "var text = pm.response.text();",
+                  "pm.test('the provider refusing the caller\\u2019s own key answers with its own 401', function () {",
+                  "  pm.expect(pm.response.code, 'a refused direct key is the caller\\u2019s error, not exhausted gateway keys: ' + text).to.eql(401);",
+                  "  pm.expect(text, 'expected OpenAI\\u2019s own rejection').to.include('Incorrect API key');",
+                  "  pm.expect(text).to.not.include('upstream_credentials_exhausted');",
+                  "});",
+                  "// The log row is written by the batching writer, so poll for it until it has settled.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('the refused key is tried once: there is no other key to reach', function () {",
+                  "        pm.expect((j.attempt_trail || []).length, JSON.stringify(j.attempt_trail || [])).to.eql(1);",
+                  "      });",
+                  "      return finish();",
+                  "    }",
+                  "    if (attempt < 15) { return setTimeout(function () { checkLog(attempt + 1); }, 1000); }",
+                  "    pm.test('the refused key is tried once: there is no other key to reach', function () { pm.expect.fail('log ' + reqId + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "    finish();",
+                  "  });",
+                  "}",
+                  "function finish() { call('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (res) { expectOk('cleanup: deleted the run-scoped provider', res); }); }",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{directRefusalKey}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{directRefusalRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{directRefusalProvider}}/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "173. A caller's key pin on the routed provider keeps a session from moving the request (session-caller-pin)",
+      "description": "A key the caller pins (x-bf-api-key-id or x-bf-api-key) belongs to one provider. When that provider heads the routed chain, a session used to reorder the request onto the provider it was bound to anyway, carrying the pin to a provider with no such key: that attempt failed at key selection, the fallback cleared the pin, and the request was served on a key the caller never chose. The session now leaves the chain alone when the caller pinned one of the head provider's keys, as it already does for a provider-prefixed model. A pin on another provider's key, and a direct key, still leave the session to decide.\n\nEach row builds two run-scoped OpenAI-backed providers and a header-gated rule targeting P1 with P2 as its fallback, then binds a session to P2 by having P1 refuse its keys. (1) P1's keys are repaired and the request pins P1's weight-0 key 1: P1 must serve on key 1 as the primary. Before the change the session promoted P2, the pin failed there, and P1 served as a fallback on key 1b. (2) The request pins P2's weight-0 key 2p: the session still promotes P2, which serves on key 2p as the primary. Each row deletes what it made. Run with FEATURE=\"session-caller-pin\".",
+      "item": [
+        {
+          "name": "openai session with a caller key pin on the rule target stays on the pinned key's provider - session-caller-pin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sesspin-';",
+                  "var BAD = 'sk-harness-session-pin-invalid';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, p1: PREFIX + 'a-' + run, p2: PREFIX + 'b-' + run, session: 'session-caller-pin-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) };",
+                  "pm.collectionVariables.set('sessPinState', JSON.stringify(state));",
+                  "function key(provider, suffix, weight, value, cb) {",
+                  "  call('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', { name: provider + '-' + suffix, value: value, models: ['*'], weight: weight }, function (res, k) {",
+                  "    if (!expectOk('setup: created key ' + suffix, res)) { return cb(false); }",
+                  "    state['key' + suffix] = { id: k.id, name: k.name }; cb();",
+                  "  });",
+                  "}",
+                  "function provider(name, cb) {",
+                  "  call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) { cb(expectOk('setup: created provider ' + name.slice(PREFIX.length, PREFIX.length + 1), res)); });",
+                  "}",
+                  "var chatHeaders = function (extra) { var h = { 'Content-Type': 'application/json', 'x-harness-session-pin-run': run, 'x-bf-session-id': state.session }; for (var k in extra) { h[k] = extra[k]; } return h; };",
+                  "seq([",
+                  "  function (next) {",
+                  "    call('GET', '/api/providers', null, function (res, j) {",
+                  "      var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "      var i = 0; (function del() { if (i >= stale.length) { return next(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { del(); }); })();",
+                  "    });",
+                  "  },",
+                  "  function (next) { provider(state.p1, function (ok) { next(ok); }); },",
+                  "  function (next) { key(state.p1, '1', 0, BAD, next); },",
+                  "  function (next) { key(state.p1, '1b', 1, BAD, next); },",
+                  "  function (next) { provider(state.p2, function (ok) { next(ok); }); },",
+                  "  function (next) { key(state.p2, '2', 1, 'env.OPENAI_API_KEY', next); },",
+                  "  function (next) {",
+                  "    call('POST', '/api/governance/routing-rules', { name: 'Harness session caller pin ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: 500000 + (Date.now() % 90000), cel_expression: '\"x-harness-session-pin-run\" in headers && headers[\"x-harness-session-pin-run\"] == \"' + run + '\"', targets: [{ provider: state.p1, model: 'gpt-4o-mini', weight: 1 }], fallbacks: [{ provider: state.p2, model: 'gpt-4o-mini' }], scope: 'global' }, function (res, j) {",
+                  "      if (!expectOk('setup: created the rule that targets P1 and falls back to P2', res)) { return next(false); }",
+                  "      state.ruleId = ((j || {}).rule || {}).id; next();",
+                  "    });",
+                  "  },",
+                  "  // Bind the session to P2: P1 refuses its keys, so the rule's fallback serves.",
+                  "  function (next) {",
+                  "    pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: chatHeaders({}), body: { mode: 'raw', raw: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Reply OK.' }], max_tokens: 3 }) } }, function (err, res) {",
+                  "      var ri = {}; try { ri = ((res.json() || {}).extra_fields || {}).routing_info || {}; } catch (e) { ri = {}; }",
+                  "      var bound = !err && res && res.code === 200 && ri.provider === state.p2;",
+                  "      pm.test('setup: the session is bound to P2, which served after P1 refused its keys', function () { pm.expect(bound, err ? String(err) : (res.code + ' ' + res.text())).to.eql(true); });",
+                  "      next(bound);",
+                  "    });",
+                  "  },",
+                  "  function (next) { call('PUT', '/api/providers/' + encodeURIComponent(state.p1) + '/keys/' + state.key1.id, { name: state.key1.name, value: 'env.OPENAI_API_KEY' }, function (res) { next(expectOk('setup: key 1 repaired', res)); }); },",
+                  "  function (next) { call('PUT', '/api/providers/' + encodeURIComponent(state.p1) + '/keys/' + state.key1b.id, { name: state.key1b.name, value: 'env.OPENAI_API_KEY' }, function (res) { next(expectOk('setup: key 1b repaired', res)); }); },",
+                  "], function () {",
+                  "  pm.collectionVariables.set('sessPinState', JSON.stringify(state));",
+                  "  pm.collectionVariables.set('sessPinRun', run);",
+                  "  pm.collectionVariables.set('sessPinSession', state.session);",
+                  "  pm.collectionVariables.set('sessPinKeyId', (state.key1 || {}).id || 'missing');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sesspin-';",
+                  "var BAD = 'sk-harness-session-pin-invalid';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('sessPinState') || '{}');",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('the pinned request succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('P1 serves on the pinned key 1, not P2 promoted by the session binding', function () {",
+                  "  pm.expect(ri.provider, pm.response.text()).to.eql(state.p1);",
+                  "  pm.expect(ri.key, 'the caller pinned key 1: ' + pm.response.text()).to.eql((state.key1 || {}).name);",
+                  "  pm.expect(ri.is_fallback === true, 'P1 is the rule target; serving it as a fallback means the session moved the request: ' + pm.response.text()).to.eql(false);",
+                  "});",
+                  "cleanup(state);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-session-pin-run",
+                "value": "{{sessPinRun}}"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{sessPinSession}}"
+              },
+              {
+                "key": "x-bf-api-key-id",
+                "value": "{{sessPinKeyId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "openai session with a caller key pin on the session's provider still follows the session - session-caller-pin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sesspin-';",
+                  "var BAD = 'sk-harness-session-pin-invalid';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, p1: PREFIX + 'a-' + run, p2: PREFIX + 'b-' + run, session: 'session-caller-pin-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) };",
+                  "pm.collectionVariables.set('sessPinBoundState', JSON.stringify(state));",
+                  "function key(provider, suffix, weight, value, cb) {",
+                  "  call('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', { name: provider + '-' + suffix, value: value, models: ['*'], weight: weight }, function (res, k) {",
+                  "    if (!expectOk('setup: created key ' + suffix, res)) { return cb(false); }",
+                  "    state['key' + suffix] = { id: k.id, name: k.name }; cb();",
+                  "  });",
+                  "}",
+                  "function provider(name, cb) {",
+                  "  call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) { cb(expectOk('setup: created provider ' + name.slice(PREFIX.length, PREFIX.length + 1), res)); });",
+                  "}",
+                  "var chatHeaders = function (extra) { var h = { 'Content-Type': 'application/json', 'x-harness-session-pin-run': run, 'x-bf-session-id': state.session }; for (var k in extra) { h[k] = extra[k]; } return h; };",
+                  "seq([",
+                  "  function (next) {",
+                  "    call('GET', '/api/providers', null, function (res, j) {",
+                  "      var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "      var i = 0; (function del() { if (i >= stale.length) { return next(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { del(); }); })();",
+                  "    });",
+                  "  },",
+                  "  function (next) { provider(state.p1, function (ok) { next(ok); }); },",
+                  "  function (next) { key(state.p1, '1', 1, BAD, next); },",
+                  "  function (next) { provider(state.p2, function (ok) { next(ok); }); },",
+                  "  function (next) { key(state.p2, '2', 1, 'env.OPENAI_API_KEY', next); },",
+                  "  function (next) { key(state.p2, '2p', 0, 'env.OPENAI_API_KEY', next); },",
+                  "  function (next) {",
+                  "    call('POST', '/api/governance/routing-rules', { name: 'Harness session caller pin ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: 500000 + (Date.now() % 90000), cel_expression: '\"x-harness-session-pin-run\" in headers && headers[\"x-harness-session-pin-run\"] == \"' + run + '\"', targets: [{ provider: state.p1, model: 'gpt-4o-mini', weight: 1 }], fallbacks: [{ provider: state.p2, model: 'gpt-4o-mini' }], scope: 'global' }, function (res, j) {",
+                  "      if (!expectOk('setup: created the rule that targets P1 and falls back to P2', res)) { return next(false); }",
+                  "      state.ruleId = ((j || {}).rule || {}).id; next();",
+                  "    });",
+                  "  },",
+                  "  // Bind the session to P2: P1 refuses its keys, so the rule's fallback serves.",
+                  "  function (next) {",
+                  "    pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: chatHeaders({}), body: { mode: 'raw', raw: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Reply OK.' }], max_tokens: 3 }) } }, function (err, res) {",
+                  "      var ri = {}; try { ri = ((res.json() || {}).extra_fields || {}).routing_info || {}; } catch (e) { ri = {}; }",
+                  "      var bound = !err && res && res.code === 200 && ri.provider === state.p2;",
+                  "      pm.test('setup: the session is bound to P2, which served after P1 refused its keys', function () { pm.expect(bound, err ? String(err) : (res.code + ' ' + res.text())).to.eql(true); });",
+                  "      next(bound);",
+                  "    });",
+                  "  },",
+                  "], function () {",
+                  "  pm.collectionVariables.set('sessPinBoundState', JSON.stringify(state));",
+                  "  pm.collectionVariables.set('sessPinBoundRun', run);",
+                  "  pm.collectionVariables.set('sessPinBoundSession', state.session);",
+                  "  pm.collectionVariables.set('sessPinBoundKeyId', (state.key2p || {}).id || 'missing');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sesspin-';",
+                  "var BAD = 'sk-harness-session-pin-invalid';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('sessPinBoundState') || '{}');",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('the pinned request succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('the session still moves the request to P2, which serves on the pinned key 2p', function () {",
+                  "  pm.expect(ri.provider, pm.response.text()).to.eql(state.p2);",
+                  "  pm.expect(ri.key, 'the caller pinned key 2p: ' + pm.response.text()).to.eql((state.key2p || {}).name);",
+                  "  pm.expect(ri.is_fallback === true, 'the session promotes P2 to primary; serving it as a fallback means the pin kept the request on P1: ' + pm.response.text()).to.eql(false);",
+                  "});",
+                  "cleanup(state);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-session-pin-run",
+                "value": "{{sessPinBoundRun}}"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{sessPinBoundSession}}"
+              },
+              {
+                "key": "x-bf-api-key-id",
+                "value": "{{sessPinBoundKeyId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "174. A fallback that served a request with a direct key does not become the session's provider (session-direct-key)",
+      "description": "A direct key (x-bf-direct-key: true plus the caller's own provider key, enabled by client.allow_direct_keys) is tried only on the first route of the chain; fallbacks run on the gateway's keys. A fallback that served such a request used to become the session's provider, so the next request of the session was moved there first and the caller's key was sent to a provider it was never meant for. That attempt was refused, and the demoted provider then served on the gateway's keys. A fallback that serves a direct-key request now binds no route, and the next request follows the routing decision.\n\nThe row builds two run-scoped OpenAI-backed providers, each with a working gateway key, and a header-gated rule targeting P1 with P2 as its fallback. Turn 1 sends a throwaway direct key on a session: P1 refuses it and P2 serves as the fallback. Turn 2 repeats it on the same session and must start on P1 again: P1 refuses the key and P2 serves as the fallback, with the request's primary attempt logged on P1. Before the change turn 2 started on P2 and P1 served it as the fallback. Everything is deleted by the row. Run with FEATURE=\"session-direct-key\".",
+      "item": [
+        {
+          "name": "openai session with a direct key starts on the routed provider again after a fallback served - session-direct-key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sessdk-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var nonce = Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "var state = { run: run, p1: PREFIX + 'a-' + run, p2: PREFIX + 'b-' + run, session: 'session-direct-key-' + nonce, directKey: 'sk-harness-session-direct-' + pm.variables.replaceIn('{{$guid}}'), turn2: 'session-direct-key-turn2-' + nonce };",
+                  "pm.collectionVariables.set('sessDkState', JSON.stringify(state));",
+                  "function provider(name, cb) {",
+                  "  call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) { cb(expectOk('setup: created provider ' + name.slice(PREFIX.length, PREFIX.length + 1), res)); });",
+                  "}",
+                  "function key(name, cb) {",
+                  "  call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', { name: name + '-key', value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }, function (res) { cb(expectOk('setup: created the gateway key on ' + name.slice(PREFIX.length, PREFIX.length + 1), res)); });",
+                  "}",
+                  "seq([",
+                  "  function (next) {",
+                  "    call('GET', '/api/providers', null, function (res, j) {",
+                  "      var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "      var i = 0; (function del() { if (i >= stale.length) { return next(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { del(); }); })();",
+                  "    });",
+                  "  },",
+                  "  // Both providers hold a working gateway key; the caller's direct key works on neither.",
+                  "  function (next) { provider(state.p1, next); },",
+                  "  function (next) { key(state.p1, next); },",
+                  "  function (next) { provider(state.p2, next); },",
+                  "  function (next) { key(state.p2, next); },",
+                  "  function (next) {",
+                  "    call('POST', '/api/governance/routing-rules', { name: 'Harness session direct key ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: 500000 + (Date.now() % 90000), cel_expression: '\"x-harness-session-direct-run\" in headers && headers[\"x-harness-session-direct-run\"] == \"' + run + '\"', targets: [{ provider: state.p1, model: 'gpt-4o-mini', weight: 1 }], fallbacks: [{ provider: state.p2, model: 'gpt-4o-mini' }], scope: 'global' }, function (res, j) {",
+                  "      if (!expectOk('setup: created the rule that targets P1 and falls back to P2', res)) { return next(false); }",
+                  "      state.ruleId = ((j || {}).rule || {}).id; next();",
+                  "    });",
+                  "  },",
+                  "  // Turn 1: P1 refuses the caller's key, and P2 serves as the fallback on the gateway's key.",
+                  "  function (next) {",
+                  "    pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-harness-session-direct-run': run, 'x-bf-session-id': state.session, 'x-bf-direct-key': 'true', 'Authorization': 'Bearer ' + state.directKey }, body: { mode: 'raw', raw: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Reply OK.' }], max_tokens: 3 }) } }, function (err, res) {",
+                  "      var ri = {}; try { ri = ((res.json() || {}).extra_fields || {}).routing_info || {}; } catch (e) { ri = {}; }",
+                  "      var rescued = !err && res && res.code === 200 && ri.provider === state.p2 && ri.is_fallback === true;",
+                  "      pm.test('setup: turn 1 was refused by P1 and served by the P2 fallback on the gateway key', function () { pm.expect(rescued, err ? String(err) : (res.code + ' ' + res.text())).to.eql(true); });",
+                  "      next(rescued);",
+                  "    });",
+                  "  },",
+                  "], function () {",
+                  "  pm.collectionVariables.set('sessDkState', JSON.stringify(state));",
+                  "  pm.collectionVariables.set('sessDkRun', run);",
+                  "  pm.collectionVariables.set('sessDkSession', state.session);",
+                  "  pm.collectionVariables.set('sessDkKey', state.directKey);",
+                  "  pm.collectionVariables.set('sessDkRequestId', state.turn2);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-sessdk-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  if (state.ruleId) { paths.push('/api/governance/routing-rules/' + state.ruleId); }",
+                  "  if (state.p1) { paths.push('/api/providers/' + encodeURIComponent(state.p1)); }",
+                  "  if (state.p2) { paths.push('/api/providers/' + encodeURIComponent(state.p2)); }",
+                  "  var i = 0; (function next() { if (i >= paths.length) { return; } var p = paths[i++]; call('DELETE', p, null, function (res) { expectOk('cleanup: ' + p.split('/')[2] + ' deleted', res); next(); }); })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('sessDkState') || '{}');",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var ri = (body.extra_fields || {}).routing_info || {};",
+                  "pm.test('turn 2 is served', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('turn 2 starts on P1 again, and P2 serves it as the fallback', function () {",
+                  "  pm.expect(ri.provider, 'a P1 fallback serving means the session moved turn 2 to P2 first: ' + pm.response.text()).to.eql(state.p2);",
+                  "  pm.expect(ri.is_fallback === true, pm.response.text()).to.eql(true);",
+                  "});",
+                  "// The primary attempt is logged under the request id: it names the provider the caller's key went to first.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(state.turn2), method: 'GET' }, function (err, res) {",
+                  "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('the caller\\u2019s key goes first to P1, the provider routing chose, not to the P2 fallback that served turn 1', function () {",
+                  "        pm.expect(j.provider, 'the turn-2 primary attempt: ' + JSON.stringify({ provider: j.provider, status: j.status, fallback_index: j.fallback_index })).to.eql(state.p1);",
+                  "      });",
+                  "      return cleanup(state);",
+                  "    }",
+                  "    if (attempt < 15) { return setTimeout(function () { checkLog(attempt + 1); }, 1000); }",
+                  "    pm.test('the caller\\u2019s key goes first to P1, the provider routing chose, not to the P2 fallback that served turn 1', function () { pm.expect.fail('log ' + state.turn2 + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "    cleanup(state);",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-session-direct-run",
+                "value": "{{sessDkRun}}"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{sessDkSession}}"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sessDkKey}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{sessDkRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
         }
       ]
     },

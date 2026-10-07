@@ -188,7 +188,14 @@ func TestBuildClickHouseDSN(t *testing.T) {
 		assert.Contains(t, dsn, "mutations_sync=1")
 		assert.Contains(t, dsn, "prefer_column_name_to_alias=1")
 		assert.Contains(t, dsn, "dial_timeout=10s")
+		assert.Contains(t, dsn, "max_query_size=16777216")
 		assert.NotContains(t, dsn, "secure=")
+	})
+
+	t.Run("MaxQuerySizeOverride", func(t *testing.T) {
+		dsn, err := buildClickHouseDSN(&ClickHouseConfig{Host: schemas.NewSecretVar("ch.local"), MaxQuerySize: 4194304})
+		require.NoError(t, err)
+		assert.Contains(t, dsn, "max_query_size=4194304")
 	})
 
 	t.Run("NativeSecureUsesTLSPort", func(t *testing.T) {

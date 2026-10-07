@@ -1290,6 +1290,7 @@
   },
   "client": {
     "allow_per_request_raw_override": true,
+    "allow_direct_keys": true,
     "drop_excess_requests": false,
     "initial_pool_size": 300,
     "allowed_origins": ["*"],

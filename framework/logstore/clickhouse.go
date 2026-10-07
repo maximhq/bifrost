@@ -35,6 +35,8 @@ type ClickHouseConfig struct {
 	// DialTimeout is the connection dial timeout in milliseconds (JSON config
 	// duration fields are integer milliseconds). 0 means the 10s default.
 	DialTimeout int `json:"dial_timeout,omitempty"`
+	// MaxQuerySize is the ClickHouse max_query_size setting in bytes. 0 means the 16 MiB default.
+	MaxQuerySize int `json:"max_query_size,omitempty"`
 	// Cluster, when set, makes DDL run as `ON CLUSTER <name>` against
 	// ReplicatedReplacingMergeTree engines. Empty means single-node.
 	Cluster string `json:"cluster,omitempty"`
@@ -47,6 +49,7 @@ const (
 	defaultClickHouseHTTPSPort     = "8443"
 	defaultClickHouseDatabase      = "default"
 	defaultClickHouseDialTimeout   = 10 * time.Second
+	defaultClickHouseMaxQuerySize  = 16 << 20
 	clickHouseProtocolNative       = "native"
 	clickHouseProtocolHTTP         = "http"
 )
@@ -134,6 +137,12 @@ func buildClickHouseDSN(config *ClickHouseConfig) (string, error) {
 	// (error 184: aggregate function found in WHERE); this setting restores
 	// the standard-SQL column-first resolution Postgres/SQLite use.
 	q.Set("prefer_column_name_to_alias", "1")
+	// Team-scoped reads inline every member and VK id into the SQL, which outgrows the 256 KiB server default.
+	maxQuerySize := defaultClickHouseMaxQuerySize
+	if config.MaxQuerySize > 0 {
+		maxQuerySize = config.MaxQuerySize
+	}
+	q.Set("max_query_size", strconv.Itoa(maxQuerySize))
 	q.Set("dial_timeout", dialTimeout.String())
 	// clickhouse-go: native TLS is requested via secure=true; the https scheme
 	// also requires secure=true; plain http must NOT set it.

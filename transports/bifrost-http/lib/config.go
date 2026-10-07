@@ -91,6 +91,8 @@ type HandlerStore interface {
 	ShouldAllowPerRequestRawOverride() bool
 	// ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header
 	ShouldAllowDirectKeys() bool
+	// IsProviderConfigured reports whether provider has a configuration on this gateway
+	IsProviderConfigured(provider schemas.ModelProvider) bool
 	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
 	// redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 	// if not configured (falls back to dynamic Host-header-based URL).
@@ -6424,6 +6426,14 @@ func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.
 func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
+}
+
+// IsProviderConfigured reports whether provider has a configuration on this gateway.
+func (c *Config) IsProviderConfigured(provider schemas.ModelProvider) bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	_, exists := c.Providers[provider]
+	return exists
 }
 
 // GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the

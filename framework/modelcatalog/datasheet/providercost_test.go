@@ -144,3 +144,20 @@ func TestCalculateCost_IgnoreProviderCostPricesVideoFromDuration(t *testing.T) {
 	assert.Positive(t, cost)
 	assert.NotEqual(t, 0.42, cost)
 }
+
+// With the provider cost ignored and no catalog price for the model, the model
+// call itself contributes nothing, but a budget-counted routing call is still
+// charged. The provider docs state this exception.
+func TestCalculateCost_IgnoreProviderCostUnpricedModelKeepsRoutingCost(t *testing.T) {
+	s := routingCostTestStore()
+	provider := schemas.ModelProvider("cortecs")
+	s.SetIgnoreProviderCost(provider, true)
+
+	resp := makeChatResponse(provider, "unpriced-model", creditsUsage())
+	assert.Nil(t, s.CalculateCostBreakdown(resp, nil), "unpriced model with ignored provider cost has no cost of its own")
+
+	resp.ChatResponse.ExtraFields.RoutingMetadata = &schemas.BifrostRoutingMetadata{
+		Calls: []schemas.BifrostRoutingCall{embedRoutingCall(200, true)},
+	}
+	assert.InDelta(t, 200*0.00000002, s.CalculateCost(resp, nil), 1e-12)
+}
