@@ -5432,6 +5432,11 @@
                   "minimum": 1,
                   "description": "Connection dial timeout in milliseconds (default: 10000)"
                 },
+                "maxQuerySize": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "ClickHouse max_query_size setting in bytes, the longest SQL text the server will parse (default: 16777216)"
+                },
                 "cluster": {
                   "type": "string",
                   "description": "Optional cluster name; when set, DDL runs ON CLUSTER with replicated table engines"

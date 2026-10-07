@@ -1093,6 +1093,7 @@ false
 {{- with $ch.protocol }}{{- $_ := set $chConfig "protocol" . }}{{- end }}
 {{- if hasKey $ch "secure" }}{{- $_ := set $chConfig "secure" $ch.secure }}{{- end }}
 {{- with $ch.dialTimeout }}{{- $_ := set $chConfig "dial_timeout" (. | int) }}{{- end }}
+{{- with $ch.maxQuerySize }}{{- $_ := set $chConfig "max_query_size" (. | int) }}{{- end }}
 {{- with $ch.cluster }}{{- $_ := set $chConfig "cluster" . }}{{- end }}
 {{- $clickhouseLogsStore := dict "enabled" true "type" "clickhouse" "config" $chConfig }}
 {{- if .Values.storage.logsStore.writer }}
