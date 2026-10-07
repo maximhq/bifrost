@@ -21119,3 +21119,36 @@ func TestResolveSetupToken_TrimsSurroundingWhitespace(t *testing.T) {
 	configData := &ConfigData{SetupToken: schemas.NewSecretVar("  my-token  ")}
 	assert.Equal(t, "my-token", resolveSetupToken(configData))
 }
+
+// TestServerConfigConnectionSettings pins the inbound connection defaults and that
+// each setting is configurable.
+func TestServerConfigConnectionSettings(t *testing.T) {
+	var unset *ServerConfig
+	for name, cfg := range map[string]*ServerConfig{"nil": unset, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			if !cfg.ConnectionReduceMemoryUsage() {
+				t.Error("reduce_memory_usage must default to true")
+			}
+			if got := cfg.ConnectionReadTimeout(); got != DefaultServerReadTimeoutSeconds*time.Second {
+				t.Errorf("read timeout = %v, want %ds", got, DefaultServerReadTimeoutSeconds)
+			}
+			if got := cfg.ConnectionIdleTimeout(); got != 620*time.Second {
+				t.Errorf("idle timeout = %v, want 620s", got)
+			}
+		})
+	}
+
+	var cfg ServerConfig
+	if err := json.Unmarshal([]byte(`{"read_buffer_size":65536,"reduce_memory_usage":false,"read_timeout_seconds":0,"idle_timeout_seconds":90}`), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.ConnectionReduceMemoryUsage() {
+		t.Error("reduce_memory_usage false must be honored")
+	}
+	if got := cfg.ConnectionReadTimeout(); got != 0 {
+		t.Errorf("read_timeout_seconds 0 must mean no limit, got %v", got)
+	}
+	if got := cfg.ConnectionIdleTimeout(); got != 90*time.Second {
+		t.Errorf("idle timeout = %v, want 90s", got)
+	}
+}

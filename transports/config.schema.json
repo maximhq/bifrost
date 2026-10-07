@@ -18,6 +18,23 @@
           "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
           "default": 65536
         },
+        "reduce_memory_usage": {
+          "type": "boolean",
+          "description": "Release a keep-alive connection's read, write and body buffers while it idles between requests instead of holding them at peak size (about 150 KiB per idle connection with the default read buffer). Costs a buffer allocation on the connection's next request.",
+          "default": true
+        },
+        "read_timeout_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum time in seconds to read one request, headers and body. 0 disables the limit. Raise it if clients upload large bodies over slow links.",
+          "default": 300
+        },
+        "idle_timeout_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum time in seconds a keep-alive connection may wait for its next request before it is closed. The default sits just above the 600s backend keep-alive common to cloud load balancers, so the balancer closes idle pooled connections first. 0 falls back to read_timeout_seconds.",
+          "default": 620
+        },
         "plugin_download_private_allowlist": {
           "type": "array",
           "items": {

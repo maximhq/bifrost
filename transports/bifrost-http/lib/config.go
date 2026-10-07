@@ -144,14 +144,53 @@ func IsBuiltinPlugin(name string) bool {
 	return slices.Contains(builtinPluginNames, name)
 }
 
+// ConnectionReduceMemoryUsage reports whether a keep-alive connection releases its
+// read, write and body buffers while it idles between requests instead of holding
+// them at peak size (about 150 KiB per connection with the 64 KiB read buffer).
+// Defaults to true.
+func (c *ServerConfig) ConnectionReduceMemoryUsage() bool {
+	return c == nil || c.ReduceMemoryUsage == nil || *c.ReduceMemoryUsage
+}
+
+// ConnectionReadTimeout returns the limit for reading one request, headers and
+// body: DefaultServerReadTimeoutSeconds when unset, no limit when set to 0.
+func (c *ServerConfig) ConnectionReadTimeout() time.Duration {
+	if c == nil || c.ReadTimeoutSeconds == nil {
+		return DefaultServerReadTimeoutSeconds * time.Second
+	}
+	return time.Duration(max(*c.ReadTimeoutSeconds, 0)) * time.Second
+}
+
+// ConnectionIdleTimeout returns the limit for waiting on the next request of a
+// keep-alive connection: DefaultServerIdleTimeoutSeconds when unset. 0 falls back
+// to the read timeout, as fasthttp does.
+func (c *ServerConfig) ConnectionIdleTimeout() time.Duration {
+	if c == nil || c.IdleTimeoutSeconds == nil {
+		return DefaultServerIdleTimeoutSeconds * time.Second
+	}
+	return time.Duration(max(*c.IdleTimeoutSeconds, 0)) * time.Second
+}
+
 // pluginOrderInfo stores ordering metadata for a plugin.
 type pluginOrderInfo struct {
 	Placement schemas.PluginPlacement
 	Order     int
 }
 
+// Inbound connection defaults. The idle timeout sits just above the 600s backend
+// keep-alive common to cloud load balancers, so the balancer, not Bifrost, closes
+// an idle pooled connection and never sends a request on one Bifrost just closed.
+const (
+	DefaultServerReadTimeoutSeconds = 300
+	DefaultServerIdleTimeoutSeconds = 620
+)
+
 type ServerConfig struct {
 	ReadBufferSize int `json:"read_buffer_size,omitempty"`
+
+	ReduceMemoryUsage  *bool `json:"reduce_memory_usage,omitempty"`  // See ConnectionReduceMemoryUsage
+	ReadTimeoutSeconds *int  `json:"read_timeout_seconds,omitempty"` // See ConnectionReadTimeout
+	IdleTimeoutSeconds *int  `json:"idle_timeout_seconds,omitempty"` // See ConnectionIdleTimeout
 
 	// PluginDownloadPrivateAllowlist lists hostnames, IPs, and CIDR ranges that custom
 	// plugin (.so) downloads may reach even when they resolve to a private/loopback/

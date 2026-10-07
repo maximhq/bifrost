@@ -2716,6 +2716,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		Handler:            handlers.SecurityHeadersMiddleware()(s.CORSMiddleware.Middleware()(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
+		ReduceMemoryUsage:  s.Config.ServerConfig.ConnectionReduceMemoryUsage(),
+		ReadTimeout:        s.Config.ServerConfig.ConnectionReadTimeout(),
+		IdleTimeout:        s.Config.ServerConfig.ConnectionIdleTimeout(),
 	}
 	startSkillsOrphanCleanupWorker(s.Ctx, s.Config, nil)
 	// Keep the live model catalog current after boot. Without this, a model an

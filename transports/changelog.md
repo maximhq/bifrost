@@ -21,6 +21,7 @@
 
 ## 🐞 Fixed
 
+- **Idle Inbound Connections Release Their Buffers** - Keep-alive connections held their 64 KiB read buffer plus writer and body buffers at peak size between requests (about 150 KiB per idle connection), and had no idle or read timeout, so idle connections accumulated. The server now releases buffers while a connection idles (`server.reduce_memory_usage`, default `true`; about 3 KiB per idle connection), closes keep-alive connections idle for `server.idle_timeout_seconds` (default `620`, just above the common 600s load balancer backend keep-alive) and bounds reading a request to `server.read_timeout_seconds` (default `300`; `0` disables it)
 - **Exact Numbers in Extra Params** - Unknown request fields and `extra_params` are decoded with numbers kept as written, so integers above 2^53 (seeds, ids) and decimal literals reach the provider exactly instead of being rounded through float64. Every typed chat parameter (`seed`, `n`, `stop`, `top_p`, `top_logprobs`, `audio`, `prediction`, `web_search_options`, `top_k`, `speed` and the other Anthropic knobs) is now a known field, so it is no longer also copied into extra params where it shadowed the typed value on the wire. Extracting extra params no longer copies known fields such as `messages`
 - **GenAI SSE Heartbeats** - GenAI streams delimit heartbeat comments so Google SDK clients preserve the following event (thanks [@dani29](https://github.com/dani29)!) (#6240)
 - **Path Normalization Auth Bypass** - Fixed a path normalization flaw that allowed auth to be bypassed (#5763)
