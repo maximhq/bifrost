@@ -14,7 +14,7 @@ type Route struct {
 type RouteOutcome struct {
 	// Served is the route that answered, nil when no route did.
 	Served *Route
-	// KeyID is the key Served used, when key selection ran for it.
+	// KeyID is the pool key Served used, empty when it served on the caller's direct key or on no key.
 	KeyID string
 	// Fallback reports that Served was not the first route of the dispatched chain.
 	Fallback bool

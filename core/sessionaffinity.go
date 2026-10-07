@@ -427,7 +427,9 @@ func (bifrost *Bifrost) observeSessionOutcome(ctx *schemas.BifrostContext, reque
 		return
 	}
 	outcome := schemas.RouteOutcome{Served: served, Fallback: fallback, DirectKey: directKey, Err: err}
-	if served != nil {
+	// The primary attempt of a request that carried a direct key served on the caller's own key,
+	// which is no key of the pool: a key binding naming it could never be followed.
+	if served != nil && !(directKey && !fallback) {
 		outcome.KeyID, _ = ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
 	}
 	bifrost.sessionAffinity.Observe(ctx, requested, outcome)
