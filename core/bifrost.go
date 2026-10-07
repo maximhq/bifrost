@@ -10279,8 +10279,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		keys = batchEnabledKeys
 	}
 
-	// Filter out keys that don't support the model: blacklisted_models wins over models allow list;
-	// if the key has no models list, it supports all models except those blacklisted.
+	// Filter out keys that don't support the model: blacklisted_models wins over the models allow
+	// list, which allows only what it names (["*"] every model, an empty list none).
 	var supportedKeys []schemas.Key
 
 	// Skip model check conditions

@@ -64,7 +64,7 @@ Bindings are written only when a request is served. A failed request writes noth
 | Served by a fallback provider, the request carried a direct key | Not written; a binding the request followed is deleted, and the next request follows the routing decision | Moved to the key the fallback used |
 | Failed after following the binding                     | Deleted, the next request follows the routing decision                 | Deleted, a key is picked normally on the next request                |
 | Cancelled by the caller after following the binding    | Unchanged, the failure is not the provider's                           | Unchanged                                                            |
-| Request failed on every attempt                        | Untouched                                                              | Untouched                                                            |
+| Request failed on every attempt without following a binding | Untouched                                                              | Untouched                                                            |
 | Request refused by governance before routing           | Untouched                                                              | Untouched                                                            |
 | Bound route not in the chain routing built (provider and model) | Deleted, the routing decision stands, the next served request rebinds  | Unchanged                                                            |
 | Bound key not in the eligible pool                     | Unchanged                                                              | Deleted, a key is picked normally, the next served request rebinds   |
@@ -175,7 +175,7 @@ In OpenTelemetry, the trace's root span carries the session ID as the `session.i
 A virtual key allows `gpt-4o` on OpenAI with weight 70 and Azure with weight 30. Azure has two keys. A Claude Code session sends its session header on every request.
 
 1. **Turn 1**: governance rolls the weights and picks Azure, with OpenAI as the fallback. Key selection picks Azure key `prod-eu-2`. The request is served, and the session is bound to Azure for `gpt-4o` and to `prod-eu-2` on Azure.
-2. **Turn 2**: governance rolls OpenAI this time and builds the chain `[openai, azure]`. Affinity moves Azure to the front and the trail says `Session stays on azure for gpt-4o; routing proposed openai`. Key selection reuses `prod-eu-2`. The Azure prompt cache warmed by turn 1 is hit.
+2. **Turn 2**: governance rolls OpenAI this time and builds the chain `[openai, azure]`. Affinity moves Azure to the front and the trail says `Session stays on azure/gpt-4o for gpt-4o; routing proposed openai/gpt-4o`. Key selection reuses `prod-eu-2`. The Azure prompt cache warmed by turn 1 is hit.
 3. **Turn 3**: the virtual key's Azure budget is exhausted, so governance excludes Azure and offers only OpenAI. The bound provider is not in the chain, so the binding is deleted with `…which this request cannot use…` in the trail. OpenAI serves and the session rebinds to OpenAI and to the OpenAI key that served.
 
 ### A fallback that serves
@@ -184,7 +184,7 @@ The same session is bound to Azure and `prod-eu-2`.
 
 1. Azure returns a server error on every retry. Retries reuse `prod-eu-2`, because the session is bound to it.
 2. The fallback attempt on OpenAI selects a key freely, say `openai-main`, and serves.
-3. The session moves: the provider binding now points at OpenAI, and a key binding for OpenAI and `gpt-4o` points at `openai-main`. The stale Azure key binding is left to expire; it is only consulted if Azure serves this session again.
+3. The session moves: the provider binding now points at OpenAI, and a key binding for OpenAI and `gpt-4o` points at `openai-main`. The Azure key binding is deleted, because the request followed `prod-eu-2` and it did not serve; if Azure serves this session again, a key is picked normally and bound.
 4. The next turn's chain, whatever governance rolls, is reordered to put OpenAI first.
 
 ### A provider that fails on one node (Enterprise)

@@ -1423,9 +1423,11 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 	}
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
+	// Each key that blacklists the model allows every model otherwise: a key with no models list
+	// allows none, which would exclude it whatever its blacklist said.
 	t.Run("all keys blacklist model", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, Models: []string{"*"}, BlacklistedModels: []string{"gpt-4"}},
 		})
 		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err == nil {
@@ -1452,7 +1454,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 
 	t.Run("second key used when first blacklists", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, Models: []string{"*"}, BlacklistedModels: []string{"gpt-4"}},
 			{ID: "k2", Name: "K2", Value: *schemas.NewSecretVar("sk-2"), Weight: 1, Models: []string{"*"}},
 		})
 		pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
