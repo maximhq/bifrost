@@ -110,6 +110,20 @@ test("evaluate ignores failed tool calls when checking which tools ran", () => {
 
 // A refusal backed by describe_filter_space alone is still a refusal; one that
 // ran a real query answered the out-of-scope question.
+// A case can be answerable from one tool and no other: topics come from
+// list_topics, and reaching past it for the logs is rebuilding an answer no
+// tool holds. noDataTools cannot say that - it forbids the one tool too.
+test("toolsOnly allows the named tools and rejects any other", () => {
+  const { pm } = fakePm();
+  const lib = createWarpLib(pm);
+  assert.deepStrictEqual(lib.evaluate(answered("Refunds lead.", ["list_topics"]), { toolsOnly: ["list_topics"] }), []);
+  assert.deepStrictEqual(lib.evaluate(answered("Refunds lead.", ["list_topics", "list_topics"]), { toolsOnly: ["list_topics"] }), []);
+  assert.deepStrictEqual(lib.evaluate(answered("I can't do that yet.", []), { toolsOnly: ["list_topics"] }), []);
+  const failures = lib.evaluate(answered("Refunds lead.", ["list_topics", "query_logs", "count_logs"]), { toolsOnly: ["list_topics"] });
+  assert.strictEqual(failures.length, 1);
+  assert.match(failures[0], /called query_logs, count_logs, which this question has no use for/);
+});
+
 test("noDataTools allows discovery calls and rejects data queries", () => {
   const { pm } = fakePm();
   const lib = createWarpLib(pm);

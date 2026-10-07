@@ -322,9 +322,10 @@ def test_virtual_key_request_contract_is_current():
 def test_warp_credential_contract_is_current():
     """Warp's settings API carries `api_key_id`, a reference to a configured provider key.
     There is no write-only `api_key` and no `api_key_set` presence flag, so no redaction
-    step and no omitted-versus-empty rule. `base_url` overrides the provider's default
-    endpoint; it does not default to this Bifrost's own origin. Guard the modular source
-    and the published bundle against prose that still describes the abandoned design."""
+    step and no omitted-versus-empty rule. `base_url` is retired with them: Warp calls the
+    gateway in-process, so nothing may describe an endpoint it defaults to. Guard the
+    modular source and the published bundle against prose that still describes the
+    abandoned design."""
     import json
 
     schema_source = load(HERE / "schemas" / "management" / "warp.yaml")
@@ -627,36 +628,12 @@ def test_warp_config_input_models_the_enabled_contract():
             if not constraint.get("pattern"):
                 problems.append(f"{source}: an enabled `{field}` has no non-whitespace pattern")
 
-        # base_url is optional, but a non-empty one must be an absolute http(s)
-        # URL with no userinfo - the same rule ValidateConfigInput applies.
-        #
-        # Checked by behaviour, not just by presence: a pattern that exists but
-        # admits whitespace in the authority, or a dropped `format`, is exactly
-        # the drift a non-empty check cannot see.
-        base_url = (schema.get("properties") or {}).get("base_url") or {}
-        pattern = base_url.get("pattern")
-        if not pattern:
-            problems.append(f"{source}: base_url has no pattern constraining it to an absolute http(s) URL without userinfo")
-        else:
-            accepted = ("", "https://api.example.com", "http://localhost:8080", "https://a.com/v1")
-            rejected = (
-                "https://host name",  # whitespace in the authority
-                "https://tok@a.com",  # userinfo
-                "https://u:p@a.com",
-                "api.example.com",  # not absolute
-                "https://",  # scheme only
-                "ftp://a.com",  # wrong scheme
-            )
-            for value in accepted:
-                if not re.match(pattern, value):
-                    problems.append(f"{source}: base_url pattern rejects {value!r}, which the server accepts")
-            for value in rejected:
-                if re.match(pattern, value):
-                    problems.append(f"{source}: base_url pattern accepts {value!r}, which the server rejects")
-        # url.Parse also rejects a malformed percent escape such as "https://%",
-        # which a character-class pattern cannot express - format carries that.
-        if base_url.get("format") != "uri-reference":
-            problems.append(f"{source}: base_url has no `format: uri-reference`")
+        # base_url is retired. Warp calls the gateway in-process, so there is no
+        # endpoint to override and the server has no such field. A schema that
+        # still offers one documents a setting that does nothing, and a client
+        # generated from it sends a value that is silently dropped.
+        if "base_url" in (schema.get("properties") or {}):
+            problems.append(f"{source}: WarpConfigInput still documents the retired `base_url`")
 
     assert not problems, "Warp enabled-config contract:\n    " + "\n    ".join(problems)
 
