@@ -1,4 +1,5 @@
 import { isReservedMetadataKey } from "@/lib/registries/logs";
+import type { ResponsesMessage } from "@/lib/types/logs";
 import { isLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 
 /**
@@ -126,11 +127,27 @@ export function isResponsesToolCallItem(type: string | undefined): boolean {
 // Calls the caller runs itself. Their output is not in this response - the caller
 // executes the tool and sends the result as input to its next request. Server-side
 // calls (web_search_call, mcp_call, ...) are resolved within the same response.
-// Computer use and local shell run on the caller's machine as well.
-const CLIENT_TOOL_CALL_TYPES = new Set(["function_call", "custom_tool_call", "computer_call", "local_shell_call"]);
+// Computer use, shell and apply_patch run on the caller's machine as well.
+const CLIENT_TOOL_CALL_TYPES = new Set([
+	"function_call",
+	"custom_tool_call",
+	"computer_call",
+	"local_shell_call",
+	"shell_call",
+	"apply_patch_call",
+]);
 
 export function isClientToolCallItem(type: string | undefined): boolean {
 	return !!type && CLIENT_TOOL_CALL_TYPES.has(type);
+}
+
+// Index of the last output call the caller still has to run, or -1. A call whose output
+// is already in the same response (a hosted shell_call) ran upstream and needs no link.
+export function findLastPendingClientCallIndex(entries: Array<{ msg: ResponsesMessage; fromOutput: boolean }>): number {
+	const resolved = new Set(
+		entries.filter((e) => e.fromOutput && e.msg.type?.endsWith("_call_output") && e.msg.call_id).map((e) => e.msg.call_id),
+	);
+	return entries.findLastIndex((e) => e.fromOutput && isClientToolCallItem(e.msg.type) && !(e.msg.call_id && resolved.has(e.msg.call_id)));
 }
 
 // Whether a call's arguments name nothing: empty, or a JSON object with no keys.

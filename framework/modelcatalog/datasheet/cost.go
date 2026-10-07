@@ -97,7 +97,7 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 }
 
 // RoutingCallCost calculates the cost of one routing-classification call — a
-// semantic embed, LLM completion, or Jev decision. Exported so
+// semantic embed, LLM completion, or decision-model call. Exported so
 // telemetry can price each call independently and unconditionally, while
 // CalculateCost folds a call's cost into the request's cost only when that
 // call's CountTowardBudgets is set. If scopes is nil, an empty LookupScopes is
