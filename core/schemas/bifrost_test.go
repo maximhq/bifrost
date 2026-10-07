@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -93,6 +94,83 @@ func TestBifrostRequestUpdateProviderKeyRejectsSecretReferences(t *testing.T) {
 	}
 	if err := (&BifrostRequest{}).UpdateProviderKey(Azure, literal); err != nil {
 		t.Fatalf("literal key rejected: %v", err)
+	}
+}
+
+// secretVarSetter sets one SecretVar reachable from a value of some type, allocating the
+// pointers, maps and slices on the way.
+type secretVarSetter struct {
+	path string
+	set  func(v reflect.Value, ref SecretVar)
+}
+
+// secretVarSetters returns a setter for every SecretVar reachable from a value of type t
+// through exported fields, pointers, maps and slices.
+func secretVarSetters(t reflect.Type, path string, visiting map[reflect.Type]bool) []secretVarSetter {
+	if t == reflect.TypeFor[SecretVar]() {
+		return []secretVarSetter{{path, func(v reflect.Value, ref SecretVar) { v.Set(reflect.ValueOf(ref)) }}}
+	}
+	if visiting[t] {
+		return nil
+	}
+	visiting[t] = true
+	defer delete(visiting, t)
+	var setters []secretVarSetter
+	switch t.Kind() {
+	case reflect.Pointer:
+		for _, s := range secretVarSetters(t.Elem(), path, visiting) {
+			setters = append(setters, secretVarSetter{s.path, func(v reflect.Value, ref SecretVar) {
+				p := reflect.New(t.Elem())
+				s.set(p.Elem(), ref)
+				v.Set(p)
+			}})
+		}
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if field := t.Field(i); field.IsExported() {
+				for _, s := range secretVarSetters(field.Type, path+"."+field.Name, visiting) {
+					setters = append(setters, secretVarSetter{s.path, func(v reflect.Value, ref SecretVar) { s.set(v.Field(i), ref) }})
+				}
+			}
+		}
+	case reflect.Map:
+		for _, s := range secretVarSetters(t.Elem(), path+"[k]", visiting) {
+			setters = append(setters, secretVarSetter{s.path, func(v reflect.Value, ref SecretVar) {
+				elem := reflect.New(t.Elem()).Elem()
+				s.set(elem, ref)
+				m := reflect.MakeMap(t)
+				m.SetMapIndex(reflect.ValueOf("k").Convert(t.Key()), elem)
+				v.Set(m)
+			}})
+		}
+	case reflect.Slice, reflect.Array:
+		for _, s := range secretVarSetters(t.Elem(), path+"[0]", visiting) {
+			setters = append(setters, secretVarSetter{s.path, func(v reflect.Value, ref SecretVar) {
+				if t.Kind() == reflect.Slice {
+					v.Set(reflect.MakeSlice(t, 1, 1))
+				}
+				s.set(v.Index(0), ref)
+			}})
+		}
+	}
+	return setters
+}
+
+// TestKeyHasSecretReferenceCoversEveryField pins that a reference in any SecretVar of a Key,
+// including ones added to Key and its configs later, makes UpdateProviderKey reject the key.
+func TestKeyHasSecretReferenceCoversEveryField(t *testing.T) {
+	setters := secretVarSetters(reflect.TypeFor[Key](), "Key", map[reflect.Type]bool{})
+	if len(setters) < 20 {
+		t.Fatalf("found only %d SecretVar fields in Key; the walk is broken", len(setters))
+	}
+	for _, ref := range []*SecretVar{NewSecretVar("env.BIFROST_TEST_REQUEST_SCOPED_KEY"), {ref: "vault.secret/path", SecretType: SecretTypeVault}} {
+		for _, s := range setters {
+			var key Key
+			s.set(reflect.ValueOf(&key).Elem(), *ref)
+			if !key.hasSecretReference() {
+				t.Errorf("%s holding %s reference is not detected", s.path, ref.Type())
+			}
+		}
 	}
 }
 
