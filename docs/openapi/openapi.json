@@ -42456,7 +42456,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List all providers",
-        "description": "Returns a list of all configured providers with their configurations and status.\n",
+        "description": "Returns a list of all configured providers with their configurations and status.\nOptional metadata and tag filters are AND-ed together.\n\n**Metadata filters:** add one `metadata_<key>=<value>` query parameter per metadata\nkey to match, where `<key>` is the metadata key itself (for example\n`?metadata_owner=team-a&metadata_region=eu-west-1`). Only providers whose metadata\nhas every given key set to exactly the given value are returned. A key that is not\n1-256 characters of letters, digits, '.', '_' and '-' is rejected with a 400.\nThese parameters have dynamic names, so they are described here rather than declared\nas individual parameters.\n",
         "tags": [
           "Providers"
         ],
@@ -42468,6 +42468,16 @@
             "BasicAuth": []
           }
         ],
+        "parameters": [
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "Comma-separated tags (for example tags=prod,eu); only providers carrying every listed tag are returned. An invalid tag is rejected with a 400.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -42475,6 +42485,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListProvidersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (invalid metadata or tags filter)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -43311,6 +43331,14 @@
             }
           },
           {
+            "name": "tags",
+            "in": "query",
+            "description": "Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag are returned. Applied before limit/offset, so total counts matching models only. An invalid tag is rejected with a 400.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "unfiltered",
             "in": "query",
             "description": "If true, return all models including those filtered out by provider-level restrictions",
@@ -43354,6 +43382,15 @@
                             "items": {
                               "type": "string"
                             }
+                          },
+                          "tags": {
+                            "type": "array",
+                            "description": "Free-form labels (for example prod, eu, approved-for-pii), stored trimmed, de-duplicated and sorted. Omitted when there are none.",
+                            "maxItems": 50,
+                            "items": {
+                              "type": "string",
+                              "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+                            }
                           }
                         }
                       }
@@ -43362,6 +43399,16 @@
                       "type": "integer"
                     }
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (invalid tags filter)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -43427,6 +43474,14 @@
             "schema": {
               "type": "integer",
               "default": 20
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "Comma-separated tags (for example tags=prod,eu); only models carrying every listed tag are returned. Applied before limit/offset, so total counts matching models only. An invalid tag is rejected with a 400.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -43530,6 +43585,15 @@
                             "items": {
                               "type": "string"
                             }
+                          },
+                          "tags": {
+                            "type": "array",
+                            "description": "Free-form labels (for example prod, eu, approved-for-pii), stored trimmed, de-duplicated and sorted. Omitted when there are none.",
+                            "maxItems": 50,
+                            "items": {
+                              "type": "string",
+                              "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+                            }
                           }
                         }
                       }
@@ -43538,6 +43602,121 @@
                       "type": "integer"
                     }
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (invalid tags filter)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/tags": {
+      "put": {
+        "operationId": "setModelTags",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Set model tags",
+        "description": "Replaces the tags of each listed model. The provider must be configured; any model name is accepted, including models that are not in the pricing datasheet. Every entry must carry tags; a missing or null tags field is rejected with a 400, and an empty tags list clears a model's tags. The whole batch is validated first and written in one transaction. Requires a config store.\n\nEntries are applied in request order, and the same (provider, model) pair may appear more than once: each entry replaces that model's tags, so the last entry for a pair decides its final tags (an empty list in that last entry clears them).\n",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "provider",
+                    "model",
+                    "tags"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "description": "A configured provider"
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "Model name; does not have to be in the pricing datasheet. Surrounding whitespace is trimmed, and the trimmed name can be at most 255 bytes of UTF-8 (the config_models column size); a longer name is rejected with a 400. The limit is in bytes, not characters, so it is not expressed as maxLength."
+                    },
+                    "tags": {
+                      "type": "array",
+                      "description": "Replaces the model's tags. Required: a missing or null value is rejected with a 400, and an empty list clears the model's tags. Each tag is 1-64 characters of letters, digits, '.', '_' and '-' once surrounding whitespace is trimmed; at most 50 entries, duplicates included. Stored trimmed, de-duplicated and sorted.",
+                      "maxItems": 50,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^\\s*[a-zA-Z0-9._-]{1,64}\\s*$"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Tags written"
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A provider in the batch is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No config store is configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -115411,6 +115590,27 @@
               }
             }
           },
+          "metadata": {
+            "type": "object",
+            "description": "Custom key/value metadata on the provider (for example owner, region, cost_center). Omitted when the provider has none.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "tags": {
+            "type": "array",
+            "description": "Free-form labels (for example prod, eu, approved-for-pii), stored trimmed, de-duplicated and sorted. Omitted when there are none.",
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+            }
+          },
           "prompt_cache": {
             "type": "object",
             "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Requests that already carry their own cache markers are never modified.",
@@ -115654,6 +115854,27 @@
               }
             }
           },
+          "metadata": {
+            "type": "object",
+            "description": "Custom key/value metadata (for example owner, region, cost_center). Keys are 1-256 characters of letters, digits, '.', '_' and '-'; values are strings of at most 512 characters; at most 50 entries.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "tags": {
+            "type": "array",
+            "description": "Free-form labels (for example prod, eu, approved-for-pii). Each tag is 1-64 characters of letters, digits, '.', '_' and '-' once surrounding whitespace is trimmed; at most 50 entries, duplicates included. Stored trimmed, de-duplicated and sorted.",
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "pattern": "^\\s*[a-zA-Z0-9._-]{1,64}\\s*$"
+            }
+          },
           "prompt_cache": {
             "type": "object",
             "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Requests that already carry their own cache markers are never modified.",
@@ -115853,6 +116074,27 @@
                   "type": "string"
                 }
               }
+            }
+          },
+          "metadata": {
+            "type": ["object", "null"],
+            "description": "Replaces the provider's metadata as a whole. Omit to leave it unchanged; send {} or null to clear it. Same rules as on create.",
+            "maxProperties": 50,
+            "propertyNames": {
+              "pattern": "^[a-zA-Z0-9._-]{1,256}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "tags": {
+            "type": ["array", "null"],
+            "description": "Replaces the provider's tags as a whole. Omit to leave them unchanged; send [] or null to clear them. Same rules as on create: surrounding whitespace is trimmed, at most 50 entries (duplicates included).",
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "pattern": "^\\s*[a-zA-Z0-9._-]{1,64}\\s*$"
             }
           },
           "prompt_cache": {

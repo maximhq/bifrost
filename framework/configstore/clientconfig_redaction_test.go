@@ -435,3 +435,17 @@ func TestProviderConfig_Redacted_MasksSecretBackedIdentifiers(t *testing.T) {
 			"env var reference %q missing from redacted JSON output", ref)
 	}
 }
+
+// TestProviderConfig_Redacted_CopiesLabels verifies that Redacted returns its own copy of the
+// provider's metadata and tags, so editing the redacted config cannot change the live one.
+func TestProviderConfig_Redacted_CopiesLabels(t *testing.T) {
+	config := &ProviderConfig{
+		Metadata: map[string]string{"owner": "team-a"},
+		Tags:     []string{"prod"},
+	}
+	redacted := config.Redacted()
+	redacted.Metadata["owner"] = "changed"
+	redacted.Tags[0] = "changed"
+	assert.Equal(t, map[string]string{"owner": "team-a"}, config.Metadata, "Redacted must copy the metadata map")
+	assert.Equal(t, []string{"prod"}, config.Tags, "Redacted must copy the tags slice")
+}

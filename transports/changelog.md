@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **Virtual Key Metadata in config.json** - `governance.virtual_keys[].metadata` accepts string key/value pairs (for example `cost_center`, `owner`) for cost attribution. Keys use letters, digits, `.`, `_` and `-`; values are up to 512 characters; up to 50 entries [@jimseiwert](https://github.com/jimseiwert)
 - **OSS Management API Setup Lock** - While dashboard auth is not active (no admin account, or auth disabled), every non-public `/api` call on OSS Bifrost now needs the setup token, sent as the `X-Bifrost-Setup-Token` header or as the `bifrost_setup_session` cookie the dashboard gets from `POST /api/session/setup`. A missing token returns `401`. A wrong token, or no token set on the server, returns `403`. `/health`, `/api/version`, the session login routes, `/.well-known/*` and whitelisted routes stay public. The lock lifts as soon as an enabled admin is saved (#8010)
   <Warning>
   Migration: set `setup_token` in config.json (or `BIFROST_SETUP_TOKEN`) and restart. Then either enable dashboard auth, or send `X-Bifrost-Setup-Token` from scripts and API clients that call `/api` with auth off. Enterprise is not affected by the lock.
@@ -22,6 +23,9 @@
 - **Per-Message Effort Override** - A per-turn effort override sent as an effort-only system message (`{"role":"system","content":[],"output_config":{"effort":"low"}}`) now reaches Anthropic instead of being dropped, with the `mid-conversation-output-config-2026-07-01` beta added. Models without per-turn effort, and OpenAI-shaped providers, drop it instead of returning an error (#7714)
 - **Claude Code Per-Message Effort on Vertex and Other Cloud Surfaces** - Claude Code requests to Opus 5.5, Fable 5.1 and Sonnet 5.5 on Vertex no longer fail with `messages.1.output_config: Extra inputs are not permitted`. The per-message `output_config` is now removed for every provider and model without per-message effort (Vertex, Bedrock, Bedrock Mantle, Azure, DeepSeek, Fireworks, vLLM, SGL). The system message text and the top-level effort are kept
 
+- **Provider Metadata and Tags in config.json** - `providers.<name>.metadata` (string key/value pairs, same rules as virtual key metadata) and `providers.<name>.tags` (up to 50 labels of 1-64 letters, digits, `.`, `_` or `-`; surrounding whitespace is trimmed) label providers by owner, region, environment or compliance status. Existing providers keep their config hash [@jimseiwert](https://github.com/jimseiwert)
+- **Model Tags API** - `PUT /api/models/tags` sets tags on any model of a configured provider (including models outside the pricing datasheet). `GET /api/models` and `GET /api/models/details` return each model's `tags` and filter with `tags=a,b` (all tags must match) before pagination [@jimseiwert](https://github.com/jimseiwert)
+- **Provider Metadata and Tags API** - Provider create and update accept `metadata` and `tags` (update: omit to keep, `{}`/`[]`/`null` to clear; invalid labels are a 400). Provider responses include them, and `GET /api/providers` filters by `metadata_<key>=<value>` and `tags=a,b` (all tags must match) [@jimseiwert](https://github.com/jimseiwert)
 
 ## 🐞 Fixed
 
@@ -33,4 +37,6 @@
 
 ## 🗄️ Database Migrations
 
-- No new database migrations in this release.
+- `add_virtual_key_metadata_column` - adds the nullable `metadata` column to `governance_virtual_keys`. Existing keys keep NULL. Non-rollbackable: dropping the column would delete every key's metadata; older binaries ignore it.
+- `add_provider_metadata_and_tags_columns` - adds the nullable `metadata` and `tags` columns to `config_providers`. Existing providers keep NULL. Non-rollbackable: dropping the columns would delete every provider's labels; older binaries ignore them.
+- `add_model_tags_column` - adds the nullable `tags` column to `config_models`. Non-rollbackable: dropping the column would delete every model's tags; older binaries ignore it.
