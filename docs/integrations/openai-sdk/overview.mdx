@@ -385,6 +385,32 @@ if (initial.status === "completed") {
 
 ---
 
+## Decisions API
+
+`client.decisions.create` works through Bifrost with the same `base_url`. Requests are served by OpenAI decisions models such as `gpt-6-luna`.
+
+```python
+response = client.decisions.create(
+    model="gpt-6-luna",
+    input="I was charged twice for my order and nobody has replied.",
+    questions=[
+        {"type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?"},
+        {
+            "type": "choice",
+            "name": "category",
+            "instructions": "Pick the ticket category",
+            "choices": [{"value": "billing"}, {"value": "bug"}, {"value": "other"}],
+        },
+    ],
+)
+for answer in response.answers:
+    print(answer.type, answer.name)
+```
+
+See [Decisions](../../quickstart/gateway/decisions#openai-decisions-api) for the request shape and routing rules.
+
+---
+
 ## Supported Features
 
 The OpenAI integration supports all features that are available in both the OpenAI SDK and Bifrost core functionality. If the OpenAI SDK supports a feature and Bifrost supports it, the integration will work seamlessly.

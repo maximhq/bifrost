@@ -124,3 +124,47 @@ Requests are validated before dispatch and rejected with a `400` rather than sil
 <Note>
 TypeSafe's native API is also available 1:1 at `POST /typesafe/v1/systemone` - see the [TypeSafe provider page](/providers/supported-providers/typesafe) for the mapping between the two.
 </Note>
+
+## OpenAI Decisions API
+
+OpenAI's Decisions API shape is served at `POST /openai/v1/decisions` (also `/openai/decisions`), so the OpenAI SDKs work with `base_url` set to `http://localhost:8080/openai`. Questions are an ordered list, `name` is optional, and answers come back in request order.
+
+```bash
+curl --location 'http://localhost:8080/openai/v1/decisions' \
+--header 'Content-Type: application/json' \
+--data '{
+  "model": "gpt-6-luna",
+  "input": "Customer message: I was double charged and nobody replied to my two emails. I want a refund today.",
+  "questions": [
+    { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" },
+    {
+      "type": "choice",
+      "name": "category",
+      "instructions": "Pick the ticket category",
+      "choices": [
+        { "value": "billing", "description": "charges and refunds" },
+        { "value": "bug", "description": "product defects" },
+        { "value": "other" }
+      ]
+    },
+    {
+      "type": "score",
+      "name": "urgency",
+      "instructions": "Rate how urgently this needs a human reply",
+      "levels": [
+        { "label": "Low", "description": "can wait a week" },
+        { "label": "Medium", "description": "should be answered soon" },
+        { "label": "High", "description": "needs a reply today" }
+      ]
+    }
+  ]
+}'
+```
+
+The response is OpenAI's own body: an `answers` array with `probability` for `predicate`, `choice` with `probabilities` and `confidence` for `choice`, and `score` with labelled `probabilities` and `confidence` for `score`. A question the model declines to answer comes back as `{"type": "refusal", "name": ...}`.
+
+This shape is served only by OpenAI decisions models such as `openai/gpt-6-luna`. A request routed to any other provider or model, including through a fallback, is rejected with `400` rather than converted, because the map shape above cannot carry question order, labelled levels, boolean choices, or images.
+
+<Note>
+OpenAI's Decisions API is in public beta, and `gpt-6-luna` is currently the only model it serves.
+</Note>

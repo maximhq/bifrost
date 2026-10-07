@@ -1,0 +1,173 @@
+# OpenAI Integration Decisions Schemas
+
+OpenAIDecisionRequest:
+  type: object
+  required:
+    - model
+    - input
+    - questions
+  properties:
+    model:
+      type: string
+      description: Decisions model. A bare model name is served by OpenAI.
+      example: gpt-6-luna
+    input:
+      description: Shared evidence for every question. A text string, or user messages with text and inline base64 image parts.
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            $ref: '#/OpenAIDecisionInputMessage'
+    questions:
+      type: array
+      minItems: 1
+      description: Questions in the order their answers are returned.
+      items:
+        $ref: '#/OpenAIDecisionQuestion'
+    safety_identifier:
+      type: string
+      description: Stable identifier for the end user, forwarded to OpenAI.
+    # Bifrost-specific
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback models in provider/model format. Only an OpenAI decisions model can serve this request; any other fallback is rejected with 400.
+  additionalProperties: true
+
+OpenAIDecisionInputMessage:
+  type: object
+  required:
+    - role
+    - content
+  properties:
+    role:
+      type: string
+      enum: [user]
+    content:
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            $ref: '#/OpenAIDecisionInputPart'
+
+OpenAIDecisionInputPart:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      description: "`input_text` or `input_image`. Parts of other types are forwarded unchanged."
+      example: input_text
+    text:
+      type: string
+      description: Text of an `input_text` part.
+    image_url:
+      type: string
+      description: Inline base64 data URL of an `input_image` part.
+
+OpenAIDecisionQuestion:
+  type: object
+  required:
+    - type
+    - instructions
+  properties:
+    type:
+      type: string
+      enum: [predicate, choice, score]
+      description: "`predicate` yields the probability that a condition is true, `choice` yields one of the supplied values, `score` yields a probability-weighted rubric score."
+    name:
+      type: string
+      description: Optional name, echoed on the answer. Names must be unique within a request.
+    instructions:
+      type: string
+    choices:
+      type: array
+      description: Required for `choice` questions.
+      items:
+        type: object
+        required:
+          - value
+        properties:
+          value:
+            oneOf:
+              - type: string
+              - type: boolean
+          description:
+            type: string
+    levels:
+      type: array
+      description: Required for `score` questions, in ascending order.
+      items:
+        type: object
+        required:
+          - label
+        properties:
+          label:
+            type: string
+          description:
+            type: string
+
+OpenAIDecisionResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    model:
+      type: string
+    answers:
+      type: array
+      description: One answer per question, in request order. Answers of a type not listed here are returned unchanged.
+      items:
+        $ref: '#/OpenAIDecisionAnswer'
+    usage:
+      type: object
+      properties:
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+  additionalProperties: true
+
+OpenAIDecisionAnswer:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      description: "`predicate`, `choice`, `score`, or `refusal` when the model declined to answer."
+      example: predicate
+    name:
+      type: string
+    probability:
+      type: number
+      description: Probability the condition is true (`predicate`).
+    choice:
+      description: The chosen value (`choice`).
+      oneOf:
+        - type: string
+        - type: boolean
+    score:
+      type: number
+      description: Probability-weighted level index (`score`).
+    probabilities:
+      type: array
+      description: Distribution over choice values or score levels.
+      items:
+        type: object
+        properties:
+          value:
+            oneOf:
+              - type: string
+              - type: boolean
+              - type: number
+          label:
+            type: string
+          probability:
+            type: number
+    confidence:
+      type: number

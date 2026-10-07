@@ -2,6 +2,8 @@ package integrations
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"mime/multipart"
 	"testing"
 
@@ -236,5 +238,157 @@ func TestParseTranscriptionMultipartRequest_PreservesFilename(t *testing.T) {
 
 	if req.Filename != "sample.mp3" {
 		t.Errorf("Filename = %q, want %q (multipart part filename dropped)", req.Filename, "sample.mp3")
+	}
+}
+
+// findOpenAIRoute returns the route registered at path under the given prefix,
+// or nil when none is.
+func findOpenAIRoute(prefix, path string) *RouteConfig {
+	for _, route := range CreateOpenAIRouteConfigs(prefix, &mockHandlerStore{}) {
+		if route.Path == path && route.Method == "POST" {
+			rc := route
+			return &rc
+		}
+	}
+	return nil
+}
+
+// TestOpenAIDecisionsRouteRegisteredOnEveryPath pins that OpenAI's decisions
+// shape is served at both SDK paths, under /openai and under every SDK prefix
+// that reuses the OpenAI routes.
+func TestOpenAIDecisionsRouteRegisteredOnEveryPath(t *testing.T) {
+	for _, prefix := range []string{"/openai", "/langchain", "/litellm", "/pydanticai"} {
+		for _, path := range []string{"/v1/decisions", "/decisions"} {
+			route := findOpenAIRoute(prefix, prefix+path)
+			if route == nil {
+				t.Errorf("POST %s%s not registered", prefix, path)
+				continue
+			}
+			if got := route.GetHTTPRequestType(nil); got != schemas.DecisionRequest {
+				t.Errorf("%s%s request type = %s, want %s", prefix, path, got, schemas.DecisionRequest)
+			}
+		}
+	}
+}
+
+// TestOpenAIDecisionsRouteConvertsRequest pins the route's request handling: an
+// SDK body becomes an ordered request for OpenAI, an unknown future field is
+// marked to reach the provider wire, and fallbacks are kept for gateway
+// routing. The payload is synthetic.
+func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
+	route := findOpenAIRoute("/openai", "/openai/v1/decisions")
+	if route == nil {
+		t.Fatal("decisions route not registered")
+	}
+
+	incoming := route.GetRequestTypeInstance(context.Background())
+	body := []byte(`{
+		"model": "gpt-6-luna",
+		"input": [{"role": "user", "content": [{"type": "input_text", "text": "Inspect the product in this photo."}, {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}]}],
+		"questions": [
+			{"type": "predicate", "name": "visible_damage", "instructions": "Is the product damaged?"},
+			{"type": "score", "instructions": "How severe is the damage?", "levels": [{"label": "Cosmetic"}, {"label": "Blocked"}]}
+		],
+		"fallbacks": ["gpt-6-luna-2026-09-01"],
+		"future_option": {"mode": "strict"}
+	}`)
+	if err := parseJSONRequestBody(body, incoming); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	converted, err := route.RequestConverter(ctx, incoming)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if converted == nil || converted.DecisionRequest == nil {
+		t.Fatal("decision request not produced")
+	}
+	decision := converted.DecisionRequest
+	if decision.Provider != schemas.OpenAI || decision.Model != "gpt-6-luna" {
+		t.Errorf("got provider %q model %q, want openai gpt-6-luna", decision.Provider, decision.Model)
+	}
+	if !decision.UsesOrderedForm() || decision.UsesMapForm() {
+		t.Error("route request must be in the ordered form only")
+	}
+	if len(decision.OrderedQuestions) != 2 || decision.OrderedQuestions[1].Name != nil {
+		t.Errorf("question order or the unnamed question was not kept: %+v", decision.OrderedQuestions)
+	}
+	if _, ok := decision.ExtraParams["future_option"]; !ok {
+		t.Error("unknown field was dropped instead of carried to the provider")
+	}
+	if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !passthrough {
+		t.Error("unknown fields present but passthrough not requested; they would be dropped on the wire")
+	}
+
+	router := &GenericRouter{}
+	if err := router.extractAndParseFallbacks(ctx, incoming, converted); err != nil {
+		t.Fatalf("fallbacks: %v", err)
+	}
+	want := schemas.Fallback{Provider: schemas.OpenAI, Model: "gpt-6-luna-2026-09-01"}
+	if len(decision.Fallbacks) != 1 || decision.Fallbacks[0] != want {
+		t.Errorf("fallbacks = %+v, want [%+v]", decision.Fallbacks, want)
+	}
+}
+
+// TestOpenAIDecisionsRouteResponses pins the route's response handling: the
+// native body is relayed when an OpenAI-based provider served the request,
+// including a custom provider, and the wire shape is rebuilt from the typed
+// answers otherwise. Errors use the OpenAI error envelope like the other
+// OpenAI routes.
+func TestOpenAIDecisionsRouteResponses(t *testing.T) {
+	route := findOpenAIRoute("/openai", "/openai/v1/decisions")
+	if route == nil {
+		t.Fatal("decisions route not registered")
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	native := `{"id":"dec_1","model":"gpt-6-luna","answers":[{"type":"predicate","name":"q","probability":0.4}],"future_field":true}`
+	resp := &schemas.BifrostDecisionResponse{
+		ID:    "dec_1",
+		Model: "gpt-6-luna",
+		OrderedAnswers: []schemas.DecisionOrderedAnswer{
+			{Type: schemas.DecisionOrderedKindPredicate, Name: schemas.Ptr("q"), Probability: schemas.Ptr(0.4)},
+			{Type: schemas.DecisionOrderedKindRefusal, Name: schemas.Ptr("r")},
+		},
+		NativeResponse: json.RawMessage(native),
+	}
+	resp.ExtraFields.Provider = schemas.OpenAI
+	out, err := route.DecisionResponseConverter(ctx, resp)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if got, ok := out.(json.RawMessage); !ok || string(got) != native {
+		t.Errorf("native body not relayed verbatim: %#v", out)
+	}
+
+	customCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	customCtx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+	resp.ExtraFields.Provider = "my-openai"
+	out, err = route.DecisionResponseConverter(customCtx, resp)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if got, ok := out.(json.RawMessage); !ok || string(got) != native {
+		t.Errorf("custom OpenAI provider's native body not relayed verbatim: %#v", out)
+	}
+
+	resp.NativeResponse = nil
+	resp.ExtraFields.Provider = schemas.OpenAI
+	out, err = route.DecisionResponseConverter(ctx, resp)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	built, ok := out.(*openai.OpenAIDecisionResponse)
+	if !ok {
+		t.Fatalf("expected the typed wire response without a native body, got %#v", out)
+	}
+	if len(built.Answers) != 2 || built.Answers[1].Type != schemas.DecisionOrderedKindRefusal {
+		t.Errorf("typed response must keep answer order and the refusal: %+v", built.Answers)
+	}
+
+	bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "Invalid value for 'questions': expected an array."}}
+	if got := route.ErrorConverter(ctx, bifrostErr); got != bifrostErr {
+		t.Errorf("error must be returned in the OpenAI envelope, got %#v", got)
 	}
 }

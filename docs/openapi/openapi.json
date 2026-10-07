@@ -17701,6 +17701,69 @@
         ]
       }
     },
+    "/openai/v1/decisions": {
+      "post": {
+        "operationId": "openaiCreateDecision",
+        "summary": "Evaluate a decision (OpenAI format)",
+        "description": "Evaluates shared input against an ordered list of questions with OpenAI's\nDecisions API shape, and returns one answer per question in request order.\nServed by OpenAI decisions models such as `gpt-6-luna`; a request routed to\nany other provider is rejected with 400 rather than approximated.\n\nFor the TypeSafe-shaped map of named questions, use `POST /v1/decisions`.\n\n**Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/decisions`).\n",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAIDecisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIDecisionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/openai/v1/audio/speech": {
       "post": {
         "operationId": "openaiCreateSpeech",
@@ -110606,6 +110669,259 @@
             }
           }
         }
+      },
+      "OpenAIDecisionRequest": {
+        "type": "object",
+        "required": [
+          "model",
+          "input",
+          "questions"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Decisions model. A bare model name is served by OpenAI.",
+            "example": "gpt-6-luna"
+          },
+          "input": {
+            "description": "Shared evidence for every question. A text string, or user messages with text and inline base64 image parts.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "content"
+                  ],
+                  "properties": {
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "user"
+                      ]
+                    },
+                    "content": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "type"
+                            ],
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "description": "`input_text` or `input_image`. Parts of other types are forwarded unchanged.",
+                                "example": "input_text"
+                              },
+                              "text": {
+                                "type": "string",
+                                "description": "Text of an `input_text` part."
+                              },
+                              "image_url": {
+                                "type": "string",
+                                "description": "Inline base64 data URL of an `input_image` part."
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "questions": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Questions in the order their answers are returned.",
+            "items": {
+              "type": "object",
+              "required": [
+                "type",
+                "instructions"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "predicate",
+                    "choice",
+                    "score"
+                  ],
+                  "description": "`predicate` yields the probability that a condition is true, `choice` yields one of the supplied values, `score` yields a probability-weighted rubric score."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Optional name, echoed on the answer. Names must be unique within a request."
+                },
+                "instructions": {
+                  "type": "string"
+                },
+                "choices": {
+                  "type": "array",
+                  "description": "Required for `choice` questions.",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "value"
+                    ],
+                    "properties": {
+                      "value": {
+                        "oneOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "boolean"
+                          }
+                        ]
+                      },
+                      "description": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "levels": {
+                  "type": "array",
+                  "description": "Required for `score` questions, in ascending order.",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "label"
+                    ],
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "safety_identifier": {
+            "type": "string",
+            "description": "Stable identifier for the end user, forwarded to OpenAI."
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fallback models in provider/model format. Only an OpenAI decisions model can serve this request; any other fallback is rejected with 400."
+          }
+        },
+        "additionalProperties": true
+      },
+      "OpenAIDecisionResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "answers": {
+            "type": "array",
+            "description": "One answer per question, in request order. Answers of a type not listed here are returned unchanged.",
+            "items": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "description": "`predicate`, `choice`, `score`, or `refusal` when the model declined to answer.",
+                  "example": "predicate"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "probability": {
+                  "type": "number",
+                  "description": "Probability the condition is true (`predicate`)."
+                },
+                "choice": {
+                  "description": "The chosen value (`choice`).",
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "score": {
+                  "type": "number",
+                  "description": "Probability-weighted level index (`score`)."
+                },
+                "probabilities": {
+                  "type": "array",
+                  "description": "Distribution over choice values or score levels.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "oneOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "number"
+                          }
+                        ]
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "probability": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                },
+                "confidence": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "input_tokens": {
+                "type": "integer"
+              },
+              "output_tokens": {
+                "type": "integer"
+              },
+              "total_tokens": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "additionalProperties": true
       },
       "OpenAISpeechRequest": {
         "type": "object",

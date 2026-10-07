@@ -1043,6 +1043,58 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		})
 	}
 
+	// Decisions endpoint (OpenAI's ordered Decisions API shape)
+	for _, path := range []string{
+		"/v1/decisions",
+		"/decisions",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:        RouteConfigTypeOpenAI,
+			Path:        pathPrefix + path,
+			Method:      "POST",
+			PreCallback: openAILargePayloadPreHook,
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.DecisionRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &openai.OpenAIDecisionRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if decisionReq, ok := req.(*openai.OpenAIDecisionRequest); ok {
+					bifrostReq := decisionReq.ToBifrostDecisionRequest(ctx)
+					// The route is the endpoint's wire shape: fields a newer SDK
+					// sends always reach the provider, no header needed.
+					if len(bifrostReq.ExtraParams) > 0 && ctx != nil {
+						ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+					}
+					return &schemas.BifrostRequest{
+						DecisionRequest: bifrostReq,
+					}, nil
+				}
+				return nil, errors.New("invalid decision request type")
+			},
+			DecisionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostDecisionResponse) (interface{}, error) {
+				// Custom providers report their own name, so match on the base
+				// provider type that served the attempt. Like the other OpenAI
+				// routes, the native body is relayed as is, so fields outside
+				// the shared shape survive; a post-hook edit to OrderedAnswers
+				// is not reflected in it.
+				if schemas.ResolveBaseProvider(ctx, resp.ExtraFields.Provider) == schemas.OpenAI {
+					if resp.ExtraFields.RawResponse != nil {
+						return resp.ExtraFields.RawResponse, nil
+					}
+					if len(resp.NativeResponse) > 0 {
+						return resp.NativeResponse, nil
+					}
+				}
+				return openai.ToOpenAIDecisionResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
 	// Speech synthesis endpoint
 	for _, path := range []string{
 		"/v1/audio/speech",

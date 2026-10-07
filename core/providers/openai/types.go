@@ -161,7 +161,46 @@ type OpenAIDecisionRequest struct {
 	Input            *schemas.DecisionInput            `json:"input"`
 	Questions        []schemas.DecisionOrderedQuestion `json:"questions"`
 	SafetyIdentifier *string                           `json:"safety_identifier,omitempty"`
-	ExtraParams      map[string]interface{}            `json:"-"` // Optional: Extra parameters
+	Fallbacks        []string                          `json:"fallbacks,omitempty"` // gateway routing only; never set on the upstream body
+	ExtraParams      map[string]interface{}            `json:"-"`                   // Optional: Extra parameters
+}
+
+// openAIDecisionRequestKnownFields are the modelled top-level keys; anything
+// else is a native extension carried in ExtraParams.
+var openAIDecisionRequestKnownFields = map[string]bool{
+	"model":             true,
+	"input":             true,
+	"questions":         true,
+	"safety_identifier": true,
+	"fallbacks":         true,
+}
+
+// UnmarshalJSON decodes the modelled fields and captures unknown top-level
+// properties verbatim (compacted), so a field a newer SDK sends is forwarded
+// to the endpoint rather than dropped.
+func (r *OpenAIDecisionRequest) UnmarshalJSON(data []byte) error {
+	type Alias OpenAIDecisionRequest
+	if err := sonic.Unmarshal(data, (*Alias)(r)); err != nil {
+		return err
+	}
+	r.ExtraParams = nil
+	gjson.ParseBytes(data).ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		if openAIDecisionRequestKnownFields[name] {
+			return true
+		}
+		if r.ExtraParams == nil {
+			r.ExtraParams = make(map[string]interface{})
+		}
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(value.Raw)); err == nil {
+			r.ExtraParams[name] = json.RawMessage(buf.Bytes())
+		} else {
+			r.ExtraParams[name] = json.RawMessage(value.Raw)
+		}
+		return true
+	})
+	return nil
 }
 
 // GetExtraParams implements providerUtils.RequestBodyWithExtraParams.

@@ -664,10 +664,11 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		}, []schemas.ResponsesMessage{}
 	}
 	if request.DecisionRequest != nil {
-		var state string
 		if request.DecisionRequest.UsesOrderedForm() {
-			state = decisionInputLogText(request.DecisionRequest.Input)
-		} else if s, ok := request.DecisionRequest.State.(string); ok {
+			return decisionInputLogMessages(request.DecisionRequest.Input), []schemas.ResponsesMessage{}
+		}
+		var state string
+		if s, ok := request.DecisionRequest.State.(string); ok {
 			state = s
 		} else if raw, err := sonic.Marshal(request.DecisionRequest.State); err == nil {
 			state = string(raw)
@@ -733,38 +734,53 @@ func redactEmbeddingMediaData(items []schemas.EmbeddingInputItem) []schemas.Embe
 	return stripped
 }
 
-// decisionImageLogPlaceholder stands in for an inline image in a logged
-// decision input, so base64 image data never reaches the log store.
-const decisionImageLogPlaceholder = "[image omitted]"
-
-// decisionInputLogText renders an ordered decision input for the log: text is
-// kept, an inline image is replaced by a placeholder, and any other part is
-// reduced to its type name.
-func decisionInputLogText(input *schemas.DecisionInput) string {
+// decisionInputLogMessages renders an ordered decision input as chat messages
+// for the log, the shape chat requests are logged in, so the logs UI shows
+// text and inline images the same way. A text input is one user message; a
+// part of a type the schema does not model is kept as its type name.
+func decisionInputLogMessages(input *schemas.DecisionInput) []schemas.ChatMessage {
 	if input == nil {
-		return ""
+		return []schemas.ChatMessage{}
 	}
 	if input.Text != nil {
-		return *input.Text
+		return []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: input.Text},
+		}}
 	}
-	var lines []string
+	messages := make([]schemas.ChatMessage, 0, len(input.Messages))
 	for _, message := range input.Messages {
+		role := schemas.ChatMessageRole(message.Role)
+		if role == "" {
+			role = schemas.ChatMessageRoleUser
+		}
 		if message.Content.Text != nil {
-			lines = append(lines, *message.Content.Text)
+			messages = append(messages, schemas.ChatMessage{
+				Role:    role,
+				Content: &schemas.ChatMessageContent{ContentStr: message.Content.Text},
+			})
 			continue
 		}
+		blocks := make([]schemas.ChatContentBlock, 0, len(message.Content.Parts))
 		for _, part := range message.Content.Parts {
 			switch {
 			case part.Type == schemas.DecisionInputPartTypeText && part.Text != nil:
-				lines = append(lines, *part.Text)
-			case part.Type == schemas.DecisionInputPartTypeImage:
-				lines = append(lines, decisionImageLogPlaceholder)
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: part.Text})
+			case part.Type == schemas.DecisionInputPartTypeImage && part.ImageURL != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{
+					Type:           schemas.ChatContentBlockTypeImage,
+					ImageURLStruct: &schemas.ChatInputImage{URL: *part.ImageURL},
+				})
 			default:
-				lines = append(lines, "["+part.Type+"]")
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("[" + part.Type + "]")})
 			}
 		}
+		messages = append(messages, schemas.ChatMessage{
+			Role:    role,
+			Content: &schemas.ChatMessageContent{ContentBlocks: blocks},
+		})
 	}
-	return strings.Join(lines, "\n")
+	return messages
 }
 
 // embeddingMediaDataSize totals the inline media bytes across every item.

@@ -117,12 +117,19 @@ func TestAttachMCPLogRedactionDataSkipsUnavailableContent(t *testing.T) {
 	assert.Nil(t, entry.RedactionData)
 }
 
-// TestDecisionInputLogTextRedactsImages pins that a logged ordered decision
-// input keeps its text but never carries inline image data, and that an
-// unfamiliar part is reduced to its type name.
-func TestDecisionInputLogTextRedactsImages(t *testing.T) {
-	assert.Equal(t, "", decisionInputLogText(nil))
-	assert.Equal(t, "I was charged twice.", decisionInputLogText(&schemas.DecisionInput{Text: schemas.Ptr("I was charged twice.")}))
+// TestDecisionInputLogMessagesMatchChatLogging pins that a logged ordered
+// decision input takes the shape chat requests are logged in: a text input is
+// one user message, text and image parts become text and image_url blocks the
+// logs UI renders, and an unfamiliar part is kept as its type name. The
+// payload is synthetic.
+func TestDecisionInputLogMessagesMatchChatLogging(t *testing.T) {
+	assert.Empty(t, decisionInputLogMessages(nil))
+
+	text := decisionInputLogMessages(&schemas.DecisionInput{Text: schemas.Ptr("I was charged twice.")})
+	require.Len(t, text, 1)
+	assert.Equal(t, schemas.ChatMessageRoleUser, text[0].Role)
+	require.NotNil(t, text[0].Content.ContentStr)
+	assert.Equal(t, "I was charged twice.", *text[0].Content.ContentStr)
 
 	input := &schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
 		{Role: "user", Content: schemas.DecisionInputContent{Text: schemas.Ptr("Plain message.")}},
@@ -133,7 +140,18 @@ func TestDecisionInputLogTextRedactsImages(t *testing.T) {
 		}}},
 	}}
 
-	logged := decisionInputLogText(input)
-	assert.Equal(t, "Plain message.\nInspect the product.\n[image omitted]\n[input_audio]", logged)
-	assert.NotContains(t, logged, "base64")
+	logged := decisionInputLogMessages(input)
+	require.Len(t, logged, 2)
+	require.NotNil(t, logged[0].Content.ContentStr)
+	assert.Equal(t, "Plain message.", *logged[0].Content.ContentStr)
+
+	blocks := logged[1].Content.ContentBlocks
+	require.Len(t, blocks, 3)
+	assert.Equal(t, schemas.ChatContentBlockTypeText, blocks[0].Type)
+	assert.Equal(t, "Inspect the product.", *blocks[0].Text)
+	assert.Equal(t, schemas.ChatContentBlockTypeImage, blocks[1].Type)
+	require.NotNil(t, blocks[1].ImageURLStruct)
+	assert.Equal(t, "data:image/png;base64,AAAA", blocks[1].ImageURLStruct.URL)
+	assert.Equal(t, schemas.ChatContentBlockTypeText, blocks[2].Type)
+	assert.Equal(t, "[input_audio]", *blocks[2].Text)
 }

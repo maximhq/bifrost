@@ -26,6 +26,7 @@ OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, param
 | Batch | ✅ | - | `/v1/batches` |
 | Video Generation | ✅ | - | `/v1/videos` |
 | Context Compaction | ✅ | - | `/v1/responses/compact` |
+| Decisions | ✅ | - | `/openai/v1/decisions` |
 | List Models | ✅ | - | `/v1/models` |
 
 ## Setup & Configuration
@@ -641,6 +642,30 @@ Compresses a conversation into an opaque encrypted item that can be reused in fu
 | `fallbacks` | array | ❌ | Bifrost fallback model list. |
 
 **Endpoint**: `POST /v1/responses/compact`
+
+---
+
+# 15. Decisions
+
+Evaluates shared input against an ordered list of questions with OpenAI's Decisions API (`gpt-6-luna` models). Send requests in OpenAI's shape to `POST /openai/v1/decisions` (or `/openai/decisions`); see [Decisions](/quickstart/gateway/decisions#openai-decisions-api).
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Decisions model, e.g. `gpt-6-luna`. A bare model name is routed to OpenAI. |
+| `input` | string/array | ✅ | Text, or user messages with `input_text` and base64 `input_image` parts. |
+| `questions` | array | ✅ | Ordered `predicate`, `choice`, or `score` questions. `name` is optional and must be unique when set. |
+| `safety_identifier` | string | ❌ | Forwarded to OpenAI. |
+| `fallbacks` | array | ❌ | Bifrost fallback model list. Only an OpenAI decisions model can serve the request. |
+
+Other top-level fields are forwarded to OpenAI unchanged.
+
+- No streaming support. Answers come back in request order, including `refusal` answers; answer types Bifrost does not model are returned unchanged.
+- The ordered shape is served only by OpenAI decisions models. A request routed to any other provider or model, including through a fallback, is rejected with `400` rather than converted.
+- `POST /v1/decisions` keeps the TypeSafe-shaped map of named questions. For an OpenAI chat model that request is emulated through the Responses API.
+
+**Endpoint**: `POST /openai/v1/decisions`
 
 ---
 

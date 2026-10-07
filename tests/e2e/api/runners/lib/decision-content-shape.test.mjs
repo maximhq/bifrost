@@ -31,3 +31,11 @@ test('decision answers count as response content', () => {
 test('empty decision answers still fail the content check', () => {
   assert.equal(contentFailures({ answers: {} }).length, 1);
 });
+
+test('ordered decision answers count as response content', () => {
+  assert.equal(contentFailures({ answers: [{ type: 'predicate', name: 'is_frustrated', probability: 0.9 }] }).length, 0);
+});
+
+test('an empty ordered answers array still fails the content check', () => {
+  assert.equal(contentFailures({ answers: [] }).length, 1);
+});

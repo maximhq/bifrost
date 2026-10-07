@@ -4857,3 +4857,46 @@ func TestDecisionRequestMustCarryExactlyOneForm(t *testing.T) {
 		t.Errorf("nothing may reach the upstream, saw %v", got)
 	}
 }
+
+// TestOrderedDecisionFallbacksAreGuardedPerAttempt pins that the dispatch guard
+// judges each fallback attempt on its own: a primary that cannot serve the
+// ordered form falls back to an OpenAI decisions model, which serves it
+// natively, while a fallback to a provider that cannot serve it is refused
+// without reaching any upstream.
+func TestOrderedDecisionFallbacksAreGuardedPerAttempt(t *testing.T) {
+	t.Run("fallback to an OpenAI decisions model is served", func(t *testing.T) {
+		client, seenPaths := newOrderedDecisionClient(t, schemas.Typesafe, schemas.OpenAI)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		request := orderedDecisionTestRequest(schemas.Typesafe, "jev-1.13.0")
+		request.Fallbacks = []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-6-luna"}}
+
+		resp, bifrostErr := client.DecisionRequest(ctx, request)
+		if bifrostErr != nil {
+			t.Fatalf("fallback must serve the ordered request, got %v", bifrostErr)
+		}
+		if !resp.UsesOrderedForm() || len(resp.OrderedAnswers) != 1 {
+			t.Fatalf("expected one ordered answer, got %+v", resp)
+		}
+		if got := seenPaths(); !reflect.DeepEqual(got, []string{"/v1/decisions"}) {
+			t.Errorf("upstream saw %v, want only the fallback's /v1/decisions", got)
+		}
+	})
+
+	t.Run("fallback to a provider that cannot serve it is refused", func(t *testing.T) {
+		client, seenPaths := newOrderedDecisionClient(t, schemas.OpenAI, schemas.Typesafe)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		request := orderedDecisionTestRequest(schemas.OpenAI, "gpt-4o")
+		request.Fallbacks = []schemas.Fallback{{Provider: schemas.Typesafe, Model: "jev-1.13.0"}}
+
+		resp, bifrostErr := client.DecisionRequest(ctx, request)
+		if resp != nil || bifrostErr == nil {
+			t.Fatalf("ordered request must be refused, got resp=%+v err=%v", resp, bifrostErr)
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected a 400, got %+v", bifrostErr.StatusCode)
+		}
+		if got := seenPaths(); len(got) != 0 {
+			t.Errorf("nothing may reach the upstream, saw %v", got)
+		}
+	})
+}

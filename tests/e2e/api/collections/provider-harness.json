@@ -76,6 +76,9 @@
           "    if (j.answers && typeof j.answers === 'object' && !Array.isArray(j.answers)) {",
           "        shape = 'decisions';",
           "        hasContent = Object.keys(j.answers).length > 0;",
+          "    } else if (Array.isArray(j.answers)) {",
+          "        shape = 'openai-decisions';",
+          "        hasContent = j.answers.length > 0;",
           "    } else if (j.message && typeof j.message === 'object' && (j.message.content !== undefined || Array.isArray(j.message.tool_calls))) {",
           "        shape = 'cohere-v2-chat';",
           "        var cohereContent = j.message.content;",
@@ -162172,6 +162175,161 @@
                 "v1",
                 "models"
               ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "177. OpenAI Decisions API drop-in (openai-decisions)",
+      "description": "OpenAI's ordered Decisions API shape on the /openai drop-in (public beta; gpt-6-luna is the only model). The gpt-6-luna rows call OpenAI; the refusal row makes no upstream call.",
+      "item": [
+        {
+          "name": "/openai/v1/decisions - mixed types return ordered answers - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('answers come back as an ordered array in request order', function () {",
+                  "    pm.expect(body.answers, 'missing answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(4);",
+                  "    var expected = [['predicate', 'is_frustrated'], ['choice', 'category'], ['choice', undefined], ['score', 'urgency']];",
+                  "    expected.forEach(function (pair, i) {",
+                  "        var answer = body.answers[i];",
+                  "        if (answer.type === 'refusal') { return; }",
+                  "        pm.expect(answer.type, 'answer ' + i).to.eql(pair[0]);",
+                  "        // OpenAI answers an unnamed question with \"name\": null.",
+                  "        pm.expect(answer.name === null ? undefined : answer.name, 'answer ' + i).to.eql(pair[1]);",
+                  "    });",
+                  "});",
+                  "pm.test('each answer carries its typed value', function () {",
+                  "    var p = body.answers[0];",
+                  "    if (p.type === 'predicate') { pm.expect(p.probability).to.be.within(0, 1); }",
+                  "    var c = body.answers[1];",
+                  "    if (c.type === 'choice') { pm.expect(['billing', 'bug', 'other']).to.include(c.choice); }",
+                  "    var b = body.answers[2];",
+                  "    if (b.type === 'choice') { pm.expect(b.choice, 'boolean choice values stay booleans').to.be.a('boolean'); }",
+                  "    var s = body.answers[3];",
+                  "    if (s.type === 'score') { pm.expect(s.score).to.be.a('number'); pm.expect(s.probabilities).to.be.an('array'); }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"instructions\": \"Does the customer ask for a refund?\",\n      \"choices\": [\n        {\n          \"value\": true\n        },\n        {\n          \"value\": false\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"levels\": [\n        {\n          \"label\": \"Low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"Medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"High\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/openai/decisions - unversioned path with a bare model - gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('unversioned path and bare model succeed', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('one ordered answer comes back', function () {",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.answers, 'missing answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-6-luna\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/openai/v1/decisions - ordered request to a non-OpenAI provider rejected with 400 - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('ordered request for a provider that cannot serve it is refused, not flattened', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "    pm.expect(pm.response.text()).to.include('cannot serve a decision request with ordered input and questions');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
             }
           },
           "response": []

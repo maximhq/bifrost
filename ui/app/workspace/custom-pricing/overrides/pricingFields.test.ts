@@ -137,4 +137,13 @@ describe("request type groups", () => {
 		const perSecond = PRICING_FIELDS.find((f) => f.key === "input_cost_per_second");
 		expect(perSecond?.requestTypeGroups).toContain("audio");
 	});
+
+	// Decision cost is priced on input and output tokens only, so an override
+	// scoped to decisions offers exactly those two fields.
+	it("offers decisions with its input and output token fields", () => {
+		expect(REQUEST_TYPE_OPTIONS).toContain("decisions");
+		expect(getRequestTypeGroup("decisions")).toBe("Decisions");
+		const decisionFields = PRICING_FIELDS.filter((f) => (f.requestTypeGroups as readonly string[]).includes("decisions")).map((f) => f.key);
+		expect(decisionFields).toEqual(["input_cost_per_token", "output_cost_per_token"]);
+	});
 });

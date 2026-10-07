@@ -331,6 +331,10 @@ paths:
   /openai/openai/deployments/{deployment-id}/embeddings:
     $ref: "./paths/integrations/openai/embeddings.yaml#/azure-embeddings"
 
+  # Decisions
+  /openai/v1/decisions:
+    $ref: "./paths/integrations/openai/decisions.yaml#/decisions"
+
   # Audio (Speech & Transcription)
   /openai/v1/audio/speech:
     $ref: "./paths/integrations/openai/audio.yaml#/speech"
@@ -1673,6 +1677,10 @@ components:
       $ref: "./schemas/integrations/openai/responses.yaml#/OpenAIResponsesRequest"
     OpenAIEmbeddingRequest:
       $ref: "./schemas/integrations/openai/embeddings.yaml#/OpenAIEmbeddingRequest"
+    OpenAIDecisionRequest:
+      $ref: "./schemas/integrations/openai/decisions.yaml#/OpenAIDecisionRequest"
+    OpenAIDecisionResponse:
+      $ref: "./schemas/integrations/openai/decisions.yaml#/OpenAIDecisionResponse"
     OpenAISpeechRequest:
       $ref: "./schemas/integrations/openai/audio.yaml#/OpenAISpeechRequest"
     OpenAITranscriptionRequest:

@@ -1,0 +1,39 @@
+# OpenAI Integration - Decisions Endpoints
+
+decisions:
+  post:
+    operationId: openaiCreateDecision
+    summary: Evaluate a decision (OpenAI format)
+    description: |
+      Evaluates shared input against an ordered list of questions with OpenAI's
+      Decisions API shape, and returns one answer per question in request order.
+      Served by OpenAI decisions models such as `gpt-6-luna`; a request routed to
+      any other provider is rejected with 400 rather than approximated.
+
+      For the TypeSafe-shaped map of named questions, use `POST /v1/decisions`.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/decisions`).
+    tags:
+    - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/decisions.yaml#/OpenAIDecisionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/decisions.yaml#/OpenAIDecisionResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
