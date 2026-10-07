@@ -601,6 +601,9 @@ type MockConfigStore struct {
 	governanceItemsUpdated struct {
 		budgets []tables.TableBudget
 	}
+	// virtualKeysDeleted records the IDs handed to DeleteVirtualKey, so a test can assert on
+	// what a source_of_truth=config.json prune removed.
+	virtualKeysDeleted  []string
 	flushSessionsCalled bool
 }
 
@@ -1153,6 +1156,7 @@ func (m *MockConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *tabl
 }
 
 func (m *MockConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error {
+	m.virtualKeysDeleted = append(m.virtualKeysDeleted, id)
 	return nil
 }
 
@@ -2069,6 +2073,236 @@ func TestMergeGovernanceConfig_ForceFileSyncPreservesBudgetRuntimeState(t *testi
 	assert.True(t, inMemory.LastReset.Equal(lastReset),
 		"in-memory snapshot must keep the persisted last_reset: got %s, want %s",
 		inMemory.LastReset.UTC(), lastReset)
+}
+
+// TestMatchConfigVirtualKeys pins how config.json virtual keys find their stored rows: by id when
+// they have one, otherwise by name within their own owner, falling back to a lone key of that name
+// that no other entry claims, and refusing to guess between several candidates.
+func TestMatchConfigVirtualKeys(t *testing.T) {
+	team1, team2, team3, team4, customer1, blank := "team-1", "team-2", "team-3", "team-4", "customer-1", ""
+	stored := []tables.TableVirtualKey{
+		{ID: "vk-prod-team1", Name: "prod", TeamID: &team1},
+		{ID: "vk-prod-team2", Name: "prod", TeamID: &team2},
+		{ID: "vk-prod-unowned", Name: "prod"},
+		{ID: "vk-ci-customer1", Name: "ci", CustomerID: &customer1},
+	}
+	tests := []struct {
+		name          string
+		entries       []tables.TableVirtualKey
+		wantIdx       []int
+		wantAmbiguous []bool
+	}{
+		{name: "id wins over name and owner", entries: []tables.TableVirtualKey{{ID: "vk-prod-team2", Name: "other", TeamID: &team1}}, wantIdx: []int{1}},
+		{name: "unknown id is new", entries: []tables.TableVirtualKey{{ID: "vk-new", Name: "prod", TeamID: &team1}}, wantIdx: []int{-1}},
+		{name: "name within the same team", entries: []tables.TableVirtualKey{{Name: "prod", TeamID: &team2}}, wantIdx: []int{1}},
+		{name: "name among unowned keys", entries: []tables.TableVirtualKey{{Name: "prod"}}, wantIdx: []int{2}},
+		{name: "blank owner id means unowned", entries: []tables.TableVirtualKey{{Name: "prod", TeamID: &blank}}, wantIdx: []int{2}},
+		{name: "lone key of that name with another owner", entries: []tables.TableVirtualKey{{Name: "ci"}}, wantIdx: []int{3}},
+		{
+			name:          "several keys of that name none with the owner",
+			entries:       []tables.TableVirtualKey{{Name: "prod", TeamID: &team3}},
+			wantIdx:       []int{-1},
+			wantAmbiguous: []bool{true},
+		},
+		{name: "unknown name is new", entries: []tables.TableVirtualKey{{Name: "dev", TeamID: &team1}}, wantIdx: []int{-1}},
+		{
+			// The stored ci key belongs to customer-1 and the file declares ci for customer-1 and for
+			// team-1: the owner match claims the row, so the team-1 entry is a new key rather than a
+			// second claim on the same row that would overwrite customer-1's key.
+			name:    "owner match claims the lone key before another owner falls back to it",
+			entries: []tables.TableVirtualKey{{Name: "ci", TeamID: &team1}, {Name: "ci", CustomerID: &customer1}},
+			wantIdx: []int{-1, 3},
+		},
+		{
+			name:    "id match claims the lone key before an id-less entry falls back to it",
+			entries: []tables.TableVirtualKey{{Name: "ci", TeamID: &team1}, {ID: "vk-ci-customer1", Name: "ci", CustomerID: &customer1}},
+			wantIdx: []int{-1, 3},
+		},
+		{
+			// vk-ci-customer1 is renamed by id, and a new id-less ci key is declared for the same
+			// customer: the id match claims the row, so the id-less entry is a new key rather than a
+			// second claim on vk-ci-customer1.
+			name:    "id match claims the row before a same-owner name match",
+			entries: []tables.TableVirtualKey{{ID: "vk-ci-customer1", Name: "renamed", CustomerID: &customer1}, {Name: "ci", CustomerID: &customer1}},
+			wantIdx: []int{3, -1},
+		},
+		{
+			name:          "two id-less entries cannot both fall back to one lone key",
+			entries:       []tables.TableVirtualKey{{Name: "ci", TeamID: &team3}, {Name: "ci", TeamID: &team4}},
+			wantIdx:       []int{-1, -1},
+			wantAmbiguous: []bool{true, true},
+		},
+		{
+			// team-1 and team-2 claim their own rows, leaving the unowned prod key as the lone
+			// unclaimed candidate for the team-3 entry.
+			name:    "claimed keys leave a lone candidate",
+			entries: []tables.TableVirtualKey{{Name: "prod", TeamID: &team1}, {Name: "prod", TeamID: &team2}, {Name: "prod", TeamID: &team3}},
+			wantIdx: []int{0, 1, 2},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := matchConfigVirtualKeys(stored, tc.entries)
+			assert.Equal(t, tc.wantIdx, got.idx)
+			wantAmbiguous := tc.wantAmbiguous
+			if wantAmbiguous == nil {
+				wantAmbiguous = make([]bool, len(tc.entries))
+			}
+			assert.Equal(t, wantAmbiguous, got.ambiguous)
+		})
+	}
+}
+
+// TestMergeGovernanceConfig_AmbiguousVirtualKeyFailsSync covers an id-less virtual key whose name
+// matches several stored keys, none with its owner. Bifrost cannot tell which key the entry means, so
+// the sync fails with an error that names the entry and asks for its id, before anything is written:
+// no stored key is pruned, updated or kept on the entry's behalf, and no key is created for it. This
+// holds in both sync modes.
+func TestMergeGovernanceConfig_AmbiguousVirtualKeyFailsSync(t *testing.T) {
+	for _, sourceOfTruth := range []string{"", SourceOfTruthConfigJSON} {
+		t.Run("source_of_truth="+sourceOfTruth, func(t *testing.T) {
+			initTestLogger()
+
+			team1, team2, team3 := "team-1", "team-2", "team-3"
+			store := NewMockConfigStore()
+			dbGovernance := &configstore.GovernanceConfig{
+				VirtualKeys: []tables.TableVirtualKey{
+					{ID: "vk-prod-team1", Name: "prod", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-team1")},
+					{ID: "vk-prod-team2", Name: "prod", TeamID: &team2, Value: *schemas.NewSecretVar("sk-bf-team2")},
+					{ID: "vk-stale", Name: "stale", Value: *schemas.NewSecretVar("sk-bf-stale")},
+				},
+			}
+			store.governanceConfig = dbGovernance
+			config := &Config{
+				ConfigStore:      store,
+				GovernanceConfig: dbGovernance,
+			}
+			configData := &ConfigData{
+				SourceOfTruth: sourceOfTruth,
+				Governance: &configstore.GovernanceConfig{
+					VirtualKeys: []tables.TableVirtualKey{
+						{Name: "prod", TeamID: &team3, Value: *schemas.NewSecretVar("sk-bf-team3")},
+					},
+				},
+			}
+
+			err := mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+			require.Error(t, err, "an ambiguous id-less entry must fail the sync")
+			assert.Contains(t, err.Error(), `"prod"`, "the error must name the entry")
+			assert.Contains(t, err.Error(), "id", "the error must say how to fix it")
+			assert.Empty(t, store.virtualKeysDeleted, "nothing may be pruned when the sync fails")
+			assert.Empty(t, store.governanceItemsCreated.virtualKeys, "an ambiguous entry must not create a key")
+			ids := make([]string, 0, len(config.GovernanceConfig.VirtualKeys))
+			for _, vk := range config.GovernanceConfig.VirtualKeys {
+				ids = append(ids, vk.ID)
+			}
+			assert.ElementsMatch(t, []string{"vk-prod-team1", "vk-prod-team2", "vk-stale"}, ids,
+				"the in-memory snapshot is left as stored")
+		})
+	}
+}
+
+// TestLoadConfig_AmbiguousVirtualKeyFailsBeforeAnyWrite covers a config.json whose id-less virtual
+// key is ambiguous while other sections changed too. LoadConfig must fail before it writes anything:
+// the client settings and providers from the previous load stay as stored, including the provider a
+// source_of_truth=config.json load would otherwise have deleted.
+func TestLoadConfig_AmbiguousVirtualKeyFailsBeforeAnyWrite(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	team1, team2, team3 := "team-1", "team-2", "team-3"
+	first := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
+	}, tempDir)
+	first.Governance = &configstore.GovernanceConfig{
+		Teams: []tables.TableTeam{{ID: team1, Name: "Team 1"}, {ID: team2, Name: "Team 2"}, {ID: team3, Name: "Team 3"}},
+		VirtualKeys: []tables.TableVirtualKey{
+			{ID: "vk-prod-team1", Name: "prod", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-team1"), IsActive: new(true)},
+			{ID: "vk-prod-team2", Name: "prod", TeamID: &team2, Value: *schemas.NewSecretVar("sk-bf-team2"), IsActive: new(true)},
+		},
+	}
+	createConfigFile(t, tempDir, first)
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	second := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"anthropic": makeProviderConfig("anthropic-key-1", "sk-ant-123"),
+	}, tempDir)
+	second.SourceOfTruth = SourceOfTruthConfigJSON
+	second.Client.InitialPoolSize = 77
+	second.Governance = &configstore.GovernanceConfig{
+		Teams:       first.Governance.Teams,
+		VirtualKeys: []tables.TableVirtualKey{{Name: "prod", TeamID: &team3, Value: *schemas.NewSecretVar("sk-bf-team3"), IsActive: new(true)}},
+	}
+	createConfigFile(t, tempDir, second)
+	_, err = LoadConfig(ctx, tempDir)
+	require.Error(t, err, "an ambiguous id-less virtual key must fail the load")
+	assert.Contains(t, err.Error(), `"prod"`)
+
+	// Inspect what the failed load left in the store.
+	store, err := configstore.NewConfigStore(ctx, first.ConfigStoreConfig, logger)
+	require.NoError(t, err)
+	defer store.Close(ctx)
+	clientConfig, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, clientConfig)
+	assert.Equal(t, 10, clientConfig.InitialPoolSize, "client settings must not be written by a failed load")
+	providers, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, providers, schemas.OpenAI, "a failed load must not delete stored providers")
+	assert.NotContains(t, providers, schemas.Anthropic, "a failed load must not add providers")
+}
+
+// TestLoadConfig_RenamedVirtualKeyFreesItsNameForANewKey covers a reload that renames a key by id
+// and declares a new id-less key with the old name for the same team. The id match keeps vk-prod
+// (renamed), the id-less entry creates a new key, and the rename is written before the create so
+// the new key does not collide with the old name.
+func TestLoadConfig_RenamedVirtualKeyFreesItsNameForANewKey(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	team1 := "team-1"
+	first := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
+	}, tempDir)
+	first.Governance = &configstore.GovernanceConfig{
+		Teams:       []tables.TableTeam{{ID: team1, Name: "Team 1"}},
+		VirtualKeys: []tables.TableVirtualKey{{ID: "vk-prod", Name: "prod", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-old"), IsActive: new(true)}},
+	}
+	createConfigFile(t, tempDir, first)
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	second := first
+	second.Governance = &configstore.GovernanceConfig{
+		Teams: first.Governance.Teams,
+		VirtualKeys: []tables.TableVirtualKey{
+			{ID: "vk-prod", Name: "renamed", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-old"), IsActive: new(true)},
+			{Name: "prod", TeamID: &team1, Value: *schemas.NewSecretVar("sk-bf-new"), IsActive: new(true)},
+		},
+	}
+	createConfigFile(t, tempDir, second)
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	keys, err := config2.ConfigStore.GetVirtualKeys(ctx)
+	require.NoError(t, err)
+	byName := map[string]*tables.TableVirtualKey{}
+	for i := range keys {
+		byName[keys[i].Name] = &keys[i]
+	}
+	require.Len(t, keys, 2, "the id-less entry must create a new key, not update vk-prod")
+	assert.Equal(t, "vk-prod", byName["renamed"].ID)
+	assert.Equal(t, "sk-bf-old", byName["renamed"].Value.GetValue())
+	require.Contains(t, byName, "prod")
+	assert.NotEqual(t, "vk-prod", byName["prod"].ID)
+	assert.Equal(t, "sk-bf-new", byName["prod"].Value.GetValue())
 }
 
 func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {

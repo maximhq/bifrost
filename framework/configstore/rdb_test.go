@@ -1450,6 +1450,119 @@ func TestCreateVirtualKey_DuplicateName(t *testing.T) {
 	assert.Error(t, err, "Should fail with duplicate name")
 }
 
+// TestCreateVirtualKey_NameUniquePerOwner pins that a virtual key name is unique within one team,
+// one customer, one business unit, and among keys with no owner, but not across owners.
+func TestCreateVirtualKey_NameUniquePerOwner(t *testing.T) {
+	team1, team2, customer1, bu1 := "team-1", "team-2", "customer-1", "bu-1"
+	sameIDAsTeam := "team-1"
+	tests := []struct {
+		name          string
+		first, second func(vk *tables.TableVirtualKey)
+		wantDuplicate bool
+	}{
+		{name: "two teams", first: func(vk *tables.TableVirtualKey) { vk.TeamID = &team1 }, second: func(vk *tables.TableVirtualKey) { vk.TeamID = &team2 }},
+		{name: "same team", first: func(vk *tables.TableVirtualKey) { vk.TeamID = &team1 }, second: func(vk *tables.TableVirtualKey) { vk.TeamID = &team1 }, wantDuplicate: true},
+		{name: "same customer", first: func(vk *tables.TableVirtualKey) { vk.CustomerID = &customer1 }, second: func(vk *tables.TableVirtualKey) { vk.CustomerID = &customer1 }, wantDuplicate: true},
+		{name: "same business unit", first: func(vk *tables.TableVirtualKey) { vk.BusinessUnitID = &bu1 }, second: func(vk *tables.TableVirtualKey) { vk.BusinessUnitID = &bu1 }, wantDuplicate: true},
+		{name: "both unowned", first: func(*tables.TableVirtualKey) {}, second: func(*tables.TableVirtualKey) {}, wantDuplicate: true},
+		{name: "team and unowned", first: func(vk *tables.TableVirtualKey) { vk.TeamID = &team1 }, second: func(*tables.TableVirtualKey) {}},
+		{name: "team and customer with the same id", first: func(vk *tables.TableVirtualKey) { vk.TeamID = &team1 }, second: func(vk *tables.TableVirtualKey) { vk.CustomerID = &sameIDAsTeam }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := setupRDBTestStore(t)
+			ctx := context.Background()
+
+			first := &tables.TableVirtualKey{ID: "vk-1", Name: "prod", Value: *schemas.NewSecretVar("vk-value-1"), IsActive: schemas.Ptr(true)}
+			tc.first(first)
+			require.NoError(t, store.CreateVirtualKey(ctx, first))
+			second := &tables.TableVirtualKey{ID: "vk-2", Name: "prod", Value: *schemas.NewSecretVar("vk-value-2"), IsActive: schemas.Ptr(true)}
+			tc.second(second)
+			err := store.CreateVirtualKey(ctx, second)
+			if !tc.wantDuplicate {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, ErrAlreadyExists)
+			assert.Contains(t, err.Error(), "for this owner")
+		})
+	}
+}
+
+// TestUpdateVirtualKey_MatchesByID pins that an update carrying a key's ID targets that row only.
+// The colliding key's ID sorts first, which is the row an "id OR name" lookup used to resolve to:
+// renaming onto another owner's name must succeed, and onto a name the owner already uses must
+// fail on the name index without touching the other key.
+func TestUpdateVirtualKey_MatchesByID(t *testing.T) {
+	team1, team2 := "team-1", "team-2"
+	tests := []struct {
+		name          string
+		otherTeam     *string
+		wantDuplicate bool
+	}{
+		{name: "name used by another team", otherTeam: &team2},
+		{name: "name used in the same team", otherTeam: &team1, wantDuplicate: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := setupRDBTestStore(t)
+			ctx := context.Background()
+
+			other := &tables.TableVirtualKey{ID: "vk-aaa", Name: "prod", Value: *schemas.NewSecretVar("vk-other-value"), IsActive: schemas.Ptr(true), TeamID: tc.otherTeam}
+			require.NoError(t, store.CreateVirtualKey(ctx, other))
+			target := &tables.TableVirtualKey{ID: "vk-zzz", Name: "staging", Value: *schemas.NewSecretVar("vk-target-value"), IsActive: schemas.Ptr(true), TeamID: &team1}
+			require.NoError(t, store.CreateVirtualKey(ctx, target))
+
+			update, err := store.GetVirtualKey(ctx, "vk-zzz")
+			require.NoError(t, err)
+			update.Name = "prod"
+			update.Description = "renamed"
+			err = store.UpdateVirtualKey(ctx, update)
+			assert.Equal(t, "vk-zzz", update.ID, "the update must not be redirected to another key")
+			if tc.wantDuplicate {
+				require.ErrorIs(t, err, ErrAlreadyExists)
+			} else {
+				require.NoError(t, err)
+			}
+
+			gotOther, err := store.GetVirtualKey(ctx, "vk-aaa")
+			require.NoError(t, err)
+			assert.Empty(t, gotOther.Description, "the other key must not be overwritten")
+			assert.Equal(t, "vk-other-value", gotOther.Value.GetValue())
+			gotTarget, err := store.GetVirtualKey(ctx, "vk-zzz")
+			require.NoError(t, err)
+			if tc.wantDuplicate {
+				assert.Equal(t, "staging", gotTarget.Name)
+			} else {
+				assert.Equal(t, "prod", gotTarget.Name)
+				assert.Equal(t, "renamed", gotTarget.Description)
+			}
+		})
+	}
+}
+
+// TestUpdateVirtualKey_NameFallbackRespectsOwner pins that an update without an ID resolves its
+// name within its own owner only, never to another owner's key of the same name.
+func TestUpdateVirtualKey_NameFallbackRespectsOwner(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	team1, team2 := "team-1", "team-2"
+
+	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{ID: "vk-aaa", Name: "prod", Value: *schemas.NewSecretVar("vk-team1-value"), IsActive: schemas.Ptr(true), TeamID: &team1}))
+	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{ID: "vk-zzz", Name: "prod", Value: *schemas.NewSecretVar("vk-team2-value"), IsActive: schemas.Ptr(true), TeamID: &team2}))
+
+	update := &tables.TableVirtualKey{Name: "prod", Description: "team 2", Value: *schemas.NewSecretVar("vk-team2-value"), IsActive: schemas.Ptr(true), TeamID: &team2}
+	require.NoError(t, store.UpdateVirtualKey(ctx, update))
+	assert.Equal(t, "vk-zzz", update.ID)
+
+	got1, err := store.GetVirtualKey(ctx, "vk-aaa")
+	require.NoError(t, err)
+	assert.Empty(t, got1.Description)
+	got2, err := store.GetVirtualKey(ctx, "vk-zzz")
+	require.NoError(t, err)
+	assert.Equal(t, "team 2", got2.Description)
+}
+
 func TestGetVirtualKeyByValue(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

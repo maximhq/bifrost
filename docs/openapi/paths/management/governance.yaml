@@ -137,6 +137,13 @@ virtual-keys:
               $ref: "../../schemas/management/governance.yaml#/VirtualKeyResponse"
       "400":
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "409":
+        description: >-
+          A virtual key with this name already exists for this owner. Names are unique within one team, one customer or one business unit; keys with no owner share a single namespace, so an unowned key's name must be unused by every other unowned key
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
 
@@ -301,6 +308,13 @@ virtual-keys-by-id:
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "404":
         description: Virtual key not found
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "409":
+        description: >-
+          A virtual key with this name already exists for this owner. Names are unique within one team, one customer or one business unit; keys with no owner share a single namespace, so an unowned key's name must be unused by every other unowned key
         content:
           application/json:
             schema:

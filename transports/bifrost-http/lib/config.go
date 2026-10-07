@@ -1116,6 +1116,11 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
 		return nil, err
 	}
+	// 2a. Refuse a config.json with an ambiguous id-less virtual key before any
+	// step below writes to the store, so a failed load leaves it unchanged.
+	if err := checkConfigVirtualKeysResolvable(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	// 3. KV store
 	if err := initKVStore(config); err != nil {
 		return nil, err
@@ -1152,7 +1157,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 7. Webhook endpoints
 	loadWebhooksConfig(ctx, config, &configData)
 	// 8. Governance config
-	loadGovernanceConfig(ctx, config, &configData)
+	if err := loadGovernanceConfig(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	// 8a. Agent Gateway registrations (after governance so file-declared virtual
 	// keys exist before agent grants referencing them are written)
 	loadAgentsConfig(ctx, config, &configData)
@@ -3160,7 +3167,7 @@ func syncAgentRegistrationsFromFile(ctx context.Context, config *Config, fileAge
 }
 
 // loadGovernanceConfig loads and merges governance config from file
-func loadGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData) {
+func loadGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData) error {
 	if configData.Governance != nil {
 		if err := resolveGovernanceKeyReferences(ctx, config, configData.Governance); err != nil {
 			logger.Fatal("failed to resolve governance key references: %v", err)
@@ -3197,8 +3204,9 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 	}
 
 	if governanceConfig != nil && configData.Governance != nil {
-		mergeGovernanceConfig(ctx, config, configData, governanceConfig)
+		return mergeGovernanceConfig(ctx, config, configData, governanceConfig)
 	}
+	return nil
 }
 
 func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governanceConfig *configstore.GovernanceConfig) error {
@@ -3370,8 +3378,154 @@ func entityIDSet[T any](existing []T, id func(T) string, toAdd []T) map[string]b
 	return set
 }
 
+// virtualKeyMatches is the result of matchConfigVirtualKeys. idx[i] is the index in stored of the
+// row config.json entry i refers to, or -1 when it refers to none. ambiguous[i] reports that entry i
+// has no id and several stored keys could be the one it means; mergeGovernanceConfig refuses to sync
+// such a file (see ambiguousConfigVirtualKeysError).
+type virtualKeyMatches struct {
+	idx       []int
+	ambiguous []bool
+}
+
+// matchConfigVirtualKeys pairs config.json virtual key entries with stored rows.
+//
+// An entry with an id matches by id only, and those matches claim their rows first. An entry
+// without an id then falls back to its name: names are unique per owner (team, customer, business
+// unit, or none), so the unclaimed stored key with the same name and owner is the match, and it
+// claims that row. A row already claimed by an id match (for example a key renamed by id) is never
+// taken by an id-less entry still using its old name; that entry is a new key.
+//
+// An entry still unmatched after that may take the one remaining unclaimed key with its name, as it
+// would have when names were globally unique (e.g. the key's owner was changed in the UI), but only
+// when it is the only unmatched entry with that name: another owner's entry for the same name never
+// lands on a key that is already spoken for. The entry is ambiguous, and must set its id, when
+// several unclaimed keys have its name, or when several unmatched entries want the one that does.
+func matchConfigVirtualKeys(stored, entries []configstoreTables.TableVirtualKey) virtualKeyMatches {
+	m := virtualKeyMatches{
+		idx:       make([]int, len(entries)),
+		ambiguous: make([]bool, len(entries)),
+	}
+	claimed := make(map[int]bool, len(entries))
+	// Id matches claim their rows first, so a row renamed by id can't also be taken by an id-less
+	// entry that still uses its old name.
+	for i, entry := range entries {
+		m.idx[i] = -1
+		if entry.ID == "" {
+			continue
+		}
+		for j := range stored {
+			if stored[j].ID == entry.ID {
+				m.idx[i] = j
+				claimed[j] = true
+				break
+			}
+		}
+	}
+	// Then id-less entries take the unclaimed row with their name and owner.
+	for i, entry := range entries {
+		if entry.ID != "" {
+			continue
+		}
+		for j := range stored {
+			if !claimed[j] && stored[j].Name == entry.Name && sameVirtualKeyOwner(stored[j], entry) {
+				m.idx[i] = j
+				claimed[j] = true
+				break
+			}
+		}
+	}
+	unmatched := make(map[string][]int)
+	for i, entry := range entries {
+		if entry.ID == "" && m.idx[i] < 0 {
+			unmatched[entry.Name] = append(unmatched[entry.Name], i)
+		}
+	}
+	for name, entryIdxs := range unmatched {
+		candidates := make([]int, 0, 1)
+		for j := range stored {
+			if stored[j].Name == name && !claimed[j] {
+				candidates = append(candidates, j)
+			}
+		}
+		switch {
+		case len(candidates) == 0:
+			// A new key.
+		case len(candidates) == 1 && len(entryIdxs) == 1:
+			m.idx[entryIdxs[0]] = candidates[0]
+		default:
+			for _, i := range entryIdxs {
+				m.ambiguous[i] = true
+			}
+		}
+	}
+	return m
+}
+
+// ambiguousConfigVirtualKeysError returns an error naming every ambiguous id-less config.json
+// virtual key (see matchConfigVirtualKeys: its name matches several unclaimed keys of other owners,
+// or several id-less entries want the one such key), or nil when there is none. Bifrost cannot tell
+// which stored key such an entry means: updating one would take over another owner's key, and
+// keeping or skipping them would leave keys live that the file no longer declares. So the sync
+// stops until the operator sets the entry's id.
+func ambiguousConfigVirtualKeysError(entries []configstoreTables.TableVirtualKey, m virtualKeyMatches) error {
+	var names []string
+	for i, entry := range entries {
+		if m.ambiguous[i] {
+			names = append(names, fmt.Sprintf("%q (%s)", entry.Name, describeVirtualKeyOwner(entry)))
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return fmt.Errorf("config.json virtual key %s has no id, and its name matches existing virtual keys of other owners that more than one key or entry could claim, so Bifrost cannot tell which key it refers to; set the entry's id to the key it should update (or to a new id to create one)", strings.Join(names, ", "))
+}
+
+// checkConfigVirtualKeysResolvable fails the load when an id-less config.json virtual key is
+// ambiguous against the stored keys (see ambiguousConfigVirtualKeysError). LoadConfig runs it before
+// the client, provider and webhook steps write anything, since governance is only merged after them.
+func checkConfigVirtualKeysResolvable(ctx context.Context, config *Config, configData *ConfigData) error {
+	if config.ConfigStore == nil || configData.Governance == nil || len(configData.Governance.VirtualKeys) == 0 {
+		return nil
+	}
+	stored, err := config.ConfigStore.GetVirtualKeys(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to read stored virtual keys: %w", err)
+	}
+	return ambiguousConfigVirtualKeysError(configData.Governance.VirtualKeys,
+		matchConfigVirtualKeys(stored, configData.Governance.VirtualKeys))
+}
+
+// describeVirtualKeyOwner names a virtual key's owner for error messages.
+func describeVirtualKeyOwner(vk configstoreTables.TableVirtualKey) string {
+	switch {
+	case configstoreTables.NormalizeVirtualKeyOwnerID(vk.TeamID) != nil:
+		return "team " + *vk.TeamID
+	case configstoreTables.NormalizeVirtualKeyOwnerID(vk.CustomerID) != nil:
+		return "customer " + *vk.CustomerID
+	case configstoreTables.NormalizeVirtualKeyOwnerID(vk.BusinessUnitID) != nil:
+		return "business unit " + *vk.BusinessUnitID
+	default:
+		return "no owner"
+	}
+}
+
+// sameVirtualKeyOwner reports whether a and b have the same owner: the same team, customer or
+// business unit, or none.
+func sameVirtualKeyOwner(a, b configstoreTables.TableVirtualKey) bool {
+	same := func(x, y *string) bool {
+		x, y = configstoreTables.NormalizeVirtualKeyOwnerID(x), configstoreTables.NormalizeVirtualKeyOwnerID(y)
+		return (x == nil && y == nil) || (x != nil && y != nil && *x == *y)
+	}
+	return same(a.TeamID, b.TeamID) && same(a.CustomerID, b.CustomerID) && same(a.BusinessUnitID, b.BusinessUnitID)
+}
+
 // mergeGovernanceConfig merges governance config from file with store
-func mergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData, governanceConfig *configstore.GovernanceConfig) {
+func mergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData, governanceConfig *configstore.GovernanceConfig) error {
+	// Refuse an ambiguous file before anything is written, so a failed sync changes nothing.
+	if err := ambiguousConfigVirtualKeysError(configData.Governance.VirtualKeys,
+		matchConfigVirtualKeys(governanceConfig.VirtualKeys, configData.Governance.VirtualKeys)); err != nil {
+		return err
+	}
 	logger.Debug("merging governance config from config file with store")
 	// When config.json is the source of truth, file-present entities must be
 	// re-synced even when the stored ConfigHash still matches the file. The stored
@@ -3545,6 +3699,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	// update was skipped for the same reason aren't tracked here — their prior DB
 	// row is untouched and still valid, so their ID stays a legitimate reference.
 	skippedNewVirtualKeyIDs := make(map[string]bool)
+	vkMatches := matchConfigVirtualKeys(governanceConfig.VirtualKeys, configData.Governance.VirtualKeys)
 	for i, newVirtualKey := range configData.Governance.VirtualKeys {
 		fileVKHash, err := configstore.GenerateVirtualKeyHash(newVirtualKey)
 		if err != nil {
@@ -3553,12 +3708,11 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		}
 		configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
 		// Preparing hash
+		matchIdx := vkMatches.idx[i]
 		found := false
 		for j, existingVirtualKey := range governanceConfig.VirtualKeys {
-			idMatch := existingVirtualKey.ID == newVirtualKey.ID
-			nameMatch := newVirtualKey.ID == "" && existingVirtualKey.Name == newVirtualKey.Name
-			if idMatch || nameMatch {
-				if nameMatch {
+			if j == matchIdx {
+				if newVirtualKey.ID == "" {
 					// Config file has no ID; adopt the DB record's ID so updates use the right primary key.
 					configData.Governance.VirtualKeys[i].ID = existingVirtualKey.ID
 				}
@@ -3957,6 +4111,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	if configData.isConfigJSONSourceOfTruth() {
 		pruneGovernanceConfigToFile(ctx, config, configData)
 	}
+	return nil
 }
 
 // planComplexityAnalyzerConfigUpdate applies config.json complexity analyzer
@@ -4280,6 +4435,7 @@ func dropRoutingRulesByID(rules []configstoreTables.TableRoutingRule, ids []stri
 	return kept
 }
 
+// pruneGovernanceConfigToFile removes DB-only governance rows for file-present collections.
 // pruneGovernanceConfigToFile removes DB-only governance rows for file-present collections.
 func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData *ConfigData) {
 	if config.ConfigStore == nil || config.GovernanceConfig == nil || configData.Governance == nil {
@@ -4753,6 +4909,17 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
+		// Update virtual keys (config.json changed) before creating new ones: a key renamed by id
+		// frees its old name, which a new key in the same file may reuse under the per-owner index.
+		for _, virtualKey := range virtualKeysToUpdate {
+			if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, virtualKey.ID, virtualKey.ProviderConfigs, virtualKey.MCPConfigs); err != nil {
+				return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", virtualKey.ID, err)
+			}
+			if err := config.ConfigStore.UpdateVirtualKey(ctx, &virtualKey, tx); err != nil {
+				return fmt.Errorf("failed to update virtual key %s: %w", virtualKey.ID, err)
+			}
+		}
+
 		// Create virtual keys with explicit association handling
 		for i := range virtualKeysToAdd {
 			virtualKey := &virtualKeysToAdd[i]
@@ -4779,16 +4946,6 @@ func updateGovernanceConfigInStore(
 
 			virtualKey.ProviderConfigs = providerConfigs
 			virtualKey.MCPConfigs = mcpConfigs
-		}
-
-		// Update virtual keys (config.json changed)
-		for _, virtualKey := range virtualKeysToUpdate {
-			if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, virtualKey.ID, virtualKey.ProviderConfigs, virtualKey.MCPConfigs); err != nil {
-				return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", virtualKey.ID, err)
-			}
-			if err := config.ConfigStore.UpdateVirtualKey(ctx, &virtualKey, tx); err != nil {
-				return fmt.Errorf("failed to update virtual key %s: %w", virtualKey.ID, err)
-			}
 		}
 
 		// Create virtual-key-owned budgets after virtual keys exist.

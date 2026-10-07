@@ -241,9 +241,14 @@ func (mc *TableVirtualKeyMCPConfig) UnmarshalJSON(data []byte) error {
 }
 
 // TableVirtualKey represents a virtual key with budget, rate limits, and team/customer association
+//
+// Name is unique per owner, not globally: within one team, one customer or one business unit, and
+// among keys with no owner. Each owner column carries a partial (owner_id, name) unique index and
+// unowned keys a partial (name) one; migrationScopeVirtualKeyNameUniqueness builds the same
+// indexes on upgraded databases.
 type TableVirtualKey struct {
 	ID                string                          `gorm:"primaryKey;type:varchar(255);index:idx_virtual_keys_created_at_id,priority:2" json:"id"`
-	Name              string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
+	Name              string                          `gorm:"type:varchar(255);not null;uniqueIndex:idx_virtual_key_name_unowned,where:team_id IS NULL AND customer_id IS NULL AND business_unit_id IS NULL;uniqueIndex:idx_virtual_key_team_name,priority:2;uniqueIndex:idx_virtual_key_customer_name,priority:2;uniqueIndex:idx_virtual_key_business_unit_name,priority:2" json:"name"`
 	Description       string                          `gorm:"type:text" json:"description,omitempty"`
 	Value             schemas.SecretVar               `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"`
 	IsActive          *bool                           `gorm:"default:true" json:"is_active,omitempty"`                                     // Nil means true (DB default); false means inactive
@@ -256,12 +261,12 @@ type TableVirtualKey struct {
 	// Foreign key relationships. TeamID, CustomerID and BusinessUnitID are mutually exclusive: a
 	// key belongs to at most one owner, which is what decides whose money it spends and whose
 	// access profile it answers to.
-	TeamID     *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
-	CustomerID *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
+	TeamID     *string `gorm:"type:varchar(255);index;uniqueIndex:idx_virtual_key_team_name,priority:1,where:team_id IS NOT NULL" json:"team_id,omitempty"`
+	CustomerID *string `gorm:"type:varchar(255);index;uniqueIndex:idx_virtual_key_customer_name,priority:1,where:customer_id IS NOT NULL" json:"customer_id,omitempty"`
 	// BusinessUnitID is a bare indexed column rather than a GORM association: business units are
 	// an enterprise table this package does not know, so the column records the owner without this
 	// side being able to preload it. Whoever owns the business unit resolves the name.
-	BusinessUnitID *string `gorm:"type:varchar(255);index" json:"business_unit_id,omitempty"`
+	BusinessUnitID *string `gorm:"type:varchar(255);index;uniqueIndex:idx_virtual_key_business_unit_name,priority:1,where:business_unit_id IS NOT NULL" json:"business_unit_id,omitempty"`
 	RateLimitID    *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`

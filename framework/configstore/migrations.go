@@ -556,6 +556,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_compat_force_reasoning_only_models_to_responses_column"}, run: migrationAddCompatForceReasoningOnlyModelsToResponsesColumn},
 	{IDs: []string{"backfill_compat_force_reasoning_only_models_to_responses"}, run: migrationBackfillCompatForceReasoningOnlyModelsToResponses},
 	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
+	{IDs: []string{"scope_virtual_key_name_uniqueness"}, run: migrationScopeVirtualKeyNameUniqueness},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -14234,9 +14235,10 @@ func migrationAddVirtualKeyBusinessUnitColumn(ctx context.Context, db *gorm.DB, 
 				return fmt.Errorf("failed to add business_unit_id column: %w", err)
 			}
 			// Every request made with a key owned by a business unit walks this column, and AddColumn
-			// does not create indexes from struct tags.
+			// does not create indexes from struct tags. Named rather than looked up by field: the
+			// field is also part of the (business_unit_id, name) unique index.
 			if !mg.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_business_unit_id") {
-				if err := mg.CreateIndex(&tables.TableVirtualKey{}, "BusinessUnitID"); err != nil {
+				if err := mg.CreateIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_business_unit_id"); err != nil {
 					return fmt.Errorf("failed to create index on governance_virtual_keys.business_unit_id: %w", err)
 				}
 			}
@@ -15281,4 +15283,75 @@ func migrationBackfillCompatForceReasoningOnlyModelsToResponses(ctx context.Cont
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
+}
+
+// virtualKeyNameIndex is one of the partial unique indexes that scope virtual key names to their
+// owner. The definitions match the TableVirtualKey struct tags, which build the same indexes on
+// fresh installs.
+type virtualKeyNameIndex struct{ name, columns, where string }
+
+// virtualKeyNameIndexes make a virtual key name unique within one team, one customer or one
+// business unit, and among keys with no owner. The owner columns are mutually exclusive, so every
+// row falls under exactly one of the four predicates.
+var virtualKeyNameIndexes = []virtualKeyNameIndex{
+	{"idx_virtual_key_name_unowned", "name", "team_id IS NULL AND customer_id IS NULL AND business_unit_id IS NULL"},
+	{"idx_virtual_key_team_name", "team_id, name", "team_id IS NOT NULL"},
+	{"idx_virtual_key_customer_name", "customer_id, name", "customer_id IS NOT NULL"},
+	{"idx_virtual_key_business_unit_name", "business_unit_id, name", "business_unit_id IS NOT NULL"},
+}
+
+// legacyVirtualKeyNameIndex is the global unique index on governance_virtual_keys.name that
+// migrationScopeVirtualKeyNameUniqueness replaces.
+const legacyVirtualKeyNameIndex = "idx_virtual_key_name"
+
+// migrationScopeVirtualKeyNameUniqueness replaces the global unique index on virtual key names
+// with the per-owner partial unique indexes in virtualKeyNameIndexes. Every existing row already
+// satisfies the narrower indexes, so they build without a dedup pass; they are built before the
+// old index is dropped so names are never left unconstrained. Built concurrently on postgres so the
+// upgrade never blocks writes.
+func migrationScopeVirtualKeyNameUniqueness(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "scope_virtual_key_name_uniqueness"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, virtualKeyNameUniquenessMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// virtualKeyNameUniquenessMigration builds the migration applied by
+// migrationScopeVirtualKeyNameUniqueness, so tests exercise the same Migrate and Rollback callbacks
+// the upgrade runs.
+func virtualKeyNameUniquenessMigration(ctx context.Context, id string) *migrator.Migration {
+	return &migrator.Migration{
+		ID: id,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			table := tables.TableVirtualKey{}.TableName()
+			// Rows written before blank owner ids were normalized can hold '' (or only
+			// whitespace) in an owner column. Such a row matches none of the unowned
+			// predicate's IS NULL checks, so once the global index is gone a new unowned
+			// key could take its name. Blank means no owner, so store NULL first. The global
+			// name index still holds while this runs, so no duplicate unowned name can appear.
+			for _, column := range []string{"team_id", "customer_id", "business_unit_id"} {
+				if err := tx.Exec("UPDATE " + table + " SET " + column + " = NULL WHERE TRIM(" + column + ") = ''").Error; err != nil {
+					return fmt.Errorf("normalize blank virtual key %s: %w", column, err)
+				}
+			}
+			for _, idx := range virtualKeyNameIndexes {
+				if err := ensurePartialIndexConcurrently(tx, table, idx.name, idx.columns, idx.where, true); err != nil {
+					return fmt.Errorf("create index %s: %w", idx.name, err)
+				}
+			}
+			if err := dropIndexConcurrently(tx, table, legacyVirtualKeyNameIndex); err != nil {
+				return fmt.Errorf("drop index %s: %w", legacyVirtualKeyNameIndex, err)
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: once names are unique per owner, keys of different owners may share a name and the global unique index on name cannot be rebuilt", id)
+		},
+	}
 }

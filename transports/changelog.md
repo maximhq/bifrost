@@ -22,6 +22,7 @@
 - **Per-Message Effort Override** - A per-turn effort override sent as an effort-only system message (`{"role":"system","content":[],"output_config":{"effort":"low"}}`) now reaches Anthropic instead of being dropped, with the `mid-conversation-output-config-2026-07-01` beta added. Models without per-turn effort, and OpenAI-shaped providers, drop it instead of returning an error (#7714)
 - **Claude Code Per-Message Effort on Vertex and Other Cloud Surfaces** - Claude Code requests to Opus 5.5, Fable 5.1 and Sonnet 5.5 on Vertex no longer fail with `messages.1.output_config: Extra inputs are not permitted`. The per-message `output_config` is now removed for every provider and model without per-message effort (Vertex, Bedrock, Bedrock Mantle, Azure, DeepSeek, Fireworks, vLLM, SGL). The system message text and the top-level effort are kept
 
+- **Virtual Key Names Scoped to Owner** - Virtual key names only need to be unique within their team, customer or business unit (keys with no owner stay globally unique), so several teams can each have a `prod` key. The 409 now reads "A virtual key with this name already exists for this owner", and a config.json entry without an `id` matches the key of that name with the same owner (an id-less entry that could match several keys fails the config load until it sets its `id`) [@jimseiwert](https://github.com/jimseiwert)
 
 ## 🐞 Fixed
 
@@ -33,4 +34,4 @@
 
 ## 🗄️ Database Migrations
 
-- No new database migrations in this release.
+- `scope_virtual_key_name_uniqueness` - Replaces the global unique index on `governance_virtual_keys.name` with unique indexes per team, customer and business unit (plus one for keys with no owner). The new indexes are built before the old one is dropped, concurrently on PostgreSQL, and existing rows need no cleanup. Non-rollbackable: once two owners share a key name, the global index cannot be rebuilt.

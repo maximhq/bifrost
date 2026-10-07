@@ -102,6 +102,10 @@ customer_id == "acme-corp"
 virtual_key_name.startsWith("prod-")
 ```
 
+<Note>
+Virtual key names are unique per team, customer or business unit, not globally, so a condition on `virtual_key_name` can match keys of several owners. Combine it with `team_id` or `customer_id`, or use `virtual_key_id`, to target one key.
+</Note>
+
 #### Capacity Metrics (as percentages: 0-100)
 ```cel
 budget_used      // Budget usage percentage for provider/model (0.0 to 100.0)

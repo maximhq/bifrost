@@ -206622,6 +206622,246 @@
           ]
         }
       ]
+    },
+    {
+      "name": "190. Virtual key names unique per owner, not globally (vk-name-scoped-uniqueness)",
+      "description": "Pins PR #7931: virtual key names used to be globally unique (a single unique index on name), so two teams, customers or business units could not each have a key called \"prod\". Names are now unique within one team, one customer, one business unit, and among keys with no owner. Both cases go through the governance management API only - no provider call is made, so they cost nothing. Case 1 creates two temporary teams and the same key name in each: pre-change the second create is a 409, post-change both are 200. Case 2 creates a temporary team and a key in it (prerequest), then creates the same name in the same team: it must still be rejected with 409 and the message now names the scope ('... already exists for this owner'), so pre-change it fails on the message. Every team and key a case creates is deleted by that same case, keys before their team, including any key an unexpected 200 created.",
+      "item": [
+        {
+          "name": "openai vk-name-scoped-uniqueness: the same virtual key name in two teams is accepted",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "function body(r) { try { return r.json() || {}; } catch (e) { return {}; } }",
+                  "function del(label, path, next) {",
+                  "  if (!path) { next(); return; }",
+                  "  mgmt('DELETE', path, null, function (e, r) {",
+                  "    pm.test(label, function () {",
+                  "      pm.expect(e).to.equal(null);",
+                  "      pm.expect(r.code, r.text()).to.be.below(300);",
+                  "    });",
+                  "    next();",
+                  "  });",
+                  "}",
+                  "var teamA = pm.response.code === 200 ? (body(pm.response).team || {}).id : null;",
+                  "pm.test('first temporary team is created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(teamA, pm.response.text()).to.be.a('string');",
+                  "});",
+                  "if (!teamA) { return; }",
+                  "var run = pm.variables.replaceIn('{{$guid}}');",
+                  "var vkName = 'harness-vk-scoped-' + run;",
+                  "var teamB = null, vkA = null, vkB = null;",
+                  "function cleanup() {",
+                  "  del('virtual key in team B is deleted', vkB && '/api/governance/virtual-keys/' + vkB, function () {",
+                  "    del('virtual key in team A is deleted', vkA && '/api/governance/virtual-keys/' + vkA, function () {",
+                  "      del('team B is deleted', teamB && '/api/governance/teams/' + teamB, function () {",
+                  "        del('team A is deleted', '/api/governance/teams/' + teamA, function () {});",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "}",
+                  "mgmt('POST', '/api/governance/teams', {name: 'harness-vk-scoped-b-' + run}, function (e1, r1) {",
+                  "  teamB = r1 && r1.code === 200 ? (body(r1).team || {}).id : null;",
+                  "  pm.test('second temporary team is created', function () {",
+                  "    pm.expect(e1).to.equal(null);",
+                  "    pm.expect(r1.code, r1.text()).to.equal(200);",
+                  "    pm.expect(teamB, r1.text()).to.be.a('string');",
+                  "  });",
+                  "  if (!teamB) { cleanup(); return; }",
+                  "  mgmt('POST', '/api/governance/virtual-keys', {name: vkName, team_id: teamA}, function (e2, r2) {",
+                  "    vkA = r2 && r2.code === 200 ? (body(r2).virtual_key || {}).id : null;",
+                  "    pm.test('virtual key is created in team A', function () {",
+                  "      pm.expect(e2).to.equal(null);",
+                  "      pm.expect(r2.code, r2.text()).to.equal(200);",
+                  "      pm.expect(vkA, r2.text()).to.be.a('string');",
+                  "    });",
+                  "    if (!vkA) { cleanup(); return; }",
+                  "    mgmt('POST', '/api/governance/virtual-keys', {name: vkName, team_id: teamB}, function (e3, r3) {",
+                  "      vkB = r3 && r3.code === 200 ? (body(r3).virtual_key || {}).id : null;",
+                  "      pm.test('a virtual key with the same name is created in team B (no 409)', function () {",
+                  "        pm.expect(e3).to.equal(null);",
+                  "        pm.expect(r3.code, 'same name in another team must be accepted: ' + r3.text()).to.equal(200);",
+                  "        pm.expect(vkB, r3.text()).to.be.a('string');",
+                  "        pm.expect(vkB).to.not.equal(vkA);",
+                  "        pm.expect(body(r3).virtual_key.name, r3.text()).to.equal(vkName);",
+                  "        pm.expect(body(r3).virtual_key.team_id, r3.text()).to.equal(teamB);",
+                  "      });",
+                  "      cleanup();",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness-vk-scoped-a-{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/teams",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "teams"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-409] openai vk-name-scoped-uniqueness: the same virtual key name twice in one team is rejected for this owner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var run = pm.variables.replaceIn('{{$guid}}');",
+                  "var vkName = 'harness-vk-scoped-dup-' + run;",
+                  "pm.collectionVariables.set('vkScopedDupName', vkName);",
+                  "pm.collectionVariables.unset('vkScopedDupTeam');",
+                  "pm.collectionVariables.unset('vkScopedDupFirstVk');",
+                  "mgmt('POST', '/api/governance/teams', {name: 'harness-vk-scoped-dup-' + run}, function (e1, r1) {",
+                  "  var team = null;",
+                  "  try { team = r1 && r1.code === 200 ? r1.json().team.id : null; } catch (e) { team = null; }",
+                  "  if (!team) { return; }",
+                  "  pm.collectionVariables.set('vkScopedDupTeam', team);",
+                  "  mgmt('POST', '/api/governance/virtual-keys', {name: vkName, team_id: team}, function (e2, r2) {",
+                  "    var vk = null;",
+                  "    try { vk = r2 && r2.code === 200 ? r2.json().virtual_key.id : null; } catch (e) { vk = null; }",
+                  "    if (vk) { pm.collectionVariables.set('vkScopedDupFirstVk', vk); }",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "function body(r) { try { return r.json() || {}; } catch (e) { return {}; } }",
+                  "function del(label, path, next) {",
+                  "  if (!path) { next(); return; }",
+                  "  mgmt('DELETE', path, null, function (e, r) {",
+                  "    pm.test(label, function () {",
+                  "      pm.expect(e).to.equal(null);",
+                  "      pm.expect(r.code, r.text()).to.be.below(300);",
+                  "    });",
+                  "    next();",
+                  "  });",
+                  "}",
+                  "var team = pm.collectionVariables.get('vkScopedDupTeam');",
+                  "var firstVk = pm.collectionVariables.get('vkScopedDupFirstVk');",
+                  "var stray = pm.response.code === 200 ? (body(pm.response).virtual_key || {}).id : null;",
+                  "pm.test('setup created a team and a first virtual key in it', function () {",
+                  "  pm.expect(team, 'team setup failed').to.be.a('string').and.not.empty;",
+                  "  pm.expect(firstVk, 'first virtual key setup failed').to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('a second virtual key with the same name in the same team is a 409 scoped to the owner', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(409);",
+                  "  var msg = ((body(pm.response).error) || {}).message;",
+                  "  pm.expect(msg, pm.response.text()).to.equal('A virtual key with this name already exists for this owner');",
+                  "});",
+                  "del('a key created by an unexpected 200 is deleted', stray && '/api/governance/virtual-keys/' + stray, function () {",
+                  "  del('first virtual key is deleted', firstVk && '/api/governance/virtual-keys/' + firstVk, function () {",
+                  "    del('temporary team is deleted', team && '/api/governance/teams/' + team, function () {",
+                  "      pm.collectionVariables.unset('vkScopedDupName');",
+                  "      pm.collectionVariables.unset('vkScopedDupTeam');",
+                  "      pm.collectionVariables.unset('vkScopedDupFirstVk');",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{vkScopedDupName}}\",\n  \"team_id\": \"{{vkScopedDupTeam}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

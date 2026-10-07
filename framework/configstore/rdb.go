@@ -437,6 +437,21 @@ func (s *RDBConfigStore) RefreshConnectionPool(ctx context.Context) error {
 	return s.refreshPoolFn(ctx)
 }
 
+// isVirtualKeyNameViolation reports whether a unique violation came from one of the per-owner
+// virtual key name indexes. SQLite names the columns ("governance_virtual_keys.name", optionally
+// preceded by the owner column); PostgreSQL names the index.
+func isVirtualKeyNameViolation(errMsg string) bool {
+	if strings.Contains(errMsg, "governance_virtual_keys.name") {
+		return true
+	}
+	for _, idx := range virtualKeyNameIndexes {
+		if strings.Contains(errMsg, `"`+idx.name+`"`) {
+			return true
+		}
+	}
+	return false
+}
+
 // parseGormError parses GORM errors to provide user-friendly error messages.
 // Currently handles unique constraint violations and is designed to be extended
 // for other error types in the future (e.g., foreign key violations, not null constraints).
@@ -517,6 +532,9 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 			// governance_teams.name or config_plugins.name.
 			if strings.Contains(errMsg, "config_keys.name") || strings.Contains(errMsg, "idx_key_name") {
 				return fmt.Errorf("API key names must be unique across providers. A key with this name %w. Rename it in the UI or config.json", ErrAlreadyExists)
+			}
+			if isVirtualKeyNameViolation(errMsg) {
+				return fmt.Errorf("a virtual key with this name %w for this owner. Please use a different name", ErrAlreadyExists)
 			}
 			return fmt.Errorf("a record with this %s %w. Please use a different value", columnName, ErrAlreadyExists)
 		}
@@ -4200,11 +4218,18 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 
 	txDB := tx[0]
 
-	// Check if record exists by ID or Name
+	// Look the row up by ID. Only a key without an ID falls back to its name, and only within its
+	// own owner: names are unique per team, customer, business unit or among unowned keys, so a
+	// bare name lookup could resolve to another owner's key. Matching "id OR name" would also let a
+	// rename onto another key's name redirect this update to that key's row.
 	var existing tables.TableVirtualKey
-	err := dbForUpdate(txDB.WithContext(ctx)).
-		Where("id = ? OR name = ?", virtualKey.ID, virtualKey.Name).
-		First(&existing).Error
+	query := dbForUpdate(txDB.WithContext(ctx))
+	if virtualKey.ID != "" {
+		query = query.Where("id = ?", virtualKey.ID)
+	} else {
+		query = whereVirtualKeyOwner(query.Where("name = ?", virtualKey.Name), virtualKey)
+	}
+	err := query.First(&existing).Error
 
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return s.parseGormError(err)
@@ -4245,6 +4270,27 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		}
 	}
 	return nil
+}
+
+// whereVirtualKeyOwner restricts query to virtual keys with the same owner as vk: the same team,
+// customer or business unit, or no owner at all.
+func whereVirtualKeyOwner(query *gorm.DB, vk *tables.TableVirtualKey) *gorm.DB {
+	owners := []struct {
+		column string
+		id     *string
+	}{
+		{"team_id", vk.TeamID},
+		{"customer_id", vk.CustomerID},
+		{"business_unit_id", vk.BusinessUnitID},
+	}
+	for _, owner := range owners {
+		if id := tables.NormalizeVirtualKeyOwnerID(owner.id); id != nil {
+			query = query.Where(owner.column+" = ?", *id)
+		} else {
+			query = query.Where(owner.column + " IS NULL")
+		}
+	}
+	return query
 }
 
 // GetKeysByIDs retrieves multiple keys by their IDs

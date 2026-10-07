@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -97,6 +98,77 @@ func TestVKProviderConfigTagsBuildVirtualKeyIDIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, db.Migrator().CreateTable(&tables.TableVirtualKeyProviderConfig{}))
 	require.True(t, db.Migrator().HasIndex(&tables.TableVirtualKeyProviderConfig{}, "idx_vk_provider_configs_virtual_key_id"))
+}
+
+// TestMigrationScopeVirtualKeyNameUniqueness pins the upgrade from the global unique index on
+// virtual key names: afterwards the per-owner indexes exist, the old one is gone, names repeat
+// across owners but not within one, a re-run is a no-op, and rollback refuses.
+func TestMigrationScopeVirtualKeyNameUniqueness(t *testing.T) {
+	const table = "governance_virtual_keys"
+	const id = "scope_virtual_key_name_uniqueness"
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			ctx := context.Background()
+			db := ndb.db
+			// A database created before this change: the table with the global name index only.
+			require.NoError(t, db.Exec(`CREATE TABLE governance_virtual_keys (
+				id VARCHAR(255) PRIMARY KEY, name VARCHAR(255) NOT NULL, value TEXT NOT NULL,
+				team_id VARCHAR(255), customer_id VARCHAR(255), business_unit_id VARCHAR(255))`).Error)
+			require.NoError(t, db.Exec("CREATE UNIQUE INDEX idx_virtual_key_name ON governance_virtual_keys (name)").Error)
+			require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys (id, name, value, team_id) VALUES ('vk-1', 'prod', 'v1', 'team-1')").Error)
+			// Rows written before blank owner ids were normalized: a blank or whitespace-only owner
+			// column is no owner, so these keys must land in the unowned namespace.
+			require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys (id, name, value, team_id) VALUES ('vk-legacy-1', 'legacy-blank', 'l1', '')").Error)
+			require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys (id, name, value, customer_id) VALUES ('vk-legacy-2', 'legacy-space', 'l2', '   ')").Error)
+
+			require.NoError(t, migrationScopeVirtualKeyNameUniqueness(ctx, db, testMigrationLogger))
+			var blankOwners int64
+			require.NoError(t, db.Raw("SELECT COUNT(*) FROM governance_virtual_keys WHERE TRIM(team_id) = '' OR TRIM(customer_id) = '' OR TRIM(business_unit_id) = ''").Scan(&blankOwners).Error)
+			require.Zero(t, blankOwners, "blank owner ids must be normalized to NULL")
+			for _, idx := range virtualKeyNameIndexes {
+				require.True(t, indexExists(t, db, table, idx.name), "index %s must exist after the migration", idx.name)
+			}
+			require.False(t, indexExists(t, db, table, legacyVirtualKeyNameIndex), "the global name index must be dropped")
+
+			insert := func(id, name, column, owner string) error {
+				if column == "" {
+					return db.Exec("INSERT INTO governance_virtual_keys (id, name, value) VALUES (?, ?, ?)", id, name, id).Error
+				}
+				return db.Exec("INSERT INTO governance_virtual_keys (id, name, value, "+column+") VALUES (?, ?, ?, ?)", id, name, id, owner).Error
+			}
+			require.NoError(t, insert("vk-2", "prod", "team_id", "team-2"), "the same name in another team is allowed")
+			require.Error(t, insert("vk-3", "prod", "team_id", "team-1"), "the same name in the same team is rejected")
+			require.NoError(t, insert("vk-4", "prod", "", ""))
+			require.Error(t, insert("vk-5", "prod", "", ""), "the same name among unowned keys is rejected")
+			require.NoError(t, insert("vk-6", "prod", "customer_id", "customer-1"))
+			require.Error(t, insert("vk-7", "prod", "customer_id", "customer-1"))
+			require.NoError(t, insert("vk-8", "prod", "business_unit_id", "bu-1"))
+			require.Error(t, insert("vk-9", "prod", "business_unit_id", "bu-1"))
+			require.Error(t, insert("vk-10", "legacy-blank", "", ""), "a legacy key with a blank owner keeps its name among unowned keys")
+			require.Error(t, insert("vk-11", "legacy-space", "", ""), "a whitespace-only owner is no owner either")
+
+			require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", id).Error)
+			require.NoError(t, migrationScopeVirtualKeyNameUniqueness(ctx, db, testMigrationLogger))
+			require.Error(t, virtualKeyNameUniquenessMigration(ctx, id).Rollback(db))
+		})
+	}
+}
+
+// TestVirtualKeyTagsBuildScopedNameIndexes pins that a fresh install, which creates the table from
+// struct tags, gets the same per-owner name indexes as the upgrade migration and no global one.
+func TestVirtualKeyTagsBuildScopedNameIndexes(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "fresh.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Migrator().CreateTable(&tables.TableVirtualKey{}))
+	for _, idx := range virtualKeyNameIndexes {
+		var sql string
+		require.NoError(t, db.Raw("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", idx.name).Scan(&sql).Error)
+		require.NotEmpty(t, sql, "index %s must exist", idx.name)
+		assert.Contains(t, sql, "UNIQUE")
+		assert.Contains(t, sql, "WHERE "+idx.where, "index %s must have the migration's predicate", idx.name)
+	}
+	require.False(t, db.Migrator().HasIndex(&tables.TableVirtualKey{}, legacyVirtualKeyNameIndex))
+	require.True(t, db.Migrator().HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_business_unit_id"))
 }
 
 // TestIndexHelpersNeverDropAnotherTablesIndex pins that the concurrent index
