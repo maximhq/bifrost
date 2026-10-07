@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+
+	"github.com/tidwall/gjson"
 )
 
 // DecisionKind identifies how a single question is decided. The vocabulary
@@ -172,13 +174,13 @@ func (s DecisionScalar) MarshalJSON() ([]byte, error) {
 	}
 	switch {
 	case s.Str != nil:
-		return MarshalSorted(*s.Str)
+		return Marshal(*s.Str)
 	case s.Bool != nil:
-		return MarshalSorted(*s.Bool)
+		return Marshal(*s.Bool)
 	case s.Num != nil:
-		return MarshalSorted(*s.Num)
+		return Marshal(*s.Num)
 	}
-	return MarshalSorted(nil)
+	return Marshal(nil)
 }
 
 // UnmarshalJSON decodes a JSON string, boolean, or number and rejects any
@@ -221,12 +223,12 @@ func (in DecisionInput) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("both decision input text and messages are set; only one should be non-nil")
 	}
 	if in.Text != nil {
-		return MarshalSorted(*in.Text)
+		return Marshal(*in.Text)
 	}
 	if in.Messages != nil {
-		return MarshalSorted(in.Messages)
+		return Marshal(in.Messages)
 	}
-	return MarshalSorted(nil)
+	return Marshal(nil)
 }
 
 // UnmarshalJSON accepts a string or an array of messages.
@@ -236,15 +238,18 @@ func (in *DecisionInput) UnmarshalJSON(data []byte) error {
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil
 	}
-	var text string
-	if err := Unmarshal(trimmed, &text); err == nil {
-		in.Text = &text
-		return nil
-	}
-	var messages []DecisionInputMessage
-	if err := Unmarshal(trimmed, &messages); err == nil {
-		in.Messages = messages
-		return nil
+	if trimmed[0] == '"' {
+		var text string
+		if err := Unmarshal(trimmed, &text); err == nil {
+			in.Text = &text
+			return nil
+		}
+	} else if trimmed[0] == '[' {
+		var messages []DecisionInputMessage
+		if err := Unmarshal(trimmed, &messages); err == nil {
+			in.Messages = messages
+			return nil
+		}
 	}
 	return fmt.Errorf("decision input must be a string or an array of messages")
 }
@@ -268,12 +273,12 @@ func (c DecisionInputContent) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("both decision message text and parts are set; only one should be non-nil")
 	}
 	if c.Text != nil {
-		return MarshalSorted(*c.Text)
+		return Marshal(*c.Text)
 	}
 	if c.Parts != nil {
-		return MarshalSorted(c.Parts)
+		return Marshal(c.Parts)
 	}
-	return MarshalSorted(nil)
+	return Marshal(nil)
 }
 
 // UnmarshalJSON accepts a string or an array of parts.
@@ -283,15 +288,18 @@ func (c *DecisionInputContent) UnmarshalJSON(data []byte) error {
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil
 	}
-	var text string
-	if err := Unmarshal(trimmed, &text); err == nil {
-		c.Text = &text
-		return nil
-	}
-	var parts []DecisionInputPart
-	if err := Unmarshal(trimmed, &parts); err == nil {
-		c.Parts = parts
-		return nil
+	if trimmed[0] == '"' {
+		var text string
+		if err := Unmarshal(trimmed, &text); err == nil {
+			c.Text = &text
+			return nil
+		}
+	} else if trimmed[0] == '[' {
+		var parts []DecisionInputPart
+		if err := Unmarshal(trimmed, &parts); err == nil {
+			c.Parts = parts
+			return nil
+		}
 	}
 	return fmt.Errorf("decision message content must be a string or an array of parts")
 }
@@ -322,12 +330,17 @@ func (p DecisionInputPart) MarshalJSON() ([]byte, error) {
 		return p.raw, nil
 	}
 	type alias DecisionInputPart
-	return MarshalSorted(alias(p))
+	return Marshal(alias(p))
 }
 
 // UnmarshalJSON decodes the modelled part types and retains any other part
-// verbatim.
+// verbatim. The type is read first, so an unfamiliar part is kept whole even
+// when its fields do not fit the modelled ones.
 func (p *DecisionInputPart) UnmarshalJSON(data []byte) error {
+	if partType := gjson.GetBytes(data, "type").String(); partType != DecisionInputPartTypeText && partType != DecisionInputPartTypeImage {
+		*p = DecisionInputPart{Type: partType, raw: append(json.RawMessage(nil), data...)}
+		return nil
+	}
 	type alias DecisionInputPart
 	var decoded alias
 	if err := Unmarshal(data, &decoded); err != nil {
@@ -335,9 +348,6 @@ func (p *DecisionInputPart) UnmarshalJSON(data []byte) error {
 	}
 	*p = DecisionInputPart(decoded)
 	p.raw = nil
-	if p.Type != DecisionInputPartTypeText && p.Type != DecisionInputPartTypeImage {
-		p.raw = append(json.RawMessage(nil), data...)
-	}
 	return nil
 }
 
@@ -397,12 +407,22 @@ func (a DecisionOrderedAnswer) MarshalJSON() ([]byte, error) {
 		return a.raw, nil
 	}
 	type alias DecisionOrderedAnswer
-	return MarshalSorted(alias(a))
+	return Marshal(alias(a))
 }
 
 // UnmarshalJSON decodes the modelled answer types and retains any other answer
-// verbatim, so an unfamiliar variant is preserved rather than rejected.
+// verbatim, so an unfamiliar variant is preserved rather than rejected. The
+// type is read first, so an unfamiliar answer is kept whole even when its
+// fields do not fit the modelled ones.
 func (a *DecisionOrderedAnswer) UnmarshalJSON(data []byte) error {
+	if answerType := DecisionOrderedKind(gjson.GetBytes(data, "type").String()); !answerType.isAnswerKind() {
+		*a = DecisionOrderedAnswer{Type: answerType, raw: append(json.RawMessage(nil), data...)}
+		if name := gjson.GetBytes(data, "name"); name.Type == gjson.String {
+			value := name.String()
+			a.Name = &value
+		}
+		return nil
+	}
 	type alias DecisionOrderedAnswer
 	var decoded alias
 	if err := Unmarshal(data, &decoded); err != nil {
@@ -410,9 +430,6 @@ func (a *DecisionOrderedAnswer) UnmarshalJSON(data []byte) error {
 	}
 	*a = DecisionOrderedAnswer(decoded)
 	a.raw = nil
-	if !a.Type.isAnswerKind() {
-		a.raw = append(json.RawMessage(nil), data...)
-	}
 	return nil
 }
 

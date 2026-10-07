@@ -135,3 +135,28 @@ func TestDecisionOrderedAnswerIsRecognizedByType(t *testing.T) {
 	assert.False(t, DecisionOrderedAnswer{}.IsRecognized())
 	assert.True(t, DecisionOrderedAnswer{Type: DecisionOrderedKindPredicate}.IsRecognized())
 }
+
+// TestDecisionUnknownVariantsWithClashingFieldsArePreserved pins that an
+// unfamiliar answer or input part is kept verbatim even when one of its fields
+// shares a name with a modelled field but not its shape, instead of failing
+// the whole decode. The payloads are synthetic.
+func TestDecisionUnknownVariantsWithClashingFieldsArePreserved(t *testing.T) {
+	answerJSON := `{"type":"future","name":"q","choice":{"id":"a"},"score":"high"}`
+	var answer DecisionOrderedAnswer
+	require.NoError(t, Unmarshal([]byte(answerJSON), &answer))
+	assert.False(t, answer.IsRecognized())
+	assert.Equal(t, DecisionOrderedKind("future"), answer.Type)
+	require.NotNil(t, answer.Name)
+	assert.Equal(t, "q", *answer.Name)
+	encoded, err := Marshal(answer)
+	require.NoError(t, err)
+	assert.JSONEq(t, answerJSON, string(encoded))
+
+	partJSON := `{"type":"input_audio","text":{"transcript":"hi"},"image_url":["x"]}`
+	var part DecisionInputPart
+	require.NoError(t, Unmarshal([]byte(partJSON), &part))
+	assert.Equal(t, "input_audio", part.Type)
+	encoded, err = Marshal(part)
+	require.NoError(t, err)
+	assert.JSONEq(t, partJSON, string(encoded))
+}

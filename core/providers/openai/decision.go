@@ -11,6 +11,46 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// ToBifrostDecisionRequest converts a request received on the OpenAI-shaped
+// decisions route into an ordered Bifrost decision request. A model without a
+// provider prefix defaults to OpenAI, because only OpenAI serves the ordered
+// form; leaving the provider to model-catalog resolution would fail for a
+// decisions model the catalog does not list. Request validation is left to
+// ToOpenAIDecisionRequest, which every attempt runs through.
+func (request *OpenAIDecisionRequest) ToBifrostDecisionRequest(ctx *schemas.BifrostContext) *schemas.BifrostDecisionRequest {
+	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
+
+	return &schemas.BifrostDecisionRequest{
+		Provider:         provider,
+		Model:            model,
+		Input:            request.Input,
+		OrderedQuestions: request.Questions,
+		SafetyIdentifier: request.SafetyIdentifier,
+		Fallbacks:        schemas.ParseFallbacks(request.Fallbacks),
+		ExtraParams:      request.ExtraParams,
+	}
+}
+
+// ToOpenAIDecisionResponse builds the OpenAI wire response from the typed
+// ordered answers. The OpenAI route uses it when no native body is available,
+// such as for a response served from a cache; answers of a type the schema
+// does not model are re-emitted verbatim.
+func ToOpenAIDecisionResponse(response *schemas.BifrostDecisionResponse) *OpenAIDecisionResponse {
+	if response == nil {
+		return nil
+	}
+	answers := response.OrderedAnswers
+	if answers == nil {
+		answers = []schemas.DecisionOrderedAnswer{}
+	}
+	return &OpenAIDecisionResponse{
+		ID:      response.ID,
+		Model:   response.Model,
+		Answers: answers,
+		Usage:   response.Usage.ToResponsesResponseUsage(),
+	}
+}
+
 // ToOpenAIDecisionRequest converts an ordered Bifrost decision request into the
 // wire request for OpenAI's decisions endpoint. Malformed requests are rejected
 // with a 400 rather than approximated; validation is never stricter than the

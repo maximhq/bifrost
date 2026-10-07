@@ -316,3 +316,123 @@ func TestDecisionHonorsAllowedRequests(t *testing.T) {
 	require.NotNil(t, bifrostErr)
 	assert.Zero(t, upstreamCalls)
 }
+
+// TestOpenAIDecisionRequestUnmarshalCapturesExtensionsAndFallbacks pins that
+// decoding the route body keeps the modelled fields typed, keeps fallbacks for
+// gateway routing, and captures an unknown future field verbatim instead of
+// rejecting or dropping it. The payload is synthetic.
+func TestOpenAIDecisionRequestUnmarshalCapturesExtensionsAndFallbacks(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-6-luna",
+		"input": "I was charged twice for my order.",
+		"questions": [{"type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?"}],
+		"safety_identifier": "alex-1234",
+		"fallbacks": ["openai/gpt-6-luna-2026-09-01"],
+		"future_option": {"mode": "strict", "limit": 3}
+	}`)
+
+	var request OpenAIDecisionRequest
+	require.NoError(t, json.Unmarshal(body, &request))
+
+	assert.Equal(t, "gpt-6-luna", request.Model)
+	require.NotNil(t, request.Input)
+	require.NotNil(t, request.Input.Text)
+	require.Len(t, request.Questions, 1)
+	assert.Equal(t, []string{"openai/gpt-6-luna-2026-09-01"}, request.Fallbacks)
+	require.Len(t, request.ExtraParams, 1, "only unmodelled fields belong in ExtraParams")
+	assert.JSONEq(t, `{"mode":"strict","limit":3}`, string(request.ExtraParams["future_option"].(json.RawMessage)))
+}
+
+// TestOpenAIDecisionRequestToBifrostDecisionRequest pins that the route's
+// request becomes an ordered request, that a bare model defaults to OpenAI, and
+// that a provider prefix is honored.
+func TestOpenAIDecisionRequestToBifrostDecisionRequest(t *testing.T) {
+	ordered := orderedDecisionRequest()
+	request := &OpenAIDecisionRequest{
+		Model:            "gpt-6-luna",
+		Input:            ordered.Input,
+		Questions:        ordered.OrderedQuestions,
+		SafetyIdentifier: ordered.SafetyIdentifier,
+		Fallbacks:        []string{"openai/gpt-6-luna-2026-09-01"},
+		ExtraParams:      map[string]interface{}{"future_option": json.RawMessage(`true`)},
+	}
+
+	converted := request.ToBifrostDecisionRequest(nil)
+	assert.Equal(t, schemas.OpenAI, converted.Provider)
+	assert.Equal(t, "gpt-6-luna", converted.Model)
+	assert.True(t, converted.UsesOrderedForm())
+	assert.False(t, converted.UsesMapForm())
+	assert.Equal(t, ordered.OrderedQuestions, converted.OrderedQuestions)
+	assert.Equal(t, ordered.SafetyIdentifier, converted.SafetyIdentifier)
+	assert.Equal(t, []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-6-luna-2026-09-01"}}, converted.Fallbacks)
+	assert.Equal(t, request.ExtraParams, converted.ExtraParams)
+
+	request.Model = "azure/gpt-6-luna"
+	converted = request.ToBifrostDecisionRequest(nil)
+	assert.Equal(t, schemas.Azure, converted.Provider)
+	assert.Equal(t, "gpt-6-luna", converted.Model)
+}
+
+// TestToOpenAIDecisionResponseBuildsWireShape pins the typed builder used when
+// no native body is available: answer order, the refusal, and an unfamiliar
+// answer type survive, and usage is emitted in the endpoint's token fields.
+func TestToOpenAIDecisionResponseBuildsWireShape(t *testing.T) {
+	var native OpenAIDecisionResponse
+	require.NoError(t, json.Unmarshal([]byte(openAIDecisionResponseBody), &native))
+	bifrostResponse := native.ToBifrostDecisionResponse()
+
+	body, err := json.Marshal(ToOpenAIDecisionResponse(bifrostResponse))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"id": "dec_1",
+		"model": "gpt-6-luna",
+		"answers": [
+			{"type": "predicate", "name": "visible_damage", "probability": 0.92},
+			{"type": "choice", "choice": true, "probabilities": [{"value": true, "probability": 0.8}, {"value": false, "probability": 0.2}], "confidence": 0.8},
+			{"type": "refusal", "name": "severity"},
+			{"type": "ranking", "name": "future", "order": ["a"]}
+		],
+		"usage": {"input_tokens": 120, "input_tokens_details": null, "output_tokens": 0, "output_tokens_details": null, "total_tokens": 120}
+	}`, string(body))
+
+	empty, err := json.Marshal(ToOpenAIDecisionResponse(&schemas.BifrostDecisionResponse{Model: "gpt-6-luna"}))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"model": "gpt-6-luna", "answers": []}`, string(empty), "answers must be an array, never null")
+	assert.Nil(t, ToOpenAIDecisionResponse(nil))
+}
+
+// TestDecisionNativeForwardsExtensionsButNotFallbacks pins the upstream body
+// for a route request: an unknown field captured from the client reaches
+// OpenAI under the passthrough flag the route sets, and the gateway-only
+// fallbacks never do.
+func TestDecisionNativeForwardsExtensionsButNotFallbacks(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(openAIDecisionResponseBody))
+	}))
+	defer server.Close()
+
+	var routeRequest OpenAIDecisionRequest
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"model": "gpt-6-luna",
+		"input": "I was charged twice for my order.",
+		"questions": [{"type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?"}],
+		"fallbacks": ["openai/gpt-6-luna-2026-09-01"],
+		"future_option": {"mode": "strict"}
+	}`), &routeRequest))
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	_, bifrostErr := provider.Decision(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, routeRequest.ToBifrostDecisionRequest(ctx))
+	require.Nil(t, bifrostErr)
+
+	var sent map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(gotBody, &sent))
+	assert.JSONEq(t, `{"mode":"strict"}`, string(sent["future_option"]))
+	assert.NotContains(t, sent, "fallbacks")
+	assert.Contains(t, sent, "questions")
+}

@@ -207,8 +207,7 @@ func TestPreRequestHook_LLMFallbackClassifiesSemanticRejections(t *testing.T) {
 	require.Equal(t, schemas.ChatMessageRoleUser, classifierReq.Input[1].Role)
 	require.Equal(t, "prove the scheduler is deadlock-free", *classifierReq.Input[1].Content.ContentStr)
 	require.NotNil(t, classifierReq.Params)
-	require.NotNil(t, classifierReq.Params.Temperature)
-	require.Zero(t, *classifierReq.Params.Temperature)
+	require.Nil(t, classifierReq.Params.Temperature, "reasoning models reject a temperature field")
 }
 
 // TestPreRequestHook_LLMFallbackCoversSemanticUnavailability pins that the
