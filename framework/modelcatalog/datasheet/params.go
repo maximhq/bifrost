@@ -374,6 +374,14 @@ func (s *Store) modelParameterCandidates(model string) []string {
 
 	add(s.BaseModelName(model))
 
+	// BaseModelName only strips version and date suffixes, so a Bedrock
+	// inference-profile id keeps its vendor/region prefix and matches nothing:
+	// BaseModelName("us.anthropic.claude-sonnet-5-5") is unchanged, while
+	// NormalizeModelName gives "claude-sonnet-5-5". The dots are why the
+	// slash-stripping above cannot reach it. NormalizeModelName leaves
+	// digit-dotted names such as "gpt-3.5-turbo" intact.
+	add(schemas.NormalizeModelName(model))
+
 	suffix := "/" + bare
 	var qualified []string
 	s.mu.RLock()

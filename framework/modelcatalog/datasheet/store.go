@@ -336,15 +336,29 @@ func (s *Store) IsRequestTypeSupported(model string, requestType schemas.Request
 // GetSupportedParameters returns the list of OpenAI-compatible parameter
 // names a model accepts (e.g. temperature, top_p, tools). nil for unknown.
 func (s *Store) GetSupportedParameters(model string) []string {
-	s.mu.RLock()
-	params, ok := s.supportedParams[model]
-	s.mu.RUnlock()
-	if !ok {
-		return nil
+	// Resolve through the same candidate chain ResolveModelParameters uses,
+	// rather than the exact key alone. The datasheet carries a row for some
+	// spellings of a model and not others: it has a bare
+	// "us.anthropic.claude-opus-5-5" but no bare
+	// "us.anthropic.claude-sonnet-5-5", so an exact lookup returned nil for the
+	// Bedrock sonnet id and the compat plugin dropped nothing. Every sonnet-5-5
+	// row in the sheet omits "temperature", so resolving to one is what lets it
+	// be dropped before Bedrock rejects the request.
+	//
+	// The exact key is the first candidate, so a model that resolves today
+	// resolves to the same row.
+	for _, candidate := range s.modelParameterCandidates(model) {
+		s.mu.RLock()
+		params, ok := s.supportedParams[candidate]
+		s.mu.RUnlock()
+		if !ok {
+			continue
+		}
+		out := make([]string, len(params))
+		copy(out, params)
+		return out
 	}
-	out := make([]string, len(params))
-	copy(out, params)
-	return out
+	return nil
 }
 
 // IsTextCompletionSupported checks whether a model has a text_completion
