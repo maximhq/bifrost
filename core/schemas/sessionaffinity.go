@@ -18,6 +18,8 @@ type RouteOutcome struct {
 	KeyID string
 	// Fallback reports that Served was not the first route of the dispatched chain.
 	Fallback bool
+	// DirectKey reports that the request carried the caller's own key, which only the first route is tried with.
+	DirectKey bool
 	// Err is the failure the request ended in, nil when it was served.
 	Err *BifrostError
 }

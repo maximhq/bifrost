@@ -42,6 +42,8 @@ The binding is keyed by what the caller asked for, so a session that asks for `g
 
 <Note>
 A request that names its provider (`openai/gpt-4o`) is never reordered and writes no provider binding. The caller asked for that provider, so only the key level applies, even when a fallback served an earlier turn of the same session.
+
+A request that pins one of the routed provider's keys, by ID (`x-bf-api-key-id`) or by name (`x-bf-api-key`), is not reordered either: the pinned key exists only on that provider, so the session keeps the routing decision. A pin on another provider's key leaves the order to the session, which may be moving the request to that very provider. A key a routing rule pinned moves with its route instead, see [How it fits with routing](#how-it-fits-with-routing).
 </Note>
 
 ### Key level
@@ -59,6 +61,7 @@ Bindings are written only when a request is served. A failed request writes noth
 | First served request of the session                    | Written to the provider that served                                    | Written to the key that served                                       |
 | Served request that followed the binding               | TTL refreshed                                                          | TTL refreshed                                                        |
 | Served by a fallback provider                          | Moved to the fallback provider                                         | The key the primary followed is deleted; moved to the key the fallback used |
+| Served by a fallback provider, the request carried a direct key | Not written; a binding the request followed is deleted, and the next request follows the routing decision | Moved to the key the fallback used |
 | Failed after following the binding                     | Deleted, the next request follows the routing decision                 | Deleted, a key is picked normally on the next request                |
 | Cancelled by the caller after following the binding    | Unchanged, the failure is not the provider's                           | Unchanged                                                            |
 | Request failed on every attempt                        | Untouched                                                              | Untouched                                                            |
@@ -67,6 +70,8 @@ Bindings are written only when a request is served. A failed request writes noth
 | Bound key not in the eligible pool                     | Unchanged                                                              | Deleted, a key is picked normally, the next served request rebinds   |
 | TTL expires with no served request                     | Gone                                                                   | Gone                                                                 |
 | Request sent with `x-bf-session-affinity: off`         | Neither read nor written                                               | Neither read nor written                                             |
+
+A [direct key](/providers/request-options#direct-api-key) is tried only on the first provider of the chain; fallback providers run on their configured keys. A fallback that served such a request therefore says nothing about where the caller's key works, and binding the session to it would send the caller's key to that provider first on the next request.
 
 A request refused by governance outright, because its credential is inactive or expired, or because the provider or model it asked for is not allowed, is refused before any routing engine builds a chain. Affinity never sees it, so the session keeps whatever binding it had. Revoking a session's access to the provider it is bound to therefore leaves that binding in the trail until it expires, even though no request can follow it. Narrowing access instead, so routing still offers some other provider, deletes the binding on the next request and rebinds the session to whatever serves it.
 
@@ -93,7 +98,7 @@ Affinity runs after every routing engine has had its say, and again inside each 
 | Model catalog                         | Any provider whose catalog lists the model, when nothing else picked one         | The session's provider comes first among the catalog candidates.                                                                                                          |
 | Circuit breaker (Enterprise)          | Which keys are held back from the pool                                           | A bound key that the circuit breaker removes from the pool loses its binding; a key is picked normally.                                                                    |
 | Complexity Router                     | The complexity tier a routing rule can match on                                  | Independent. The router keeps the tier stable per session; affinity keeps the provider and key stable. Both use the same session identity and neither reads the other's state. |
-| Fallbacks and retries                 | Which provider to try next, and how often to retry                               | Fallback attempts pick their keys freely unless the rule pinned a key for that entry. A pin belongs to the provider it was decided for, so when the session moves that provider elsewhere in the chain the pin moves with it. Retries of one attempt reuse the bound key. Whatever finally serves becomes the session's new binding at both levels.            |
+| Fallbacks and retries                 | Which provider to try next, and how often to retry                               | Fallback attempts pick their keys freely unless the rule pinned a key for that entry. A pin belongs to the provider it was decided for, so when the session moves that provider elsewhere in the chain the pin moves with it. Retries of one attempt reuse the bound key. Whatever finally serves becomes the session's new binding at both levels, except that a fallback serving a request with a direct key binds only its key.            |
 
 ## Health-aware invalidation (Enterprise)
 
@@ -148,8 +153,10 @@ Every decision affinity makes is written to the request's routing trail under th
 | `Session reused key prod-eu-2 for azure/gpt-4o`                                                                                      | The bound key was used instead of running key selection.                                             |
 | `Session was last served by azure/gpt-4o for gpt-4o, which this request cannot use, so the routing decision stands and the session rebinds on its next served request` | Routing no longer offers the bound route, provider and model together, so the binding was deleted. |
 | `Session moved the request from vertex to anthropic, so a key is picked normally there; the key pinned for vertex applies if vertex is tried as a fallback` | The session promoted another provider; the routing rule's pin stayed with the provider it was set for, now a fallback entry. |
+| `Request pins the caller's key on vertex, so the session keeps the routing decision for claude-opus-4-8` | The caller pinned one of the routed provider's keys, so the chain was left as routing built it. |
 | `The key this session followed for azure/gpt-4o failed, so the session forgets it and a key is picked normally next time`            | The request followed the key binding and did not serve on it, so the binding was deleted.            |
 | `The provider this session followed for gpt-4o failed, so the session forgets it and the next request follows the routing decision`  | The request followed the route binding and failed outright, so the binding was deleted.              |
+| `Fallback openai/gpt-4o served gpt-4o without the caller's own key, so the session does not bind to it and the next request follows the routing decision` | The request carried a direct key and a fallback served it on the gateway's keys, so no provider binding was written and any binding the request followed was deleted. |
 | `The key this session last used for azure/gpt-4o is no longer eligible, so one is being picked`                                      | The bound key left the pool, so the binding was deleted.                                             |
 | `Request carries a session but asked not to follow it, so the routing decision stands for gpt-4o`                                    | The request sent `x-bf-session-affinity: off`, so no binding was read or written.                    |
 | `Session was last served by azure for gpt-4o, which is failing on this node, so the routing decision stands`                         | Enterprise only: the load balancer marks the provider as failed here, so the binding was dropped.    |
@@ -191,6 +198,7 @@ A three-node cluster. The session is bound to Azure and `prod-eu-2`.
 ## Limits to know
 
 - **Explicit providers get no provider stickiness.** `openai/gpt-4o` is honoured as written. Use a bare model name and let routing offer several providers if you want the session to choose among them.
+- **A direct key goes to whichever provider comes first.** With a bare model, routing and the session's binding decide which provider that is, and neither knows which provider the caller's key is for. Name the provider (`openai/gpt-4o`) so the session never moves the request away from it.
 - **Weighted routing-rule targets with no fallbacks** are rolled on every request. Add fallbacks to the rule if the session should stick to the target that served it.
 - **A bound key is used for every retry.** A session with a key binding does not rotate keys on a rate limit; the retry policy runs on the bound key, and only a fallback provider moves the session. A session with no key binding yet rotates like any other request.
 - **A new session's first parallel burst scatters once.** Requests already in flight when the first one is served keep the provider and key they were given.
