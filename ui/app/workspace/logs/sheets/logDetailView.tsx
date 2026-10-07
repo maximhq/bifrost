@@ -81,7 +81,7 @@ import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
 import {
 	extractProviderErrorMessage,
-	isClientToolCallItem,
+	findLastPendingClientCallIndex,
 	nextSessionLookupStart,
 	isShownMetadataKey,
 	parseRoutingDecisionLine,
@@ -2955,8 +2955,7 @@ export function LogDetailView({
 						if (all.length === 0) return null;
 						// The link to the request carrying the results goes under the last call
 						// the caller has to run, once, however many calls the response made.
-						const lastClientCallIndex =
-							onOpenLog && log.session_id ? all.findLastIndex((entry) => entry.fromOutput && isClientToolCallItem(entry.msg.type)) : -1;
+						const lastClientCallIndex = onOpenLog && log.session_id ? findLastPendingClientCallIndex(all) : -1;
 						return (
 							<div className="bg-card rounded-sm border p-5">
 								{all.map(({ msg, mapping }, index) => (

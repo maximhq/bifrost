@@ -148,6 +148,25 @@ func TestResolveCacheThreshold(t *testing.T) {
 	}
 }
 
+// TestResponseHasToolCalls_ShellAndApplyPatch pins that shell and apply_patch calls
+// count as client-executed tool calls, so cache_tool_call_responses=false skips them.
+func TestResponseHasToolCalls_ShellAndApplyPatch(t *testing.T) {
+	for _, itemType := range []schemas.ResponsesMessageType{
+		schemas.ResponsesMessageTypeShellCall,
+		schemas.ResponsesMessageTypeApplyPatchCall,
+	} {
+		t.Run(string(itemType), func(t *testing.T) {
+			item := schemas.ResponsesMessage{Type: schemas.Ptr(itemType)}
+			if !responseHasToolCalls(&schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{item}}}) {
+				t.Errorf("non-stream %s not treated as a tool call", itemType)
+			}
+			if !responseHasToolCalls(&schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Item: &item}}) {
+				t.Errorf("stream %s not treated as a tool call", itemType)
+			}
+		})
+	}
+}
+
 // TestMain drops the shared test namespace BEFORE the run starts (in case a
 // previous run was interrupted and left stale entries) AND once after — both
 // matter: tests share one namespace + one cache_key prefix per t.Name(),
