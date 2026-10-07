@@ -308,7 +308,9 @@ func (mc *ModelCatalog) SetAfterSyncHook(fn func(ctx context.Context)) {
 }
 
 // ReloadFromDB reloads pricing, model-parameters and model-tag caches from the database.
-// Gossip handler on non-leader pods.
+// Gossip handler on non-leader pods. A failed tag reload is logged rather than returned:
+// pricing and parameters are already reloaded, ReloadModelTags marks the overlay stale, and
+// the periodic retry publishes the tags once the store answers.
 func (mc *ModelCatalog) ReloadFromDB(ctx context.Context) error {
 	if err := mc.datasheet.LoadFromDB(ctx); err != nil {
 		return err
@@ -316,7 +318,10 @@ func (mc *ModelCatalog) ReloadFromDB(ctx context.Context) error {
 	if _, err := mc.datasheet.LoadModelParamsFromDB(ctx); err != nil {
 		return err
 	}
-	return mc.ReloadModelTags(ctx)
+	if err := mc.ReloadModelTags(ctx); err != nil && mc.logger != nil {
+		mc.logger.Warn("model tag reload failed; the overlay is stale and will be retried: %v", err)
+	}
+	return nil
 }
 
 // ReloadPricing re-reads the pricing table into the in-memory cache. The

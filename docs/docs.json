@@ -1142,6 +1142,7 @@
                   "GET /api/keys",
                   "GET /api/models",
                   "GET /api/models/details",
+                  "PUT /api/models/tags",
                   "GET /api/models/parameters",
                   "GET /api/models/base"
                 ]
