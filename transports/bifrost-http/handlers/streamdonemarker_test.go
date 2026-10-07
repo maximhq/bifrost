@@ -22,10 +22,6 @@ import (
 // serveStreamingResponse runs handleStreamingResponse against an in-process
 // connection and returns the raw SSE body the client would receive.
 func serveStreamingResponse(t *testing.T, chunks []*schemas.BifrostStreamChunk) string {
-	return serveStreamingResponseWithUsage(t, chunks, false)
-}
-
-func serveStreamingResponseWithUsage(t *testing.T, chunks []*schemas.BifrostStreamChunk, includeUsage bool) string {
 	t.Helper()
 
 	handler := func(reqCtx *fasthttp.RequestCtx) {
@@ -44,7 +40,7 @@ func serveStreamingResponseWithUsage(t *testing.T, chunks []*schemas.BifrostStre
 			return stream, nil
 		}
 
-		h.handleStreamingResponse(reqCtx, bifrostCtx, schemas.ChatCompletionStreamRequest, includeUsage, getStream, cancel)
+		h.handleStreamingResponse(reqCtx, bifrostCtx, schemas.ChatCompletionStreamRequest, getStream, cancel)
 	}
 
 	serverConn, clientConn := net.Pipe()
@@ -96,22 +92,6 @@ func serveStreamingResponseWithUsage(t *testing.T, chunks []*schemas.BifrostStre
 		body.Write(data[:chunkSize])
 	}
 	return body.String()
-}
-
-func TestStreamingResponseWritesSeparateRequestedUsageEvent(t *testing.T) {
-	terminal := contentChunk("hello")
-	terminal.BifrostChatResponse.Choices[0].FinishReason = schemas.Ptr("stop")
-	terminal.BifrostChatResponse.Usage = &schemas.BifrostLLMUsage{
-		PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3,
-	}
-
-	body := serveStreamingResponseWithUsage(t, []*schemas.BifrostStreamChunk{terminal}, true)
-	if !strings.Contains(body, `"choices":[]`) || !strings.Contains(body, `"total_tokens":3`) {
-		t.Fatalf("requested usage-only event missing:\n%s", body)
-	}
-	if !strings.Contains(body, `"choices":[`) || !strings.Contains(body, `"usage":null`) {
-		t.Fatalf("ordinary terminal event missing choice or usage:null:\n%s", body)
-	}
 }
 
 func contentChunk(text string) *schemas.BifrostStreamChunk {
