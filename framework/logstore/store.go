@@ -56,6 +56,9 @@ type LogStore interface {
 	// rather than in the config store because they are user-generated content
 	// that grows with use, not settings an install depends on.
 	WarpConversationStore
+	// WarpTopicStore is where Warp's topics, and each request's place among
+	// them, are kept. See warptopics.go.
+	WarpTopicStore
 
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error

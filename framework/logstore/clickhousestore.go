@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"reflect"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -1178,4 +1179,84 @@ func (s *ClickHouseLogStore) deleteStrandedWarpMessages(ctx context.Context, ids
 		return nil
 	}
 	return s.chLightweightDelete(ctx, "warp_messages", "conversation_id IN ?", removed)
+}
+
+// --- Warp topics ---
+//
+// The reads are inherited: plain SELECTs that the connection-level final = 1
+// collapses to each row's newest version. The writes are overridden because
+// the SQL forms upsert with ON CONFLICT, which ClickHouse does not have. Here
+// a plain insert is the upsert: each table is ordered by its identity, so
+// ReplacingMergeTree keeps only the newest row written for it. The deletes are
+// overridden for the same reason every delete in this file is.
+
+// chWarpTopicDeleteChunk bounds the ids one delete names, which bounds the
+// statement's text below max_query_size (256 KiB by default).
+const chWarpTopicDeleteChunk = 1000
+
+// UpsertWarpTopics writes topics whole, replacing any row with the same ID.
+func (s *ClickHouseLogStore) UpsertWarpTopics(ctx context.Context, topics []WarpTopic) error {
+	if len(topics) == 0 {
+		return nil
+	}
+	if err := prepareWarpTopics(topics, time.Now().UTC()); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Create(&topics).Error
+}
+
+// UpsertWarpTopicAssignments writes one row per request. A request written
+// again replaces its earlier row because (timestamp, log_id) is unchanged.
+func (s *ClickHouseLogStore) UpsertWarpTopicAssignments(ctx context.Context, assignments []WarpTopicAssignment) error {
+	if len(assignments) == 0 {
+		return nil
+	}
+	if err := prepareWarpTopicAssignments(assignments, time.Now().UTC()); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Create(&assignments).Error
+}
+
+// DeleteWarpTopicAssignmentsBatch deletes every assignment whose log was
+// created before cutoff with one lightweight delete; see DeleteLogsBatch for
+// why batchSize is ignored.
+func (s *ClickHouseLogStore) DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
+	return s.chDeleteWhere(ctx, "warp_topic_assignments", "created_at < ?", cutoff)
+}
+
+// AddWarpTopicUnmatched puts requests in the unmatched pool.
+func (s *ClickHouseLogStore) AddWarpTopicUnmatched(ctx context.Context, rows []WarpTopicUnmatched) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := prepareWarpTopicUnmatched(rows); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Create(&rows).Error
+}
+
+// DeleteWarpTopicUnmatched removes requests from the pool.
+func (s *ClickHouseLogStore) DeleteWarpTopicUnmatched(ctx context.Context, logIDs []string) error {
+	for chunk := range slices.Chunk(logIDs, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "warp_topic_unmatched", "log_id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PruneWarpTopicUnmatched bounds the pool by age and by count, with one
+// lightweight delete for both.
+func (s *ClickHouseLogStore) PruneWarpTopicUnmatched(ctx context.Context, olderThan time.Time, keep int) (int64, error) {
+	where, args, err := warpTopicUnmatchedPruneWhere(ctx, s.db, olderThan, keep)
+	if err != nil || where == "" {
+		return 0, err
+	}
+	return s.chDeleteWhere(ctx, "warp_topic_unmatched", where, args...)
+}
+
+// DeleteWarpTopicUnmatchedBatch deletes every pool row whose log was created
+// before cutoff with one lightweight delete.
+func (s *ClickHouseLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
+	return s.chDeleteWhere(ctx, "warp_topic_unmatched", "created_at < ?", cutoff)
 }

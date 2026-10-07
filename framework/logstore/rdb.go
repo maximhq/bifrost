@@ -4984,6 +4984,12 @@ func (s *RDBLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Ti
 // on the indexed column. MySQL rejects LIMIT inside an IN subquery, so it uses
 // its single-table DELETE ... ORDER BY ... LIMIT form instead.
 func (s *RDBLogStore) deleteExpiredBatch(ctx context.Context, table, column string, cutoff time.Time, batchSize int) (int64, error) {
+	return s.deleteExpiredBatchByKey(ctx, table, "id", column, cutoff, batchSize)
+}
+
+// deleteExpiredBatchByKey is deleteExpiredBatch for a table whose primary key
+// is not named id. key, like table and column, is an internal constant.
+func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, column string, cutoff time.Time, batchSize int) (int64, error) {
 	if batchSize <= 0 {
 		return 0, nil
 	}
@@ -4991,7 +4997,7 @@ func (s *RDBLogStore) deleteExpiredBatch(ctx context.Context, table, column stri
 	if s.db.Dialector.Name() == "mysql" {
 		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s < ? ORDER BY %s LIMIT ?", table, column, column)
 	} else {
-		stmt = fmt.Sprintf("DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, table, column, column)
+		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, key, key, table, column, column)
 	}
 	result := s.db.WithContext(ctx).Exec(stmt, cutoff, batchSize)
 	if result.Error != nil {

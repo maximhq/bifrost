@@ -1466,3 +1466,42 @@ func TestClickHouseWarpWriteStopsWhenTheLeaseIsLost(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, counts[owner+"-c"], "nothing was written without the lock")
 }
+
+// The assignments table is read like logs, by time range first, so it is laid
+// out like logs and expires with them. Topics must not expire at all: they
+// outlive the requests they were built from.
+func TestClickHouseWarpTopicTablesFollowLogsRetention(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	expiring := []string{"warp_topic_assignments", "warp_topic_unmatched"}
+	removeTTLs := func() {
+		t.Helper()
+		for _, table := range expiring {
+			if strings.Contains(chEngineFull(t, store.db, table), "TTL ") {
+				require.NoError(t, store.db.Exec("ALTER TABLE `"+table+"` REMOVE TTL").Error, "%s: reset TTL", table)
+			}
+		}
+	}
+	removeTTLs()
+	t.Cleanup(removeTTLs)
+
+	assignments := chEngineFull(t, store.db, "warp_topic_assignments")
+	assert.Contains(t, assignments, "PARTITION BY toYYYYMM(timestamp)")
+	assert.Contains(t, assignments, "ORDER BY (timestamp, log_id)", "the sort key is also the identity a rewritten assignment replaces")
+	assert.Contains(t, chEngineFull(t, store.db, "warp_topic_unmatched"), "ORDER BY log_id")
+	assert.Contains(t, chEngineFull(t, store.db, "warp_topics"), "ORDER BY id")
+
+	// Retention configured after the tables exist is applied to them, and a
+	// change of retention replaces the rule instead of adding a second.
+	for _, days := range []int{30, 7} {
+		require.NoError(t, migrationClickHouseWarpTopicTables(ctx, store.db, "", days, testLogger{}))
+		for _, table := range expiring {
+			engineFull := chEngineFull(t, store.db, table)
+			got, ok := chTTLDaysFromEngineFull(engineFull)
+			require.True(t, ok, "%s: expected a managed TTL, got %q", table, engineFull)
+			assert.Equal(t, days, got, "%s: %q", table, engineFull)
+			assert.Equal(t, 1, strings.Count(engineFull, "TTL "), "%s: exactly one TTL clause expected in %q", table, engineFull)
+		}
+		assert.NotContains(t, chEngineFull(t, store.db, "warp_topics"), "TTL ", "topics never expire")
+	}
+}

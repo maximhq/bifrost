@@ -516,6 +516,68 @@ func migrationClickHouseWarpConversationTables(ctx context.Context, db *gorm.DB,
 	return clickhouseReconcileColumns(ctx, db, &WarpMessage{}, "warp_messages", cluster, logger)
 }
 
+// migrationClickHouseWarpTopicTables creates the storage for Warp's topics.
+//
+// warp_topic_assignments is shaped like logs, because it is read like logs: by
+// time range first, then by whatever the question filters on. It is ordered by
+// (timestamp, log_id) and partitioned by month so a time-bounded count reads
+// only the parts it covers, and it expires on the logs TTL, keyed on the log's
+// own created_at which each row carries. (timestamp, log_id) is also the dedup
+// identity: neither changes for a request, so writing a request's assignment
+// again replaces the earlier row.
+//
+// warp_topics has no TTL: topics outlive the requests they were built from.
+// warp_topic_unmatched is bounded from the application, by count and by age,
+// and carries the logs TTL only so a pool nobody is draining still empties.
+func migrationClickHouseWarpTopicTables(ctx context.Context, db *gorm.DB, cluster string, retentionDays int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating tables warp_topics, warp_topic_assignments, warp_topic_unmatched")
+	if err := clickhouseCreateTable(ctx, db, &WarpTopic{}, chTableOpts{
+		table:   "warp_topics",
+		orderBy: "id",
+	}, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create warp_topics table: %w", err)
+	}
+	if err := clickhouseReconcileColumns(ctx, db, &WarpTopic{}, "warp_topics", cluster, logger); err != nil {
+		return err
+	}
+
+	assignments := chTableOpts{
+		table:       "warp_topic_assignments",
+		partitionBy: "toYYYYMM(timestamp)",
+		orderBy:     "(timestamp, log_id)",
+		ttl:         chLogsTTL(retentionDays),
+		skipIndexes: []string{
+			"INDEX idx_warp_topic_assignments_topic_id topic_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_warp_topic_assignments_log_id log_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_warp_topic_assignments_session_id session_id TYPE bloom_filter GRANULARITY 1",
+		},
+	}
+	if err := clickhouseCreateTable(ctx, db, &WarpTopicAssignment{}, assignments, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create warp_topic_assignments table: %w", err)
+	}
+	if err := clickhouseReconcileColumns(ctx, db, &WarpTopicAssignment{}, "warp_topic_assignments", cluster, logger); err != nil {
+		return err
+	}
+	if err := clickhouseReconcileSkipIndexes(ctx, db, "warp_topic_assignments", cluster, assignments.skipIndexes, logger); err != nil {
+		return err
+	}
+	if err := clickhouseReconcileTTL(ctx, db, "warp_topic_assignments", cluster, chLogsTTL(retentionDays), logger); err != nil {
+		return err
+	}
+
+	if err := clickhouseCreateTable(ctx, db, &WarpTopicUnmatched{}, chTableOpts{
+		table:   "warp_topic_unmatched",
+		orderBy: "log_id",
+		ttl:     chLogsTTL(retentionDays),
+	}, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create warp_topic_unmatched table: %w", err)
+	}
+	if err := clickhouseReconcileColumns(ctx, db, &WarpTopicUnmatched{}, "warp_topic_unmatched", cluster, logger); err != nil {
+		return err
+	}
+	return clickhouseReconcileTTL(ctx, db, "warp_topic_unmatched", cluster, chLogsTTL(retentionDays), logger)
+}
+
 // clickhouseMigrationSteps lists the per-table migrations in execution order,
 // mirroring logstoreMigrationSteps for the SQL stores.
 var clickhouseMigrationSteps = []clickhouseMigrationStep{
@@ -525,6 +587,7 @@ var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseAsyncJobsTable,
 	migrationClickHouseWebhookDeliveriesTable,
 	migrationClickHouseWarpConversationTables,
+	migrationClickHouseWarpTopicTables,
 }
 
 // triggerClickHouseMigrations runs all registered ClickHouse table migrations
