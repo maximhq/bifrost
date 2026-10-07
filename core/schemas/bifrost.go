@@ -291,7 +291,7 @@ const (
 	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"      // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"    // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceComplexityTier            BifrostContextKey = "bifrost-governance-complexity-tier"      // string (complexity tier computed for routing, e.g. "SIMPLE"/"MEDIUM"/"COMPLEX"; only present when a routing rule referenced complexity_tier and classification produced a tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceComplexityMechanism       BifrostContextKey = "bifrost-governance-complexity-mechanism" // string (how the effective complexity tier was determined: "semantic", "jev", "llm", "session", or "skipped" when classification was demanded but produced no tier; only present when a routing rule referenced complexity_tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceComplexityMechanism       BifrostContextKey = "bifrost-governance-complexity-mechanism" // string (how the effective complexity tier was determined: "semantic", "decision", "llm", "session", or "skipped" when classification was demanded but produced no tier; only present when a routing rule referenced complexity_tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceComplexityScore           BifrostContextKey = "bifrost-governance-complexity-score"     // float64 (classifier score behind the tier: the semantic classifier's similarity to the nearest reference phrase; only present alongside a computed tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyRoutingPinnedAPIKeyID               BifrostContextKey = "bifrost-routing-pinned-api-key-id"       // string (provider key ID pinned by a matched routing rule target; resolved against the configured key pool during key selection and takes precedence over a caller-supplied pin (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedPromptName                  BifrostContextKey = "bifrost-selected-prompt-name"            // string (display name of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
@@ -2016,7 +2016,7 @@ type BifrostCacheDebug = BifrostCacheMetadata
 // through their dedicated routing fields.
 type BifrostRoutingMetadata struct {
 	// Calls holds each billable internal classification call. A request may run
-	// a semantic embed and, when it produces no tier, one LLM or Jev fallback.
+	// a semantic embed and, when it produces no tier, one LLM or decision-model fallback.
 	// Both calls are retained so pricing, telemetry, and logs account for each.
 	Calls []BifrostRoutingCall `json:"calls,omitempty"`
 }
@@ -2024,7 +2024,7 @@ type BifrostRoutingMetadata struct {
 // BifrostRoutingCall records one billable routing-classification call.
 type BifrostRoutingCall struct {
 	// RequestType selects the provider pricing mode when token shape alone is
-	// ambiguous, as it is for Jev's decision request.
+	// ambiguous, as it is for the decision-model classifier's request.
 	RequestType  RequestType `json:"request_type,omitempty"`
 	ProviderUsed *string     `json:"provider_used,omitempty"`
 	ModelUsed    *string     `json:"model_used,omitempty"`

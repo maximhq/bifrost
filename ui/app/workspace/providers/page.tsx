@@ -21,6 +21,7 @@ import {
 } from "@/lib/store";
 import { KnownProvider, ModelProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
+import { decisionProviderIconKey } from "@/lib/utils/decisionModelProviders";
 import { DATABRICKS_PROVIDER, isCustomDatabricksProvider } from "@/lib/utils/databricksMigration";
 import { collectTags, hasAllTags } from "@/lib/utils/metadataTags";
 import { findCustomProviderCollisions, normalizeProviderName } from "@/lib/utils/providerCollision";
@@ -351,8 +352,16 @@ export default function Providers() {
 												}
 											}}
 										>
+											{/* A custom provider has no logo of its own, so it shows its base format's. Decision-model
+											    providers (Laya, Nimble, Clef) are the one exception: they get their model family's logo
+											    instead of Typesafe's. See lib/utils/decisionModelProviders.ts; that logic is specific to the
+											    Complexity Router's decision models, not a general custom-provider icon. */}
 											<RenderProviderIcon
-												provider={(isCustom ? p.custom_provider_config?.base_provider_type : p.name) as ProviderIconType}
+												provider={
+													(isCustom
+														? (decisionProviderIconKey(p) ?? p.custom_provider_config?.base_provider_type)
+														: p.name) as ProviderIconType
+												}
 												size="sm"
 												className="h-4 w-4 shrink-0"
 											/>

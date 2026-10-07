@@ -1568,12 +1568,12 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 		hashes.ClassifierSettings = settingsHash
 	}
 
-	if normalized.Jev != nil {
-		settingsHash, err := hashComplexityValue(normalized.Jev)
+	if normalized.Decision != nil {
+		settingsHash, err := hashComplexityValue(normalized.Decision)
 		if err != nil {
-			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash jev settings: %w", err)
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash decision settings: %w", err)
 		}
-		hashes.JevSettings = settingsHash
+		hashes.DecisionSettings = settingsHash
 	}
 
 	if normalized.LLM != nil {

@@ -6596,7 +6596,7 @@ func (s *RDBConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) 
 
 // GetModelConfigsPaginated retrieves model configs with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableModelConfig{})
+	baseQuery := s.ScopedDB(ctx).Model(&tables.TableModelConfig{})
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -7327,7 +7327,7 @@ func (s *RDBConfigStore) readComplexityCarryOverWithDB(ctx context.Context, db *
 	hashes.ComplexKeywords = semanticRow.ConfigHashes.ComplexKeywords
 	hashes.SemanticSettings = semanticRow.ConfigHashes.SemanticSettings
 	hashes.ClassifierSettings = semanticRow.ConfigHashes.ClassifierSettings
-	hashes.JevSettings = semanticRow.ConfigHashes.JevSettings
+	hashes.DecisionSettings = semanticRow.ConfigHashes.DecisionSettings
 	hashes.LLMSettings = semanticRow.ConfigHashes.LLMSettings
 	hashes.SessionSettings = semanticRow.ConfigHashes.SessionSettings
 	return hashes, semanticRow.EmbeddingFingerprint, nil
